@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 )
 
 // Role is the replication role an instance is rendered for.
@@ -157,7 +159,7 @@ func (c *ServerConfig) Render() (string, error) {
 	if err := ValidateUserParameters(c.UserParameters); err != nil {
 		return "", err
 	}
-	ver, err := parseVersion(c.Version)
+	ver, err := version.Parse(c.Version)
 	if err != nil {
 		return "", err
 	}
@@ -179,7 +181,7 @@ func (c *ServerConfig) Render() (string, error) {
 
 // managedSettings returns the ordered operator-managed key/value pairs for the
 // given version.
-func (c *ServerConfig) managedSettings(ver version) []pair {
+func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	binlogFormat := c.BinlogFormat
 	if binlogFormat == "" {
 		binlogFormat = "ROW"
@@ -204,7 +206,7 @@ func (c *ServerConfig) managedSettings(ver version) []pair {
 	}
 
 	// log_replica_updates was renamed from log_slave_updates in 8.0.
-	if ver.atLeast(8, 0) {
+	if ver.HasLogReplicaUpdates() {
 		pairs = append(pairs, pair{"log_replica_updates", "ON"})
 	} else {
 		pairs = append(pairs, pair{"log_slave_updates", "ON"})
@@ -213,7 +215,7 @@ func (c *ServerConfig) managedSettings(ver version) []pair {
 	// Read-only handling: super_read_only exists since 5.7.8.
 	if c.Role == RoleReplica {
 		pairs = append(pairs, pair{"read_only", "ON"})
-		if ver.atLeast(5, 7) {
+		if ver.HasSuperReadOnly() {
 			pairs = append(pairs, pair{"super_read_only", "ON"})
 		}
 	}
@@ -228,19 +230,20 @@ func (c *ServerConfig) managedSettings(ver version) []pair {
 	}
 
 	if c.SemiSync.Enabled {
+		naming := ver.SemiSync()
 		pairs = append(pairs,
-			pair{"rpl_semi_sync_source_enabled", "1"},
-			pair{"rpl_semi_sync_replica_enabled", "1"},
+			pair{naming.EnabledVarSource, "1"},
+			pair{naming.EnabledVarReplica, "1"},
 		)
 		if c.SemiSync.WaitForReplicaCount > 0 {
 			pairs = append(pairs, pair{
-				"rpl_semi_sync_source_wait_for_replica_count",
+				naming.WaitForCountVar,
 				strconv.Itoa(c.SemiSync.WaitForReplicaCount),
 			})
 		}
 		if c.SemiSync.TimeoutMillis > 0 {
 			pairs = append(pairs, pair{
-				"rpl_semi_sync_source_timeout",
+				naming.TimeoutVar,
 				strconv.Itoa(c.SemiSync.TimeoutMillis),
 			})
 		}
