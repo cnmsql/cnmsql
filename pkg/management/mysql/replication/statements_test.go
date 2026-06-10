@@ -82,6 +82,17 @@ func TestChangeSourceLegacySyntax(t *testing.T) {
 	}
 }
 
+func TestChangeSourceGetPublicKey(t *testing.T) {
+	modern := ChangeSourceStatement(mustParse(t, "8.0.36"), SourceOptions{Host: "h", User: "u", GetPublicKey: true})
+	if !strings.Contains(modern, "GET_SOURCE_PUBLIC_KEY=1") {
+		t.Errorf("modern get public key missing:\n%s", modern)
+	}
+	legacy := ChangeSourceStatement(mustParse(t, "5.7.44"), SourceOptions{Host: "h", User: "u", GetPublicKey: true})
+	if !strings.Contains(legacy, "GET_MASTER_PUBLIC_KEY=1") {
+		t.Errorf("legacy get public key missing:\n%s", legacy)
+	}
+}
+
 func TestChangeSourceMTLS(t *testing.T) {
 	v := mustParse(t, "8.0.36")
 	stmt := ChangeSourceStatement(v, SourceOptions{
@@ -148,11 +159,11 @@ func TestStartStopResetShowVersionAware(t *testing.T) {
 
 func TestResetBinaryLogsStatement(t *testing.T) {
 	const legacy = "RESET MASTER"
-	if got := ResetBinaryLogsStatement(mustParse(t, "8.0.22")); got != "RESET BINARY LOGS AND GTIDS" {
+	if got := ResetBinaryLogsStatement(mustParse(t, "8.4.0")); got != "RESET BINARY LOGS AND GTIDS" {
 		t.Errorf("modern reset = %q", got)
 	}
-	if got := ResetBinaryLogsStatement(mustParse(t, "8.0.21")); got != legacy {
-		t.Errorf("legacy reset = %q", got)
+	if got := ResetBinaryLogsStatement(mustParse(t, "8.0.36")); got != legacy {
+		t.Errorf("8.0 reset = %q", got)
 	}
 	if got := ResetBinaryLogsStatement(mustParse(t, "5.7.44")); got != legacy {
 		t.Errorf("5.7 reset = %q", got)

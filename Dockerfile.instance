@@ -8,6 +8,7 @@
 
 ARG GO_VERSION=1.25
 ARG PERCONA_IMAGE=percona/percona-server:8.0
+ARG XTRABACKUP_IMAGE=percona/percona-xtrabackup:8.0
 
 FROM golang:${GO_VERSION} AS builder
 WORKDIR /workspace
@@ -22,7 +23,16 @@ COPY . .
 # Static binary so it runs unchanged on the Percona base image.
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/manager ./cmd/manager
 
+# Percona XtraBackup, used to provision replicas (see `instance join`). It is
+# not in the server image, so copy the tools and their bundled private libraries
+# from the matching XtraBackup image.
+FROM ${XTRABACKUP_IMAGE} AS xtrabackup
+
 FROM ${PERCONA_IMAGE}
+
+COPY --from=xtrabackup /usr/bin/xtrabackup /usr/bin/xbstream /usr/bin/xbcloud /usr/bin/
+COPY --from=xtrabackup /usr/lib64/libev.so.4 /usr/lib64/libev.so.4.0.0 /usr/lib64/
+COPY --from=xtrabackup /usr/lib/private/ /usr/lib/private/
 
 # Percona images run as the mysql user; install the manager as root-readable.
 COPY --from=builder /out/manager /usr/local/bin/manager

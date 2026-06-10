@@ -50,6 +50,10 @@ type SourceOptions struct {
 	// server default.
 	ConnectRetry int
 	RetryCount   int
+	// GetPublicKey requests the source's public key for caching_sha2_password
+	// authentication over a non-TLS connection (MySQL 8.0+). Not needed when
+	// using mTLS.
+	GetPublicKey bool
 }
 
 // ChangeSourceStatement builds the CHANGE REPLICATION SOURCE TO (8.0.23+) or
@@ -97,6 +101,13 @@ func ChangeSourceStatement(v version.Version, opts SourceOptions) string {
 
 	if opts.AutoPosition {
 		add("AUTO_POSITION", "1")
+	}
+	if opts.GetPublicKey {
+		if modern {
+			clauses = append(clauses, "GET_SOURCE_PUBLIC_KEY=1")
+		} else {
+			clauses = append(clauses, "GET_MASTER_PUBLIC_KEY=1")
+		}
 	}
 
 	return fmt.Sprintf("%s %s", verb, strings.Join(clauses, ", "))

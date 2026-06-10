@@ -136,6 +136,14 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 		// Do not start replication on the temporary server; we configure it and
 		// let the real server start it.
 		"--skip-replica-start",
+		// GTID replication is mandatory; ensure it is enabled even if the
+		// temporary server is started without the rendered configuration. The
+		// CHANGE REPLICATION SOURCE ... AUTO_POSITION and SET gtid_purged below
+		// both require it.
+		"--gtid-mode=ON",
+		"--enforce-gtid-consistency=ON",
+		"--log-bin=binlog",
+		"--log-replica-updates=ON",
 	)
 
 	sup := NewProcessSupervisor(o.MysqldPath, args, WithShutdownTimeout(o.ReadyTimeout))

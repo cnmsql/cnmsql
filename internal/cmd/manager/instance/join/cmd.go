@@ -44,6 +44,7 @@ func NewCommand() *cobra.Command {
 		sslCA          string
 		sslCert        string
 		sslKey         string
+		getPublicKey   bool
 	)
 
 	cmd := &cobra.Command{
@@ -81,6 +82,7 @@ func NewCommand() *cobra.Command {
 					SSLCA:        sslCA,
 					SSLCert:      sslCert,
 					SSLKey:       sslKey,
+					GetPublicKey: getPublicKey,
 				},
 			})
 		},
@@ -100,6 +102,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sslCA, "source-ssl-ca", "", "Replication source CA certificate")
 	cmd.Flags().StringVar(&sslCert, "source-ssl-cert", "", "Replication client certificate")
 	cmd.Flags().StringVar(&sslKey, "source-ssl-key", "", "Replication client key")
+	cmd.Flags().BoolVar(&getPublicKey, "source-get-public-key", false, "Request the source's public key for caching_sha2_password over a non-TLS connection")
 
 	return cmd
 }

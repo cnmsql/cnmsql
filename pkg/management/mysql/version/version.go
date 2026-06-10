@@ -111,10 +111,10 @@ func (v Version) HasAdminInterface() bool {
 }
 
 // UsesResetBinaryLogsAndGtids reports whether the server uses
-// "RESET BINARY LOGS AND GTIDS" (MySQL 8.0.22+) instead of the deprecated
+// "RESET BINARY LOGS AND GTIDS" (MySQL 8.4.0+) instead of the now-deprecated
 // "RESET MASTER".
 func (v Version) UsesResetBinaryLogsAndGtids() bool {
-	return v.AtLeast(8, 0, 22)
+	return v.AtLeast(8, 4, 0)
 }
 
 // usesSourceSemiSyncNaming reports whether the server uses the source/replica

@@ -20,6 +20,7 @@ limitations under the License.
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/yyewolf/cnmysql/internal/cmd/manager"
@@ -27,6 +28,7 @@ import (
 
 func main() {
 	if err := manager.NewRootCommand().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "manager: error:", err)
 		os.Exit(1)
 	}
 }

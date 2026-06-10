@@ -54,6 +54,10 @@ func buildInstanceContext(t *testing.T) string {
 	}
 
 	dockerfile := "FROM percona/percona-server:8.0\n" +
+		// XtraBackup tooling (and its bundled private libs) for `instance join`.
+		"COPY --from=percona/percona-xtrabackup:8.0 /usr/bin/xtrabackup /usr/bin/xbstream /usr/bin/\n" +
+		"COPY --from=percona/percona-xtrabackup:8.0 /usr/lib64/libev.so.4 /usr/lib64/libev.so.4.0.0 /usr/lib64/\n" +
+		"COPY --from=percona/percona-xtrabackup:8.0 /usr/lib/private/ /usr/lib/private/\n" +
 		"COPY manager /usr/local/bin/manager\n" +
 		"ENTRYPOINT [\"/usr/local/bin/manager\"]\n"
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
