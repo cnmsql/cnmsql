@@ -70,6 +70,46 @@ func TestBootstrapFull(t *testing.T) {
 	}
 }
 
+func TestBootstrapControlUserWithDynamicPrivileges(t *testing.T) {
+	out := joinStmts(t, BootstrapParams{
+		RootPassword:              "rootpw",
+		ControlUser:               "control",
+		ControlPassword:           "ctlpw",
+		SupportsDynamicPrivileges: true,
+	})
+	wantGrant := "GRANT SERVICE_CONNECTION_ADMIN, CONNECTION_ADMIN, SYSTEM_VARIABLES_ADMIN, " +
+		"REPLICATION_SLAVE_ADMIN, BACKUP_ADMIN, CLONE_ADMIN ON *.* TO 'control'@'%'"
+	for _, want := range []string{
+		"CREATE USER IF NOT EXISTS 'control'@'%' IDENTIFIED BY 'ctlpw'",
+		"GRANT ALL PRIVILEGES ON *.* TO 'control'@'%' WITH GRANT OPTION",
+		wantGrant,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestBootstrapControlUserWithoutDynamicPrivileges(t *testing.T) {
+	out := joinStmts(t, BootstrapParams{
+		RootPassword:    "rootpw",
+		ControlUser:     "control",
+		ControlPassword: "ctlpw",
+	})
+	if strings.Contains(out, "SERVICE_CONNECTION_ADMIN") {
+		t.Errorf("legacy server should not get dynamic privilege grants:\n%s", out)
+	}
+	if !strings.Contains(out, "GRANT ALL PRIVILEGES ON *.* TO 'control'@'%'") {
+		t.Errorf("control user should still get ALL PRIVILEGES:\n%s", out)
+	}
+}
+
+func TestBootstrapControlUserValidation(t *testing.T) {
+	if _, err := BootstrapStatements(BootstrapParams{RootPassword: "x", ControlUser: "control"}); err == nil {
+		t.Error("expected error when control password missing")
+	}
+}
+
 func TestBootstrapReplicationX509(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:           "rootpw",

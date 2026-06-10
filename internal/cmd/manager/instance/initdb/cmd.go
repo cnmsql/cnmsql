@@ -24,21 +24,24 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/instance"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 )
 
 // NewCommand builds the `instance initdb` command.
 func NewCommand() *cobra.Command {
 	var (
-		mysqldPath string
-		dataDir    string
-		configFile string
-		socket     string
-		database   string
-		owner      string
-		replUser   string
-		requireTLS bool
-		charset    string
-		collation  string
+		mysqldPath    string
+		dataDir       string
+		configFile    string
+		socket        string
+		database      string
+		owner         string
+		replUser      string
+		requireTLS    bool
+		charset       string
+		collation     string
+		controlUser   string
+		serverVersion string
 	)
 
 	cmd := &cobra.Command{
@@ -54,21 +57,38 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("MYSQL_ROOT_PASSWORD must be set")
 			}
 
+			if serverVersion == "" {
+				serverVersion = os.Getenv("MYSQL_VERSION")
+			}
+			// Dynamic privileges (admin interface, super_read_only) exist on
+			// MySQL 8.0+. When the version is unknown, assume modern.
+			dynamicPrivileges := true
+			if serverVersion != "" {
+				ver, err := version.Parse(serverVersion)
+				if err != nil {
+					return err
+				}
+				dynamicPrivileges = ver.AtLeast(8, 0, 0)
+			}
+
 			return instance.Initialize(cmd.Context(), instance.InitOptions{
 				MysqldPath: mysqldPath,
 				DataDir:    dataDir,
 				ConfigFile: configFile,
 				Socket:     socket,
 				Bootstrap: instance.BootstrapParams{
-					RootPassword:           rootPassword,
-					Database:               database,
-					AppUser:                owner,
-					AppPassword:            os.Getenv("MYSQL_APP_PASSWORD"),
-					CharacterSet:           charset,
-					Collation:              collation,
-					ReplicationUser:        replUser,
-					ReplicationPassword:    os.Getenv("MYSQL_REPLICATION_PASSWORD"),
-					ReplicationRequireX509: requireTLS,
+					RootPassword:              rootPassword,
+					Database:                  database,
+					AppUser:                   owner,
+					AppPassword:               os.Getenv("MYSQL_APP_PASSWORD"),
+					CharacterSet:              charset,
+					Collation:                 collation,
+					ReplicationUser:           replUser,
+					ReplicationPassword:       os.Getenv("MYSQL_REPLICATION_PASSWORD"),
+					ReplicationRequireX509:    requireTLS,
+					ControlUser:               controlUser,
+					ControlPassword:           os.Getenv("MYSQL_CONTROL_PASSWORD"),
+					SupportsDynamicPrivileges: dynamicPrivileges,
 				},
 			})
 		},
@@ -84,6 +104,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&requireTLS, "replication-require-x509", false, "Require a client certificate (mTLS) for the replication user")
 	cmd.Flags().StringVar(&charset, "character-set", "", "Character set for the application database")
 	cmd.Flags().StringVar(&collation, "collation", "", "Collation for the application database")
+	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from MYSQL_CONTROL_PASSWORD)")
+	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version (e.g. 8.0.36); gates dynamic privilege grants")
 
 	return cmd
 }

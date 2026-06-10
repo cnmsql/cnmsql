@@ -40,8 +40,28 @@ type BootstrapParams struct {
 	// ReplicationRequireX509 creates the replication user requiring a client
 	// certificate (mTLS) rather than password authentication.
 	ReplicationRequireX509 bool
+	// ControlUser and ControlPassword create the privileged account the instance
+	// manager uses for monitoring and lifecycle over the admin interface. Both
+	// must be set together, or empty to skip.
+	ControlUser     string
+	ControlPassword string
+	// SupportsDynamicPrivileges enables the MySQL 8.0+ dynamic privilege grants
+	// the control user needs (admin-interface access, super_read_only, etc.).
+	SupportsDynamicPrivileges bool
 	// PostInitSQL is run verbatim, in order, after the managed statements.
 	PostInitSQL []string
+}
+
+// controlDynamicPrivileges are the MySQL 8.0+ dynamic privileges the control
+// user needs: connect on the administrative interface, use the reserved
+// connection slot, toggle super_read_only, manage replication and take backups.
+var controlDynamicPrivileges = []string{
+	"SERVICE_CONNECTION_ADMIN",
+	"CONNECTION_ADMIN",
+	"SYSTEM_VARIABLES_ADMIN",
+	"REPLICATION_SLAVE_ADMIN",
+	"BACKUP_ADMIN",
+	"CLONE_ADMIN",
 }
 
 // Validate checks the parameters are internally consistent.
@@ -55,6 +75,9 @@ func (p BootstrapParams) Validate() error {
 	}
 	if p.ReplicationUser != "" && p.ReplicationPassword == "" && !p.ReplicationRequireX509 {
 		return fmt.Errorf("bootstrap: replication user needs a password or requireX509")
+	}
+	if (p.ControlUser != "") != (p.ControlPassword != "") {
+		return fmt.Errorf("bootstrap: controlUser and controlPassword must be set together")
 	}
 	return nil
 }
@@ -106,6 +129,20 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 			fmt.Sprintf("GRANT REPLICATION SLAVE ON *.* TO '%s'@'%%'",
 				escapeName(p.ReplicationUser)),
 		)
+	}
+
+	// Control account used by the instance manager.
+	if p.ControlUser != "" {
+		stmts = append(stmts,
+			fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY %s",
+				escapeName(p.ControlUser), quoteString(p.ControlPassword)),
+			fmt.Sprintf("GRANT ALL PRIVILEGES ON *.* TO '%s'@'%%' WITH GRANT OPTION",
+				escapeName(p.ControlUser)),
+		)
+		if p.SupportsDynamicPrivileges {
+			stmts = append(stmts, fmt.Sprintf("GRANT %s ON *.* TO '%s'@'%%'",
+				strings.Join(controlDynamicPrivileges, ", "), escapeName(p.ControlUser)))
+		}
 	}
 
 	stmts = append(stmts, "FLUSH PRIVILEGES")
