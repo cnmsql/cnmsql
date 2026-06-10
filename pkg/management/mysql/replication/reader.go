@@ -83,6 +83,60 @@ func (m *Manager) ReadOnly(ctx context.Context) (ReadOnlyState, error) {
 	return state, nil
 }
 
+// SemiSyncState reports whether the semi-sync source/replica plugins are
+// enabled, using the version-appropriate variable names.
+type SemiSyncState struct {
+	SourceEnabled  bool
+	ReplicaEnabled bool
+}
+
+// SemiSyncStatus reads the semi-sync enabled flags. Missing variables (plugins
+// not installed) are reported as disabled rather than an error.
+func (m *Manager) SemiSyncStatus(ctx context.Context) (SemiSyncState, error) {
+	naming := m.version.SemiSync()
+	source, err := m.optionalGlobalBool(ctx, naming.EnabledVarSource)
+	if err != nil {
+		return SemiSyncState{}, err
+	}
+	replica, err := m.optionalGlobalBool(ctx, naming.EnabledVarReplica)
+	if err != nil {
+		return SemiSyncState{}, err
+	}
+	return SemiSyncState{SourceEnabled: source, ReplicaEnabled: replica}, nil
+}
+
+// Uptime returns the mysqld uptime in seconds.
+func (m *Manager) Uptime(ctx context.Context) (int64, error) {
+	var name string
+	var value sql.NullString
+	row := m.conn.QueryRowContext(ctx, "SHOW GLOBAL STATUS LIKE 'Uptime'")
+	if err := row.Scan(&name, &value); err != nil {
+		return 0, fmt.Errorf("reading uptime: %w", err)
+	}
+	if !value.Valid {
+		return 0, nil
+	}
+	uptime, err := strconv.ParseInt(value.String, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing uptime %q: %w", value.String, err)
+	}
+	return uptime, nil
+}
+
+// optionalGlobalBool reads a global variable as a bool, treating an unknown
+// variable (plugin not installed) as false.
+func (m *Manager) optionalGlobalBool(ctx context.Context, name string) (bool, error) {
+	query := fmt.Sprintf("SELECT @@GLOBAL.%s", name)
+	var value sql.NullString
+	if err := m.conn.QueryRowContext(ctx, query).Scan(&value); err != nil {
+		if mysqlErrorNumber(err) == errUnknownSystemVariable {
+			return false, nil
+		}
+		return false, fmt.Errorf("query %q: %w", query, err)
+	}
+	return parseBool(value.String), nil
+}
+
 func (m *Manager) scalarString(ctx context.Context, query string) (string, error) {
 	var value sql.NullString
 	if err := m.conn.QueryRowContext(ctx, query).Scan(&value); err != nil {

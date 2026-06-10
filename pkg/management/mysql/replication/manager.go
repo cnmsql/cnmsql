@@ -132,5 +132,5 @@ func (m *Manager) installPlugin(ctx context.Context, stmt string) error {
 // isPluginAlreadyInstalled reports whether the error is MySQL error 1968
 // (ER_PLUGIN_INSTALLED) so re-installing a plugin is idempotent.
 func isPluginAlreadyInstalled(err error) bool {
-	return mysqlErrorNumber(err) == 1968
+	return mysqlErrorNumber(err) == errPluginInstalled
 }

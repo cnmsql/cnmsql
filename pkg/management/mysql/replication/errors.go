@@ -22,6 +22,14 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
+// MySQL server error numbers we special-case.
+const (
+	// errPluginInstalled is ER_PLUGIN_INSTALLED.
+	errPluginInstalled = 1968
+	// errUnknownSystemVariable is ER_UNKNOWN_SYSTEM_VARIABLE.
+	errUnknownSystemVariable = 1193
+)
+
 // mysqlErrorNumber returns the MySQL server error number for an error, or 0 if
 // it is not a *mysql.MySQLError.
 func mysqlErrorNumber(err error) uint16 {
