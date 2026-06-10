@@ -100,6 +100,16 @@ func (v Version) HasLogReplicaUpdates() bool {
 	return v.AtLeast(8, 0, 0)
 }
 
+// HasAdminInterface reports whether the server supports the administrative
+// network interface (admin_address/admin_port), introduced in MySQL 8.0.14.
+// Connections on that interface are not governed by max_connections, so the
+// instance manager can always reach mysqld even when client connections are
+// exhausted. On older servers the manager must rely on the reserved
+// SUPER/CONNECTION_ADMIN connection slot instead.
+func (v Version) HasAdminInterface() bool {
+	return v.AtLeast(8, 0, 14)
+}
+
 // usesSourceSemiSyncNaming reports whether the server uses the source/replica
 // semi-sync plugin and variable naming (MySQL 8.0.26+) instead of master/slave.
 func (v Version) usesSourceSemiSyncNaming() bool {

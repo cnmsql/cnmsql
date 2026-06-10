@@ -57,7 +57,16 @@ type Config struct {
 	Database string
 	// Params are extra DSN parameters merged with the defaults.
 	Params map[string]string
+	// MaxOpenConns caps the pool size. The instance manager's control pool
+	// should set this to 1: on servers without the admin interface (pre-8.0.14)
+	// a single privileged connection reliably owns the one reserved
+	// SUPER/CONNECTION_ADMIN slot that survives max_connections exhaustion,
+	// instead of wasting it across idle connections. Defaults to 2.
+	MaxOpenConns int
 }
+
+// DefaultMaxOpenConns is used when Config.MaxOpenConns is zero.
+const DefaultMaxOpenConns = 2
 
 // defaultParams are always applied unless overridden by Config.Params.
 func defaultParams() map[string]string {
@@ -132,9 +141,13 @@ func Open(ctx context.Context, c Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("pool: opening connection: %w", err)
 	}
 
+	maxOpen := c.MaxOpenConns
+	if maxOpen <= 0 {
+		maxOpen = DefaultMaxOpenConns
+	}
 	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxOpen)
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()

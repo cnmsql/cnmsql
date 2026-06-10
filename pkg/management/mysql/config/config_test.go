@@ -121,6 +121,46 @@ func TestRenderSemiSync(t *testing.T) {
 	assertContains(t, out, "rpl_semi_sync_source_timeout = 5000")
 }
 
+func TestRenderAdminInterfaceModern(t *testing.T) {
+	c := baseConfig()
+	c.Version = "8.0.36"
+	out := mustRender(t, c)
+
+	assertContains(t, out, "admin_address = 127.0.0.1")
+	assertContains(t, out, "admin_port = 33062")
+}
+
+func TestRenderAdminInterfaceCustom(t *testing.T) {
+	c := baseConfig()
+	c.Version = "8.4.0"
+	c.AdminAddress = "127.0.0.2"
+	c.AdminPort = 40000
+	out := mustRender(t, c)
+
+	assertContains(t, out, "admin_address = 127.0.0.2")
+	assertContains(t, out, "admin_port = 40000")
+}
+
+func TestRenderAdminInterfaceUnsupportedVersions(t *testing.T) {
+	for _, ver := range []string{"5.6.51", "5.7.44", "8.0.13"} {
+		c := baseConfig()
+		c.Version = ver
+		out := mustRender(t, c)
+		assertNotContains(t, out, "admin_address")
+		assertNotContains(t, out, "admin_port")
+	}
+}
+
+func TestRenderRejectsAdminInterfaceUserParameters(t *testing.T) {
+	for _, key := range []string{"admin_address", "admin-port"} {
+		c := baseConfig()
+		c.UserParameters = map[string]string{key: "x"}
+		if _, err := c.Render(); err == nil {
+			t.Errorf("expected Render() to reject managed parameter %q", key)
+		}
+	}
+}
+
 func TestRenderUserParametersAppended(t *testing.T) {
 	c := baseConfig()
 	c.UserParameters = map[string]string{

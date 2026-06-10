@@ -29,6 +29,14 @@ import (
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 )
 
+// DefaultAdminPort is the default MySQL administrative interface port.
+const DefaultAdminPort = 33062
+
+// DefaultAdminAddress is the default bind address for the administrative
+// interface. Loopback keeps it reachable only from inside the pod (the instance
+// manager), never from the network.
+const DefaultAdminAddress = "127.0.0.1"
+
 // Role is the replication role an instance is rendered for.
 type Role string
 
@@ -78,6 +86,12 @@ type ServerConfig struct {
 	ReportHost string
 	// BinlogFormat is the binary log format (ROW/STATEMENT/MIXED).
 	BinlogFormat string
+	// AdminAddress and AdminPort configure the administrative network interface
+	// (MySQL 8.0.14+), a separate listener not governed by max_connections that
+	// guarantees the instance manager can always reach mysqld. They are ignored
+	// on older servers. When AdminAddress is empty it defaults to loopback.
+	AdminAddress string
+	AdminPort    int
 	// TLS holds the TLS material paths; mTLS is enforced when set.
 	TLS TLSPaths
 	// SemiSync configures semi-synchronous replication.
@@ -106,6 +120,10 @@ var managedKeys = map[string]struct{}{
 	"datadir":                  {},
 	"socket":                   {},
 	"report_host":              {},
+	"admin_address":            {},
+	"admin-address":            {},
+	"admin_port":               {},
+	"admin-port":               {},
 	"ssl_ca":                   {},
 	"ssl-ca":                   {},
 	"ssl_cert":                 {},
@@ -203,6 +221,23 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	}
 	if c.ReportHost != "" {
 		pairs = append(pairs, pair{"report_host", c.ReportHost})
+	}
+
+	// Administrative interface (8.0.14+): a dedicated listener exempt from
+	// max_connections, so the instance manager can always reach mysqld.
+	if ver.HasAdminInterface() {
+		addr := c.AdminAddress
+		if addr == "" {
+			addr = DefaultAdminAddress
+		}
+		port := c.AdminPort
+		if port == 0 {
+			port = DefaultAdminPort
+		}
+		pairs = append(pairs,
+			pair{"admin_address", addr},
+			pair{"admin_port", strconv.Itoa(port)},
+		)
 	}
 
 	// log_replica_updates was renamed from log_slave_updates in 8.0.
