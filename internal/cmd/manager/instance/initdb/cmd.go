@@ -18,30 +18,72 @@ limitations under the License.
 package initdb
 
 import (
-	"errors"
+	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/instance"
 )
 
 // NewCommand builds the `instance initdb` command.
 func NewCommand() *cobra.Command {
 	var (
-		dataDir  string
-		database string
-		owner    string
+		mysqldPath string
+		dataDir    string
+		configFile string
+		socket     string
+		database   string
+		owner      string
+		replUser   string
+		requireTLS bool
+		charset    string
+		collation  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "initdb",
 		Short: "Initialise a fresh MySQL data directory",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("instance initdb: not implemented yet")
+		Long: "Initialise a fresh MySQL data directory and bootstrap the application " +
+			"and replication accounts. Passwords are read from the environment " +
+			"(MYSQL_ROOT_PASSWORD, MYSQL_APP_PASSWORD, MYSQL_REPLICATION_PASSWORD). " +
+			"This command is idempotent: it is a no-op on an already initialised directory.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			rootPassword := os.Getenv("MYSQL_ROOT_PASSWORD")
+			if rootPassword == "" {
+				return fmt.Errorf("MYSQL_ROOT_PASSWORD must be set")
+			}
+
+			return instance.Initialize(cmd.Context(), instance.InitOptions{
+				MysqldPath: mysqldPath,
+				DataDir:    dataDir,
+				ConfigFile: configFile,
+				Socket:     socket,
+				Bootstrap: instance.BootstrapParams{
+					RootPassword:           rootPassword,
+					Database:               database,
+					AppUser:                owner,
+					AppPassword:            os.Getenv("MYSQL_APP_PASSWORD"),
+					CharacterSet:           charset,
+					Collation:              collation,
+					ReplicationUser:        replUser,
+					ReplicationPassword:    os.Getenv("MYSQL_REPLICATION_PASSWORD"),
+					ReplicationRequireX509: requireTLS,
+				},
+			})
 		},
 	}
 
+	cmd.Flags().StringVar(&mysqldPath, "mysqld", "mysqld", "Path to the mysqld binary")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")
+	cmd.Flags().StringVar(&configFile, "config", "/etc/mysql/my.cnf", "Path to the rendered my.cnf")
+	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket for the temporary server")
 	cmd.Flags().StringVar(&database, "database", "", "Application database to create")
 	cmd.Flags().StringVar(&owner, "owner", "", "Owner user of the application database")
+	cmd.Flags().StringVar(&replUser, "replication-user", "", "Replication user to create")
+	cmd.Flags().BoolVar(&requireTLS, "replication-require-x509", false, "Require a client certificate (mTLS) for the replication user")
+	cmd.Flags().StringVar(&charset, "character-set", "", "Character set for the application database")
+	cmd.Flags().StringVar(&collation, "collation", "", "Collation for the application database")
 
 	return cmd
 }
