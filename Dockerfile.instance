@@ -1,0 +1,31 @@
+# Build the instance manager binary, then layer it onto Percona Server. The
+# resulting image runs `manager` as PID1; it supervises mysqld, bootstraps and
+# joins instances, and serves the control API.
+#
+# PERCONA_IMAGE selects the Percona Server base (and thus the MySQL version):
+#   docker build -f Dockerfile.instance \
+#     --build-arg PERCONA_IMAGE=percona/percona-server:8.0 -t cnmysql-instance:8.0 .
+
+ARG GO_VERSION=1.25
+ARG PERCONA_IMAGE=percona/percona-server:8.0
+
+FROM golang:${GO_VERSION} AS builder
+WORKDIR /workspace
+
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+# .dockerignore keeps this to Go sources and the module files.
+COPY . .
+
+# Static binary so it runs unchanged on the Percona base image.
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/manager ./cmd/manager
+
+FROM ${PERCONA_IMAGE}
+
+# Percona images run as the mysql user; install the manager as root-readable.
+COPY --from=builder /out/manager /usr/local/bin/manager
+
+ENTRYPOINT ["/usr/local/bin/manager"]
+CMD ["instance", "run"]
