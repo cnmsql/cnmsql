@@ -1,0 +1,9 @@
+apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+kind: Database
+metadata:
+  labels:
+    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/managed-by: kustomize
+  name: database-sample
+spec:
+  # TODO(user): Add fields here

@@ -1,0 +1,20 @@
+apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+kind: Cluster
+metadata:
+  labels:
+    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/managed-by: kustomize
+  name: cluster-sample
+spec:
+  instances: 3
+  imageName: percona/percona-server:8.0
+  storage:
+    size: 10Gi
+  mysql:
+    binlogFormat: ROW
+    semiSync:
+      enabled: true
+  bootstrap:
+    initdb:
+      database: app
+      owner: app

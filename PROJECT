@@ -9,4 +9,52 @@ layout:
 - helm.kubebuilder.io/v2-alpha
 projectName: cnmysql
 repo: github.com/yyewolf/cnmysql
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: cloudnative-mysql.io
+  group: mysql
+  kind: Cluster
+  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: cloudnative-mysql.io
+  group: mysql
+  kind: Backup
+  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: cloudnative-mysql.io
+  group: mysql
+  kind: ScheduledBackup
+  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: cloudnative-mysql.io
+  group: mysql
+  kind: Database
+  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: cloudnative-mysql.io
+  group: mysql
+  kind: ImageCatalog
+  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+  domain: cloudnative-mysql.io
+  group: mysql
+  kind: ClusterImageCatalog
+  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  version: v1alpha1
 version: "3"
