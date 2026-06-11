@@ -47,11 +47,20 @@ func (m *Manager) exec(ctx context.Context, stmt string) error {
 // ConfigureSource points the replica at the given source and starts
 // replication: STOP REPLICA, CHANGE REPLICATION SOURCE, START REPLICA.
 func (m *Manager) ConfigureSource(ctx context.Context, opts SourceOptions) error {
+	return m.configureSource(ctx, opts, true)
+}
+
+// configureSource runs STOP REPLICA, CHANGE REPLICATION SOURCE and, when start
+// is true, START REPLICA.
+func (m *Manager) configureSource(ctx context.Context, opts SourceOptions, start bool) error {
 	if err := m.exec(ctx, StopReplicaStatement(m.version)); err != nil {
 		return err
 	}
 	if err := m.exec(ctx, ChangeSourceStatement(m.version, opts)); err != nil {
 		return err
+	}
+	if !start {
+		return nil
 	}
 	return m.exec(ctx, StartReplicaStatement(m.version))
 }
@@ -59,8 +68,13 @@ func (m *Manager) ConfigureSource(ctx context.Context, opts SourceOptions) error
 // ProvisionFromBackup configures a freshly restored replica: it resets the
 // binary logs and GTID history, sets gtid_purged to the backup's GTID set so
 // auto-positioning resumes from the backup point, then points the replica at
-// the source and starts replication. gtidPurged may be empty for a non-GTID
-// backup.
+// the source. gtidPurged may be empty for a non-GTID backup.
+//
+// It deliberately does NOT start replication: this runs on the throwaway
+// temporary server (started with --skip-slave-start), and the real instance
+// resumes replication from the persisted source config on its next boot.
+// Starting here is redundant and, on MySQL 5.6 with --skip-networking, START
+// SLAVE is rejected outright (Error 1200), so we configure-only.
 func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, opts SourceOptions) error {
 	if err := m.exec(ctx, ResetBinaryLogsStatement(m.version)); err != nil {
 		return err
@@ -70,7 +84,7 @@ func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, op
 			return err
 		}
 	}
-	return m.ConfigureSource(ctx, opts)
+	return m.configureSource(ctx, opts, false)
 }
 
 // StartReplica starts the replication threads.

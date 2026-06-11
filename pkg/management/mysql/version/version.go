@@ -94,6 +94,15 @@ func (v Version) HasSuperReadOnly() bool {
 	return v.AtLeast(5, 7, 8)
 }
 
+// HasGetSourcePublicKey reports whether CHANGE MASTER/REPLICATION SOURCE accepts
+// the GET_{MASTER,SOURCE}_PUBLIC_KEY clause, which fetches the
+// caching_sha2_password public key over a non-TLS link. Added in MySQL 5.7.23 /
+// 8.0.4; absent on 5.6 (which has no caching_sha2_password), where emitting it
+// is a syntax error.
+func (v Version) HasGetSourcePublicKey() bool {
+	return v.AtLeast(5, 7, 23)
+}
+
 // HasLogReplicaUpdates reports whether the log_replica_updates spelling is used
 // instead of log_slave_updates (MySQL 8.0+).
 func (v Version) HasLogReplicaUpdates() bool {

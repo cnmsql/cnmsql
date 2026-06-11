@@ -23,9 +23,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # The instance-manager integration tests build per-version images and run
-      # real Percona Server containers (5.6 / 8.0 / 8.4) via testcontainers, so
-      # they require a working Docker daemon (present on ubuntu-latest runners).
+      # The instance-manager integration tests build our own slim Percona Server
+      # images (Dockerfile.instance: Debian + Percona APT repos, per version
+      # 5.6 / 8.0 / 8.4 / 9.x) and run them as real containers via testcontainers,
+      # so they require a working Docker daemon (present on ubuntu-latest runners)
+      # and outbound access to repo.percona.com and archive.debian.org (5.6).
       - name: Running Integration Tests
         run: |
           go mod tidy

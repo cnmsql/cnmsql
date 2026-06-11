@@ -60,7 +60,7 @@ func TestProvisionFromBackupOrdering(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL gtid_purged = 'uuid:1-10'")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CHANGE REPLICATION SOURCE TO").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("START REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
+	// No START REPLICA: provisioning configures only; the real server resumes.
 
 	err := m.ProvisionFromBackup(context.Background(), "uuid:1-10", SourceOptions{
 		Host: "primary", User: "repl", AutoPosition: true,
@@ -80,7 +80,7 @@ func TestProvisionFromBackupSkipsEmptyGTID(t *testing.T) {
 	// No SET GLOBAL gtid_purged expected when the set is empty.
 	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CHANGE REPLICATION SOURCE TO").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("START REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
+	// No START REPLICA: provisioning configures only; the real server resumes.
 
 	if err := m.ProvisionFromBackup(context.Background(), "", SourceOptions{Host: "p", User: "r"}); err != nil {
 		t.Fatalf("ProvisionFromBackup: %v", err)

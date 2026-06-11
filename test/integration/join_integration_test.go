@@ -44,14 +44,8 @@ func TestJoinProvisionsReplica(t *testing.T) {
 }
 
 func runJoinTest(t *testing.T, f flavor) {
-	if !f.modernXtrabackup {
-		// XtraBackup 2.4 (the 5.6/5.7 series) ships binaries built against
-		// glibc 2.28+, which the EOL CentOS-based percona-server:5.6 image
-		// predates, and the CentOS repos needed to install it in-image are
-		// archived. Provisioning 5.6 replicas needs a custom image bundling a
-		// glibc-compatible XtraBackup; the join code itself is version-aware and
-		// covered by unit tests and the 8.0/8.4 e2e.
-		t.Skip("xtrabackup 2.4 is incompatible with the EOL 5.6 base image; needs a custom image")
+	if !f.joinSupported {
+		t.Skip("XtraBackup-based replica provisioning is not supported on this flavor's image")
 	}
 
 	ctx := context.Background()
@@ -83,11 +77,7 @@ exec /usr/sbin/mysqld --datadir=$REP --socket=/tmp/rep.sock --port=3307 --server
 `, appPass, f.gtidArgs(t), appUser, f.version, f.version)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    buildInstanceContext(t, f),
-			Dockerfile: "Dockerfile",
-			KeepImage:  true,
-		},
+		Image:          ensureInstanceImage(t, f),
 		ExposedPorts: []string{"3306/tcp", "3307/tcp"},
 		Entrypoint:   []string{"bash", "-lc"},
 		Cmd:          []string{script},

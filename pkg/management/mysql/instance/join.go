@@ -133,9 +133,6 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 		"--datadir="+o.DataDir,
 		"--socket="+o.Socket,
 		"--skip-networking",
-		// Do not start replication on the temporary server; we configure it and
-		// let the real server start it.
-		"--skip-replica-start",
 		// GTID replication is mandatory; ensure it is enabled even if the
 		// temporary server is started without the rendered configuration. The
 		// CHANGE REPLICATION SOURCE ... AUTO_POSITION and SET gtid_purged below
@@ -144,6 +141,14 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 		"--enforce-gtid-consistency=ON",
 		"--log-bin=binlog",
 	)
+	// Do not start replication on the temporary server; we configure it and let
+	// the real server start it. The option was renamed slave→replica in 8.0.26;
+	// 5.6 only knows --skip-slave-start, 9.x only --skip-replica-start.
+	if ver.UsesReplicaTerminology() {
+		args = append(args, "--skip-replica-start")
+	} else {
+		args = append(args, "--skip-slave-start")
+	}
 	// log_slave_updates was renamed to log_replica_updates in 8.0.
 	if ver.HasLogReplicaUpdates() {
 		args = append(args, "--log-replica-updates=ON")

@@ -1,14 +1,29 @@
-# Build the instance manager binary, then layer it onto Percona Server. The
-# resulting image runs `manager` as PID1; it supervises mysqld, bootstraps and
-# joins instances, and serves the control API.
+# Our own slim Percona Server instance image.
 #
-# PERCONA_IMAGE selects the Percona Server base (and thus the MySQL version):
+# Instead of layering onto the fat upstream `percona/percona-server` image, we
+# build from a minimal Debian base and install only what the instance manager
+# needs at runtime: the Percona Server `mysqld` (plus its init tooling),
+# XtraBackup, and the `manager` binary itself. Everything else — the mysql
+# client, docs, man pages, the mysql-test suite, debug builds — is stripped.
+#
+# The image is parameterized by build args so a single Dockerfile covers every
+# supported version (see images/versions.json for the matrix):
+#
 #   docker build -f Dockerfile.instance \
-#     --build-arg PERCONA_IMAGE=percona/percona-server:8.0 -t cnmysql-instance:8.0 .
+#     --build-arg BASE_IMAGE=debian:bookworm-slim \
+#     --build-arg PS_REPO=ps-80 \
+#     --build-arg PXB_REPO=pxb-80 \
+#     --build-arg PXB_PACKAGE=percona-xtrabackup-80 \
+#     -t cnmysql-instance:8.0 .
+#
+# The runtime stage runs as an unprivileged user (uid 1001); mysqld and the
+# manager never need root, and every port they bind is above 1024.
 
 ARG GO_VERSION=1.25
-ARG PERCONA_IMAGE=percona/percona-server:8.0
-ARG XTRABACKUP_IMAGE=percona/percona-xtrabackup:8.0
+ARG BASE_IMAGE=debian:bookworm-slim
+ARG PS_REPO=ps-80
+ARG PXB_REPO=pxb-80
+ARG PXB_PACKAGE=percona-xtrabackup-80
 
 FROM golang:${GO_VERSION} AS builder
 WORKDIR /workspace
@@ -20,22 +35,100 @@ RUN go mod download
 # .dockerignore keeps this to Go sources and the module files.
 COPY . .
 
-# Static binary so it runs unchanged on the Percona base image.
+# Static binary so it runs unchanged on the slim runtime image.
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/manager ./cmd/manager
 
-# Percona XtraBackup, used to provision replicas (see `instance join`). It is
-# not in the server image, so copy the tools and their bundled private libraries
-# from the matching XtraBackup image.
-FROM ${XTRABACKUP_IMAGE} AS xtrabackup
+FROM ${BASE_IMAGE}
 
-FROM ${PERCONA_IMAGE}
+# Re-declare the args needed in this stage (ARGs do not cross FROM boundaries).
+ARG PS_REPO
+ARG PXB_REPO
+ARG PXB_PACKAGE
+# percona-release component: "release" for GA versions; "testing" for versions
+# Percona only ships pre-GA (e.g. 9.x innovation lives in the testing channel).
+ARG REPO_COMPONENT=release
 
-COPY --from=xtrabackup /usr/bin/xtrabackup /usr/bin/xbstream /usr/bin/xbcloud /usr/bin/
-COPY --from=xtrabackup /usr/lib64/libev.so.4 /usr/lib64/libev.so.4.0.0 /usr/lib64/
-COPY --from=xtrabackup /usr/lib/private/ /usr/lib/private/
+# Fixed, unprivileged identity for the server. Created before package install so
+# the percona-server-server postinst reuses it instead of allocating a dynamic
+# uid; gid 0 (root group) + group-writable data dirs keep the image usable under
+# arbitrary-uid platforms (OpenShift) without granting any real privilege.
+ARG MYSQL_UID=1001
+ARG MYSQL_GID=1001
+
+RUN set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    . /etc/os-release; codename="${VERSION_CODENAME}"; \
+    # 5.6's Percona packages only exist for Debian buster, which is now EOL and
+    # served from archive.debian.org; point apt there and tolerate the expired
+    # Release metadata. No-op on supported (bookworm) releases.
+    if [ "${codename}" = "buster" ]; then \
+        sed -i -e 's|http://deb.debian.org|http://archive.debian.org|g' \
+               -e 's|http://security.debian.org|http://archive.debian.org|g' \
+               -e '/buster-updates/d' /etc/apt/sources.list; \
+        echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid; \
+    fi; \
+    groupadd -g "${MYSQL_GID}" mysql; \
+    useradd -u "${MYSQL_UID}" -g mysql -s /usr/sbin/nologin -M mysql; \
+    # Stop package postinst scripts from trying to start mysqld during build.
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; \
+    chmod +x /usr/sbin/policy-rc.d; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg2; \
+    # Percona's apt repo bootstrap (percona-release), then enable only the repos
+    # for the requested version and component.
+    curl -fsSLo /tmp/percona-release.deb \
+        "https://repo.percona.com/apt/percona-release_latest.${codename}_all.deb"; \
+    apt-get install -y --no-install-recommends /tmp/percona-release.deb; \
+    percona-release enable-only "${PS_REPO}" "${REPO_COMPONENT}" --scheme https; \
+    percona-release enable "${PXB_REPO}" "${REPO_COMPONENT}" --scheme https; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        percona-server-server "${PXB_PACKAGE}"; \
+    # NB: we deliberately do NOT purge percona-release / curl / gnupg2 here.
+    # percona-server-server's dependency chain (via percona-telemetry-agent)
+    # depends on percona-release, so purging it cascades into removing mysqld.
+    # These packages are inert at runtime — the telemetry agent never starts
+    # because `manager` is PID1 — so we just clean caches and trim instead.
+    # Trim everything the manager does not need at runtime.
+    #   - docs/man/locale/test suites: never used in a running instance;
+    #   - *-debug binaries and the debug/ plugin variants: duplicate, huge;
+    #   - the telemetry agent: phones home and never starts (manager is PID1);
+    #   - static (.a) libraries: dev artefacts, not loaded at runtime.
+    rm -rf \
+        /usr/share/doc /usr/share/doc-base /usr/share/man /usr/share/info \
+        /usr/share/lintian /usr/share/locale \
+        /usr/lib/mysql-test /usr/share/mysql*/mysql-test \
+        /usr/sbin/mysqld-debug /usr/bin/xtrabackup-debug \
+        /usr/lib/mysql/plugin/debug \
+        /usr/bin/percona-telemetry-agent \
+        /etc/cron.d/percona-telemetry-agent \
+        /usr/lib/systemd/system/percona-telemetry-agent.service \
+        /var/lib/apt/lists/* /var/cache/apt/* \
+        /tmp/percona-release.deb /usr/sbin/policy-rc.d; \
+    find /usr/lib -name '*.a' -delete; \
+    # Drop the bulky mysql client utilities the instance does not need. We keep:
+    # mysql + mysqladmin (operator debugging via `kubectl exec`, and liveness
+    # ping), mysqlbinlog (binlog streaming / PITR), mysql_install_db (5.6 init),
+    # and the XtraBackup suite. rm -f tolerates a tool being absent on a version.
+    for b in mysqldump mysqlpump mysqlcheck mysqlshow \
+             mysqlimport mysqlslap mysqlanalyze mysqloptimize mysqlrepair \
+             mysqldumpslow mysqld_multi mysql_upgrade mysql_secure_installation \
+             mysql_migrate_keyring mysql_ssl_rsa_setup mysql_tzinfo_to_sql \
+             myisamchk myisampack myisamlog myisam_ftdump comp_err perror replace; do \
+        rm -f "/usr/bin/$b"; \
+    done; \
+    # Ship an empty, mysql-owned data dir and runtime dir; the manager runs
+    # initdb/join into the (PVC-backed) data dir at first boot.
+    rm -rf /var/lib/mysql; \
+    mkdir -p /var/lib/mysql /var/run/mysqld; \
+    chown -R "${MYSQL_UID}:0" /var/lib/mysql /var/run/mysqld; \
+    chmod -R g=u /var/lib/mysql /var/run/mysqld
 
 # Percona images run as the mysql user; install the manager as root-readable.
 COPY --from=builder /out/manager /usr/local/bin/manager
+
+USER ${MYSQL_UID}
 
 ENTRYPOINT ["/usr/local/bin/manager"]
 CMD ["instance", "run"]

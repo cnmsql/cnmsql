@@ -60,11 +60,7 @@ exec /usr/sbin/mysqld --datadir=/var/lib/mysql --socket=/var/run/mysqld/mysqld.s
 `, appPass, appDB, appUser, f.version)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    buildInstanceContext(t, f),
-			Dockerfile: "Dockerfile",
-			KeepImage:  true,
-		},
+		Image:          ensureInstanceImage(t, f),
 		ExposedPorts: []string{"3306/tcp"},
 		Env:          map[string]string{"MYSQL_ROOT_PASSWORD": rootPassword, "MYSQL_APP_PASSWORD": appPass},
 		Entrypoint:   []string{"bash", "-lc"},

@@ -60,11 +60,7 @@ exec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
 `, f.myCnf(t, 1), f.version, f.version)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    buildInstanceContext(t, f),
-			Dockerfile: "Dockerfile",
-			KeepImage:  true,
-		},
+		Image:          ensureInstanceImage(t, f),
 		ExposedPorts: []string{"8080/tcp"},
 		Entrypoint:   []string{"bash", "-lc"},
 		Cmd:          []string{script},

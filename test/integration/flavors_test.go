@@ -20,65 +20,138 @@ package integration
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 )
 
-// flavor describes a supported MySQL/Percona version under test, including the
-// images to build from and the version-specific traits the tests must account
-// for.
+// flavor describes a supported MySQL/Percona version under test. Each one builds
+// our own slim instance image (Dockerfile.instance) from a Debian base plus the
+// version's Percona APT repositories — we no longer consume the upstream
+// percona/percona-server image. The build args mirror images/versions.json.
 type flavor struct {
 	// name is the subtest name.
 	name string
-	// perconaImage is the Percona Server base image.
-	perconaImage string
-	// xtrabackupImage is the matching XtraBackup image.
-	xtrabackupImage string
-	// version is passed to the manager as --server-version.
+	// base is the Debian base image. 5.6's Percona apt packages only ship for
+	// buster, so it builds on buster; the rest build on bookworm.
+	base string
+	// ps and pxb are the percona-release repository keywords for the server and
+	// XtraBackup; pxbPackage is the XtraBackup package to install.
+	ps         string
+	pxb        string
+	pxbPackage string
+	// component is the percona-release repository component ("release" for GA,
+	// "testing" for versions Percona only ships pre-GA, e.g. 9.x).
+	component string
+	// version is passed to the manager as --server-version and must match the
+	// server actually installed by the image.
 	version string
-	// modernXtrabackup is true for the 8.0+ XtraBackup images, which bundle
-	// private libraries under /usr/lib/private; the 2.4 series does not.
-	modernXtrabackup bool
 	// hasAdminInterface is true for servers with the administrative interface
 	// (8.0.14+); older servers reach the control connection over the socket.
 	hasAdminInterface bool
+	// joinSupported is false where XtraBackup-based replica provisioning cannot
+	// run on the flavor's image (see runJoinTest).
+	joinSupported bool
 }
 
-// flavors is the matrix of MySQL versions the operator targets and for which an
-// upstream Percona image exists.
-//
-// Percona Server 9.x has no published image yet, so it is not covered here; add
-// it once percona/percona-server:9.x and a matching XtraBackup image ship.
+// flavors is the matrix of MySQL versions the operator targets. It mirrors
+// images/versions.json; keep the two in sync.
 var flavors = []flavor{
 	{
 		name:              "8.0",
-		perconaImage:      "percona/percona-server:8.0",
-		xtrabackupImage:   "percona/percona-xtrabackup:8.0",
-		version:           "8.0.36",
-		modernXtrabackup:  true,
+		base:              "debian:bookworm-slim",
+		ps:                "ps-80",
+		pxb:               "pxb-80",
+		pxbPackage:        "percona-xtrabackup-80",
+		component:         "release",
+		version:           "8.0.46",
 		hasAdminInterface: true,
+		joinSupported:     true,
 	},
 	{
 		name:              "8.4",
-		perconaImage:      "percona/percona-server:8.4",
-		xtrabackupImage:   "percona/percona-xtrabackup:8.4",
+		base:              "debian:bookworm-slim",
+		ps:                "ps-84-lts",
+		pxb:               "pxb-84-lts",
+		pxbPackage:        "percona-xtrabackup-84",
+		component:         "release",
 		version:           "8.4.0",
-		modernXtrabackup:  true,
 		hasAdminInterface: true,
+		joinSupported:     true,
+	},
+	{
+		name:              "9.x",
+		base:              "debian:bookworm-slim",
+		ps:                "ps-9x-innovation",
+		pxb:               "pxb-9x-innovation",
+		pxbPackage:        "percona-xtrabackup-96",
+		// Percona Server 9.x is only published in the testing channel so far.
+		component:         "testing",
+		version:           "9.6.0",
+		hasAdminInterface: true,
+		joinSupported:     true,
 	},
 	{
 		name:              "5.6",
-		perconaImage:      "percona/percona-server:5.6",
-		xtrabackupImage:   "percona/percona-xtrabackup:2.4",
+		base:              "debian:buster-slim",
+		ps:                "ps-56",
+		pxb:               "pxb-24",
+		pxbPackage:        "percona-xtrabackup-24",
+		component:         "release",
 		version:           "5.6.51",
-		modernXtrabackup:  false,
 		hasAdminInterface: false,
+		joinSupported:     true,
 	},
+}
+
+// buildResult memoises a single image build per flavor.
+type buildResult struct {
+	once sync.Once
+	tag  string
+	err  error
+}
+
+// instanceBuilds tracks the per-flavor image build so the initdb/run/join tests
+// (which run in parallel) build each flavor's image exactly once.
+var instanceBuilds sync.Map // flavor name -> *buildResult
+
+// ensureInstanceImage builds this flavor's slim instance image from the repo's
+// Dockerfile.instance (once) and returns its tag. We shell out to `docker build`
+// rather than let testcontainers build from the context: testcontainers'
+// .dockerignore handling drops Go sources our multi-stage build needs.
+func ensureInstanceImage(t *testing.T, f flavor) string {
+	t.Helper()
+	v, _ := instanceBuilds.LoadOrStore(f.name, &buildResult{})
+	br := v.(*buildResult)
+	br.once.Do(func() {
+		repoRoot, err := filepath.Abs("../..")
+		if err != nil {
+			br.err = err
+			return
+		}
+		tag := "cnmysql-instance-test:" + f.name
+		cmd := exec.Command("docker", "build",
+			"-f", "Dockerfile.instance",
+			"--build-arg", "BASE_IMAGE="+f.base,
+			"--build-arg", "PS_REPO="+f.ps,
+			"--build-arg", "PXB_REPO="+f.pxb,
+			"--build-arg", "PXB_PACKAGE="+f.pxbPackage,
+			"--build-arg", "REPO_COMPONENT="+f.component,
+			"-t", tag, repoRoot)
+		cmd.Dir = repoRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			br.err = fmt.Errorf("building %s: %w\n%s", tag, err, out)
+			return
+		}
+		br.tag = tag
+	})
+	if br.err != nil {
+		t.Fatal(br.err)
+	}
+	return br.tag
 }
 
 // gtidArgs returns the mysqld command-line flags enabling GTID replication for
@@ -121,42 +194,4 @@ binlog_format=ROW
 		cfg += "admin_address=127.0.0.1\nadmin_port=33062\n"
 	}
 	return cfg
-}
-
-// buildInstanceContext compiles the manager binary for the container platform
-// and writes it next to a thin Dockerfile that layers it (and XtraBackup) onto
-// the flavor's Percona image. Prebuilding avoids compiling Go inside Docker.
-func buildInstanceContext(t *testing.T, f flavor) string {
-	t.Helper()
-	repoRoot, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-
-	build := exec.Command("go", "build", "-o", filepath.Join(dir, "manager"), "./cmd/manager")
-	build.Dir = repoRoot
-	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building manager binary: %v\n%s", err, out)
-	}
-
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(f.dockerfile()), 0o600); err != nil {
-		t.Fatalf("writing Dockerfile: %v", err)
-	}
-	return dir
-}
-
-// dockerfile renders the thin image Dockerfile for the flavor, copying the
-// XtraBackup tooling and its libraries from the matching XtraBackup image.
-func (f flavor) dockerfile() string {
-	df := fmt.Sprintf("FROM %s\n", f.perconaImage)
-	df += fmt.Sprintf("COPY --from=%s /usr/bin/xtrabackup /usr/bin/xbstream /usr/bin/\n", f.xtrabackupImage)
-	if f.modernXtrabackup {
-		df += fmt.Sprintf("COPY --from=%s /usr/lib64/libev.so.4 /usr/lib64/libev.so.4.0.0 /usr/lib64/\n", f.xtrabackupImage)
-		df += fmt.Sprintf("COPY --from=%s /usr/lib/private/ /usr/lib/private/\n", f.xtrabackupImage)
-	}
-	df += "COPY manager /usr/local/bin/manager\n"
-	df += "ENTRYPOINT [\"/usr/local/bin/manager\"]\n"
-	return df
 }

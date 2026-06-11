@@ -131,6 +131,19 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+# Slim instance images (our own Percona Server build; see Dockerfile.instance and
+# images/versions.json). INSTANCE_VERSION selects one version; empty builds all.
+.PHONY: docker-build-instance
+docker-build-instance: ## Build the slim instance image(s). INSTANCE_VERSION=8.0 for one; empty for all.
+	CONTAINER_TOOL=$(CONTAINER_TOOL) REGISTRY=$(INSTANCE_REGISTRY) ./images/build.sh $(INSTANCE_VERSION)
+
+.PHONY: docker-push-instance
+docker-push-instance: ## Build and push the slim instance image(s).
+	CONTAINER_TOOL=$(CONTAINER_TOOL) REGISTRY=$(INSTANCE_REGISTRY) PUSH=1 ./images/build.sh $(INSTANCE_VERSION)
+
+INSTANCE_REGISTRY ?= cnmysql-instance
+INSTANCE_VERSION ?=
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/

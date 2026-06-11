@@ -1,0 +1,38 @@
+[
+  {
+    "version": "5.6",
+    "base": "debian:buster-slim",
+    "ps": "ps-56",
+    "pxb": "pxb-24",
+    "pxbPackage": "percona-xtrabackup-24",
+    "component": "release",
+    "serverVersion": "5.6.51"
+  },
+  {
+    "version": "8.0",
+    "base": "debian:bookworm-slim",
+    "ps": "ps-80",
+    "pxb": "pxb-80",
+    "pxbPackage": "percona-xtrabackup-80",
+    "component": "release",
+    "serverVersion": "8.0.46"
+  },
+  {
+    "version": "8.4",
+    "base": "debian:bookworm-slim",
+    "ps": "ps-84-lts",
+    "pxb": "pxb-84-lts",
+    "pxbPackage": "percona-xtrabackup-84",
+    "component": "release",
+    "serverVersion": "8.4.0"
+  },
+  {
+    "version": "9.x",
+    "base": "debian:bookworm-slim",
+    "ps": "ps-9x-innovation",
+    "pxb": "pxb-9x-innovation",
+    "pxbPackage": "percona-xtrabackup-96",
+    "component": "testing",
+    "serverVersion": "9.6.0"
+  }
+]
