@@ -70,6 +70,9 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 	if err := r.ensurePasswordSecret(ctx, cluster, plan.ReplicationSecret, map[string]string{"username": "cnmysql_repl"}); err != nil {
 		return err
 	}
+	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{"username": "cnmysql_backup"}); err != nil {
+		return err
+	}
 	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{"username": "cnmysql_control"})
 }
 
@@ -93,7 +96,7 @@ func (r *ClusterReconciler) ensurePasswordSecret(ctx context.Context, cluster *m
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: cluster.Namespace,
-			Labels:    labelsFor(cluster, ""),
+			Labels:    labelsFor(cluster, "", ""),
 		},
 		Type:       corev1.SecretTypeOpaque,
 		StringData: stringData,
@@ -112,24 +115,24 @@ func randomPassword() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-func (r *ClusterReconciler) ensureConfigMap(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
-	rendered, err := renderMyCnf(cluster, plan)
+func (r *ClusterReconciler) ensureConfigMap(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) error {
+	rendered, err := renderMyCnf(cluster, plan, inst)
 	if err != nil {
 		return err
 	}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-		Name:      plan.ConfigMapName,
+		Name:      inst.ConfigMapName,
 		Namespace: cluster.Namespace,
 	}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
-		cm.Labels = labelsFor(cluster, "")
+		cm.Labels = labelsFor(cluster, inst.Name, roleOf(inst))
 		cm.Data = map[string]string{"my.cnf": rendered}
 		return controllerutil.SetControllerReference(cluster, cm, r.Scheme)
 	})
 	return err
 }
 
-func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (string, error) {
+func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) (string, error) {
 	semiSync := mysqlconfig.SemiSync{}
 	if cluster.Spec.MySQL.SemiSync != nil {
 		semiSync.Enabled = cluster.Spec.MySQL.SemiSync.Enabled
@@ -138,25 +141,37 @@ func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (string, erro
 			semiSync.TimeoutMillis = int(*cluster.Spec.MySQL.SemiSync.TimeoutMillis)
 		}
 	}
+	role := mysqlconfig.RolePrimary
+	if !inst.IsPrimary {
+		role = mysqlconfig.RoleReplica
+	}
 	return (&mysqlconfig.ServerConfig{
-		ServerID:       1,
-		Version:        plan.ServerVersion,
-		Role:           mysqlconfig.RolePrimary,
-		DataDir:        dataDir,
-		Socket:         socketPath,
-		Port:           3306,
-		ReportHost:     plan.ServiceName,
-		BinlogFormat:   cluster.Spec.MySQL.BinlogFormat,
-		AdminAddress:   mysqlconfig.DefaultAdminAddress,
-		AdminPort:      mysqlconfig.DefaultAdminPort,
+		ServerID:     inst.ServerID,
+		Version:      plan.ServerVersion,
+		Role:         role,
+		DataDir:      dataDir,
+		Socket:       socketPath,
+		Port:         3306,
+		ReportHost:   inst.ServiceName,
+		BinlogFormat: cluster.Spec.MySQL.BinlogFormat,
+		AdminAddress: mysqlconfig.DefaultAdminAddress,
+		AdminPort:    mysqlconfig.DefaultAdminPort,
+		// Configure mysqld transport TLS so replicas and clients can connect over
+		// TLS. Whether to require it is left to the user (require_secure_transport
+		// is no longer operator-managed).
+		TLS: mysqlconfig.TLSPaths{
+			CA:   clientCAPath + "/ca.crt",
+			Cert: serverTLSPath + "/tls.crt",
+			Key:  serverTLSPath + "/tls.key",
+		},
 		UserParameters: cluster.Spec.MySQL.Parameters,
 		SemiSync:       semiSync,
 	}).Render()
 }
 
-func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
+func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-		Name:      plan.DataPVCName,
+		Name:      inst.PVCName,
 		Namespace: cluster.Namespace,
 	}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err != nil {
@@ -167,7 +182,7 @@ func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha
 		if err != nil {
 			return err
 		}
-		pvc.Labels = labelsFor(cluster, plan.InstanceName)
+		pvc.Labels = labelsFor(cluster, inst.Name, roleOf(inst))
 		pvc.Spec = spec
 		if err := controllerutil.SetControllerReference(cluster, pvc, r.Scheme); err != nil {
 			return err
@@ -220,34 +235,41 @@ func pvcSpec(storage mysqlv1alpha1.StorageConfiguration) (corev1.PersistentVolum
 	return spec, nil
 }
 
-func (r *ClusterReconciler) ensureService(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
+// ensureInstanceService reconciles the per-instance headless Service used for
+// stable DNS and the instance manager's report_host.
+func (r *ClusterReconciler) ensureInstanceService(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
-		Name:      plan.ServiceName,
+		Name:      inst.ServiceName,
 		Namespace: cluster.Namespace,
 	}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-		service.Labels = labelsFor(cluster, plan.InstanceName)
+		service.Labels = labelsFor(cluster, inst.Name, roleOf(inst))
 		service.Spec.ClusterIP = corev1.ClusterIPNone
-		service.Spec.Selector = map[string]string{instanceLabel: plan.InstanceName}
-		service.Spec.Ports = []corev1.ServicePort{
-			{Name: "mysql", Port: 3306, TargetPort: intstr.FromString("mysql")},
-			{Name: "control", Port: 8080, TargetPort: intstr.FromString("control")},
-		}
+		service.Spec.Selector = map[string]string{instanceLabel: inst.Name}
+		service.Spec.Ports = servicePorts()
+		service.Spec.PublishNotReadyAddresses = true
 		return controllerutil.SetControllerReference(cluster, service, r.Scheme)
 	})
 	return err
 }
 
-func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
-	labels := labelsFor(cluster, plan.InstanceName)
-	spec := r.podSpec(cluster, plan)
-	annotations, err := podAnnotations(cluster, plan, labels, spec)
+func servicePorts() []corev1.ServicePort {
+	return []corev1.ServicePort{
+		{Name: "mysql", Port: 3306, TargetPort: intstr.FromString("mysql")},
+		{Name: "control", Port: 8080, TargetPort: intstr.FromString("control")},
+	}
+}
+
+func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) error {
+	labels := labelsFor(cluster, inst.Name, roleOf(inst))
+	spec := r.podSpec(cluster, plan, inst)
+	annotations, err := podAnnotations(cluster, plan, inst, labels, spec)
 	if err != nil {
 		return err
 	}
 
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name:      plan.InstanceName,
+		Name:      inst.Name,
 		Namespace: cluster.Namespace,
 	}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
@@ -271,8 +293,8 @@ func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha
 	return nil
 }
 
-func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, labels map[string]string, spec corev1.PodSpec) (map[string]string, error) {
-	config, err := renderMyCnf(cluster, plan)
+func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, labels map[string]string, spec corev1.PodSpec) (map[string]string, error) {
+	config, err := renderMyCnf(cluster, plan, inst)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +306,7 @@ func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, labels map
 	if cluster.Spec.InheritedMetadata != nil {
 		maps.Copy(annotations, cluster.Spec.InheritedMetadata.Annotations)
 	}
-	annotations[configMapAnnotation] = plan.ConfigMapName
+	annotations[configMapAnnotation] = inst.ConfigMapName
 	annotations[configHashAnnotation] = configHash
 	templateHash, err := hashObject(struct {
 		Labels      map[string]string
@@ -311,7 +333,15 @@ func hashObject(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName string) map[string]string {
+// roleOf maps an instance to its role label value.
+func roleOf(inst instancePlan) string {
+	if inst.IsPrimary {
+		return rolePrimary
+	}
+	return roleReplica
+}
+
+func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName, role string) map[string]string {
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "cnmysql",
 		"app.kubernetes.io/instance":  cluster.Name,
@@ -323,7 +353,7 @@ func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName string) map[string]s
 	}
 	if instanceName != "" {
 		labels[instanceLabel] = instanceName
-		labels[roleLabel] = "primary"
+		labels[roleLabel] = role
 	}
 	return labels
 }

@@ -63,7 +63,7 @@ type JoinOptions struct {
 
 func (o *JoinOptions) applyDefaults() {
 	if o.XtrabackupPath == "" {
-		o.XtrabackupPath = "xtrabackup"
+		o.XtrabackupPath = defaultXtrabackupBinary
 	}
 	if o.MysqldPath == "" {
 		o.MysqldPath = defaultMysqldBinary

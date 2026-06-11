@@ -42,21 +42,21 @@ type HTTPStatusClient struct {
 
 // Status fetches /status from the per-instance Service.
 func (c *HTTPStatusClient) Status(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
-	plan := clusterPlan{
+	conn := statusTLS{
 		ServiceName:     instanceName,
 		CASecretName:    cluster.Name + "-ca",
 		ClientTLSSecret: cluster.Name + "-client-tls",
 	}
 	if certs := cluster.Spec.Certificates; certs != nil {
 		if certs.ClientCASecret != "" {
-			plan.CASecretName = certs.ClientCASecret
+			conn.CASecretName = certs.ClientCASecret
 		}
 		if certs.ReplicationTLSSecret != "" {
-			plan.ClientTLSSecret = certs.ReplicationTLSSecret
+			conn.ClientTLSSecret = certs.ReplicationTLSSecret
 		}
 	}
 
-	transport, err := c.transport(ctx, cluster.Namespace, plan)
+	transport, err := c.transport(ctx, cluster.Namespace, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func (c *HTTPStatusClient) Status(ctx context.Context, cluster *mysqlv1alpha1.Cl
 	clientCopy := *httpClient
 	clientCopy.Transport = transport
 
-	url := fmt.Sprintf("https://%s.%s.svc:8080/status", plan.ServiceName, cluster.Namespace)
+	url := fmt.Sprintf("https://%s.%s.svc:8080/status", conn.ServiceName, cluster.Namespace)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -89,13 +89,21 @@ func (c *HTTPStatusClient) Status(ctx context.Context, cluster *mysqlv1alpha1.Cl
 	return &status, nil
 }
 
-func (c *HTTPStatusClient) transport(ctx context.Context, namespace string, plan clusterPlan) (*http.Transport, error) {
+// statusTLS holds the names needed to build the mTLS connection to an instance
+// manager's control API.
+type statusTLS struct {
+	ServiceName     string
+	CASecretName    string
+	ClientTLSSecret string
+}
+
+func (c *HTTPStatusClient) transport(ctx context.Context, namespace string, conn statusTLS) (*http.Transport, error) {
 	caSecret := &corev1.Secret{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: plan.CASecretName}, caSecret); err != nil {
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: conn.CASecretName}, caSecret); err != nil {
 		return nil, err
 	}
 	clientSecret := &corev1.Secret{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: plan.ClientTLSSecret}, clientSecret); err != nil {
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: conn.ClientTLSSecret}, clientSecret); err != nil {
 		return nil, err
 	}
 
@@ -105,13 +113,13 @@ func (c *HTTPStatusClient) transport(ctx context.Context, namespace string, plan
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(caSecret.Data["ca.crt"]) {
-		return nil, fmt.Errorf("secret %s does not contain a valid ca.crt", plan.CASecretName)
+		return nil, fmt.Errorf("secret %s does not contain a valid ca.crt", conn.CASecretName)
 	}
 
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
-			ServerName:   plan.ServiceName + "." + namespace + ".svc",
+			ServerName:   conn.ServiceName + "." + namespace + ".svc",
 			Certificates: []tls.Certificate{cert},
 			RootCAs:      roots,
 		},

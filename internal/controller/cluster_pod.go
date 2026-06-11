@@ -26,23 +26,23 @@ import (
 	mysqlconfig "github.com/yyewolf/cnmysql/pkg/management/mysql/config"
 )
 
-func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) corev1.PodSpec {
-	initdb := cluster.Spec.Bootstrap.InitDB
+func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) corev1.PodSpec {
 	podSpec := corev1.PodSpec{
 		RestartPolicy: corev1.RestartPolicyAlways,
 		Volumes: []corev1.Volume{
-			{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: plan.DataPVCName}}},
+			{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: inst.PVCName}}},
 			{Name: "run", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: plan.ConfigMapName}}}},
-			{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.ServerTLSSecret}}},
+			{Name: "backup", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: inst.ConfigMapName}}}},
+			{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: inst.ServerTLSSecret}}},
 			{Name: "client-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.CASecretName}}},
 		},
 		InitContainers: []corev1.Container{{
-			Name:            "initdb",
+			Name:            "bootstrap",
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-			Args:            initdbArgs(initdb),
-			Env:             initdbEnv(plan),
+			Args:            bootstrapArgs(cluster, plan, inst),
+			Env:             initEnv(plan),
 			VolumeMounts:    volumeMounts(),
 			Resources:       cluster.Spec.Resources,
 			SecurityContext: cluster.Spec.SecurityContext,
@@ -51,7 +51,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			Name:            "mysql",
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-			Args:            runArgs(),
+			Args:            runArgs(cluster, plan, inst),
 			Env:             runEnv(plan),
 			EnvFrom:         cluster.Spec.EnvFrom,
 			Ports: []corev1.ContainerPort{
@@ -89,17 +89,27 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 	return podSpec
 }
 
+// bootstrapArgs returns the init-container command: the primary initialises a
+// fresh data dir; a replica clones the primary over the streamed backup.
+func bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
+	if inst.IsPrimary {
+		return initdbArgs(cluster.Spec.Bootstrap.InitDB)
+	}
+	return joinArgs(cluster, plan)
+}
+
 func initdbArgs(initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 	args := []string{
 		"instance", "initdb",
-		"--mysqld=/usr/sbin/mysqld",
+		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
 		"--server-version=$(MYSQL_VERSION)",
-		"--replication-user=cnmysql_repl",
+		"--replication-user=" + replicationUser,
 		"--replication-require-x509",
-		"--control-user=cnmysql_control",
+		"--backup-user=" + backupUser,
+		"--control-user=" + controlUser,
 	}
 	if initdb.Database != "" {
 		args = append(args, "--database="+initdb.Database)
@@ -116,16 +126,41 @@ func initdbArgs(initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 	return args
 }
 
-func runArgs() []string {
+// joinArgs builds the replica's init-container command: pull and restore a
+// streamed backup from the primary over mTLS, then configure GTID replication.
+func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
+	primaryFQDN := plan.primaryName(cluster) + "." + cluster.Namespace + ".svc"
 	return []string{
+		"instance", "join",
+		"--mysqld=" + mysqldBinary,
+		"--config=" + configPath,
+		"--data-dir=" + dataDir,
+		"--socket=" + socketPath,
+		"--server-version=$(MYSQL_VERSION)",
+		"--backup-dir=" + joinBackupDir,
+		"--source-host=" + primaryFQDN,
+		"--source-port=3306",
+		"--replication-user=" + replicationUser,
+		"--source-ssl",
+		"--source-ssl-ca=" + clientCAPath + "/ca.crt",
+		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
+		"--source-ssl-key=" + serverTLSPath + "/tls.key",
+		"--source-manager-url=https://" + primaryFQDN + ":8080/cluster/backup",
+		"--source-manager-server-name=" + primaryFQDN,
+	}
+}
+
+func runArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
+	args := []string{
 		"instance", "run",
-		"--mysqld=/usr/sbin/mysqld",
+		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
 		"--server-version=$(MYSQL_VERSION)",
 		"--instance-name=$(POD_NAME)",
-		"--control-user=cnmysql_control",
+		"--control-user=" + controlUser,
+		"--backup-user=" + backupUser,
 		"--admin-address=" + mysqlconfig.DefaultAdminAddress,
 		fmt.Sprintf("--admin-port=%d", mysqlconfig.DefaultAdminPort),
 		"--web-addr=:8080",
@@ -133,14 +168,30 @@ func runArgs() []string {
 		"--tls-key=" + serverTLSPath + "/tls.key",
 		"--tls-client-ca=" + clientCAPath + "/ca.crt",
 	}
+	if inst.IsPrimary {
+		return append(args, "--role="+rolePrimary)
+	}
+	primaryFQDN := plan.primaryName(cluster) + "." + cluster.Namespace + ".svc"
+	return append(args,
+		"--role="+roleReplica,
+		"--source-host="+primaryFQDN,
+		"--source-port=3306",
+		"--replication-user="+replicationUser,
+		"--source-ssl",
+		"--source-ssl-ca="+clientCAPath+"/ca.crt",
+		"--source-ssl-cert="+serverTLSPath+"/tls.crt",
+		"--source-ssl-key="+serverTLSPath+"/tls.key",
+	)
 }
 
-func initdbEnv(plan clusterPlan) []corev1.EnvVar {
+// initEnv is the environment for the init container, which may run initdb (on
+// the primary) or join (on a replica). Replication uses mTLS-only auth, so the
+// generated replication password is deliberately not exposed to pods.
+func initEnv(plan clusterPlan) []corev1.EnvVar {
 	env := runEnv(plan)
 	env = append(env,
 		secretEnv("MYSQL_ROOT_PASSWORD", plan.RootSecretName),
 		secretEnv("MYSQL_APP_PASSWORD", plan.AppSecretName),
-		secretEnv("MYSQL_REPLICATION_PASSWORD", plan.ReplicationSecret),
 	)
 	return env
 }
@@ -150,6 +201,7 @@ func runEnv(plan clusterPlan) []corev1.EnvVar {
 		{Name: "MYSQL_VERSION", Value: plan.ServerVersion},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		secretEnv("MYSQL_CONTROL_PASSWORD", plan.ControlSecretName),
+		secretEnv("MYSQL_BACKUP_PASSWORD", plan.BackupSecretName),
 	}
 }
 
@@ -167,6 +219,7 @@ func volumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
 		{Name: "data", MountPath: dataDir},
 		{Name: "run", MountPath: "/var/run/mysqld"},
+		{Name: "backup", MountPath: joinBackupDir},
 		{Name: "config", MountPath: configPath, SubPath: "my.cnf", ReadOnly: true},
 		{Name: "server-tls", MountPath: serverTLSPath, ReadOnly: true},
 		{Name: "client-ca", MountPath: clientCAPath, ReadOnly: true},

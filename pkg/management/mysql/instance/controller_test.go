@@ -27,12 +27,17 @@ import (
 
 func newController(t *testing.T, sup Supervisor) (*Controller, sqlmock.Sqlmock) {
 	t.Helper()
+	return newControllerWithRole(t, webserver.RoleUnknown, sup)
+}
+
+func newControllerWithRole(t *testing.T, role webserver.Role, sup Supervisor) (*Controller, sqlmock.Sqlmock) {
+	t.Helper()
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	c, err := NewController("cluster-1", db, "8.0.36", sup)
+	c, err := NewController("cluster-1", db, "8.0.36", role, sup)
 	if err != nil {
 		t.Fatalf("NewController: %v", err)
 	}
@@ -143,6 +148,38 @@ func TestReadyzReplicaNotRunning(t *testing.T) {
 	}
 }
 
+func TestReadyzExpectedReplicaWithoutSource(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}))
+
+	if err := c.Readyz(context.Background()); err == nil {
+		t.Error("expected Readyz to fail when an expected replica has no source")
+	}
+}
+
+func TestStatusExpectedReplicaWithoutSource(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+
+	expectStatusQueries(mock, false, false, false)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host"}))
+	expectBestEffortQueries(mock)
+
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Role != webserver.RoleUnknown {
+		t.Errorf("role = %q, want unknown", status.Role)
+	}
+	if status.IsReady {
+		t.Error("expected replica without source to be not ready")
+	}
+}
+
 func TestHealthzPing(t *testing.T) {
 	c, mock := newController(t, nil)
 	mock.ExpectPing()
@@ -182,7 +219,7 @@ func TestNewControllerRejectsBadVersion(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := NewController("x", db, "not-a-version", nil); err == nil {
+	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil); err == nil {
 		t.Error("expected error for invalid version")
 	}
 }

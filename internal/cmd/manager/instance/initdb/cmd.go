@@ -41,6 +41,7 @@ func NewCommand() *cobra.Command {
 		charset       string
 		collation     string
 		controlUser   string
+		backupUser    string
 		serverVersion string
 	)
 
@@ -87,6 +88,8 @@ func NewCommand() *cobra.Command {
 					ReplicationUser:           replUser,
 					ReplicationPassword:       os.Getenv("MYSQL_REPLICATION_PASSWORD"),
 					ReplicationRequireX509:    requireTLS,
+					BackupUser:                backupUser,
+					BackupPassword:            os.Getenv("MYSQL_BACKUP_PASSWORD"),
 					ControlUser:               controlUser,
 					ControlPassword:           os.Getenv("MYSQL_CONTROL_PASSWORD"),
 					SupportsDynamicPrivileges: dynamicPrivileges,
@@ -106,6 +109,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&charset, "character-set", "", "Character set for the application database")
 	cmd.Flags().StringVar(&collation, "collation", "", "Collation for the application database")
 	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from MYSQL_CONTROL_PASSWORD)")
+	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup user for cloning replicas (password from MYSQL_BACKUP_PASSWORD)")
 	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version (e.g. 8.0.36); gates dynamic privilege grants")
 
 	return cmd

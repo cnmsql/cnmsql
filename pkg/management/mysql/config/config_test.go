@@ -99,7 +99,7 @@ func TestRenderReplica56HasNoSuperReadOnly(t *testing.T) {
 	assertNotContains(t, out, "super_read_only")
 }
 
-func TestRenderTLSEnforcesSecureTransport(t *testing.T) {
+func TestRenderTLSConfiguresMaterialWithoutForcingSecureTransport(t *testing.T) {
 	c := baseConfig()
 	c.TLS = TLSPaths{CA: "/tls/ca.crt", Cert: "/tls/tls.crt", Key: "/tls/tls.key"}
 	out := mustRender(t, c)
@@ -107,6 +107,17 @@ func TestRenderTLSEnforcesSecureTransport(t *testing.T) {
 	assertContains(t, out, "ssl_ca = /tls/ca.crt")
 	assertContains(t, out, "ssl_cert = /tls/tls.crt")
 	assertContains(t, out, "ssl_key = /tls/tls.key")
+	// require_secure_transport is the user's choice, not forced by the operator.
+	assertNotContains(t, out, "require_secure_transport")
+}
+
+func TestUserCanRequireSecureTransport(t *testing.T) {
+	c := baseConfig()
+	c.UserParameters = map[string]string{"require_secure_transport": "ON"}
+	if err := ValidateUserParameters(c.UserParameters); err != nil {
+		t.Fatalf("require_secure_transport should be user-settable: %v", err)
+	}
+	out := mustRender(t, c)
 	assertContains(t, out, "require_secure_transport = ON")
 }
 

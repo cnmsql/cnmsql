@@ -72,6 +72,57 @@ func TestBackupArgsValidation(t *testing.T) {
 	}
 }
 
+func TestBackupArgsStreamCompress(t *testing.T) {
+	args, err := BackupArgs(BackupOptions{
+		TargetDir: "/tmp/work",
+		Socket:    "/run/mysqld.sock",
+		User:      "cnmysql_backup",
+		Stream:    true,
+		Compress:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--stream=xbstream", "--compress"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("missing %q in %v", want, args)
+		}
+	}
+}
+
+func TestBackupArgsNoStreamByDefault(t *testing.T) {
+	args, err := BackupArgs(BackupOptions{TargetDir: "/b", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(args, "--stream=xbstream") || slices.Contains(args, "--compress") {
+		t.Errorf("non-stream backup should not set stream/compress: %v", args)
+	}
+}
+
+func TestExtractAndDecompressArgs(t *testing.T) {
+	extract, err := ExtractArgs("/restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"-x", "--directory=/restore"}; !slices.Equal(extract, want) {
+		t.Errorf("ExtractArgs = %v, want %v", extract, want)
+	}
+	decompress, err := DecompressArgs("/restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"--decompress", "--target-dir=/restore"}; !slices.Equal(decompress, want) {
+		t.Errorf("DecompressArgs = %v, want %v", decompress, want)
+	}
+	if _, err := ExtractArgs(""); err == nil {
+		t.Error("expected error without target dir")
+	}
+	if _, err := DecompressArgs(""); err == nil {
+		t.Error("expected error without target dir")
+	}
+}
+
 func TestPrepareArgs(t *testing.T) {
 	args, err := PrepareArgs("/backup")
 	if err != nil {

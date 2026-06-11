@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,6 +49,47 @@ func (f *fakeController) Status(context.Context) (*Status, error) {
 func (f *fakeController) Promote(context.Context) error { f.promoteCalled = true; return f.promoteErr }
 func (f *fakeController) Demote(context.Context) error  { f.demoteCalled = true; return f.demoteErr }
 func (f *fakeController) Restart(context.Context) error { f.restartCalled = true; return f.restartErr }
+
+// backupController is an InstanceController that also streams a backup.
+type backupController struct {
+	fakeController
+	payload string
+	err     error
+}
+
+func (b *backupController) BackupStream(_ context.Context, w io.Writer) error {
+	if b.err != nil {
+		return b.err
+	}
+	_, _ = io.WriteString(w, b.payload)
+	return nil
+}
+
+func TestBackupRouteOnlyWhenStreamerImplemented(t *testing.T) {
+	// A plain controller does not advertise the backup route.
+	if rec := do(t, Handler(&fakeController{}), http.MethodGet, "/cluster/backup"); rec.Code != http.StatusNotFound {
+		t.Errorf("backup route on plain controller = %d, want 404", rec.Code)
+	}
+
+	// A streamer controller serves the archive.
+	h := Handler(&backupController{payload: "xbstream-bytes"})
+	rec := do(t, h, http.MethodGet, "/cluster/backup")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("backup = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != "xbstream-bytes" {
+		t.Errorf("backup body = %q", rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/x-xbstream" {
+		t.Errorf("content type = %q", ct)
+	}
+
+	// An error before any bytes surfaces as a 500.
+	herr := Handler(&backupController{err: errors.New("xtrabackup failed")})
+	if rec := do(t, herr, http.MethodGet, "/cluster/backup"); rec.Code != http.StatusInternalServerError {
+		t.Errorf("failed backup = %d, want 500", rec.Code)
+	}
+}
 
 func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {
 	t.Helper()

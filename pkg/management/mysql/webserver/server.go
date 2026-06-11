@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 )
 
@@ -45,6 +46,13 @@ type InstanceController interface {
 	Restart(ctx context.Context) error
 }
 
+// BackupStreamer streams a consistent physical backup (xbstream archive) to the
+// writer, used by a joining replica to clone this instance. It is optional: the
+// GET /cluster/backup route is only served when the controller implements it.
+type BackupStreamer interface {
+	BackupStream(ctx context.Context, w io.Writer) error
+}
+
 // Handler builds the http.Handler serving the instance control API. Exposing
 // the handler (rather than only a server) lets it be tested with httptest and
 // wrapped by the caller for TLS.
@@ -56,7 +64,23 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /promote", actionHandler(controller.Promote))
 	mux.HandleFunc("POST /demote", actionHandler(controller.Demote))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
+	if streamer, ok := controller.(BackupStreamer); ok {
+		mux.HandleFunc("GET /cluster/backup", backupHandler(streamer))
+	}
 	return mux
+}
+
+// backupHandler streams an xbstream physical backup. Because the body is sent
+// incrementally, an error mid-stream cannot change the already-sent 200 status;
+// the truncated archive will simply fail to extract on the replica.
+func backupHandler(streamer BackupStreamer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-xbstream")
+		if err := streamer.BackupStream(r.Context(), w); err != nil {
+			// If nothing was written yet, this still surfaces as a 500.
+			writeError(w, err)
+		}
+	}
 }
 
 // healthHandler maps a probe func to 200 OK / 503 Service Unavailable.
@@ -76,12 +100,12 @@ func statusHandler(controller InstanceController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status, err := controller.Status(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(status); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, err)
 		}
 	}
 }
@@ -90,18 +114,21 @@ func statusHandler(controller InstanceController) http.HandlerFunc {
 func actionHandler(action func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := action(r.Context()); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func writeError(w http.ResponseWriter, code int, err error) {
+// writeError reports a server-side failure as a 500 with a JSON body. Every
+// handler failure here is an internal error; client errors are handled by the
+// router (404/405).
+func writeError(w http.ResponseWriter, err error) {
 	if err == nil {
 		err = errors.New("unknown error")
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
+	w.WriteHeader(http.StatusInternalServerError)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }

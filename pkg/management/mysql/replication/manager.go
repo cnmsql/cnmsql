@@ -92,6 +92,37 @@ func (m *Manager) StartReplica(ctx context.Context) error {
 	return m.exec(ctx, StartReplicaStatement(m.version))
 }
 
+// EnsureReplicaConfigured makes sure this server follows the requested source.
+// It configures a missing source, otherwise it starts stopped replication
+// threads. It leaves already-running replicas untouched.
+func (m *Manager) EnsureReplicaConfigured(ctx context.Context, opts SourceOptions) error {
+	state, err := m.ReplicaState(ctx)
+	if err != nil {
+		return err
+	}
+	if !state.Configured {
+		return m.ConfigureSource(ctx, opts)
+	}
+	if state.IORunning && state.SQLRunning {
+		return nil
+	}
+	return m.StartReplica(ctx)
+}
+
+// EnsureReplicaStarted starts replication when this server has a configured
+// source but one of the replication threads is not running. It is a no-op on
+// primaries and on replicas that are already applying.
+func (m *Manager) EnsureReplicaStarted(ctx context.Context) error {
+	state, err := m.ReplicaState(ctx)
+	if err != nil {
+		return err
+	}
+	if !state.Configured || (state.IORunning && state.SQLRunning) {
+		return nil
+	}
+	return m.StartReplica(ctx)
+}
+
 // StopReplica stops the replication threads.
 func (m *Manager) StopReplica(ctx context.Context) error {
 	return m.exec(ctx, StopReplicaStatement(m.version))

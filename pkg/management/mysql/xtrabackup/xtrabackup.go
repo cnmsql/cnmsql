@@ -40,6 +40,13 @@ type BackupOptions struct {
 	Password string
 	// Parallel sets the number of copy threads (0 = tool default).
 	Parallel int
+	// Stream, when true, writes the backup to stdout as an xbstream archive
+	// instead of populating TargetDir. TargetDir is still required: xtrabackup
+	// uses it as a working directory for transient metadata.
+	Stream bool
+	// Compress enables on-the-fly compression of the stream. It requires the
+	// matching decompression tooling (qpress/zstd) on both ends.
+	Compress bool
 	// ExtraArgs are appended verbatim.
 	ExtraArgs []string
 }
@@ -68,7 +75,31 @@ func BackupArgs(o BackupOptions) ([]string, error) {
 	if o.Parallel > 0 {
 		args = append(args, "--parallel="+strconv.Itoa(o.Parallel))
 	}
+	if o.Stream {
+		args = append(args, "--stream=xbstream")
+	}
+	if o.Compress {
+		args = append(args, "--compress")
+	}
 	return append(args, o.ExtraArgs...), nil
+}
+
+// ExtractArgs builds the `xbstream -x` argument list that extracts a streamed
+// archive (read from stdin) into targetDir.
+func ExtractArgs(targetDir string) ([]string, error) {
+	if targetDir == "" {
+		return nil, fmt.Errorf("xtrabackup: target dir is required")
+	}
+	return []string{"-x", "--directory=" + targetDir}, nil
+}
+
+// DecompressArgs builds the `xtrabackup --decompress` argument list, used after
+// extracting a compressed stream.
+func DecompressArgs(targetDir string) ([]string, error) {
+	if targetDir == "" {
+		return nil, fmt.Errorf("xtrabackup: target dir is required")
+	}
+	return []string{"--decompress", "--target-dir=" + targetDir}, nil
 }
 
 // PrepareArgs builds the argument list for `xtrabackup --prepare`.

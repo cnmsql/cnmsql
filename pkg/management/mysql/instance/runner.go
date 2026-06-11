@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
@@ -45,10 +46,18 @@ type RunOptions struct {
 	Version string
 	// InstanceName is reported in status.
 	InstanceName string
+	// Role is the expected role for readiness/status.
+	Role webserver.Role
+	// Source configures replication when Role is replica. It lets the main
+	// process repair missing source metadata after a physical clone.
+	Source *replication.SourceOptions
 	// Control describes the privileged control connection used for monitoring.
 	Control pool.ControlParams
 	// WebserverAddr is the listen address for the control API.
 	WebserverAddr string
+	// Backup, when set, enables the streaming physical-backup endpoint so this
+	// instance can clone replicas.
+	Backup *BackupConfig
 	// TLS configures the control API mTLS. When ServerCertFile is empty the
 	// control API is served over plain HTTP (development only).
 	TLS webserver.TLSOptions
@@ -111,10 +120,28 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	controller, err := NewController(opts.InstanceName, db, opts.Version, sup)
+	controller, err := NewController(opts.InstanceName, db, opts.Version, opts.Role, sup)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		return err
+	}
+	if opts.Role == webserver.RoleReplica {
+		if opts.Source == nil {
+			_ = sup.Shutdown(ctx)
+			return errors.New("replica source is required when role is replica")
+		}
+		if err := controller.EnsureReplicaConfigured(ctx, *opts.Source); err != nil {
+			_ = sup.Shutdown(ctx)
+			return err
+		}
+	} else {
+		if err := controller.EnsureReplicaStarted(ctx); err != nil {
+			_ = sup.Shutdown(ctx)
+			return err
+		}
+	}
+	if opts.Backup != nil {
+		controller.SetBackupConfig(*opts.Backup)
 	}
 
 	srv, err := buildServer(opts, controller)

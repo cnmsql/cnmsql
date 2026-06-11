@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,7 +29,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
 
 type observedCluster struct {
@@ -37,49 +37,68 @@ type observedCluster struct {
 	Ready       bool
 	Progressing bool
 	Plan        clusterPlan
-	Status      *webserver.Status
+	// PrimaryName is the instance acting as primary (fixed to ordinal 1 in M4).
+	PrimaryName string
+	// ReadyInstances is the number of instances reporting ready.
+	ReadyInstances int
+	// InstanceNames are the desired instance names, in ordinal order.
+	InstanceNames []string
+	// GTIDByInstance maps instance name to its gtid_executed set.
+	GTIDByInstance map[string]string
 }
 
+// observe polls every desired instance and aggregates cluster-level readiness.
+// The cluster is Ready when all desired instances report ready.
 func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (observedCluster, error) {
-	observed := observedCluster{
-		Phase:       phasePending,
-		PhaseReason: "Waiting for Pod",
-		Ready:       false,
-		Progressing: true,
-		Plan:        plan,
-	}
-	pod := &corev1.Pod{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.InstanceName}, pod); err != nil {
-		if apierrors.IsNotFound(err) {
-			return observed, nil
-		}
-		return observedCluster{}, err
-	}
-	if !podReady(pod) {
-		observed.Phase = phaseProvisioning
-		observed.PhaseReason = "Waiting for Pod readiness"
-		return observed, nil
-	}
-
 	statusClient := r.StatusClient
 	if statusClient == nil {
 		statusClient = &HTTPStatusClient{Client: r.Client}
 	}
-	status, err := statusClient.Status(ctx, cluster, plan.InstanceName)
-	if err != nil {
-		observed.Phase = phaseProvisioning
-		observed.PhaseReason = "Waiting for instance status: " + err.Error()
-		return observed, nil
+
+	observed := observedCluster{
+		Plan:           plan,
+		PrimaryName:    plan.primaryName(cluster),
+		InstanceNames:  plan.instanceNames(cluster),
+		GTIDByInstance: map[string]string{},
+		Progressing:    true,
 	}
-	observed.Status = status
-	observed.Ready = status.IsReady
-	observed.Progressing = !status.IsReady
-	if status.IsReady {
+
+	for i := 1; i <= plan.Instances; i++ {
+		inst := plan.instanceFor(cluster, i)
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return observedCluster{}, err
+		}
+		if !podReady(pod) {
+			continue
+		}
+		status, err := statusClient.Status(ctx, cluster, inst.Name)
+		if err != nil {
+			continue
+		}
+		if status.GTIDExecuted != "" {
+			observed.GTIDByInstance[inst.Name] = status.GTIDExecuted
+		}
+		if status.IsReady {
+			observed.ReadyInstances++
+		}
+	}
+
+	observed.Ready = observed.ReadyInstances == plan.Instances
+	observed.Progressing = !observed.Ready
+	switch {
+	case observed.Ready:
 		observed.Phase = phaseReady
-		observed.PhaseReason = "Instance is ready"
-	} else {
+		observed.PhaseReason = "All instances are ready"
+	case observed.ReadyInstances == 0:
+		observed.Phase = phasePending
+		observed.PhaseReason = "Waiting for the primary instance"
+	default:
 		observed.Phase = phaseProvisioning
-		observed.PhaseReason = "Instance manager reported not ready"
+		observed.PhaseReason = fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
 	}
 	return observed, nil
 }
@@ -100,11 +119,11 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		return err
 	}
 	before := latest.DeepCopy()
-	if observed.Plan.InstanceName != "" {
-		latest.Status.Instances = 1
-		latest.Status.InstanceNames = []string{observed.Plan.InstanceName}
-		latest.Status.CurrentPrimary = observed.Plan.InstanceName
-		latest.Status.LatestGeneratedNode = 1
+	if len(observed.InstanceNames) > 0 {
+		latest.Status.Instances = observed.Plan.Instances
+		latest.Status.InstanceNames = observed.InstanceNames
+		latest.Status.CurrentPrimary = observed.PrimaryName
+		latest.Status.LatestGeneratedNode = observed.Plan.Instances
 		latest.Status.Image = observed.Plan.Image
 	} else {
 		latest.Status.Instances = latest.Spec.Instances
@@ -116,19 +135,12 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	latest.Status.ObservedGeneration = latest.Generation
 	latest.Status.Phase = observed.Phase
 	latest.Status.PhaseReason = observed.PhaseReason
-	if observed.Ready {
-		latest.Status.ReadyInstances = 1
-		now := metav1.Now().Format(time.RFC3339)
-		if latest.Status.CurrentPrimaryTimestamp == "" {
-			latest.Status.CurrentPrimaryTimestamp = now
-		}
-	} else {
-		latest.Status.ReadyInstances = 0
+	latest.Status.ReadyInstances = observed.ReadyInstances
+	if observed.ReadyInstances > 0 && latest.Status.CurrentPrimaryTimestamp == "" {
+		latest.Status.CurrentPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
 	}
-	if observed.Status != nil {
-		latest.Status.GTIDExecutedByInstance = map[string]string{
-			observed.Plan.InstanceName: observed.Status.GTIDExecuted,
-		}
+	if len(observed.GTIDByInstance) > 0 {
+		latest.Status.GTIDExecutedByInstance = observed.GTIDByInstance
 	}
 	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,

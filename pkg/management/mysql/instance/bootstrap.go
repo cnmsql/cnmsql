@@ -42,6 +42,11 @@ type BootstrapParams struct {
 	// ReplicationRequireX509 creates the replication user requiring a client
 	// certificate (mTLS) rather than password authentication.
 	ReplicationRequireX509 bool
+	// BackupUser and BackupPassword create the account XtraBackup uses, running
+	// locally on the primary, to take the physical backup streamed to joining
+	// replicas. Both must be set together, or empty to skip.
+	BackupUser     string
+	BackupPassword string
 	// ControlUser and ControlPassword create the privileged account the instance
 	// manager uses for monitoring and lifecycle over the admin interface. Both
 	// must be set together, or empty to skip.
@@ -81,6 +86,9 @@ func (p BootstrapParams) Validate() error {
 	}
 	if p.ReplicationUser != "" && p.ReplicationPassword == "" && !p.ReplicationRequireX509 {
 		return fmt.Errorf("bootstrap: replication user needs a password or requireX509")
+	}
+	if (p.BackupUser != "") != (p.BackupPassword != "") {
+		return fmt.Errorf("bootstrap: backupUser and backupPassword must be set together")
 	}
 	if (p.ControlUser != "") != (p.ControlPassword != "") {
 		return fmt.Errorf("bootstrap: controlUser and controlPassword must be set together")
@@ -135,6 +143,30 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 			fmt.Sprintf("GRANT REPLICATION SLAVE ON *.* TO '%s'@'%%'",
 				escapeName(p.ReplicationUser)),
 		)
+	}
+
+	// Backup account used by XtraBackup on the primary to clone replicas. The
+	// static grants cover all supported versions (FLUSH TABLES WITH READ LOCK,
+	// reading binlog position); BACKUP_ADMIN (8.0+) enables LOCK INSTANCE FOR
+	// BACKUP and is added only where dynamic privileges exist.
+	if p.BackupUser != "" {
+		stmts = append(stmts,
+			d.createUser(p.BackupUser, "IDENTIFIED BY "+quoteString(p.BackupPassword)),
+			fmt.Sprintf("GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO '%s'@'%%'",
+				escapeName(p.BackupUser)),
+		)
+		if p.SupportsDynamicPrivileges {
+			// XtraBackup 8.0 needs BACKUP_ADMIN plus SELECT on these
+			// performance_schema tables (log position, keyring state, group
+			// membership); without them it aborts with ER_TABLEACCESS_DENIED.
+			// All three are 8.0-only, gated with the dynamic-privilege check.
+			stmts = append(stmts,
+				fmt.Sprintf("GRANT BACKUP_ADMIN ON *.* TO '%s'@'%%'", escapeName(p.BackupUser)),
+				fmt.Sprintf("GRANT SELECT ON performance_schema.log_status TO '%s'@'%%'", escapeName(p.BackupUser)),
+				fmt.Sprintf("GRANT SELECT ON performance_schema.keyring_component_status TO '%s'@'%%'", escapeName(p.BackupUser)),
+				fmt.Sprintf("GRANT SELECT ON performance_schema.replication_group_members TO '%s'@'%%'", escapeName(p.BackupUser)),
+			)
+		}
 	}
 
 	// Control account used by the instance manager.

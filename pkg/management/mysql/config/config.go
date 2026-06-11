@@ -130,7 +130,6 @@ var managedKeys = map[string]struct{}{
 	"ssl-cert":                 {},
 	"ssl_key":                  {},
 	"ssl-key":                  {},
-	"require_secure_transport": {},
 	"binlog_format":            {},
 	"binlog-format":            {},
 }
@@ -256,11 +255,14 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	}
 
 	if c.TLS.isset() {
+		// TLS material is configured so clients and replicas can connect over
+		// TLS, but transport is not forced: whether to require encrypted
+		// connections (require_secure_transport) is left to the user via
+		// spec.mysql.parameters.
 		pairs = append(pairs,
 			pair{"ssl_ca", c.TLS.CA},
 			pair{"ssl_cert", c.TLS.Cert},
 			pair{"ssl_key", c.TLS.Key},
-			pair{"require_secure_transport", "ON"},
 		)
 	}
 

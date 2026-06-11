@@ -90,6 +90,71 @@ func TestProvisionFromBackupSkipsEmptyGTID(t *testing.T) {
 	}
 }
 
+func TestEnsureReplicaStartedNoopOnPrimary(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}))
+
+	if err := m.EnsureReplicaStarted(context.Background()); err != nil {
+		t.Fatalf("EnsureReplicaStarted: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestEnsureReplicaStartedNoopWhenRunning(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}).
+			AddRow("primary.svc", "Yes", "Yes"))
+
+	if err := m.EnsureReplicaStarted(context.Background()); err != nil {
+		t.Fatalf("EnsureReplicaStarted: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestEnsureReplicaStartedStartsStoppedReplica(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}).
+			AddRow("primary.svc", "No", "Yes"))
+	mock.ExpectExec("START REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := m.EnsureReplicaStarted(context.Background()); err != nil {
+		t.Fatalf("EnsureReplicaStarted: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestEnsureReplicaConfiguredConfiguresMissingSource(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}))
+	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CHANGE REPLICATION SOURCE TO").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("START REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := m.EnsureReplicaConfigured(context.Background(), SourceOptions{
+		Host: "primary", Port: 3306, User: "repl", AutoPosition: true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureReplicaConfigured: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestPromoteOrdering(t *testing.T) {
 	m, mock := newManager(t, "8.0.36")
 

@@ -45,6 +45,9 @@ func NewCommand() *cobra.Command {
 		sslCert        string
 		sslKey         string
 		getPublicKey   bool
+		managerURL     string
+		managerName    string
+		streamCompress bool
 	)
 
 	cmd := &cobra.Command{
@@ -61,6 +64,24 @@ func NewCommand() *cobra.Command {
 			}
 			if serverVersion == "" {
 				return fmt.Errorf("--server-version or MYSQL_VERSION must be set")
+			}
+
+			// When a source manager URL is given, pull and extract the backup
+			// stream over mTLS before restoring it. Idempotent: skip when the
+			// data directory is already initialised.
+			if managerURL != "" && !instance.IsInitialized(dataDir) {
+				if err := instance.FetchBackup(cmd.Context(), instance.FetchOptions{
+					SourceURL:      managerURL,
+					BackupDir:      backupDir,
+					XtrabackupPath: xtrabackupPath,
+					Compress:       streamCompress,
+					CAFile:         sslCA,
+					CertFile:       sslCert,
+					KeyFile:        sslKey,
+					ServerName:     managerName,
+				}); err != nil {
+					return err
+				}
 			}
 
 			return instance.Join(cmd.Context(), instance.JoinOptions{
@@ -103,6 +124,9 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sslCert, "source-ssl-cert", "", "Replication client certificate")
 	cmd.Flags().StringVar(&sslKey, "source-ssl-key", "", "Replication client key")
 	cmd.Flags().BoolVar(&getPublicKey, "source-get-public-key", false, "Request the source's public key for caching_sha2_password over a non-TLS connection")
+	cmd.Flags().StringVar(&managerURL, "source-manager-url", "", "Source instance-manager backup stream URL; when set, the backup is pulled and extracted into --backup-dir over mTLS (reusing --source-ssl-* material)")
+	cmd.Flags().StringVar(&managerName, "source-manager-server-name", "", "TLS server name to verify on the source manager certificate")
+	cmd.Flags().BoolVar(&streamCompress, "source-stream-compress", false, "The backup stream is compressed and must be decompressed after extraction")
 
 	return cmd
 }

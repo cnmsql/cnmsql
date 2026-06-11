@@ -44,16 +44,27 @@ type Controller struct {
 	repl       *replication.Manager
 	version    version.Version
 	versionStr string
+	expected   webserver.Role
 	supervisor Supervisor
+	backup     *BackupConfig
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
 // MySQL server version (e.g. "8.0.36"); supervisor may be nil if restart is not
 // available in the current context.
-func NewController(name string, conn pool.Connection, versionStr string, supervisor Supervisor) (*Controller, error) {
+func NewController(
+	name string,
+	conn pool.Connection,
+	versionStr string,
+	expected webserver.Role,
+	supervisor Supervisor,
+) (*Controller, error) {
 	v, err := version.Parse(versionStr)
 	if err != nil {
 		return nil, err
+	}
+	if expected == "" {
+		expected = webserver.RoleUnknown
 	}
 	return &Controller{
 		name:       name,
@@ -61,6 +72,7 @@ func NewController(name string, conn pool.Connection, versionStr string, supervi
 		repl:       replication.NewManager(conn, v),
 		version:    v,
 		versionStr: versionStr,
+		expected:   expected,
 		supervisor: supervisor,
 	}, nil
 }
@@ -79,6 +91,9 @@ func (c *Controller) Readyz(ctx context.Context) error {
 	state, err := c.repl.ReplicaState(ctx)
 	if err != nil {
 		return err
+	}
+	if c.expected == webserver.RoleReplica && !state.Configured {
+		return errors.New("replication source is not configured")
 	}
 	if state.Configured && (!state.IORunning || !state.SQLRunning) {
 		return fmt.Errorf("replication not healthy (io=%t sql=%t): %s",
@@ -101,7 +116,7 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	status := &webserver.Status{
 		InstanceName:  c.name,
 		Version:       c.versionStr,
-		Role:          role(replicaState),
+		Role:          c.role(replicaState),
 		ReadOnly:      roState.ReadOnly,
 		SuperReadOnly: roState.SuperReadOnly,
 		IsReady:       c.Readyz(ctx) == nil,
@@ -148,6 +163,18 @@ func (c *Controller) Demote(ctx context.Context) error {
 	return c.repl.Demote(ctx)
 }
 
+// EnsureReplicaStarted resumes replication when this instance is a configured
+// replica whose threads did not auto-start with mysqld.
+func (c *Controller) EnsureReplicaStarted(ctx context.Context) error {
+	return c.repl.EnsureReplicaStarted(ctx)
+}
+
+// EnsureReplicaConfigured restores missing replication source metadata and
+// resumes stopped replication threads for an expected replica.
+func (c *Controller) EnsureReplicaConfigured(ctx context.Context, opts replication.SourceOptions) error {
+	return c.repl.EnsureReplicaConfigured(ctx, opts)
+}
+
 // Restart restarts mysqld via the supervisor.
 func (c *Controller) Restart(ctx context.Context) error {
 	if c.supervisor == nil {
@@ -157,9 +184,12 @@ func (c *Controller) Restart(ctx context.Context) error {
 }
 
 // role derives the reported role from the replica state.
-func role(state *replication.ReplicaState) webserver.Role {
+func (c *Controller) role(state *replication.ReplicaState) webserver.Role {
 	if state != nil && state.Configured {
 		return webserver.RoleReplica
+	}
+	if c.expected == webserver.RoleReplica {
+		return webserver.RoleUnknown
 	}
 	return webserver.RolePrimary
 }

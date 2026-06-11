@@ -38,6 +38,9 @@ const (
 	instanceLabel = "mysql.cloudnative-mysql.io/instance"
 	roleLabel     = "mysql.cloudnative-mysql.io/role"
 
+	rolePrimary = "primary"
+	roleReplica = "replica"
+
 	configMapAnnotation       = "cnmysql.cloudnative-mysql.io/config-map"
 	configHashAnnotation      = "cnmysql.cloudnative-mysql.io/config-hash"
 	podTemplateHashAnnotation = "cnmysql.cloudnative-mysql.io/pod-template-hash"
@@ -55,6 +58,12 @@ const (
 	configPath    = "/etc/mysql/my.cnf"
 	serverTLSPath = "/etc/cnmysql/tls/server"
 	clientCAPath  = "/etc/cnmysql/tls/client-ca"
+	joinBackupDir = "/backup"
+
+	replicationUser = "cnmysql_repl"
+	backupUser      = "cnmysql_backup"
+	controlUser     = "cnmysql_control"
+	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// provisioningRequeue paces reconciles while the instance is still coming up.
 	provisioningRequeue = 10 * time.Second
@@ -123,13 +132,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureCertificates(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureConfigMap(ctx, cluster, plan); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensurePVC(ctx, cluster, plan); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureService(ctx, cluster, plan); err != nil {
+	if err := r.ensureDefaultServices(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -147,7 +150,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		})
 	}
 
-	if err := r.ensurePod(ctx, cluster, plan); err != nil {
+	// Remove replicas above the desired count (highest ordinal first), then
+	// provision instances in order, ramping up one replica at a time.
+	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		return ctrl.Result{}, err
+	}
+	provisioned, err := r.reconcileInstances(ctx, cluster, plan)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -158,10 +167,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.patchStatus(ctx, cluster, observed); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !observed.Ready {
+	if !provisioned || !observed.Ready {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
-	// Keep re-polling the instance manager so status (GTID, role, readiness)
+	// Keep re-polling the instance managers so status (GTID, roles, readiness)
 	// stays fresh even when no Kubernetes event triggers a reconcile.
 	return ctrl.Result{RequeueAfter: readyResync}, nil
 }

@@ -190,7 +190,7 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	cluster := baseCluster()
 	plan := testPlan()
 
-	spec := (&ClusterReconciler{}).podSpec(cluster, plan)
+	spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
 	if len(spec.InitContainers) != 1 {
 		t.Fatalf("init containers = %d", len(spec.InitContainers))
 	}
@@ -199,6 +199,9 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	}
 	if got := strings.Join(spec.Containers[0].Args, " "); !strings.Contains(got, "instance run") {
 		t.Fatalf("main container args = %q", got)
+	}
+	if got := strings.Join(spec.Containers[0].Args, " "); !strings.Contains(got, "--role=primary") {
+		t.Fatalf("primary main container should declare primary role: %q", got)
 	}
 	if spec.Containers[0].ReadinessProbe.TCPSocket == nil {
 		t.Fatalf("readiness probe must be TCP because the HTTP API requires mTLS")
@@ -209,11 +212,44 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 			volumes[volume.Name] = volume.Secret.SecretName
 		}
 	}
-	if volumes["server-tls"] != "demo-server-tls" {
+	if volumes["server-tls"] != "demo-1-server-tls" {
 		t.Fatalf("server tls volume = %q", volumes["server-tls"])
 	}
 	if volumes["client-ca"] != "demo-ca" {
 		t.Fatalf("client ca volume = %q", volumes["client-ca"])
+	}
+}
+
+func TestPodSpecReplicaUsesJoin(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	plan := testPlan()
+	plan.Instances = 3
+
+	spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 2))
+	got := strings.Join(spec.InitContainers[0].Args, " ")
+	if !strings.Contains(got, "instance join") {
+		t.Fatalf("replica init container should join: %q", got)
+	}
+	if !strings.Contains(got, "--source-manager-url=https://demo-1.default.svc:8080/cluster/backup") {
+		t.Fatalf("replica should clone from the primary manager: %q", got)
+	}
+	if !strings.Contains(got, "--source-host=demo-1.default.svc") {
+		t.Fatalf("replica should replicate from the primary: %q", got)
+	}
+	got = strings.Join(spec.Containers[0].Args, " ")
+	if !strings.Contains(got, "--role=replica") {
+		t.Fatalf("replica main container should declare replica role: %q", got)
+	}
+	if !strings.Contains(got, "--source-host=demo-1.default.svc") {
+		t.Fatalf("replica main container should be able to repair replication source: %q", got)
+	}
+	for _, container := range []corev1.Container{spec.InitContainers[0], spec.Containers[0]} {
+		for _, env := range container.Env {
+			if env.Name == "MYSQL_REPLICATION_PASSWORD" {
+				t.Fatalf("%s must use mTLS-only replication auth, found MYSQL_REPLICATION_PASSWORD env", container.Name)
+			}
+		}
 	}
 }
 
@@ -222,9 +258,10 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
 	stalePod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      plan.InstanceName,
+			Name:      inst.Name,
 			Namespace: cluster.Namespace,
 			Annotations: map[string]string{
 				podTemplateHashAnnotation: "stale",
@@ -241,19 +278,19 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if err := reconciler.ensurePod(ctx, cluster, plan); err != nil {
+	if err := reconciler.ensurePod(ctx, cluster, plan, inst); err != nil {
 		t.Fatal(err)
 	}
 	got := &corev1.Pod{}
-	err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.InstanceName}, got)
+	err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, got)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("stale Pod get error = %v, want not found", err)
 	}
 
-	if err := reconciler.ensurePod(ctx, cluster, plan); err != nil {
+	if err := reconciler.ensurePod(ctx, cluster, plan, inst); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.InstanceName}, got); err != nil {
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Annotations[podTemplateHashAnnotation] == "" {
@@ -269,10 +306,11 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 
 func TestUnsupportedReasonNamesDeferredMilestones(t *testing.T) {
 	t.Parallel()
+	// Replicas are now supported.
 	cluster := baseCluster()
-	cluster.Spec.Instances = 2
-	if got := unsupportedReason(cluster); !strings.Contains(got, "M4") {
-		t.Fatalf("replica unsupported reason = %q", got)
+	cluster.Spec.Instances = 3
+	if got := unsupportedReason(cluster); got != "" {
+		t.Fatalf("3-instance cluster should be supported, got %q", got)
 	}
 
 	cluster = baseCluster()
@@ -287,7 +325,7 @@ func TestReconcileBlocksUnsupportedClusterShape(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster := baseCluster()
-	cluster.Spec.Instances = 2
+	cluster.Spec.Replica = &mysqlv1alpha1.ReplicaClusterConfiguration{Source: "external"}
 	scheme := testScheme(t)
 	recorder := record.NewFakeRecorder(10)
 	reconciler := &ClusterReconciler{
@@ -318,8 +356,8 @@ func TestReconcileBlocksUnsupportedClusterShape(t *testing.T) {
 	if got.Status.Phase != phaseBlocked {
 		t.Fatalf("phase = %q, want %q", got.Status.Phase, phaseBlocked)
 	}
-	if !strings.Contains(got.Status.PhaseReason, "M4") {
-		t.Fatalf("phase reason = %q, want deferred milestone", got.Status.PhaseReason)
+	if !strings.Contains(got.Status.PhaseReason, "replica") {
+		t.Fatalf("phase reason = %q, want replica-cluster block", got.Status.PhaseReason)
 	}
 	ready := apimeta.FindStatusCondition(got.Status.Conditions, conditionReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse {
@@ -367,14 +405,15 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-root")
 	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-app")
 	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-replication")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-backup")
 	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-control")
-	assertOwnedObject(t, ctx, reconciler, &corev1.ConfigMap{}, "demo-config")
-	assertOwnedObject(t, ctx, reconciler, &corev1.PersistentVolumeClaim{}, "demo-1")
-	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-1")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-rw")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-ro")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-r")
 	assertOwnedUnstructuredResource(t, ctx, reconciler, issuerGVK.Kind, issuerGVK, "demo-selfsigned")
-	assertOwnedUnstructuredResource(t, ctx, reconciler, certificateGVK.Kind, certificateGVK, "demo-server")
+	assertOwnedUnstructuredResource(t, ctx, reconciler, certificateGVK.Kind, certificateGVK, "demo-1-server")
 
-	for _, name := range []string{"demo-ca", "demo-server-tls", "demo-client-tls"} {
+	for _, name := range []string{"demo-ca", "demo-1-server-tls", "demo-client-tls"} {
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace},
 			Data: map[string][]byte{
@@ -395,6 +434,9 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	if result.RequeueAfter == 0 {
 		t.Fatalf("second reconcile should requeue while waiting for pod readiness")
 	}
+	assertOwnedObject(t, ctx, reconciler, &corev1.ConfigMap{}, "demo-1-config")
+	assertOwnedObject(t, ctx, reconciler, &corev1.PersistentVolumeClaim{}, "demo-1")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-1")
 	pod := &corev1.Pod{}
 	assertOwnedObject(t, ctx, reconciler, pod, "demo-1")
 	if pod.Annotations[podTemplateHashAnnotation] == "" {
@@ -474,16 +516,17 @@ func testPlan() clusterPlan {
 	return clusterPlan{
 		Image:             "cnmysql-instance:8.0",
 		ServerVersion:     "8.0.46",
-		InstanceName:      "demo-1",
-		ConfigMapName:     "demo-config",
-		DataPVCName:       "demo-1",
+		Instances:         1,
 		RootSecretName:    "demo-root",
 		AppSecretName:     "demo-app",
 		ReplicationSecret: "demo-replication",
 		ControlSecretName: "demo-control",
+		BackupSecretName:  "demo-backup",
 		CASecretName:      "demo-ca",
-		ServerTLSSecret:   "demo-server-tls",
 		ClientTLSSecret:   "demo-client-tls",
+		RWServiceName:     "demo-rw",
+		ROServiceName:     "demo-ro",
+		RServiceName:      "demo-r",
 	}
 }
 

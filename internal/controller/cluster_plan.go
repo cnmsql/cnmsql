@@ -28,21 +28,85 @@ import (
 )
 
 type clusterPlan struct {
-	Image             string
-	ServerVersion     string
-	InstanceName      string
-	ConfigMapName     string
-	DataPVCName       string
-	ServiceName       string
+	Image         string
+	ServerVersion string
+	// Instances is the desired number of MySQL instances (1 primary + replicas).
+	Instances int
+
+	// Cluster-wide secret names.
 	RootSecretName    string
 	AppSecretName     string
 	ReplicationSecret string
 	ControlSecretName string
-	SelfSignedIssuer  string
-	CAIssuer          string
-	CASecretName      string
-	ServerTLSSecret   string
-	ClientTLSSecret   string
+	BackupSecretName  string
+
+	// Cluster-wide cert-manager material.
+	SelfSignedIssuer string
+	CAIssuer         string
+	CASecretName     string
+	// ClientTLSSecret holds the operator's client certificate used to call each
+	// instance's control API.
+	ClientTLSSecret string
+	// UserServerTLSSecret, when set, is a user-provided server certificate used
+	// for every instance instead of generating per-instance certs.
+	UserServerTLSSecret string
+
+	// Default traffic-routing services.
+	RWServiceName    string
+	ROServiceName    string
+	RServiceName     string
+	DisabledServices map[mysqlv1alpha1.ServiceSelectorType]bool
+}
+
+// instancePlan holds the per-instance derived names and identity.
+type instancePlan struct {
+	Name            string
+	Ordinal         int
+	ServerID        int
+	IsPrimary       bool
+	PVCName         string
+	ConfigMapName   string
+	ServiceName     string
+	ServerCertName  string
+	ServerTLSSecret string
+}
+
+// primaryName is the bootstrap instance and, throughout M4, the fixed primary.
+func (p clusterPlan) primaryName(cluster *mysqlv1alpha1.Cluster) string {
+	return instanceName(cluster, 1)
+}
+
+// instanceNames lists the desired instance names in ordinal order.
+func (p clusterPlan) instanceNames(cluster *mysqlv1alpha1.Cluster) []string {
+	names := make([]string, 0, p.Instances)
+	for i := 1; i <= p.Instances; i++ {
+		names = append(names, instanceName(cluster, i))
+	}
+	return names
+}
+
+// instanceFor derives the per-instance plan for the given 1-based ordinal.
+func (p clusterPlan) instanceFor(cluster *mysqlv1alpha1.Cluster, ordinal int) instancePlan {
+	name := instanceName(cluster, ordinal)
+	inst := instancePlan{
+		Name:            name,
+		Ordinal:         ordinal,
+		ServerID:        ordinal,
+		IsPrimary:       ordinal == 1,
+		PVCName:         name,
+		ConfigMapName:   name + "-config",
+		ServiceName:     name,
+		ServerCertName:  name + "-server",
+		ServerTLSSecret: name + "-server-tls",
+	}
+	if p.UserServerTLSSecret != "" {
+		inst.ServerTLSSecret = p.UserServerTLSSecret
+	}
+	return inst
+}
+
+func instanceName(cluster *mysqlv1alpha1.Cluster, ordinal int) string {
+	return fmt.Sprintf("%s-%d", cluster.Name, ordinal)
 }
 
 const (
@@ -54,14 +118,14 @@ const (
 
 func unsupportedReason(cluster *mysqlv1alpha1.Cluster) string {
 	switch {
-	case cluster.Spec.Instances != 1:
-		return "M3 supports only spec.instances=1; replicas are kept for M4"
+	case cluster.Spec.Instances < 1:
+		return "spec.instances must be at least 1"
 	case cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.InitDB == nil:
-		return "M3 supports only bootstrap.initdb; recovery is kept for M6"
+		return "M4 supports only bootstrap.initdb; recovery is kept for M6"
 	case cluster.Spec.Bootstrap.Recovery != nil:
 		return "bootstrap.recovery is kept for M6"
 	case cluster.Spec.Replica != nil:
-		return "replica clusters are kept for M4"
+		return "replica clusters (following an external source) are kept for a later milestone"
 	case cluster.Spec.BinlogStorage != nil:
 		return "separate binlog storage is kept for M6"
 	}
@@ -82,19 +146,23 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 	plan := clusterPlan{
 		Image:             image,
 		ServerVersion:     serverVersion,
-		InstanceName:      cluster.Name + "-1",
-		ConfigMapName:     cluster.Name + "-config",
-		DataPVCName:       cluster.Name + "-1",
-		ServiceName:       cluster.Name + "-1",
+		Instances:         cluster.Spec.Instances,
 		RootSecretName:    cluster.Name + "-root",
 		AppSecretName:     cluster.Name + "-app",
 		ReplicationSecret: cluster.Name + "-replication",
 		ControlSecretName: cluster.Name + "-control",
+		BackupSecretName:  cluster.Name + "-backup",
 		SelfSignedIssuer:  cluster.Name + "-selfsigned",
 		CAIssuer:          cluster.Name + "-ca",
 		CASecretName:      cluster.Name + "-ca",
-		ServerTLSSecret:   cluster.Name + "-server-tls",
 		ClientTLSSecret:   cluster.Name + "-client-tls",
+		RWServiceName:     cluster.Name + "-rw",
+		ROServiceName:     cluster.Name + "-ro",
+		RServiceName:      cluster.Name + "-r",
+		DisabledServices:  disabledServices(cluster),
+	}
+	if plan.Instances == 0 {
+		plan.Instances = 1
 	}
 	if cluster.Spec.RootPasswordSecret != nil && cluster.Spec.RootPasswordSecret.Name != "" {
 		plan.RootSecretName = cluster.Spec.RootPasswordSecret.Name
@@ -110,13 +178,25 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 			plan.CASecretName = certs.ClientCASecret
 		}
 		if certs.ServerTLSSecret != "" {
-			plan.ServerTLSSecret = certs.ServerTLSSecret
+			plan.UserServerTLSSecret = certs.ServerTLSSecret
 		}
 		if certs.ReplicationTLSSecret != "" {
 			plan.ClientTLSSecret = certs.ReplicationTLSSecret
 		}
 	}
 	return plan, nil
+}
+
+// disabledServices indexes the default services the user turned off.
+func disabledServices(cluster *mysqlv1alpha1.Cluster) map[mysqlv1alpha1.ServiceSelectorType]bool {
+	disabled := map[mysqlv1alpha1.ServiceSelectorType]bool{}
+	if cluster.Spec.Managed == nil || cluster.Spec.Managed.Services == nil {
+		return disabled
+	}
+	for _, s := range cluster.Spec.Managed.Services.DisabledDefaultServices {
+		disabled[s] = true
+	}
+	return disabled
 }
 
 func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (string, error) {

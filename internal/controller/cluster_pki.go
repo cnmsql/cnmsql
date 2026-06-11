@@ -55,23 +55,29 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 	}); err != nil {
 		return err
 	}
-	if err := r.ensureCertificate(ctx, cluster, cluster.Name+"-server", map[string]any{
-		"secretName": plan.ServerTLSSecret,
-		"commonName": plan.ServiceName + "." + cluster.Namespace + ".svc",
-		"dnsNames": []any{
-			plan.InstanceName,
-			plan.ServiceName,
-			plan.ServiceName + "." + cluster.Namespace,
-			plan.ServiceName + "." + cluster.Namespace + ".svc",
-			plan.ServiceName + "." + cluster.Namespace + ".svc.cluster.local",
-		},
-		"issuerRef": map[string]any{
-			"name": plan.CAIssuer,
-			"kind": "Issuer",
-		},
-	}); err != nil {
-		return err
+
+	// One server certificate per instance. Each cert carries both server- and
+	// client-auth usages so a replica can reuse it to authenticate to the
+	// primary's control API (backup stream) and to mysqld for replication.
+	for i := 1; i <= plan.Instances; i++ {
+		inst := plan.instanceFor(cluster, i)
+		if err := r.ensureCertificate(ctx, cluster, inst.ServerCertName, map[string]any{
+			"secretName": inst.ServerTLSSecret,
+			"commonName": inst.ServiceName + "." + cluster.Namespace + ".svc",
+			"dnsNames":   serverDNSNames(cluster, plan, inst),
+			"usages": []any{
+				"server auth",
+				"client auth",
+			},
+			"issuerRef": map[string]any{
+				"name": plan.CAIssuer,
+				"kind": "Issuer",
+			},
+		}); err != nil {
+			return err
+		}
 	}
+
 	return r.ensureCertificate(ctx, cluster, cluster.Name+"-client", map[string]any{
 		"secretName": plan.ClientTLSSecret,
 		"commonName": "cnmysql-operator",
@@ -83,6 +89,23 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 			"kind": "Issuer",
 		},
 	})
+}
+
+// serverDNSNames are the SANs an instance certificate must carry: its own
+// per-instance Service plus the shared rw/ro/r Services it can be reached
+// through.
+func serverDNSNames(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []any {
+	svcNames := []string{inst.ServiceName, plan.RWServiceName, plan.ROServiceName, plan.RServiceName}
+	names := make([]any, 0, len(svcNames)*4)
+	for _, svc := range svcNames {
+		names = append(names,
+			svc,
+			svc+"."+cluster.Namespace,
+			svc+"."+cluster.Namespace+".svc",
+			svc+"."+cluster.Namespace+".svc.cluster.local",
+		)
+	}
+	return names
 }
 
 func hasUserCertificates(cluster *mysqlv1alpha1.Cluster) bool {
@@ -99,7 +122,7 @@ func (r *ClusterReconciler) ensureIssuer(ctx context.Context, cluster *mysqlv1al
 	issuer.SetName(name)
 	issuer.SetNamespace(cluster.Namespace)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
-		issuer.SetLabels(labelsFor(cluster, ""))
+		issuer.SetLabels(labelsFor(cluster, "", ""))
 		if err := unstructured.SetNestedMap(issuer.Object, spec, "spec"); err != nil {
 			return err
 		}
@@ -114,7 +137,7 @@ func (r *ClusterReconciler) ensureCertificate(ctx context.Context, cluster *mysq
 	cert.SetName(name)
 	cert.SetNamespace(cluster.Namespace)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cert, func() error {
-		cert.SetLabels(labelsFor(cluster, ""))
+		cert.SetLabels(labelsFor(cluster, "", ""))
 		if err := unstructured.SetNestedMap(cert.Object, spec, "spec"); err != nil {
 			return err
 		}
@@ -123,8 +146,14 @@ func (r *ClusterReconciler) ensureCertificate(ctx context.Context, cluster *mysq
 	return err
 }
 
+// certSecretsReady reports whether all TLS secrets the desired instances need
+// (the CA, the operator client cert, and every instance server cert) exist.
 func (r *ClusterReconciler) certSecretsReady(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (bool, error) {
-	for _, name := range []string{plan.CASecretName, plan.ServerTLSSecret, plan.ClientTLSSecret} {
+	names := []string{plan.CASecretName, plan.ClientTLSSecret}
+	for i := 1; i <= plan.Instances; i++ {
+		names = append(names, plan.instanceFor(cluster, i).ServerTLSSecret)
+	}
+	for _, name := range names {
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, secret); err != nil {
 			if apierrors.IsNotFound(err) {
