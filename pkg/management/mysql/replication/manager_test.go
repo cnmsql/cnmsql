@@ -179,8 +179,27 @@ func TestEnsureReplicaConfiguredRepointsWrongSource(t *testing.T) {
 func TestPromoteOrdering(t *testing.T) {
 	m, mock := newManager(t, "8.0.36")
 
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}).
+			AddRow("cluster-sample-1.default.svc", "Yes", "Yes"))
 	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("RESET REPLICA ALL").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL super_read_only = OFF")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL read_only = OFF")).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := m.Promote(context.Background()); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestPromoteWithoutReplicaConfigOnlyClearsReadOnly(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}))
 	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL super_read_only = OFF")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL read_only = OFF")).WillReturnResult(sqlmock.NewResult(0, 0))
 

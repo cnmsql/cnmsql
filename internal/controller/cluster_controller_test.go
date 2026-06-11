@@ -750,6 +750,48 @@ func TestReconcileSwitchoverWaitsForInstancePromotion(t *testing.T) {
 	}
 }
 
+func TestReconcileSwitchoverDoesNotBlockBootstrapTarget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 3
+	cluster.Status.TargetPrimary = testPrimary
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster).
+			Build(),
+		Scheme: scheme,
+	}
+	plan := testPlan()
+	plan.Instances = 3
+	observed := observedCluster{
+		Plan:          plan,
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+	}
+
+	handled, err := reconciler.reconcileSwitchover(ctx, cluster, plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("bootstrap target should not be treated as a switchover")
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase == phaseBlocked {
+		t.Fatalf("phase = %q, want bootstrap to keep waiting for currentPrimary", got.Status.Phase)
+	}
+	if got.Status.TargetPrimary != testPrimary {
+		t.Fatalf("targetPrimary = %q, want unchanged %q", got.Status.TargetPrimary, testPrimary)
+	}
+}
+
 func TestReconcileSwitchoverBlocksUnhealthyTarget(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

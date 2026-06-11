@@ -228,6 +228,9 @@ func TestNewControllerRejectsBadVersion(t *testing.T) {
 func TestPromoteDemoteDelegate(t *testing.T) {
 	c, mock := newController(t, nil)
 
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}).
+			AddRow("primary.default.svc", "Yes", "Yes"))
 	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("RESET REPLICA ALL").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = OFF").WillReturnResult(sqlmock.NewResult(0, 0))

@@ -155,14 +155,22 @@ func (m *Manager) SetSuperReadOnly(ctx context.Context, on bool) error {
 	return m.exec(ctx, SetSuperReadOnlyStatement(on))
 }
 
-// Promote transitions a replica to primary: stop and fully reset replication,
-// then clear the read-only flags.
+// Promote transitions a replica to primary: stop and fully reset replication
+// when a source is configured, then clear the read-only flags. A freshly
+// bootstrapped primary has no replica metadata, so promotion only needs to clear
+// read-only mode.
 func (m *Manager) Promote(ctx context.Context) error {
-	if err := m.StopReplica(ctx); err != nil {
+	state, err := m.ReplicaState(ctx)
+	if err != nil {
 		return err
 	}
-	if err := m.ResetReplica(ctx, true); err != nil {
-		return err
+	if state.Configured {
+		if err := m.StopReplica(ctx); err != nil {
+			return err
+		}
+		if err := m.ResetReplica(ctx, true); err != nil {
+			return err
+		}
 	}
 	// super_read_only must be cleared before read_only.
 	if err := m.SetSuperReadOnly(ctx, false); err != nil {

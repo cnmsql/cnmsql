@@ -20,12 +20,14 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
@@ -73,9 +75,7 @@ func Start(ctx context.Context, opts StartOptions) error {
 		Scheme:         scheme,
 		Metrics:        metricsserver.Options{BindAddress: "0"},
 		LeaderElection: false,
-		Cache: cache.Options{
-			DefaultNamespaces: map[string]cache.Config{opts.Namespace: {}},
-		},
+		Cache:          clusterCacheOptions(opts),
 	})
 	if err != nil {
 		return fmt.Errorf("creating role manager: %w", err)
@@ -93,4 +93,15 @@ func Start(ctx context.Context, opts StartOptions) error {
 		return err
 	}
 	return mgr.Start(ctx)
+}
+
+func clusterCacheOptions(opts StartOptions) cache.Options {
+	return cache.Options{
+		ByObject: map[client.Object]cache.ByObject{
+			&mysqlv1alpha1.Cluster{}: {
+				Namespaces: map[string]cache.Config{opts.Namespace: {}},
+				Field:      fields.OneTermEqualSelector("metadata.name", opts.ClusterName),
+			},
+		},
+	}
 }

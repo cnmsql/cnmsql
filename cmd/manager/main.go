@@ -23,10 +23,15 @@ import (
 	"fmt"
 	"os"
 
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
 	"github.com/yyewolf/cnmysql/internal/cmd/manager"
 )
 
 func main() {
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
 	if err := manager.NewRootCommand().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "manager: error:", err)
 		os.Exit(1)

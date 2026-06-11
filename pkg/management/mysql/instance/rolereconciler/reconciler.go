@@ -101,23 +101,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 
 	// I am the designated primary.
 	if target == me {
-		if amPrimary {
+		// Already a writable primary: just keep currentPrimary in step.
+		if amPrimary && !status.ReadOnly && !status.SuperReadOnly {
 			if current != me {
 				return ctrl.Result{RequeueAfter: steadyRequeue}, r.setCurrentPrimary(ctx, me)
 			}
 			return ctrl.Result{RequeueAfter: steadyRequeue}, nil
 		}
-		// Drain the relay log before promoting so we do not lose received
-		// transactions. For a switchover the old primary is read-only and this
-		// converges; for a failover the source is gone and the relay drains.
-		if !caughtUp(status) {
+		// A replica must drain its relay log before promoting so we do not lose
+		// received transactions. For a switchover the old primary is read-only and
+		// this converges; for a failover the source is gone and the relay drains.
+		if !amPrimary && !caughtUp(status) {
 			log.Info("waiting to catch up before promotion", "instance", me)
 			return ctrl.Result{RequeueAfter: waitRequeue}, nil
 		}
+		// Promote: stop/reset any replication and clear read-only. Idempotent on a
+		// primary that merely booted read-only.
 		if err := r.Local.Promote(ctx); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("promoted self to primary", "instance", me)
+		log.Info("ensured self is the writable primary", "instance", me)
 		return ctrl.Result{RequeueAfter: waitRequeue}, r.setCurrentPrimary(ctx, me)
 	}
 

@@ -109,6 +109,17 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Socket != "" {
 		args = append(args, "--socket="+opts.Socket)
 	}
+	// When the in-Pod reconciler manages role, boot read-only so a (re)starting
+	// instance cannot accept writes before its role is reconciled; the reconciler
+	// clears it on the confirmed primary. This is not applied to the bootstrap
+	// temporary servers (initdb/join), which must be writable.
+	if opts.ClusterName != "" && opts.Namespace != "" {
+		if ver.HasSuperReadOnly() {
+			args = append(args, "--super-read-only=ON")
+		} else {
+			args = append(args, "--read-only=ON")
+		}
+	}
 
 	sup := NewProcessSupervisor(opts.MysqldPath, args, WithShutdownTimeout(opts.ShutdownTimeout))
 	if err := sup.Start(ctx); err != nil {

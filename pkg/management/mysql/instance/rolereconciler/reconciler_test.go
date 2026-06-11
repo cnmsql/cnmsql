@@ -101,9 +101,33 @@ func reconcile(t *testing.T, r *Reconciler) ctrl.Result {
 	return res
 }
 
+func TestClusterCacheOptionsSelectsSingleClusterByName(t *testing.T) {
+	t.Parallel()
+	opts := clusterCacheOptions(StartOptions{Namespace: "default", ClusterName: "demo"})
+	if len(opts.ByObject) != 1 {
+		t.Fatalf("ByObject entries = %d, want 1", len(opts.ByObject))
+	}
+	var found bool
+	for obj, cfg := range opts.ByObject {
+		if _, ok := obj.(*mysqlv1alpha1.Cluster); !ok {
+			t.Fatalf("ByObject key = %T, want *Cluster", obj)
+		}
+		found = true
+		if _, ok := cfg.Namespaces["default"]; !ok {
+			t.Fatalf("namespaces = %#v, want default", cfg.Namespaces)
+		}
+		if got := cfg.Field.String(); got != "metadata.name=demo" {
+			t.Fatalf("field selector = %q, want metadata.name=demo", got)
+		}
+	}
+	if !found {
+		t.Fatal("cluster cache config not found")
+	}
+}
+
 func TestTargetPrimaryAlreadyPrimarySetsCurrentPrimary(t *testing.T) {
 	t.Parallel()
-	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary, SuperReadOnly: true}}
 	r := newReconciler(t, "demo-1", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-1"}, local)
 	reconcile(t, r)
 	cluster := &mysqlv1alpha1.Cluster{}
@@ -113,8 +137,8 @@ func TestTargetPrimaryAlreadyPrimarySetsCurrentPrimary(t *testing.T) {
 	if cluster.Status.CurrentPrimary != "demo-1" {
 		t.Fatalf("currentPrimary = %q, want demo-1", cluster.Status.CurrentPrimary)
 	}
-	if local.promoted {
-		t.Fatal("already-primary must not be promoted again")
+	if !local.promoted {
+		t.Fatal("read-only primary should be promoted to clear read-only flags")
 	}
 }
 

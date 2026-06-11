@@ -48,13 +48,10 @@ func (r *ClusterReconciler) reconcileSwitchover(
 		return false, nil
 	}
 	if current == "" {
-		return false, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
-			PhaseReason: "Cannot switch primary before the current primary is known",
-			Ready:       false,
-			Progressing: false,
-			Plan:        plan,
-		})
+		// Initial bootstrap has a target primary before any instance has promoted
+		// itself and recorded currentPrimary. Let normal observation surface the
+		// Pending/Provisioning phase while the target's in-Pod reconciler starts.
+		return false, nil
 	}
 
 	if err := validateSwitchoverTarget(observed, target); err != nil {

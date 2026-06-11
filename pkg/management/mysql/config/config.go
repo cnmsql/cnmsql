@@ -246,13 +246,16 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 		pairs = append(pairs, pair{"log_slave_updates", "ON"})
 	}
 
-	// Read-only handling: every instance boots read-only and only the in-Pod
-	// reconciler clears it on the confirmed primary (after promotion). This
-	// closes the split-brain window where a (re)starting instance could accept
-	// writes before its role is reconciled. super_read_only exists since 5.7.8.
-	pairs = append(pairs, pair{"read_only", "ON"})
-	if ver.HasSuperReadOnly() {
-		pairs = append(pairs, pair{"super_read_only", "ON"})
+	// Read-only handling: super_read_only exists since 5.7.8. Only replicas are
+	// rendered read-only here. The run container additionally boots read-only via
+	// a mysqld flag (see instance.Run) so a (re)starting instance cannot accept
+	// writes before its role is reconciled; that flag is not applied to the
+	// initdb/join temporary servers, which must be writable to bootstrap.
+	if c.Role == RoleReplica {
+		pairs = append(pairs, pair{"read_only", "ON"})
+		if ver.HasSuperReadOnly() {
+			pairs = append(pairs, pair{"super_read_only", "ON"})
+		}
 	}
 
 	if c.TLS.isset() {
