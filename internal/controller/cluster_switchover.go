@@ -71,6 +71,16 @@ func (r *ClusterReconciler) reconcilePrimaryChange(
 		})
 	}
 	if err := validateTargetGTID(observed, observed.PrimaryName, target); err != nil {
+		// Bound the catch-up wait by spec.maxSwitchoverDelay (RTO): if the target
+		// cannot catch up in time, abort rather than demote the primary forever.
+		startedAt, stampErr := r.ensureSwitchoverStarted(ctx, cluster)
+		if stampErr != nil {
+			return false, stampErr
+		}
+		maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second
+		if maxDelay > 0 && time.Since(startedAt) > maxDelay {
+			return r.abortSwitchover(ctx, cluster, observed, target)
+		}
 		return false, r.patchStatus(ctx, cluster, observedCluster{
 			Phase:          phaseSwitchover,
 			PhaseReason:    err.Error(),
@@ -110,6 +120,43 @@ func (r *ClusterReconciler) reconcilePrimaryChange(
 	}
 	if r.Recorder != nil {
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, phaseSwitchover, fmt.Sprintf("Switched over to %s", target))
+	}
+	return true, nil
+}
+
+// ensureSwitchoverStarted stamps status.targetPrimaryTimestamp on the first
+// reconcile of a switchover request and returns the effective start time, so the
+// catch-up wait can be bounded by spec.maxSwitchoverDelay.
+func (r *ClusterReconciler) ensureSwitchoverStarted(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (time.Time, error) {
+	if ts := cluster.Status.TargetPrimaryTimestamp; ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			return parsed, nil
+		}
+	}
+	now := time.Now().Truncate(time.Second)
+	if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
+		s.TargetPrimaryTimestamp = now.Format(time.RFC3339)
+	}); err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
+}
+
+// abortSwitchover cancels a planned switchover whose target failed to catch up
+// within spec.maxSwitchoverDelay, leaving the original primary in place.
+func (r *ClusterReconciler) abortSwitchover(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster, target string) (bool, error) {
+	reason := fmt.Sprintf("switchover to %s aborted: target did not catch up within maxSwitchoverDelay (%ds)",
+		target, cluster.Spec.MaxSwitchoverDelay)
+	if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
+		s.TargetPrimary = observed.PrimaryName
+		s.TargetPrimaryTimestamp = ""
+		s.Phase = phaseBlocked
+		s.PhaseReason = reason
+	}); err != nil {
+		return false, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, phaseBlocked, reason)
 	}
 	return true, nil
 }
@@ -177,6 +224,10 @@ func (r *ClusterReconciler) reconcileReplicaSources(
 	if controlClient == nil {
 		controlClient = &HTTPControlClient{Client: r.Client}
 	}
+	diverged := map[string]bool{}
+	for _, name := range observed.DivergedInstances {
+		diverged[name] = true
+	}
 	source := sourceOptions(cluster, observed.PrimaryName)
 	repaired := false
 	for _, name := range observed.InstanceNames {
@@ -185,6 +236,11 @@ func (r *ClusterReconciler) reconcileReplicaSources(
 		}
 		status, ok := observed.StatusByInstance[name]
 		if !ok || status.Role == webserver.RolePrimary {
+			continue
+		}
+		// A diverged replica cannot safely follow the primary; surfaced by the
+		// status, it must not be silently reconfigured.
+		if diverged[name] {
 			continue
 		}
 		if status.Replication != nil && sameSourceHost(status.Replication.SourceHost, source.Host) {
@@ -237,6 +293,7 @@ func (r *ClusterReconciler) patchPrimaryStatus(ctx context.Context, cluster *mys
 	latest.Status.CurrentPrimary = primaryName
 	latest.Status.TargetPrimary = primaryName
 	latest.Status.CurrentPrimaryTimestamp = now
+	latest.Status.TargetPrimaryTimestamp = ""
 	latest.Status.Phase = phaseSwitchover
 	latest.Status.PhaseReason = fmt.Sprintf("Switched over to %s", primaryName)
 	return r.Status().Patch(ctx, latest, client.MergeFrom(before))

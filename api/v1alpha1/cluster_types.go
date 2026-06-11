@@ -567,6 +567,11 @@ type ClusterStatus struct {
 	// +optional
 	CurrentPrimaryTimestamp string `json:"currentPrimaryTimestamp,omitempty"`
 
+	// TargetPrimaryTimestamp is when the current switchover request to
+	// TargetPrimary was started. It bounds the switchover by spec.maxSwitchoverDelay.
+	// +optional
+	TargetPrimaryTimestamp string `json:"targetPrimaryTimestamp,omitempty"`
+
 	// PrimaryFailingSince records when the current primary first became
 	// unreachable. It is used to enforce spec.failoverDelay before an automatic
 	// failover, and is cleared once the primary is healthy again.

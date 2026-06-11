@@ -3328,6 +3328,11 @@ spec:
                   TargetPrimary is the name of the instance that should become primary (used
                   during switchover/failover).
                 type: string
+              targetPrimaryTimestamp:
+                description: |-
+                  TargetPrimaryTimestamp is when the current switchover request to
+                  TargetPrimary was started. It bounds the switchover by spec.maxSwitchoverDelay.
+                type: string
             type: object
         required:
         - spec

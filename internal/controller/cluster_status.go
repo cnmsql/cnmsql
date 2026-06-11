@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
 
@@ -48,6 +50,10 @@ type observedCluster struct {
 	GTIDByInstance map[string]string
 	// StatusByInstance maps instance name to the last successful control status.
 	StatusByInstance map[string]*webserver.Status
+	// DivergedInstances are reachable replicas whose executed GTID set is not
+	// contained in the primary's (errant transactions). They cannot safely rejoin
+	// without losing data, so they are surfaced rather than silently re-cloned.
+	DivergedInstances []string
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -95,9 +101,22 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
-	observed.Ready = observed.ReadyInstances == plan.Instances
+	observed.DivergedInstances = detectDivergedReplicas(observed)
+	for _, name := range observed.DivergedInstances {
+		// A diverged replica may keep its threads running while silently
+		// diverging, so do not count it as a healthy ready instance.
+		if status, ok := observed.StatusByInstance[name]; ok && status.IsReady {
+			observed.ReadyInstances--
+		}
+	}
+
+	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
 	switch {
+	case len(observed.DivergedInstances) > 0:
+		observed.Phase = phaseDegraded
+		observed.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
+			observed.PrimaryName, strings.Join(observed.DivergedInstances, ", "))
 	case observed.Ready:
 		observed.Phase = phaseReady
 		observed.PhaseReason = "All instances are ready"
@@ -109,6 +128,34 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.PhaseReason = fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
 	}
 	return observed, nil
+}
+
+// detectDivergedReplicas returns reachable non-primary instances whose executed
+// GTID set is not contained in the primary's. This catches a former primary
+// that committed transactions the new primary never saw (errant transactions):
+// rejoining it as-is would silently diverge the data, so the operator surfaces
+// it instead of reconfiguring or re-cloning it.
+func detectDivergedReplicas(observed observedCluster) []string {
+	primaryGTID := observed.GTIDByInstance[observed.PrimaryName]
+	if primaryGTID == "" {
+		return nil
+	}
+	var diverged []string
+	for _, name := range observed.InstanceNames {
+		if name == observed.PrimaryName {
+			continue
+		}
+		gtid := observed.GTIDByInstance[name]
+		if gtid == "" {
+			continue
+		}
+		contained, err := replication.GTIDContains(primaryGTID, gtid)
+		if err != nil || contained {
+			continue
+		}
+		diverged = append(diverged, name)
+	}
+	return diverged
 }
 
 func podReady(pod *corev1.Pod) bool {

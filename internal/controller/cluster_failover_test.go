@@ -120,6 +120,101 @@ func TestSelectFailoverCandidateSkipsUnhealthyReplicas(t *testing.T) {
 	}
 }
 
+func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+		GTIDByInstance: map[string]string{
+			testPrimary: "a:1-20",
+			// behind the primary: a clean replica that can rejoin.
+			testReplica2: "a:1-15",
+			// a former primary with its own committed transactions (b:1-3) that the
+			// new primary never saw: cannot safely rejoin.
+			testReplica3: "a:1-15,b:1-3",
+		},
+	}
+	diverged := detectDivergedReplicas(observed)
+	if len(diverged) != 1 || diverged[0] != testReplica3 {
+		t.Fatalf("diverged = %v, want [%s]", diverged, testReplica3)
+	}
+}
+
+func TestDetectDivergedReplicasIgnoresUnknownGTID(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "a:1-5"},
+	}
+	if diverged := detectDivergedReplicas(observed); diverged != nil {
+		t.Fatalf("diverged = %v, want nil when primary GTID is unknown", diverged)
+	}
+}
+
+func TestReconcilePrimaryChangeAbortsWhenTargetLagsPastMaxSwitchoverDelay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 3
+	cluster.Spec.MaxSwitchoverDelay = 1
+	cluster.Status.CurrentPrimary = testPrimary
+	cluster.Status.TargetPrimary = testReplica2
+	// The switchover started well beyond maxSwitchoverDelay ago.
+	cluster.Status.TargetPrimaryTimestamp = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	scheme := testScheme(t)
+	pods := []*corev1.Pod{
+		readyPod(cluster, testPrimary, rolePrimary),
+		readyPod(cluster, testReplica2, roleReplica),
+		readyPod(cluster, testReplica3, roleReplica),
+	}
+	control := &recordingControlClient{}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, pods[0], pods[1], pods[2]).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+	plan := testPlan()
+	plan.Instances = 3
+	observed := observedCluster{
+		Plan:           plan,
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2, testReplica3},
+		ReadyInstances: 3,
+		// Target is behind the primary and cannot catch up.
+		GTIDByInstance: map[string]string{testPrimary: testGTID, testReplica2: "uuid:1-5"},
+		StatusByInstance: map[string]*webserver.Status{
+			testPrimary:  {InstanceName: testPrimary, Role: webserver.RolePrimary, IsReady: true, GTIDExecuted: testGTID},
+			testReplica2: healthyReplicaStatus(testReplica2, "uuid:1-5"),
+		},
+	}
+
+	switched, err := reconciler.reconcilePrimaryChange(ctx, cluster, plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !switched {
+		t.Fatal("aborted switchover should be reported as handled")
+	}
+	if len(control.demoted) != 0 || len(control.promoted) != 0 {
+		t.Fatalf("aborted switchover must not demote/promote: demoted=%v promoted=%v", control.demoted, control.promoted)
+	}
+	gotCluster := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster); err != nil {
+		t.Fatal(err)
+	}
+	if gotCluster.Status.TargetPrimary != testPrimary {
+		t.Fatalf("targetPrimary = %q, want reset to %q", gotCluster.Status.TargetPrimary, testPrimary)
+	}
+	if gotCluster.Status.Phase != phaseBlocked {
+		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, phaseBlocked)
+	}
+}
+
 func failoverCluster(t *testing.T, failoverDelay int32) (*mysqlv1alpha1.Cluster, *ClusterReconciler, *recordingControlClient) {
 	t.Helper()
 	cluster := baseCluster()
