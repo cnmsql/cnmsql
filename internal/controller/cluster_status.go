@@ -144,7 +144,21 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		Message:            observed.PhaseReason,
 		ObservedGeneration: latest.Generation,
 	})
+	r.recordPhaseTransition(latest, before.Status.Phase, observed)
 	return r.Status().Patch(ctx, latest, client.MergeFrom(before))
+}
+
+// recordPhaseTransition emits an Event only when the phase actually changes, so
+// steady-state resyncs do not spam the event stream.
+func (r *ClusterReconciler) recordPhaseTransition(cluster *mysqlv1alpha1.Cluster, previousPhase string, observed observedCluster) {
+	if r.Recorder == nil || observed.Phase == previousPhase {
+		return
+	}
+	eventType := corev1.EventTypeNormal
+	if observed.Phase == phaseBlocked {
+		eventType = corev1.EventTypeWarning
+	}
+	r.Recorder.Event(cluster, eventType, observed.Phase, observed.PhaseReason)
 }
 
 func conditionStatus(ok bool) metav1.ConditionStatus {

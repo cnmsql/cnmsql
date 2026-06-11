@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,6 +55,12 @@ const (
 	configPath    = "/etc/mysql/my.cnf"
 	serverTLSPath = "/etc/cnmysql/tls/server"
 	clientCAPath  = "/etc/cnmysql/tls/client-ca"
+
+	// provisioningRequeue paces reconciles while the instance is still coming up.
+	provisioningRequeue = 10 * time.Second
+	// readyResync re-polls the instance manager once the cluster is ready so the
+	// reported status (GTID, role, readiness) does not go stale between events.
+	readyResync = 30 * time.Second
 )
 
 // InstanceStatusClient reads the status served by an instance manager.
@@ -65,6 +72,7 @@ type InstanceStatusClient interface {
 type ClusterReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
+	Recorder     record.EventRecorder
 	StatusClient InstanceStatusClient
 }
 
@@ -130,7 +138,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if !certsReady {
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.patchStatus(ctx, cluster, observedCluster{
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
 			Phase:       phaseProvisioning,
 			PhaseReason: "Waiting for cert-manager certificates",
 			Ready:       false,
@@ -151,9 +159,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if !observed.Ready {
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
-	return ctrl.Result{}, nil
+	// Keep re-polling the instance manager so status (GTID, role, readiness)
+	// stays fresh even when no Kubernetes event triggers a reconcile.
+	return ctrl.Result{RequeueAfter: readyResync}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -288,13 +289,15 @@ func TestReconcileBlocksUnsupportedClusterShape(t *testing.T) {
 	cluster := baseCluster()
 	cluster.Spec.Instances = 2
 	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(10)
 	reconciler := &ClusterReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
 			WithObjects(cluster).
 			Build(),
-		Scheme: scheme,
+		Scheme:   scheme,
+		Recorder: recorder,
 	}
 
 	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{
@@ -322,6 +325,15 @@ func TestReconcileBlocksUnsupportedClusterShape(t *testing.T) {
 	if ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("ready condition = %#v, want False", ready)
 	}
+
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "Warning") || !strings.Contains(event, phaseBlocked) {
+			t.Fatalf("blocked event = %q, want Warning %s", event, phaseBlocked)
+		}
+	default:
+		t.Fatalf("expected a Warning %s event", phaseBlocked)
+	}
 }
 
 func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
@@ -329,6 +341,7 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(10)
 	reconciler := &ClusterReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -336,6 +349,7 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 			WithObjects(cluster).
 			Build(),
 		Scheme:       scheme,
+		Recorder:     recorder,
 		StatusClient: readyStatusClient{},
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{
@@ -398,8 +412,8 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("ready reconcile requeue after = %s, want 0", result.RequeueAfter)
+	if result.RequeueAfter != readyResync {
+		t.Fatalf("ready reconcile requeue after = %s, want %s", result.RequeueAfter, readyResync)
 	}
 
 	got := &mysqlv1alpha1.Cluster{}
@@ -424,6 +438,35 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	ready := apimeta.FindStatusCondition(got.Status.Conditions, conditionReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue {
 		t.Fatalf("ready condition = %#v, want True", ready)
+	}
+
+	if !drainEvents(recorder.Events, phaseReady) {
+		t.Fatalf("expected a %q phase-transition event", phaseReady)
+	}
+
+	// A steady-state resync with no phase change must not emit another event.
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("unexpected event on steady-state resync: %q", event)
+	default:
+	}
+}
+
+// drainEvents reports whether any buffered event mentions the given phase.
+func drainEvents(events <-chan string, phase string) bool {
+	found := false
+	for {
+		select {
+		case event := <-events:
+			if strings.Contains(event, phase) {
+				found = true
+			}
+		default:
+			return found
+		}
 	}
 }
 
