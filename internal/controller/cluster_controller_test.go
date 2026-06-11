@@ -20,15 +20,22 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -62,6 +69,19 @@ func baseCluster() *mysqlv1alpha1.Cluster {
 	}
 	cluster.SetDefaults()
 	return cluster
+}
+
+type readyStatusClient struct{}
+
+func (readyStatusClient) Status(context.Context, *mysqlv1alpha1.Cluster, string) (*webserver.Status, error) {
+	return &webserver.Status{
+		InstanceName:  "demo-1",
+		Role:          webserver.RolePrimary,
+		Version:       defaultMySQL80ServerVersion,
+		IsReady:       true,
+		GTIDExecuted:  "uuid:1-10",
+		UptimeSeconds: int64(time.Minute.Seconds()),
+	}, nil
 }
 
 func TestBuildPlanDefaultsToLocalInstanceImage(t *testing.T) {
@@ -221,5 +241,176 @@ func TestUnsupportedReasonNamesDeferredMilestones(t *testing.T) {
 	cluster.Spec.Bootstrap.Recovery = &mysqlv1alpha1.BootstrapRecovery{}
 	if got := unsupportedReason(cluster); !strings.Contains(got, "M6") {
 		t.Fatalf("recovery unsupported reason = %q", got)
+	}
+}
+
+func TestReconcileBlocksUnsupportedClusterShape(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster).
+			Build(),
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: cluster.Namespace,
+		Name:      cluster.Name,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("requeue after = %s, want 0", result.RequeueAfter)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != phaseBlocked {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, phaseBlocked)
+	}
+	if !strings.Contains(got.Status.PhaseReason, "M4") {
+		t.Fatalf("phase reason = %q, want deferred milestone", got.Status.PhaseReason)
+	}
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, conditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("ready condition = %#v, want False", ready)
+	}
+}
+
+func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster).
+			Build(),
+		Scheme:       scheme,
+		StatusClient: readyStatusClient{},
+	}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: cluster.Namespace,
+		Name:      cluster.Name,
+	}}
+
+	result, err := reconciler.Reconcile(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("first reconcile should requeue while waiting for cert-manager secrets")
+	}
+	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-root")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-app")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-replication")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Secret{}, "demo-control")
+	assertOwnedObject(t, ctx, reconciler, &corev1.ConfigMap{}, "demo-config")
+	assertOwnedObject(t, ctx, reconciler, &corev1.PersistentVolumeClaim{}, "demo-1")
+	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-1")
+	assertOwnedUnstructuredResource(t, ctx, reconciler, issuerGVK.Kind, issuerGVK, "demo-selfsigned")
+	assertOwnedUnstructuredResource(t, ctx, reconciler, certificateGVK.Kind, certificateGVK, "demo-server")
+
+	for _, name := range []string{"demo-ca", "demo-server-tls", "demo-client-tls"} {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace},
+			Data: map[string][]byte{
+				"ca.crt":  []byte("ca"),
+				"tls.crt": []byte("cert"),
+				"tls.key": []byte("key"),
+			},
+		}
+		if err := reconciler.Create(ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err = reconciler.Reconcile(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("second reconcile should requeue while waiting for pod readiness")
+	}
+	pod := &corev1.Pod{}
+	assertOwnedObject(t, ctx, reconciler, pod, "demo-1")
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+	if err := reconciler.Status().Update(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = reconciler.Reconcile(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("ready reconcile requeue after = %s, want 0", result.RequeueAfter)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != phaseReady {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, phaseReady)
+	}
+	if got.Status.CurrentPrimary != "demo-1" {
+		t.Fatalf("current primary = %q, want demo-1", got.Status.CurrentPrimary)
+	}
+	if got.Status.ReadyInstances != 1 {
+		t.Fatalf("ready instances = %d, want 1", got.Status.ReadyInstances)
+	}
+	if got.Status.Image != defaultInstanceImage {
+		t.Fatalf("status image = %q, want %q", got.Status.Image, defaultInstanceImage)
+	}
+	if got.Status.GTIDExecutedByInstance["demo-1"] != "uuid:1-10" {
+		t.Fatalf("gtid status = %#v", got.Status.GTIDExecutedByInstance)
+	}
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, conditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("ready condition = %#v, want True", ready)
+	}
+}
+
+func assertOwnedObject(t *testing.T, ctx context.Context, reconciler *ClusterReconciler, obj client.Object, name string) {
+	t.Helper()
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, obj); err != nil {
+		t.Fatal(err)
+	}
+	if len(obj.GetOwnerReferences()) != 1 || obj.GetOwnerReferences()[0].Name != "demo" {
+		t.Fatalf("%T owner refs = %#v, want demo owner", obj, obj.GetOwnerReferences())
+	}
+}
+
+func assertOwnedUnstructuredResource(
+	t *testing.T,
+	ctx context.Context,
+	reconciler *ClusterReconciler,
+	resourceName string,
+	gvk schema.GroupVersionKind,
+	name string,
+) {
+	t.Helper()
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(gvk)
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, obj); err != nil {
+		t.Fatalf("%s %s: %v", resourceName, name, err)
+	}
+	if len(obj.GetOwnerReferences()) != 1 || obj.GetOwnerReferences()[0].Name != "demo" {
+		t.Fatalf("%s owner refs = %#v, want demo owner", resourceName, obj.GetOwnerReferences())
 	}
 }
