@@ -11,7 +11,6 @@ spec:
   storage:
     size: 10Gi
   mysql:
-    serverVersion: 8.0.46
     binlogFormat: ROW
   bootstrap:
     initdb:

@@ -79,8 +79,8 @@ func TestBuildPlanDefaultsToLocalInstanceImage(t *testing.T) {
 	if plan.Image != defaultInstanceImage {
 		t.Fatalf("image = %q, want %q", plan.Image, defaultInstanceImage)
 	}
-	if plan.ServerVersion != mysqlv1alpha1.DefaultServerVersion {
-		t.Fatalf("server version = %q, want %q", plan.ServerVersion, mysqlv1alpha1.DefaultServerVersion)
+	if plan.ServerVersion != defaultMySQL80ServerVersion {
+		t.Fatalf("server version = %q, want %q", plan.ServerVersion, defaultMySQL80ServerVersion)
 	}
 }
 
@@ -111,6 +111,30 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 	}
 	if plan.Image != "registry.example/cnmysql:8.0" {
 		t.Fatalf("image = %q", plan.Image)
+	}
+	if plan.ServerVersion != defaultMySQL80ServerVersion {
+		t.Fatalf("server version = %q", plan.ServerVersion)
+	}
+}
+
+func TestResolveServerVersionFromImageTag(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"cnmysql-instance:5.6":       defaultMySQL56ServerVersion,
+		"cnmysql-instance:8.0":       defaultMySQL80ServerVersion,
+		"cnmysql-instance:8.4":       defaultMySQL84ServerVersion,
+		"cnmysql-instance:9.x":       defaultMySQL9xServerVersion,
+		"registry/cnmysql:8.0.46-37": "8.0.46-37",
+	}
+
+	for image, want := range tests {
+		got, err := resolveServerVersion(image)
+		if err != nil {
+			t.Fatalf("resolveServerVersion(%q): %v", image, err)
+		}
+		if got != want {
+			t.Fatalf("resolveServerVersion(%q) = %q, want %q", image, got, want)
+		}
 	}
 }
 

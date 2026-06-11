@@ -36,10 +36,6 @@ func (cluster *Cluster) SetDefaults() {
 		spec.MySQL.BinlogFormat = DefaultBinlogFormat
 	}
 
-	if spec.MySQL.ServerVersion == "" {
-		spec.MySQL.ServerVersion = DefaultServerVersion
-	}
-
 	if spec.PrimaryUpdateStrategy == "" {
 		spec.PrimaryUpdateStrategy = DefaultPrimaryUpdateStrategy
 	}

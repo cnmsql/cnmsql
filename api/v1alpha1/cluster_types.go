@@ -30,10 +30,6 @@ const (
 	// safe physical/logical replication and PITR.
 	DefaultBinlogFormat = "ROW"
 
-	// DefaultServerVersion is the development default used with the local
-	// cnmysql-instance:8.0 image.
-	DefaultServerVersion = "8.0.46"
-
 	// DefaultPrimaryUpdateStrategy is the default strategy for primary updates.
 	DefaultPrimaryUpdateStrategy = PrimaryUpdateStrategyUnsupervised
 
@@ -295,13 +291,6 @@ type MySQLConfiguration struct {
 	// +kubebuilder:default:=ROW
 	// +optional
 	BinlogFormat string `json:"binlogFormat,omitempty"`
-
-	// ServerVersion is the concrete Percona Server for MySQL version running in
-	// the instance image. The instance manager uses it to gate version-specific
-	// MySQL syntax and configuration.
-	// +kubebuilder:default:="8.0.46"
-	// +optional
-	ServerVersion string `json:"serverVersion,omitempty"`
 
 	// SemiSync configures semi-synchronous replication.
 	// +optional

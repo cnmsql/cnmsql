@@ -2205,13 +2205,6 @@ spec:
                         minimum: 0
                         type: integer
                     type: object
-                  serverVersion:
-                    default: 8.0.46
-                    description: |-
-                      ServerVersion is the concrete Percona Server for MySQL version running in
-                      the instance image. The instance manager uses it to gate version-specific
-                      MySQL syntax and configuration.
-                    type: string
                 type: object
               nodeMaintenanceWindow:
                 description: |-
