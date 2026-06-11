@@ -37,6 +37,10 @@ const (
 	instanceLabel = "mysql.cloudnative-mysql.io/instance"
 	roleLabel     = "mysql.cloudnative-mysql.io/role"
 
+	configMapAnnotation       = "cnmysql.cloudnative-mysql.io/config-map"
+	configHashAnnotation      = "cnmysql.cloudnative-mysql.io/config-hash"
+	podTemplateHashAnnotation = "cnmysql.cloudnative-mysql.io/pod-template-hash"
+
 	conditionReady       = "Ready"
 	conditionProgressing = "Progressing"
 

@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 
@@ -237,6 +239,13 @@ func (r *ClusterReconciler) ensureService(ctx context.Context, cluster *mysqlv1a
 }
 
 func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
+	labels := labelsFor(cluster, plan.InstanceName)
+	spec := r.podSpec(cluster, plan)
+	annotations, err := podAnnotations(cluster, plan, labels, spec)
+	if err != nil {
+		return err
+	}
+
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name:      plan.InstanceName,
 		Namespace: cluster.Namespace,
@@ -245,15 +254,61 @@ func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
-		pod.Labels = labelsFor(cluster, plan.InstanceName)
-		pod.Annotations = map[string]string{"cnmysql.cloudnative-mysql.io/config-map": plan.ConfigMapName}
-		pod.Spec = r.podSpec(cluster, plan)
+		pod.Labels = labels
+		pod.Annotations = annotations
+		pod.Spec = spec
 		if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
 			return err
 		}
 		return r.Create(ctx, pod)
 	}
+	if pod.DeletionTimestamp != nil {
+		return nil
+	}
+	if pod.Annotations[podTemplateHashAnnotation] != annotations[podTemplateHashAnnotation] {
+		return r.Delete(ctx, pod)
+	}
 	return nil
+}
+
+func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, labels map[string]string, spec corev1.PodSpec) (map[string]string, error) {
+	config, err := renderMyCnf(cluster, plan)
+	if err != nil {
+		return nil, err
+	}
+	configHash, err := hashObject(config)
+	if err != nil {
+		return nil, err
+	}
+	annotations := map[string]string{}
+	if cluster.Spec.InheritedMetadata != nil {
+		maps.Copy(annotations, cluster.Spec.InheritedMetadata.Annotations)
+	}
+	annotations[configMapAnnotation] = plan.ConfigMapName
+	annotations[configHashAnnotation] = configHash
+	templateHash, err := hashObject(struct {
+		Labels      map[string]string
+		Annotations map[string]string
+		Spec        corev1.PodSpec
+	}{
+		Labels:      labels,
+		Annotations: annotations,
+		Spec:        spec,
+	})
+	if err != nil {
+		return nil, err
+	}
+	annotations[podTemplateHashAnnotation] = templateHash
+	return annotations, nil
+}
+
+func hashObject(value any) (string, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName string) map[string]string {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -186,20 +187,7 @@ func TestEnsurePasswordSecretDoesNotOverwriteExistingSecret(t *testing.T) {
 func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()
-	plan := clusterPlan{
-		Image:             "cnmysql-instance:8.0",
-		ServerVersion:     "8.0.46",
-		InstanceName:      "demo-1",
-		ConfigMapName:     "demo-config",
-		DataPVCName:       "demo-1",
-		RootSecretName:    "demo-root",
-		AppSecretName:     "demo-app",
-		ReplicationSecret: "demo-replication",
-		ControlSecretName: "demo-control",
-		CASecretName:      "demo-ca",
-		ServerTLSSecret:   "demo-server-tls",
-		ClientTLSSecret:   "demo-client-tls",
-	}
+	plan := testPlan()
 
 	spec := (&ClusterReconciler{}).podSpec(cluster, plan)
 	if len(spec.InitContainers) != 1 {
@@ -225,6 +213,56 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	}
 	if volumes["client-ca"] != "demo-ca" {
 		t.Fatalf("client ca volume = %q", volumes["client-ca"])
+	}
+}
+
+func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	stalePod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      plan.InstanceName,
+			Namespace: cluster.Namespace,
+			Annotations: map[string]string{
+				podTemplateHashAnnotation: "stale",
+			},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "mysql",
+			Image: "old",
+		}}},
+	}
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, stalePod).Build(),
+		Scheme: scheme,
+	}
+
+	if err := reconciler.ensurePod(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	got := &corev1.Pod{}
+	err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.InstanceName}, got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("stale Pod get error = %v, want not found", err)
+	}
+
+	if err := reconciler.ensurePod(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.InstanceName}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Annotations[podTemplateHashAnnotation] == "" {
+		t.Fatalf("pod template hash annotation is empty")
+	}
+	if got.Annotations[configHashAnnotation] == "" {
+		t.Fatalf("config hash annotation is empty")
+	}
+	if got.Spec.Containers[0].Image != plan.Image {
+		t.Fatalf("container image = %q, want %q", got.Spec.Containers[0].Image, plan.Image)
 	}
 }
 
@@ -345,6 +383,9 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	}
 	pod := &corev1.Pod{}
 	assertOwnedObject(t, ctx, reconciler, pod, "demo-1")
+	if pod.Annotations[podTemplateHashAnnotation] == "" {
+		t.Fatalf("pod template hash annotation is empty")
+	}
 	pod.Status.Conditions = []corev1.PodCondition{{
 		Type:   corev1.PodReady,
 		Status: corev1.ConditionTrue,
@@ -383,6 +424,23 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	ready := apimeta.FindStatusCondition(got.Status.Conditions, conditionReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue {
 		t.Fatalf("ready condition = %#v, want True", ready)
+	}
+}
+
+func testPlan() clusterPlan {
+	return clusterPlan{
+		Image:             "cnmysql-instance:8.0",
+		ServerVersion:     "8.0.46",
+		InstanceName:      "demo-1",
+		ConfigMapName:     "demo-config",
+		DataPVCName:       "demo-1",
+		RootSecretName:    "demo-root",
+		AppSecretName:     "demo-app",
+		ReplicationSecret: "demo-replication",
+		ControlSecretName: "demo-control",
+		CASecretName:      "demo-ca",
+		ServerTLSSecret:   "demo-server-tls",
+		ClientTLSSecret:   "demo-client-tls",
 	}
 }
 
