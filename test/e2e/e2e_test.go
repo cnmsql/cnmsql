@@ -256,7 +256,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		It("should bootstrap a single MySQL instance", func() {
+		It("should bootstrap a replicated MySQL cluster", func() {
 			By("applying the sample Cluster")
 			cmd := exec.Command("kubectl", "apply", "-f", "config/samples/mysql_v1alpha1_cluster.yaml")
 			_, err := utils.Run(cmd)
@@ -268,7 +268,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = utils.Run(cmd)
 			})
 
-			By("waiting for the Cluster to become ready")
+			By("waiting for all instances to become ready")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "cluster", "cluster-sample",
 					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
@@ -281,17 +281,39 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("cluster-sample-1"))
-			}, 8*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("verifying that the application user can write")
+				cmd = exec.Command("kubectl", "get", "cluster", "cluster-sample",
+					"-o", "jsonpath={.status.readyInstances}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("3"))
+			}, 12*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the primary's role label and that it accepts writes")
 			password := applicationPassword()
-			sql := "CREATE TABLE IF NOT EXISTS e2e (id INT PRIMARY KEY); " +
-				"REPLACE INTO e2e VALUES (1); SELECT id FROM e2e WHERE id = 1;"
+			writeSQL := "CREATE TABLE IF NOT EXISTS e2e (id INT PRIMARY KEY); " +
+				"REPLACE INTO e2e VALUES (42);"
 			cmd = exec.Command("kubectl", "exec", "cluster-sample-1", "--",
-				"mysql", "-uapp", "-p"+password, "app", "-e", sql)
+				"mysql", "-uapp", "-p"+password, "app", "-e", writeSQL)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to write on the primary")
+
+			By("verifying the write replicates and is readable through the ro Service")
+			readSQL := "SELECT id FROM app.e2e WHERE id = 42;"
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", "cluster-sample-2", "--",
+					"mysql", "-uapp", "-p"+password, "-e", readSQL)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("42"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the rw and ro Services route to the right roles")
+			cmd = exec.Command("kubectl", "get", "endpoints", "cluster-sample-rw",
+				"-o", "jsonpath={.subsets[*].addresses[*].targetRef.name}")
 			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to write through sample Cluster")
-			Expect(output).To(ContainSubstring("1"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("cluster-sample-1"), "rw must route only to the primary")
 		})
 	})
 })

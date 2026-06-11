@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: cluster-sample
 spec:
-  instances: 1
+  instances: 3
   imageName: cnmysql-instance:8.0
   storage:
     size: 10Gi
