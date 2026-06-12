@@ -146,10 +146,16 @@ func appPassword(cluster string) string {
 }
 
 // mysqlExec runs a SQL statement inside an instance Pod as the given user and
-// returns the command output.
+// returns the command output. The password is passed through the MYSQL_PWD
+// environment variable to suppress the MySQL "Using a password on the command
+// line" warning from contaminating result parsing. Column headers are suppressed
+// with -N so parsed output is always just the raw values. The target container
+// is pinned with -c mysql because the instance Pod also carries a bootstrap init
+// container; without it kubectl prints a "Defaulted container" notice into the
+// combined output that would corrupt single-value parsing.
 func mysqlExec(pod, user, password, database, sql string) (string, error) {
-	args := []string{"exec", pod, "-n", testNamespace, "--",
-		"mysql", "-u" + user, "-p" + password}
+	args := []string{"exec", pod, "-n", testNamespace, "-c", "mysql", "--",
+		"env", "MYSQL_PWD=" + password, "mysql", "-u" + user, "-N"}
 	if database != "" {
 		args = append(args, database)
 	}
@@ -176,8 +182,11 @@ func setupMinio() {
 }
 
 // teardownMinio removes the MinIO deployment and its supporting objects.
+// It waits for the PVC to be fully deleted so the next run doesn't hit
+// "persistentvolumeclaim is being deleted" scheduling errors.
 func teardownMinio() {
 	deleteManifest("minio", minioManifest())
+	_, _ = kubectl("delete", "pvc", "minio-data", "-n", testNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s")
 }
 
 // seedObjectStoreMarker writes a small object at the given key in the MinIO
@@ -278,7 +287,20 @@ spec:
           periodSeconds: 3
       volumes:
       - name: data
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: minio-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: %[1]s
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

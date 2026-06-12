@@ -176,6 +176,10 @@ func soloArchivingSpecs(version string) {
 				"--for=condition=Available", "--timeout=3m")
 			Expect(err).NotTo(HaveOccurred(), "MinIO did not come back")
 
+			By("recreating the MinIO bucket lost when the pod was rescheduled")
+			_, err = mcExec("mc", "mb", "--ignore-existing", "local/"+minioBucket)
+			Expect(err).NotTo(HaveOccurred(), "Failed to recreate MinIO bucket")
+
 			By("verifying the backlog drains and the archive catches up gaplessly")
 			executed := flushBinaryLogs(cluster, primary, password)
 			expectArchiveCovers(cluster, executed, 6*time.Minute)

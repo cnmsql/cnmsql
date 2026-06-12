@@ -97,14 +97,35 @@ func gtidExecuted(pod, password string) string {
 	return parseSingleValue(out)
 }
 
-// parseSingleValue extracts the value row from a tab/newline mysql -e result,
-// dropping the column header line.
+// parseSingleValue extracts the value of the first column from mysql -e output.
+// Since mysqlExec always passes -N (skip column names), there is no header line
+// to discard. The function joins every non-empty line after filtering out stderr
+// noise that CombinedOutput folds in: MySQL password warnings and kubectl's
+// "Defaulted container" notice.
+//
+// MySQL's batch mode (-e on a non-tty) escapes control characters embedded in a
+// value as two-character literals: gtid_executed wraps its UUID sets across lines
+// as "...,\n..." which arrives as a backslash followed by 'n', not a real
+// newline. Left in place that bogus "\n"-prefixed token parses as a phantom UUID
+// that the real archive coverage can never contain, so strip the literal \n and
+// \t escapes to reconstruct a contiguous, valid GTID set.
 func parseSingleValue(out string) string {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 2 {
-		return ""
+	var parts []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" ||
+			strings.HasPrefix(line, "mysql:") ||
+			strings.HasPrefix(line, "[Warning]") ||
+			strings.HasPrefix(line, "Defaulted container") ||
+			strings.Contains(line, "can be insecure") {
+			continue
+		}
+		parts = append(parts, line)
 	}
-	return strings.TrimSpace(strings.Join(lines[1:], ""))
+	joined := strings.Join(parts, "")
+	joined = strings.ReplaceAll(joined, `\n`, "")
+	joined = strings.ReplaceAll(joined, `\t`, "")
+	return joined
 }
 
 // rootPassword returns the decoded root password for a Cluster, read from the
@@ -122,14 +143,39 @@ func rootPassword(cluster string) string {
 // GTID set that is a superset of want — i.e. every committed transaction up to
 // want has been durably shipped to object storage with no gap.
 func expectArchiveCovers(cluster, want string, timeout time.Duration) {
+	// An empty want would make GTIDContains trivially true: the assertion would
+	// pass without proving anything. Every caller captures gtid_executed after a
+	// seed+flush, so it must be non-empty; refuse the vacuous case loudly.
+	ExpectWithOffset(1, want).NotTo(BeEmpty(),
+		"refusing to assert archive coverage of an empty GTID set (gtid_executed parsed empty?)")
 	Eventually(func(g Gomega) {
 		idx, err := readArchiveIndex(cluster)
-		g.Expect(err).NotTo(HaveOccurred())
+		// The archiver writes the index only after it ships a rotated file, so a
+		// missing index usually means it has shipped nothing. Its own reported
+		// failure reason is far more actionable than mc's "object not found", so
+		// fold it into the message — computed only on failure to spare the happy
+		// path three kubectl calls per poll.
+		if err != nil {
+			g.Expect(err).NotTo(HaveOccurred(), "archive index unreadable: %s", archivingDiagnostics(cluster))
+		}
 		covers, err := replication.GTIDContains(idx.CoveredGTIDSet, want)
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(covers).To(BeTrue(),
-			"archive covered=%q does not yet contain executed=%q", idx.CoveredGTIDSet, want)
+		if !covers {
+			g.Expect(covers).To(BeTrue(),
+				"archive covered=%q does not yet contain executed=%q (%s)",
+				idx.CoveredGTIDSet, want, archivingDiagnostics(cluster))
+		}
 	}, timeout, 5*time.Second).Should(Succeed())
+}
+
+// archivingDiagnostics returns a compact one-line summary of the cluster's
+// self-reported continuous-archiving status, so a coverage timeout explains why
+// the archiver is stuck instead of only reporting a missing object.
+func archivingDiagnostics(cluster string) string {
+	cond, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ContinuousArchiving')].status}")
+	last, _ := clusterField(cluster, "{.status.continuousArchiving.lastArchivedBinlog}")
+	reason, _ := clusterField(cluster, "{.status.continuousArchiving.lastFailureReason}")
+	return fmt.Sprintf("condition=%q lastArchivedBinlog=%q lastFailureReason=%q", cond, last, reason)
 }
 
 // continuousArchivingClusterManifest renders a Cluster with continuous binlog
