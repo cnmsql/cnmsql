@@ -220,10 +220,13 @@ func bootstrapEnv(plan clusterPlan, inst instancePlan) []corev1.EnvVar {
 // generated replication password is deliberately not exposed to pods.
 func initEnv(plan clusterPlan) []corev1.EnvVar {
 	env := runEnv(plan)
-	env = append(env,
-		secretEnv("MYSQL_ROOT_PASSWORD", plan.RootSecretName),
-		secretEnv("MYSQL_APP_PASSWORD", plan.AppSecretName),
-	)
+	env = append(env, secretEnv("MYSQL_ROOT_PASSWORD", plan.RootSecretName))
+	// On recovery the application user comes from the restored data, so no app
+	// secret is generated (see ensureCredentials) and the non-optional secret
+	// reference would otherwise wedge the Pod in CreateContainerConfigError.
+	if plan.Recovery == nil {
+		env = append(env, secretEnv("MYSQL_APP_PASSWORD", plan.AppSecretName))
+	}
 	return env
 }
 

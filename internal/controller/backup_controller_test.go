@@ -282,6 +282,15 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 		t.Fatalf("recovery init container missing S3 env (endpoint=%t accessKey=%t)", hasEndpoint, hasAccessKey)
 	}
 
+	// Recovery generates no app Secret, so the init container must not reference
+	// one; a non-optional secretKeyRef would wedge the Pod in
+	// CreateContainerConfigError.
+	for _, env := range spec.InitContainers[0].Env {
+		if env.Name == "MYSQL_APP_PASSWORD" {
+			t.Fatal("recovery init container must not reference the app password secret")
+		}
+	}
+
 	// A replica still clones from the primary via join, not restore.
 	replicaSpec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 2))
 	if got := strings.Join(replicaSpec.InitContainers[0].Args, " "); !strings.Contains(got, "instance join") {

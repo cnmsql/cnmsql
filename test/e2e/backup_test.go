@@ -77,7 +77,10 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 
 		By("verifying the seeded row is present after recovery")
 		primary := clusterPrimary(restoredCluster)
-		password := appPassword(restoredCluster)
+		// Recovery restores the source's data verbatim, including its app user and
+		// password, so the restored cluster authenticates with the source's app
+		// credentials (no new app Secret is generated for a recovery bootstrap).
+		password := appPassword(sourceCluster)
 		Eventually(func(g Gomega) {
 			out, err := mysqlExec(primary, "app", password, "app",
 				"SELECT body FROM notes WHERE id = 1;")
