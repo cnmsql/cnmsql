@@ -19,7 +19,7 @@ var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "example.com/cnmysql:v0.0.1"
 	// instanceImage is the local M3 instance image consumed by the sample Cluster.
-	instanceImage = "cnmysql-instance:8.0"
+	instanceImage = "cnmysql-instance:8.4"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -49,7 +49,7 @@ var _ = BeforeSuite(func() {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
 	By("building the instance image")
-	cmd = exec.Command("make", "docker-build-instance", "INSTANCE_VERSION=8.0")
+	cmd = exec.Command("make", "docker-build-instance", "INSTANCE_VERSION=8.4")
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the instance image")
 
@@ -59,11 +59,53 @@ var _ = BeforeSuite(func() {
 
 	configureKubectlKubeRC()
 	setupCertManager()
+	deployOperator()
 })
 
 var _ = AfterSuite(func() {
+	undeployOperator()
 	teardownCertManager()
 })
+
+// deployOperator installs the CRDs and deploys the controller-manager once for
+// the whole suite, so every Describe can exercise it without re-deploying.
+func deployOperator() {
+	By("creating manager namespace")
+	cmd := exec.Command("kubectl", "create", "ns", namespace)
+	_, _ = utils.Run(cmd)
+
+	By("labeling the namespace to enforce the restricted security policy")
+	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		"pod-security.kubernetes.io/enforce=restricted")
+	_, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+	By("installing CRDs")
+	cmd = exec.Command("make", "install")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+	By("deploying the controller-manager")
+	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+}
+
+// undeployOperator tears down the controller-manager and CRDs installed by
+// deployOperator.
+func undeployOperator() {
+	By("undeploying the controller-manager")
+	cmd := exec.Command("make", "undeploy")
+	_, _ = utils.Run(cmd)
+
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	_, _ = utils.Run(cmd)
+
+	By("removing manager namespace")
+	cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+}
 
 // Disable kubectl kuberc by default for test isolation.
 // This prevents local kubectl configurations from affecting test behavior.
