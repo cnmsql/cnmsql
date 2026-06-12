@@ -157,6 +157,79 @@ func intervalsCover(mine []GTIDInterval, iv GTIDInterval) bool {
 	return false
 }
 
+// Clone returns a deep copy of the set so the original can be mutated
+// independently.
+func (s GTIDSet) Clone() GTIDSet {
+	out := make(GTIDSet, len(s))
+	for uuid, intervals := range s {
+		cp := make([]GTIDInterval, len(intervals))
+		copy(cp, intervals)
+		out[uuid] = cp
+	}
+	return out
+}
+
+// AddInterval merges an interval for the given source UUID into the set,
+// re-normalizing so the result stays sorted and coalesced.
+func (s GTIDSet) AddInterval(uuid string, iv GTIDInterval) {
+	uuid = strings.ToLower(uuid)
+	s[uuid] = normalizeIntervals(append(s[uuid], iv))
+}
+
+// Union merges every transaction in other into s.
+func (s GTIDSet) Union(other GTIDSet) {
+	for uuid, intervals := range other {
+		for _, iv := range intervals {
+			s.AddInterval(uuid, iv)
+		}
+	}
+}
+
+// String renders the set in canonical MySQL form
+// ("uuid:1-5:8-10,uuid2:1-3"), sources sorted by UUID. An empty set renders to
+// the empty string.
+func (s GTIDSet) String() string {
+	uuids := make([]string, 0, len(s))
+	for uuid, intervals := range s {
+		if len(intervals) > 0 {
+			uuids = append(uuids, uuid)
+		}
+	}
+	sort.Strings(uuids)
+	var b strings.Builder
+	for i, uuid := range uuids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(uuid)
+		for _, iv := range s[uuid] {
+			b.WriteByte(':')
+			if iv.Start == iv.End {
+				b.WriteString(strconv.FormatInt(iv.Start, 10))
+			} else {
+				b.WriteString(strconv.FormatInt(iv.Start, 10))
+				b.WriteByte('-')
+				b.WriteString(strconv.FormatInt(iv.End, 10))
+			}
+		}
+	}
+	return b.String()
+}
+
+// UnionGTIDStrings parses and merges any number of GTID set strings into a
+// single canonical set string. A parse error on any input is returned.
+func UnionGTIDStrings(sets ...string) (string, error) {
+	union := GTIDSet{}
+	for _, raw := range sets {
+		parsed, err := ParseGTIDSet(raw)
+		if err != nil {
+			return "", err
+		}
+		union.Union(parsed)
+	}
+	return union.String(), nil
+}
+
 // GTIDContains reports whether the superset GTID string fully contains the
 // subset string. Both are parsed; a parse error is returned.
 func GTIDContains(superset, subset string) (bool, error) {

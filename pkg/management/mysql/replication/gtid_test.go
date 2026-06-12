@@ -85,6 +85,49 @@ func TestGTIDSetContains(t *testing.T) {
 	}
 }
 
+func TestGTIDSetString(t *testing.T) {
+	t.Parallel()
+	set, err := ParseGTIDSet("UUID2:1-3,UUID1:8-10:1-5:6-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := set.String(), "uuid1:1-10,uuid2:1-3"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+	empty := GTIDSet{}
+	if got := empty.String(); got != "" {
+		t.Fatalf("empty String() = %q, want \"\"", got)
+	}
+}
+
+func TestGTIDSetUnionAndClone(t *testing.T) {
+	t.Parallel()
+	a, _ := ParseGTIDSet("uuid:1-5")
+	clone := a.Clone()
+	b, _ := ParseGTIDSet("uuid:6-8,other:1-2")
+	a.Union(b)
+	if got, want := a.String(), "other:1-2,uuid:1-8"; got != want {
+		t.Fatalf("union = %q, want %q", got, want)
+	}
+	if got, want := clone.String(), "uuid:1-5"; got != want {
+		t.Fatalf("clone mutated: %q, want %q", got, want)
+	}
+}
+
+func TestUnionGTIDStrings(t *testing.T) {
+	t.Parallel()
+	got, err := UnionGTIDStrings("uuid:1-5", "uuid:4-9", "", "other:1-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "other:1-2,uuid:1-9"; got != want {
+		t.Fatalf("UnionGTIDStrings = %q, want %q", got, want)
+	}
+	if _, err := UnionGTIDStrings("bad-input"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
 func TestGTIDSetEqual(t *testing.T) {
 	t.Parallel()
 	a, _ := ParseGTIDSet("uuid:1-5:6-10")
