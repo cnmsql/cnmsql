@@ -137,6 +137,40 @@ func teardownMinio() {
 	deleteManifest("minio", minioManifest())
 }
 
+// seedObjectStoreMarker writes a small object at the given key in the MinIO
+// bucket via a one-shot mc Job and waits for it to complete. It is used to make
+// a destination prefix non-empty deterministically.
+func seedObjectStoreMarker(key string) {
+	name := "seed-" + strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(key)
+	manifest := fmt.Sprintf(`apiVersion: batch/v1
+kind: Job
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: mc
+        image: minio/mc:latest
+        command:
+        - sh
+        - -c
+        - |
+          until mc alias set local http://minio.%[2]s.svc:9000 minioadmin minioadmin; do sleep 2; done
+          echo cnmysql-guard-marker | mc pipe local/%[3]s/%[4]s
+`, name, testNamespace, minioBucket, key)
+	applyManifest(name, manifest)
+	DeferCleanup(func() {
+		deleteManifest(name, manifest)
+	})
+	_, err := kubectl("wait", "job/"+name, "-n", testNamespace,
+		"--for=condition=Complete", "--timeout=2m")
+	Expect(err).NotTo(HaveOccurred(), "Failed to seed object %s", key)
+}
+
 // objectStoreYAML returns the indented spec.backup.objectStore block pointing at
 // the in-cluster MinIO. indent is the leading whitespace for the `objectStore`
 // key so the snippet can be embedded under spec.backup.

@@ -90,28 +90,29 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 	})
 
 	It("blocks a fresh cluster from overwriting a non-empty destination", func() {
-		By("deleting the source cluster while leaving its archive in place")
-		deleteManifest(sourceCluster, archivingClusterManifest(sourceCluster))
-		Eventually(func(g Gomega) {
-			_, err := clusterField(sourceCluster, "{.metadata.name}")
-			g.Expect(err).To(HaveOccurred(), "source cluster is not deleted yet")
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		const guardCluster = "bkp-guard"
 
-		By("recreating a fresh cluster with the same name and destination")
-		applyManifest(sourceCluster, archivingClusterManifest(sourceCluster))
+		By("seeding an existing object under the guard cluster's destination prefix")
+		// ClusterPrefix is "<cluster>/"; a fresh cluster pointed there must refuse
+		// to adopt it. A standalone marker keeps this independent of the source
+		// cluster's lifecycle (and free of delete/recreate races).
+		seedObjectStoreMarker(guardCluster + "/existing-backup/marker")
+
+		By("creating a fresh cluster pointed at the non-empty destination")
+		applyManifest(guardCluster, archivingClusterManifest(guardCluster))
 		DeferCleanup(func() {
-			deleteManifest(sourceCluster, archivingClusterManifest(sourceCluster))
+			deleteManifest(guardCluster, archivingClusterManifest(guardCluster))
 		})
 
 		By("verifying the fresh cluster is Blocked instead of overwriting the archive")
 		Eventually(func(g Gomega) {
-			phase, err := clusterField(sourceCluster, "{.status.phase}")
+			phase, err := clusterField(guardCluster, "{.status.phase}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).To(Equal("Blocked"), "fresh cluster was not blocked on the non-empty destination")
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("verifying the block reason references the non-empty destination")
-		reason, err := clusterField(sourceCluster, "{.status.phaseReason}")
+		reason, err := clusterField(guardCluster, "{.status.phaseReason}")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reason).To(ContainSubstring("not empty"))
 	})
