@@ -50,6 +50,9 @@ type Controller struct {
 	expected   webserver.Role
 	supervisor Supervisor
 	backup     *BackupConfig
+	// archiving, when set, supplies the continuous archiver's current state so it
+	// surfaces in the instance status.
+	archiving func() *webserver.ArchivingStatus
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -78,6 +81,12 @@ func NewController(
 		expected:   expected,
 		supervisor: supervisor,
 	}, nil
+}
+
+// SetArchivingProvider registers a callback that supplies the continuous
+// archiver's current state for inclusion in the instance status.
+func (c *Controller) SetArchivingProvider(provider func() *webserver.ArchivingStatus) {
+	c.archiving = provider
 }
 
 // Healthz reports liveness: the server answers a ping.
@@ -140,6 +149,9 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	}
 	if uptime, err := c.repl.Uptime(ctx); err == nil {
 		status.UptimeSeconds = uptime
+	}
+	if c.archiving != nil {
+		status.Archiving = c.archiving()
 	}
 
 	if replicaState.Configured {

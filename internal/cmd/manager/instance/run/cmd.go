@@ -20,10 +20,12 @@ package run
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/instance"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
@@ -58,6 +60,11 @@ func NewCommand() *cobra.Command {
 		xtrabackupPath string
 		clusterName    string
 		namespace      string
+
+		archiving         bool
+		archiveRPOSeconds int
+		archivePurge      bool
+		mysqlbinlogPath   string
 	)
 
 	cmd := &cobra.Command{
@@ -124,6 +131,23 @@ func NewCommand() *cobra.Command {
 				}
 			}
 
+			// Enable continuous binlog archiving when requested; the destination
+			// bucket/path come from the environment alongside the S3 credentials.
+			var archive *instance.ArchivingConfig
+			if archiving {
+				flush := time.Duration(archiveRPOSeconds) * time.Second
+				archive = &instance.ArchivingConfig{
+					Enabled:         true,
+					ObjectStore:     objectstore.StoreFromEnv(),
+					ClusterName:     clusterName,
+					InstanceName:    instanceName,
+					BinlogDir:       dataDir,
+					MysqlbinlogPath: mysqlbinlogPath,
+					FlushInterval:   flush,
+					Purge:           archivePurge,
+				}
+			}
+
 			return instance.Run(cmd.Context(), instance.RunOptions{
 				MysqldPath:     mysqldPath,
 				ConfigFile:     configFile,
@@ -139,6 +163,7 @@ func NewCommand() *cobra.Command {
 				WebserverAddr:  webAddr,
 				HealthAddr:     healthAddr,
 				Backup:         backup,
+				Archiving:      archive,
 				Control: pool.ControlParams{
 					User:         controlUser,
 					Password:     os.Getenv("MYSQL_CONTROL_PASSWORD"),
@@ -181,6 +206,10 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "xtrabackup", "Path to the xtrabackup binary")
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Owning Cluster name; enables the in-Pod role reconciler (dynamic role)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Cluster namespace (defaults to POD_NAMESPACE)")
+	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from CNMYSQL_S3_* env)")
+	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")
+	cmd.Flags().BoolVar(&archivePurge, "archive-purge", true, "Purge binary logs once archived (the active purge gate)")
+	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "mysqlbinlog", "Path to the mysqlbinlog binary")
 
 	return cmd
 }

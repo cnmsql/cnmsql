@@ -71,6 +71,9 @@ type RunOptions struct {
 	// Backup, when set, enables the streaming physical-backup endpoint so this
 	// instance can clone replicas.
 	Backup *BackupConfig
+	// Archiving, when set and Enabled, runs the continuous binlog archiver in
+	// this Pod (active only while the instance is the writable primary).
+	Archiving *ArchivingConfig
 	// TLS configures the control API mTLS. When ServerCertFile is empty the
 	// control API is served over plain HTTP (development only).
 	TLS webserver.TLSOptions
@@ -199,6 +202,23 @@ func Run(ctx context.Context, opts RunOptions) error {
 		controller.SetBackupConfig(*opts.Backup)
 	}
 
+	// Continuous binlog archiver: runs in every Pod but only ships from the
+	// writable primary. Its terminal error is fatal to the run loop like the
+	// other long-lived servers.
+	var archiveErr <-chan error = make(chan error) // never fires unless enabled
+	archiveCtx, cancelArchive := context.WithCancel(ctx)
+	defer cancelArchive()
+	if opts.Archiving != nil && opts.Archiving.Enabled {
+		log.Info("Enabling continuous binlog archiving")
+		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, log.WithName("archiver"))
+		if err != nil {
+			_ = sup.Shutdown(ctx)
+			return err
+		}
+		controller.SetArchivingProvider(archivingStatusProvider(loop))
+		archiveErr = errCh
+	}
+
 	srv, err := buildServer(opts, controller)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
@@ -252,8 +272,12 @@ func Run(ctx context.Context, opts RunOptions) error {
 	case err := <-roleErr:
 		log.Error(err, "Role reconciler failed")
 		runErr = fmt.Errorf("role reconciler failed: %w", err)
+	case err := <-archiveErr:
+		log.Error(err, "Continuous archiver failed")
+		runErr = fmt.Errorf("continuous archiver failed: %w", err)
 	}
 	cancelMgr()
+	cancelArchive()
 
 	log.Info("Shutting down instance manager")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), opts.ShutdownTimeout)

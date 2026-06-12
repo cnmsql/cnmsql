@@ -55,6 +55,26 @@ type Status struct {
 
 	// UptimeSeconds is the mysqld uptime in seconds.
 	UptimeSeconds int64 `json:"uptimeSeconds,omitempty"`
+
+	// Archiving reports continuous binlog archiving health; nil when archiving is
+	// not enabled on this instance.
+	Archiving *ArchivingStatus `json:"archiving,omitempty"`
+}
+
+// ArchivingStatus reports the in-Pod continuous binlog archiver's frontier and
+// health, which the operator mirrors into Cluster.status.
+type ArchivingStatus struct {
+	// Active is true while this instance is the writable primary and archiving.
+	Active bool `json:"active"`
+	// LastArchivedBinlog/GTID/Time describe the archive frontier.
+	LastArchivedBinlog string `json:"lastArchivedBinlog,omitempty"`
+	LastArchivedGTID   string `json:"lastArchivedGTID,omitempty"`
+	LastArchivedTime   string `json:"lastArchivedTime,omitempty"`
+	// PendingFiles is the number of rotated logs not yet shipped (archive lag).
+	PendingFiles int `json:"pendingFiles,omitempty"`
+	// LastError and LastErrorTime record the most recent archiving failure.
+	LastError     string `json:"lastError,omitempty"`
+	LastErrorTime string `json:"lastErrorTime,omitempty"`
 }
 
 // ReplicationStatus captures the replica-side replication state, derived from

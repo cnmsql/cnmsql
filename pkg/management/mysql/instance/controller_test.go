@@ -110,6 +110,31 @@ func TestStatusPrimary(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesArchiving(t *testing.T) {
+	c, mock := newController(t, nil)
+
+	expectStatusQueries(mock, false, false, false)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host"}))
+	expectBestEffortQueries(mock)
+
+	c.SetArchivingProvider(func() *webserver.ArchivingStatus {
+		return &webserver.ArchivingStatus{Active: true, LastArchivedBinlog: "binlog.000007", PendingFiles: 2}
+	})
+
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Archiving == nil || !status.Archiving.Active {
+		t.Fatalf("archiving status missing: %+v", status.Archiving)
+	}
+	if status.Archiving.LastArchivedBinlog != "binlog.000007" || status.Archiving.PendingFiles != 2 {
+		t.Fatalf("archiving status = %+v", status.Archiving)
+	}
+}
+
 func TestStatusReplica(t *testing.T) {
 	c, mock := newController(t, nil)
 
