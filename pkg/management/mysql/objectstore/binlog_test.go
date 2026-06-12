@@ -88,8 +88,9 @@ func TestArchiveKeys(t *testing.T) {
 	if got, want := ServerPrefix(store, "demo", "uuid"), "cnmysql/demo/binlogs/uuid/"; got != want {
 		t.Fatalf("ServerPrefix = %q, want %q", got, want)
 	}
-	if got, want := ArchiveStatusKey(store, "demo", "uuid"), "cnmysql/demo/binlogs/uuid/_archive_status.json"; got != want {
-		t.Fatalf("ArchiveStatusKey = %q, want %q", got, want)
+	wantStatus := "cnmysql/demo/binlogs/uuid/_archive_status.json"
+	if got := ArchiveStatusKey(store, "demo", "uuid"); got != wantStatus {
+		t.Fatalf("ArchiveStatusKey = %q, want %q", got, wantStatus)
 	}
 	if got, want := ArchiveIndexKey(store, "demo"), "cnmysql/demo/binlogs/_index.json"; got != want {
 		t.Fatalf("ArchiveIndexKey = %q, want %q", got, want)

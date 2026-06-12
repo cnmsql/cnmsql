@@ -24,6 +24,7 @@ import (
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	mysqlconfig "github.com/yyewolf/cnmysql/pkg/management/mysql/config"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
 )
 
 func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) corev1.PodSpec {
@@ -53,7 +54,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 			Args:            runArgs(cluster, plan, inst),
-			Env:             runEnv(plan),
+			Env:             runEnv(cluster, plan),
 			EnvFrom:         cluster.Spec.EnvFrom,
 			Ports: []corev1.ContainerPort{
 				{Name: "mysql", ContainerPort: 3306},
@@ -185,7 +186,7 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 	// command therefore carries no --role/--source-host; it gets the owning
 	// Cluster identity and the static replication connection parameters (the
 	// source host is derived from currentPrimary at runtime).
-	return []string{
+	args := []string{
 		"instance", "run",
 		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
@@ -211,6 +212,13 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
 		"--source-ssl-key=" + serverTLSPath + "/tls.key",
 	}
+	if archivingEnabled(cluster) {
+		args = append(args,
+			"--continuous-archiving",
+			fmt.Sprintf("--archive-rpo-seconds=%d", archiveRPOSeconds(cluster)),
+		)
+	}
+	return args
 }
 
 // bootstrapEnv is the init-container environment. The recovering primary also
@@ -227,7 +235,7 @@ func bootstrapEnv(plan clusterPlan, inst instancePlan) []corev1.EnvVar {
 // the primary) or join (on a replica). Replication uses mTLS-only auth, so the
 // generated replication password is deliberately not exposed to pods.
 func initEnv(plan clusterPlan) []corev1.EnvVar {
-	env := runEnv(plan)
+	env := runEnv(nil, plan)
 	env = append(env, secretEnv("MYSQL_ROOT_PASSWORD", plan.RootSecretName))
 	// On recovery the application user comes from the restored data, so no app
 	// secret is generated (see ensureCredentials) and the non-optional secret
@@ -238,14 +246,27 @@ func initEnv(plan clusterPlan) []corev1.EnvVar {
 	return env
 }
 
-func runEnv(plan clusterPlan) []corev1.EnvVar {
-	return []corev1.EnvVar{
+// runEnv is the environment for the run container. When cluster has continuous
+// archiving enabled, the object-store credentials and destination (bucket/path)
+// are appended so the in-Pod archiver can ship binlogs. cluster may be nil for
+// the init container, which never archives.
+func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
+	env := []corev1.EnvVar{
 		{Name: "MYSQL_VERSION", Value: plan.ServerVersion},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
 		secretEnv("MYSQL_CONTROL_PASSWORD", plan.ControlSecretName),
 		secretEnv("MYSQL_BACKUP_PASSWORD", plan.BackupSecretName),
 	}
+	if cluster != nil && archivingEnabled(cluster) {
+		store := *cluster.Spec.Backup.ObjectStore
+		env = append(env, backupObjectStoreEnv(store)...)
+		env = append(env,
+			corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
+			corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
+		)
+	}
+	return env
 }
 
 func secretEnv(name, secretName string) corev1.EnvVar {

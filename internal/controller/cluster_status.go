@@ -53,6 +53,9 @@ type observedCluster struct {
 	// contained in the primary's (errant transactions). They cannot safely rejoin
 	// without losing data, so they are surfaced rather than silently re-cloned.
 	DivergedInstances []string
+	// ContinuousArchiving holds the primary's archiving frontier/health when
+	// continuous archiving is enabled; nil otherwise.
+	ContinuousArchiving *mysqlv1alpha1.ContinuousArchivingStatus
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -98,6 +101,10 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		if status.IsReady {
 			observed.ReadyInstances++
 		}
+	}
+
+	if archivingEnabled(cluster) {
+		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
 	observed.DivergedInstances = detectDivergedReplicas(observed)
@@ -157,6 +164,33 @@ func detectDivergedReplicas(observed observedCluster) []string {
 	return diverged
 }
 
+// aggregateArchiving derives the cluster-level archiving status from the
+// primary instance's reported archiver state. Archiving is authoritative only
+// on the primary (the single writer), so that is the instance whose frontier
+// the cluster surfaces.
+func aggregateArchiving(observed observedCluster) *mysqlv1alpha1.ContinuousArchivingStatus {
+	out := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true}
+	status, ok := observed.StatusByInstance[observed.PrimaryName]
+	if !ok || status.Archiving == nil {
+		return out
+	}
+	a := status.Archiving
+	out.LastArchivedBinlog = a.LastArchivedBinlog
+	out.LastArchivedGTID = a.LastArchivedGTID
+	out.LastArchivedTime = a.LastArchivedTime
+	out.PendingFiles = a.PendingFiles
+	out.LastFailureReason = a.LastError
+	out.LastFailureTime = a.LastErrorTime
+	return out
+}
+
+// archivingHealthy reports whether continuous archiving is keeping up: no
+// recorded failure on the primary. Archive lag (pending files) alone is
+// reported but is not treated as unhealthy unless it stalls with an error.
+func archivingHealthy(status *mysqlv1alpha1.ContinuousArchivingStatus) bool {
+	return status != nil && status.LastFailureReason == ""
+}
+
 func podReady(pod *corev1.Pod) bool {
 	for _, condition := range pod.Status.Conditions {
 		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
@@ -193,6 +227,23 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	latest.Status.DivergedInstances = observed.DivergedInstances
 	if len(observed.GTIDByInstance) > 0 {
 		latest.Status.GTIDExecutedByInstance = observed.GTIDByInstance
+	}
+	latest.Status.ContinuousArchiving = observed.ContinuousArchiving
+	if observed.ContinuousArchiving != nil {
+		healthy := archivingHealthy(observed.ContinuousArchiving)
+		reason := "Archiving"
+		message := "Continuous binlog archiving is healthy"
+		if !healthy {
+			reason = "ArchivingDegraded"
+			message = "Continuous binlog archiving is degraded: " + observed.ContinuousArchiving.LastFailureReason
+		}
+		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               conditionContinuousArchiving,
+			Status:             conditionStatus(healthy),
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: latest.Generation,
+		})
 	}
 	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,

@@ -157,7 +157,8 @@ func TestArchivePendingShipsRotatedFiles(t *testing.T) {
 
 	// Cluster index records the segment and cumulative coverage.
 	var idx objectstore.ArchiveIndex
-	if err := store.GetJSON(context.Background(), "backups", objectstore.ArchiveIndexKey(a.objectStore, "demo"), &idx); err != nil {
+	indexKey := objectstore.ArchiveIndexKey(a.objectStore, "demo")
+	if err := store.GetJSON(context.Background(), "backups", indexKey, &idx); err != nil {
 		t.Fatal(err)
 	}
 	if len(idx.Segments) != 1 || idx.Segments[0].ServerUUID != testUUID {

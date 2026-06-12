@@ -46,8 +46,9 @@ const (
 	configHashAnnotation      = "cnmysql.cloudnative-mysql.io/config-hash"
 	podTemplateHashAnnotation = "cnmysql.cloudnative-mysql.io/pod-template-hash"
 
-	conditionReady       = "Ready"
-	conditionProgressing = "Progressing"
+	conditionReady               = "Ready"
+	conditionProgressing         = "Progressing"
+	conditionContinuousArchiving = "ContinuousArchiving"
 
 	phasePending      = "Pending"
 	phaseProvisioning = "Provisioning"

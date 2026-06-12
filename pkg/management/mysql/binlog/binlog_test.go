@@ -64,7 +64,7 @@ func TestMarkActiveAndArchivable(t *testing.T) {
 		}
 	}
 	archivable := Archivable(marked)
-	var names []string
+	names := make([]string, 0, len(archivable))
 	for _, l := range archivable {
 		names = append(names, l.Name)
 	}

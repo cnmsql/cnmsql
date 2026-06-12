@@ -206,11 +206,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// writable primary. Its terminal error is fatal to the run loop like the
 	// other long-lived servers.
 	var archiveErr <-chan error = make(chan error) // never fires unless enabled
-	archiveCtx, cancelArchive := context.WithCancel(ctx)
+	archiveCtx, cancelArchive := context.WithCancel(logf.IntoContext(ctx, log))
 	defer cancelArchive()
 	if opts.Archiving != nil && opts.Archiving.Enabled {
 		log.Info("Enabling continuous binlog archiving")
-		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, log.WithName("archiver"))
+		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db)
 		if err != nil {
 			_ = sup.Shutdown(ctx)
 			return err

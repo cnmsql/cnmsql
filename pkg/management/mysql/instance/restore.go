@@ -206,7 +206,9 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 // internal accounts to the recovery cluster's generated passwords. The
 // replication account is intentionally left untouched: it authenticates with
 // mTLS (REQUIRE X509), so no password is exposed to the Pod.
-func credentialReconcileStatements(version, rootPassword, controlUser, controlPassword, backupUser, backupPassword string) []string {
+func credentialReconcileStatements(
+	version, rootPassword, controlUser, controlPassword, backupUser, backupPassword string,
+) []string {
 	if rootPassword == "" && controlPassword == "" && backupPassword == "" {
 		return nil
 	}

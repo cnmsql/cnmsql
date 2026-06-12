@@ -342,10 +342,7 @@ func binlogExpire(ver version.Version, seconds int) (string, string) {
 	if ver.AtLeast(8, 0, 0) {
 		return "binlog_expire_logs_seconds", strconv.Itoa(seconds)
 	}
-	days := (seconds + 86399) / 86400
-	if days < 1 {
-		days = 1
-	}
+	days := max((seconds+86399)/86400, 1)
 	return "expire_logs_days", strconv.Itoa(days)
 }
 

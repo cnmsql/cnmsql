@@ -65,7 +65,9 @@ func ServerPrefix(store mysqlv1alpha1.S3ObjectStore, clusterName, serverUUID str
 // BuildBinlogKeys returns deterministic object-store keys for an archived binlog
 // file and its manifest. Keys are partitioned by server UUID so two primaries'
 // like-named files (both produce a binlog.000004) never collide.
-func BuildBinlogKeys(store mysqlv1alpha1.S3ObjectStore, clusterName, serverUUID, binlogName string) (BinlogKeys, error) {
+func BuildBinlogKeys(
+	store mysqlv1alpha1.S3ObjectStore, clusterName, serverUUID, binlogName string,
+) (BinlogKeys, error) {
 	if store.Bucket == "" {
 		return BinlogKeys{}, fmt.Errorf("object store bucket is required")
 	}

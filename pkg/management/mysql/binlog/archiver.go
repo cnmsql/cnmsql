@@ -178,7 +178,8 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		status.LastArchivedGTID = result.LastArchivedGTID
 		status.CoveredGTIDSet = result.CoveredGTIDSet
 		status.UpdatedAt = a.now()
-		if err := a.store.PutJSON(ctx, bucket, objectstore.ArchiveStatusKey(a.objectStore, a.clusterName, a.serverUUID), status); err != nil {
+		statusKey := objectstore.ArchiveStatusKey(a.objectStore, a.clusterName, a.serverUUID)
+		if err := a.store.PutJSON(ctx, bucket, statusKey, status); err != nil {
 			return result, fmt.Errorf("binlog: writing archive status: %w", err)
 		}
 		if err := a.updateIndex(ctx, bucket, status); err != nil {
@@ -193,7 +194,9 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 // whether it was freshly uploaded (false ⇒ already archived), and any error.
 // Commit order is bytes → manifest, so a present manifest means a complete
 // archive; a present body without manifest is a partial upload that is retried.
-func (a *Archiver) archiveFile(ctx context.Context, bucket string, l BinaryLog) (objectstore.BinlogMetadata, bool, error) {
+func (a *Archiver) archiveFile(
+	ctx context.Context, bucket string, l BinaryLog,
+) (objectstore.BinlogMetadata, bool, error) {
 	keys, err := objectstore.BuildBinlogKeys(a.objectStore, a.clusterName, a.serverUUID, l.Name)
 	if err != nil {
 		return objectstore.BinlogMetadata{}, false, err
@@ -236,7 +239,8 @@ func (a *Archiver) archiveFile(ctx context.Context, bucket string, l BinaryLog) 
 	if existsManifest {
 		var prior objectstore.BinlogMetadata
 		if err := a.store.GetJSON(ctx, bucket, keys.ManifestKey, &prior); err != nil {
-			return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: reading existing manifest %q: %w", keys.ManifestKey, err)
+			return objectstore.BinlogMetadata{}, false,
+				fmt.Errorf("binlog: reading existing manifest %q: %w", keys.ManifestKey, err)
 		}
 		if prior.SHA256 != "" && prior.SHA256 != sum {
 			return objectstore.BinlogMetadata{}, false, fmt.Errorf("%w: %s (uuid %s): stored sha %s != local %s",

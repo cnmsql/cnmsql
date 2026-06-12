@@ -21,7 +21,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/go-logr/logr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/binlog"
@@ -58,8 +58,8 @@ func startArchiver(
 	ctx context.Context,
 	cfg ArchivingConfig,
 	db *sql.DB,
-	log logr.Logger,
 ) (*binlog.Loop, <-chan error, error) {
+	log := logf.FromContext(ctx).WithName("archiver")
 	store, err := objectstore.NewClientFromEnv()
 	if err != nil {
 		return nil, nil, err

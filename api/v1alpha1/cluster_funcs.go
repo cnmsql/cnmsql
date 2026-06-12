@@ -137,7 +137,23 @@ func (cluster *Cluster) Validate() field.ErrorList {
 
 	allErrs = append(allErrs, spec.validateBootstrap(specPath.Child("bootstrap"))...)
 	allErrs = append(allErrs, spec.validateReplica(specPath.Child("replica"))...)
+	allErrs = append(allErrs, spec.validateBackup(specPath.Child("backup"))...)
 
+	return allErrs
+}
+
+// validateBackup checks the backup/continuous-archiving configuration is
+// coherent: continuous archiving needs an object store to ship binlogs to.
+func (spec *ClusterSpec) validateBackup(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if spec.Backup == nil || spec.Backup.ContinuousArchiving == nil {
+		return allErrs
+	}
+	if spec.Backup.ContinuousArchiving.Enabled && spec.Backup.ObjectStore == nil {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("continuousArchiving", "enabled"), true,
+			"continuous archiving requires backup.objectStore to be configured"))
+	}
 	return allErrs
 }
 
