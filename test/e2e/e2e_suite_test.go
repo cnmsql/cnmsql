@@ -48,14 +48,13 @@ var _ = BeforeSuite(func() {
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
-	By("building the instance image")
-	cmd = exec.Command("make", "docker-build-instance", "INSTANCE_VERSION=8.4")
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the instance image")
-
-	By("loading the instance image on Kind")
-	err = utils.LoadImageToKindClusterWithName(instanceImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the instance image into Kind")
+	// Build and load every instance image the suite needs: 8.4 for the sample
+	// cluster spec plus each version the archiving matrix exercises. Building all
+	// four Percona flavors is deliberate — continuous archiving must be proven
+	// broadly compatible, so the e2e runs the same catastrophic scenarios on each.
+	for _, version := range neededInstanceVersions() {
+		buildAndLoadInstanceImage(version)
+	}
 
 	configureKubectlKubeRC()
 	setupCertManager()
@@ -66,6 +65,34 @@ var _ = AfterSuite(func() {
 	undeployOperator()
 	teardownCertManager()
 })
+
+// buildAndLoadInstanceImage builds this version's slim instance image and loads
+// it into the Kind cluster, so a Cluster pinned to cnmysql-instance:<version>
+// boots without pulling from a registry.
+func buildAndLoadInstanceImage(version string) {
+	By(fmt.Sprintf("building the instance image (%s)", version))
+	cmd := exec.Command("make", "docker-build-instance", "INSTANCE_VERSION="+version)
+	_, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the instance image for %s", version)
+
+	By(fmt.Sprintf("loading the instance image on Kind (%s)", version))
+	err = utils.LoadImageToKindClusterWithName(instanceImageFor(version))
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the instance image for %s into Kind", version)
+}
+
+// neededInstanceVersions is the deduplicated set of instance versions the suite
+// builds: 8.4 (the sample Cluster spec) plus every archiving-matrix version.
+func neededInstanceVersions() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range append([]string{"8.4"}, archiveVersions()...) {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
 
 // deployOperator installs the CRDs and deploys the controller-manager once for
 // the whole suite, so every Describe can exercise it without re-deploying.
