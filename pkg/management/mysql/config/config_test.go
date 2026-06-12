@@ -124,9 +124,9 @@ func TestRenderVersionAwareLogUpdates(t *testing.T) {
 	assertNotContains(t, mustRender(t, c), "log_replica_updates")
 }
 
-func TestRenderReplica56HasNoSuperReadOnly(t *testing.T) {
+func TestRenderReplicaBeforeSuperReadOnlyHasNoSuperReadOnly(t *testing.T) {
 	c := baseConfig()
-	c.Version = "5.6.51"
+	c.Version = "5.7.7"
 	c.Role = RoleReplica
 	out := mustRender(t, c)
 
@@ -188,7 +188,7 @@ func TestRenderAdminInterfaceCustom(t *testing.T) {
 }
 
 func TestRenderAdminInterfaceUnsupportedVersions(t *testing.T) {
-	for _, ver := range []string{"5.6.51", "5.7.44", "8.0.13"} {
+	for _, ver := range []string{"5.7.44", "8.0.13"} {
 		c := baseConfig()
 		c.Version = ver
 		out := mustRender(t, c)

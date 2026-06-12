@@ -74,8 +74,7 @@ func (m *Manager) configureSource(ctx context.Context, opts SourceOptions, start
 // It deliberately does NOT start replication: this runs on the throwaway
 // temporary server (started with --skip-slave-start), and the real instance
 // resumes replication from the persisted source config on its next boot.
-// Starting here is redundant and, on MySQL 5.6 with --skip-networking, START
-// SLAVE is rejected outright (Error 1200), so we configure-only.
+// Starting here is redundant on the throwaway server, so we configure-only.
 func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, opts SourceOptions) error {
 	if err := m.exec(ctx, ResetBinaryLogsStatement(m.version)); err != nil {
 		return err

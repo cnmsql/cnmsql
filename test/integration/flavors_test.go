@@ -35,8 +35,7 @@ import (
 type flavor struct {
 	// name is the subtest name.
 	name string
-	// base is the Debian base image. 5.6's Percona apt packages only ship for
-	// buster, so it builds on buster; the rest build on bookworm.
+	// base is the Debian base image used for this flavor.
 	base string
 	// ps and pxb are the percona-release repository keywords for the server and
 	// XtraBackup; pxbPackage is the XtraBackup package to install.
@@ -92,17 +91,6 @@ var flavors = []flavor{
 		component:         "testing",
 		version:           "9.6.0",
 		hasAdminInterface: true,
-		joinSupported:     true,
-	},
-	{
-		name:              "5.6",
-		base:              "debian:buster-slim",
-		ps:                "ps-56",
-		pxb:               "pxb-24",
-		pxbPackage:        "percona-xtrabackup-24",
-		component:         "release",
-		version:           "5.6.51",
-		hasAdminInterface: false,
 		joinSupported:     true,
 	},
 }

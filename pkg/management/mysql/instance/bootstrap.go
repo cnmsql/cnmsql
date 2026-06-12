@@ -55,7 +55,7 @@ type BootstrapParams struct {
 	// SupportsDynamicPrivileges enables the MySQL 8.0+ dynamic privilege grants
 	// the control user needs (admin-interface access, super_read_only, etc.).
 	SupportsDynamicPrivileges bool
-	// MySQLVersion selects the SQL dialect (e.g. MySQL 5.6 lacks
+	// MySQLVersion selects the SQL dialect (e.g. older MySQL lacks
 	// CREATE USER ... IF NOT EXISTS and sets the root password differently).
 	// Defaults to modern syntax when empty.
 	MySQLVersion string
@@ -110,9 +110,9 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 	// Secure the root account.
 	stmts = append(stmts, d.setRootPassword(p.RootPassword))
 
-	// Remove the anonymous accounts created by mysql_install_db on MySQL 5.6;
-	// left in place, ''@'localhost' shadows real users on local connections.
-	// A no-op on servers initialised without anonymous users.
+	// Remove anonymous accounts if an older initializer created them; left in
+	// place, ''@'localhost' shadows real users on local connections. A no-op on
+	// servers initialised without anonymous users.
 	stmts = append(stmts, "DELETE FROM mysql.user WHERE User = ''")
 
 	// Application database and owner.
@@ -138,8 +138,8 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 		if p.ReplicationRequireX509 {
 			idClause = "REQUIRE X509"
 		}
+		stmts = append(stmts, d.createUser(p.ReplicationUser, idClause))
 		stmts = append(stmts,
-			d.createUser(p.ReplicationUser, idClause),
 			fmt.Sprintf("GRANT REPLICATION SLAVE ON *.* TO '%s'@'%%'",
 				escapeName(p.ReplicationUser)),
 		)
@@ -188,9 +188,9 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 	return stmts, nil
 }
 
-// bootstrapDialect captures the version-specific SQL differences. MySQL 5.6
-// predates CREATE USER ... IF NOT EXISTS and ALTER USER ... IDENTIFIED BY (both
-// 5.7.6+), so it falls back to plain CREATE USER and SET PASSWORD.
+// bootstrapDialect captures version-specific SQL differences. Older MySQL
+// releases predate CREATE USER ... IF NOT EXISTS and ALTER USER ... IDENTIFIED
+// BY (both 5.7.6+), so they fall back to plain CREATE USER and SET PASSWORD.
 type bootstrapDialect struct {
 	ifNotExists  bool
 	alterForPass bool
@@ -222,7 +222,7 @@ func (d bootstrapDialect) setRootPassword(password string) string {
 }
 
 // setUserPassword returns the statement that resets an existing account's
-// password, using ALTER USER on modern servers and SET PASSWORD on 5.6.
+// password, using ALTER USER on modern servers and SET PASSWORD on older ones.
 func (d bootstrapDialect) setUserPassword(user, host, password string) string {
 	if d.alterForPass {
 		return fmt.Sprintf("ALTER USER '%s'@'%s' IDENTIFIED BY %s",

@@ -32,10 +32,53 @@ const minioBucket = "cnmysql-backups"
 // by Clusters and Backups through their object-store configuration.
 const minioCredsSecret = "minio-creds"
 
+const e2eInstanceResources = `  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+`
+
+const e2eMySQLParameters = `    parameters:
+      innodb_buffer_pool_size: 128M
+      max_connections: "80"
+`
+
+var _ = AfterEach(func() {
+	if !CurrentSpecReport().Failed() {
+		return
+	}
+
+	dumpE2EDiagnostics()
+})
+
 // kubectl runs a kubectl command from the project directory and returns its
 // combined output.
 func kubectl(args ...string) (string, error) {
 	return utils.Run(exec.Command("kubectl", args...))
+}
+
+func dumpE2EDiagnostics() {
+	dumps := []struct {
+		name string
+		args []string
+	}{
+		{name: "test namespace pods", args: []string{"get", "pods", "-n", testNamespace, "-o", "wide"}},
+		{name: "test namespace clusters", args: []string{"get", "clusters", "-n", testNamespace, "-o", "yaml"}},
+		{name: "test namespace events", args: []string{"get", "events", "-n", testNamespace, "--sort-by=.lastTimestamp"}},
+		{name: "test namespace pod descriptions", args: []string{"describe", "pods", "-n", testNamespace}},
+		{name: "node capacity and pressure", args: []string{"describe", "nodes"}},
+	}
+	for _, dump := range dumps {
+		out, err := kubectl(dump.args...)
+		if err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "\nFailed to collect %s: %v\n%s\n", dump.name, err, out)
+			continue
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "\n%s:\n%s\n", dump.name, out)
+	}
 }
 
 // applyManifest writes the given manifest to a temporary file and applies it,

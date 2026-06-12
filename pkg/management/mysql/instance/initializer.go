@@ -35,12 +35,6 @@ import (
 type InitOptions struct {
 	// MysqldPath is the mysqld binary (default "mysqld").
 	MysqldPath string
-	// MysqlInstallDBPath is the mysql_install_db binary used on MySQL 5.6
-	// (default "mysql_install_db").
-	MysqlInstallDBPath string
-	// Basedir is the MySQL base directory, needed by mysql_install_db on 5.6
-	// (default "/usr").
-	Basedir string
 	// Version is the MySQL server version (e.g. "8.0.36"). It selects the
 	// initialisation method and the bootstrap SQL dialect.
 	Version string
@@ -61,19 +55,13 @@ func (o *InitOptions) applyDefaults() {
 	if o.MysqldPath == "" {
 		o.MysqldPath = defaultMysqldBinary
 	}
-	if o.MysqlInstallDBPath == "" {
-		o.MysqlInstallDBPath = "mysql_install_db"
-	}
-	if o.Basedir == "" {
-		o.Basedir = "/usr"
-	}
 	if o.ReadyTimeout == 0 {
 		o.ReadyTimeout = 60 * time.Second
 	}
 }
 
 // IsInitialized reports whether the data directory already contains a MySQL
-// system schema (the "mysql" subdirectory).
+// system schema.
 func IsInitialized(dataDir string) bool {
 	info, err := os.Stat(filepath.Join(dataDir, "mysql"))
 	return err == nil && info.IsDir()
@@ -104,6 +92,9 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	if err != nil {
 		return err
 	}
+	if !ver.AtLeast(5, 7, 0) {
+		return fmt.Errorf("MySQL versions older than 5.7 are not supported")
+	}
 
 	if IsInitialized(opts.DataDir) {
 		log.Info("Data directory already initialized")
@@ -115,7 +106,7 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	}
 	log.Info("Created data directory")
 
-	if err := opts.runInitialize(ctx, ver); err != nil {
+	if err := opts.runInitialize(ctx); err != nil {
 		return err
 	}
 
@@ -126,17 +117,12 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	return nil
 }
 
-// runInitialize lays down the system tables. MySQL 5.7+ uses
-// `mysqld --initialize-insecure`; MySQL 5.6 predates it and uses
-// `mysql_install_db`.
-func (o *InitOptions) runInitialize(ctx context.Context, ver version.Version) error {
-	if ver.AtLeast(5, 7, 0) {
-		return o.runMysqldInitialize(ctx)
-	}
-	return o.runMysqlInstallDB(ctx)
+// runInitialize lays down the system tables.
+func (o *InitOptions) runInitialize(ctx context.Context) error {
+	return o.runMysqldInitialize(ctx)
 }
 
-// runMysqldInitialize runs `mysqld --initialize-insecure` (MySQL 5.7+).
+// runMysqldInitialize runs `mysqld --initialize-insecure`.
 func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysqld initialize", "binary", o.MysqldPath)
 	args := []string{}
@@ -148,21 +134,6 @@ func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 		"--datadir="+o.DataDir,
 	)
 	return runStdio(ctx, o.MysqldPath, args, "mysqld --initialize-insecure")
-}
-
-// runMysqlInstallDB runs `mysql_install_db` (MySQL 5.6), which lays down the
-// system tables with a passwordless root.
-func (o *InitOptions) runMysqlInstallDB(ctx context.Context) error {
-	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysql install db", "binary", o.MysqlInstallDBPath)
-	args := []string{}
-	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
-	}
-	args = append(args,
-		"--datadir="+o.DataDir,
-		"--basedir="+o.Basedir,
-	)
-	return runStdio(ctx, o.MysqlInstallDBPath, args, "mysql_install_db")
 }
 
 func runStdio(ctx context.Context, binary string, args []string, what string) error {

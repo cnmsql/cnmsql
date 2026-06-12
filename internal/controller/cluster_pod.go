@@ -78,6 +78,14 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				}},
 				PeriodSeconds: 10,
 			},
+			StartupProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+					Path: "/livez",
+					Port: intstr.FromString("health"),
+				}},
+				PeriodSeconds:    2,
+				FailureThreshold: 90,
+			},
 		}},
 		NodeSelector:              cluster.Spec.Affinity.NodeSelector,
 		Affinity:                  affinity(cluster),

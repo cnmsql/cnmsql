@@ -103,7 +103,7 @@ func ChangeSourceStatement(v version.Version, opts SourceOptions) string {
 		add("AUTO_POSITION", "1")
 	}
 	// caching_sha2_password public-key retrieval (and the clause itself) only
-	// exists on 5.7.23 / 8.0.4+; 5.6 rejects it as a syntax error, so omit it.
+	// exists on 5.7.23 / 8.0.4+; older servers reject it as a syntax error.
 	if opts.GetPublicKey && v.HasGetSourcePublicKey() {
 		if modern {
 			clauses = append(clauses, "GET_SOURCE_PUBLIC_KEY=1")

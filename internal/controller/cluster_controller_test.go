@@ -184,7 +184,6 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 func TestResolveServerVersionFromImageTag(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
-		"cnmysql-instance:5.6":       defaultMySQL56ServerVersion,
 		"cnmysql-instance:8.0":       defaultMySQL80ServerVersion,
 		"cnmysql-instance:8.4":       defaultMySQL84ServerVersion,
 		"cnmysql-instance:9.x":       defaultMySQL9xServerVersion,
@@ -199,6 +198,13 @@ func TestResolveServerVersionFromImageTag(t *testing.T) {
 		if got != want {
 			t.Fatalf("resolveServerVersion(%q) = %q, want %q", image, got, want)
 		}
+	}
+}
+
+func TestResolveServerVersionRejectsMySQL56(t *testing.T) {
+	t.Parallel()
+	if _, err := resolveServerVersion("cnmysql-instance:5.6"); err == nil {
+		t.Fatal("expected MySQL 5.6 image tag to be unsupported")
 	}
 }
 
@@ -229,6 +235,7 @@ func TestEnsurePasswordSecretDoesNotOverwriteExistingSecret(t *testing.T) {
 
 func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	t.Parallel()
+	const healthPortName = "health"
 	cluster := baseCluster()
 	plan := testPlan()
 
@@ -255,14 +262,22 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	if !strings.Contains(runArgsStr, "--health-addr=:8081") {
 		t.Fatalf("run container should expose the plain health listener: %q", runArgsStr)
 	}
-	if got := spec.Containers[0].ReadinessProbe.HTTPGet; got == nil || got.Path != "/readyz" || got.Port.String() != "health" {
+	if got := spec.Containers[0].ReadinessProbe.HTTPGet; got == nil || got.Path != "/readyz" || got.Port.String() != healthPortName {
 		t.Fatalf("readiness probe = %#v, want HTTP /readyz on health", got)
 	}
-	if got := spec.Containers[0].LivenessProbe.HTTPGet; got == nil || got.Path != "/livez" || got.Port.String() != "health" {
+	if got := spec.Containers[0].LivenessProbe.HTTPGet; got == nil || got.Path != "/livez" || got.Port.String() != healthPortName {
 		t.Fatalf("liveness probe = %#v, want HTTP /livez on health", got)
+	}
+	if got := spec.Containers[0].StartupProbe.HTTPGet; got == nil || got.Path != "/livez" || got.Port.String() != healthPortName {
+		t.Fatalf("startup probe = %#v, want HTTP /livez on health", got)
 	}
 	if spec.Containers[0].ReadinessProbe.PeriodSeconds != 2 {
 		t.Fatalf("readiness period = %d, want 2", spec.Containers[0].ReadinessProbe.PeriodSeconds)
+	}
+	if spec.Containers[0].StartupProbe.PeriodSeconds != 2 || spec.Containers[0].StartupProbe.FailureThreshold != 90 {
+		t.Fatalf("startup probe timing = period %d threshold %d, want period 2 threshold 90",
+			spec.Containers[0].StartupProbe.PeriodSeconds,
+			spec.Containers[0].StartupProbe.FailureThreshold)
 	}
 	volumes := map[string]string{}
 	for _, volume := range spec.Volumes {

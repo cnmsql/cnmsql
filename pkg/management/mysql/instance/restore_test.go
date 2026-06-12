@@ -51,10 +51,10 @@ func TestCredentialReconcileStatementsEmptyWhenNoPasswords(t *testing.T) {
 	}
 }
 
-func TestCredentialReconcileStatementsLegacy56(t *testing.T) {
-	stmts := credentialReconcileStatements("5.6.51", "rootpw", "", "", "", "")
+func TestCredentialReconcileStatementsLegacy(t *testing.T) {
+	stmts := credentialReconcileStatements("5.7.5", "rootpw", "", "", "", "")
 	out := strings.Join(stmts, "\n")
 	if !strings.Contains(out, "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('rootpw')") {
-		t.Fatalf("expected legacy SET PASSWORD syntax on 5.6:\n%s", out)
+		t.Fatalf("expected legacy SET PASSWORD syntax:\n%s", out)
 	}
 }

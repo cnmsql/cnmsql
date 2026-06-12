@@ -226,8 +226,9 @@ func TestDemoteOrdering(t *testing.T) {
 }
 
 func TestSetSuperReadOnlyNoopOnLegacy(t *testing.T) {
-	m, mock := newManager(t, "5.6.51")
-	// No expectations registered: a 5.6 server must not receive super_read_only.
+	m, mock := newManager(t, "5.7.7")
+	// No expectations registered: servers before 5.7.8 must not receive
+	// super_read_only.
 	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
 		t.Fatalf("SetSuperReadOnly: %v", err)
 	}

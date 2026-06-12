@@ -91,10 +91,10 @@ func TestChangeSourceGetPublicKey(t *testing.T) {
 	if !strings.Contains(legacy, "GET_MASTER_PUBLIC_KEY=1") {
 		t.Errorf("legacy get public key missing:\n%s", legacy)
 	}
-	// 5.6 has no caching_sha2_password and rejects the clause; it must be omitted.
-	old := ChangeSourceStatement(mustParse(t, "5.6.51"), SourceOptions{Host: "h", User: "u", GetPublicKey: true})
+	// Older 5.7 rejects the clause; it must be omitted.
+	old := ChangeSourceStatement(mustParse(t, "5.7.22"), SourceOptions{Host: "h", User: "u", GetPublicKey: true})
 	if strings.Contains(old, "PUBLIC_KEY") {
-		t.Errorf("5.6 should not emit a public-key clause:\n%s", old)
+		t.Errorf("old server should not emit a public-key clause:\n%s", old)
 	}
 }
 

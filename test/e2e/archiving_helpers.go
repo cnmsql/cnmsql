@@ -32,7 +32,7 @@ func archiveVersions() []string {
 		}
 		return out
 	}
-	return []string{"5.6", "8.0", "8.4", "9.x"}
+	return []string{"8.0", "8.4", "9.x"}
 }
 
 // instanceImageFor returns the locally-built slim instance image tag for a
@@ -147,19 +147,21 @@ spec:
   imageName: %[4]s
   storage:
     size: 2Gi
+%[5]s
   mysql:
     binlogFormat: ROW
+%[6]s
   bootstrap:
     initdb:
       database: app
       owner: app
   backup:
-%[5]s
+%[7]s
     continuousArchiving:
       enabled: true
       targetRPOSeconds: 10
       maxBinlogSizeMB: 1
-`, name, testNamespace, instances, instanceImageFor(version), objectStoreYAML("    "))
+`, name, testNamespace, instances, instanceImageFor(version), e2eInstanceResources, e2eMySQLParameters, objectStoreYAML("    "))
 }
 
 func mcToolboxManifest() string {

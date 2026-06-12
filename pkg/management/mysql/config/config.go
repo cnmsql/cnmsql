@@ -17,7 +17,7 @@ limitations under the License.
 // Package config renders the mysqld configuration (my.cnf) for a CNMySQL
 // instance. The operator owns a set of replication- and TLS-critical keys; user
 // supplied parameters may not override them. Rendering is version-aware to cope
-// with keyword differences between MySQL 5.6/5.7 and 8.0+.
+// with keyword differences between MySQL 5.7 and 8.0+.
 package config
 
 import (

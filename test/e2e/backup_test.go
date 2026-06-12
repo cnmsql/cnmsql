@@ -129,15 +129,17 @@ spec:
   imageName: %s
   storage:
     size: 2Gi
+%s
   mysql:
     binlogFormat: ROW
+%s
   bootstrap:
     initdb:
       database: app
       owner: app
   backup:
 %s
-`, name, testNamespace, instanceImage, objectStoreYAML("    "))
+`, name, testNamespace, instanceImage, e2eInstanceResources, e2eMySQLParameters, objectStoreYAML("    "))
 }
 
 func recoveryClusterManifest(name, backup string) string {
@@ -151,15 +153,17 @@ spec:
   imageName: %s
   storage:
     size: 2Gi
+%s
   mysql:
     binlogFormat: ROW
+%s
   bootstrap:
     recovery:
       backup:
         name: %s
   backup:
 %s
-`, name, testNamespace, instanceImage, backup, objectStoreYAML("    "))
+`, name, testNamespace, instanceImage, e2eInstanceResources, e2eMySQLParameters, backup, objectStoreYAML("    "))
 }
 
 func backupManifest(name, cluster string) string {

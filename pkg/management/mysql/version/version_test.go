@@ -80,7 +80,7 @@ func TestFeatureGates(t *testing.T) {
 		superRO      bool
 		logReplica   bool
 	}{
-		{"5.6.51", false, false, false},
+		{"5.7.7", false, false, false},
 		{"5.7.8", false, true, false},
 		{"5.7.44", false, true, false},
 		{"8.0.22", false, true, true},

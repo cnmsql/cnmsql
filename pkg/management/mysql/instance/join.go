@@ -161,8 +161,7 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 		"--log-bin=binlog",
 	)
 	// Do not start replication on the temporary server; we configure it and let
-	// the real server start it. The option was renamed slave→replica in 8.0.26;
-	// 5.6 only knows --skip-slave-start, 9.x only --skip-replica-start.
+	// the real server start it. The option was renamed slave→replica in 8.0.26.
 	if ver.UsesReplicaTerminology() {
 		args = append(args, "--skip-replica-start")
 	} else {

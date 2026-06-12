@@ -135,7 +135,6 @@ func instanceName(cluster *mysqlv1alpha1.Cluster, ordinal int) string {
 }
 
 const (
-	defaultMySQL56ServerVersion = "5.6.51"
 	defaultMySQL80ServerVersion = "8.0.46"
 	defaultMySQL84ServerVersion = "8.4.0"
 	defaultMySQL9xServerVersion = "9.6.0"
@@ -334,8 +333,6 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 func resolveServerVersion(image string) (string, error) {
 	tag := imageTag(image)
 	switch tag {
-	case "5.6":
-		return defaultMySQL56ServerVersion, nil
 	case "8.0":
 		return defaultMySQL80ServerVersion, nil
 	case "8.4":
@@ -343,8 +340,12 @@ func resolveServerVersion(image string) (string, error) {
 	case "9.x":
 		return defaultMySQL9xServerVersion, nil
 	}
-	if _, err := version.Parse(tag); err != nil {
+	parsed, err := version.Parse(tag)
+	if err != nil {
 		return "", fmt.Errorf("cannot resolve MySQL server version from image %q: %w", image, err)
+	}
+	if parsed.Major == 5 && parsed.Minor == 6 {
+		return "", fmt.Errorf("MySQL 5.6 is not supported")
 	}
 	return tag, nil
 }

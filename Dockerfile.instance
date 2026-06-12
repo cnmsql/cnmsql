@@ -58,15 +58,6 @@ ARG MYSQL_GID=1001
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     . /etc/os-release; codename="${VERSION_CODENAME}"; \
-    # 5.6's Percona packages only exist for Debian buster, which is now EOL and
-    # served from archive.debian.org; point apt there and tolerate the expired
-    # Release metadata. No-op on supported (bookworm) releases.
-    if [ "${codename}" = "buster" ]; then \
-        sed -i -e 's|http://deb.debian.org|http://archive.debian.org|g' \
-               -e 's|http://security.debian.org|http://archive.debian.org|g' \
-               -e '/buster-updates/d' /etc/apt/sources.list; \
-        echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid; \
-    fi; \
     groupadd -g "${MYSQL_GID}" mysql; \
     useradd -u "${MYSQL_UID}" -g mysql -s /usr/sbin/nologin -M mysql; \
     # Stop package postinst scripts from trying to start mysqld during build.
@@ -109,8 +100,8 @@ RUN set -eux; \
     find /usr/lib -name '*.a' -delete; \
     # Drop the bulky mysql client utilities the instance does not need. We keep:
     # mysql + mysqladmin (operator debugging via `kubectl exec`, and liveness
-    # ping), mysqlbinlog (binlog streaming / PITR), mysql_install_db (5.6 init),
-    # and the XtraBackup suite. rm -f tolerates a tool being absent on a version.
+    # ping), mysqlbinlog (binlog streaming / PITR), and the XtraBackup suite.
+    # rm -f tolerates a tool being absent on a version.
     for b in mysqldump mysqlpump mysqlcheck mysqlshow \
              mysqlimport mysqlslap mysqlanalyze mysqloptimize mysqlrepair \
              mysqldumpslow mysqld_multi mysql_upgrade mysql_secure_installation \

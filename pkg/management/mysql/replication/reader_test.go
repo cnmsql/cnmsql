@@ -154,11 +154,11 @@ func TestReadOnlySkipsSuperOnLegacy(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Only read_only is queried on 5.6.
+	// Only read_only is queried before super_read_only exists.
 	mock.ExpectQuery("SELECT @@GLOBAL.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0"))
 
-	m := NewManager(db, mustParse(t, "5.6.51"))
+	m := NewManager(db, mustParse(t, "5.7.7"))
 	state, err := m.ReadOnly(context.Background())
 	if err != nil {
 		t.Fatalf("ReadOnly: %v", err)

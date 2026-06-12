@@ -1,14 +1,5 @@
 [
   {
-    "version": "5.6",
-    "base": "debian:buster-slim",
-    "ps": "ps-56",
-    "pxb": "pxb-24",
-    "pxbPackage": "percona-xtrabackup-24",
-    "component": "release",
-    "serverVersion": "5.6.51"
-  },
-  {
     "version": "8.0",
     "base": "debian:bookworm-slim",
     "ps": "ps-80",
