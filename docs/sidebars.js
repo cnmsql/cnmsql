@@ -55,6 +55,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'api-reference',
+      label: 'API Reference',
+    },
+    {
+      type: 'doc',
       id: 'scheduled-backups',
       label: 'Scheduled Backups',
     },

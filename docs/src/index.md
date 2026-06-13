@@ -30,6 +30,8 @@ point-in-time recovery.
   deletion semantics, ScheduledBackup owner references, and planned retention GC.
 - [Object Store Configuration](./object-store.md): S3-compatible fields,
   credentials, TLS, object layout, and provider notes.
+- [API Reference](./api-reference.md): field guide for `Cluster`, `Backup`,
+  `ScheduledBackup`, `ImageCatalog`, and `ClusterImageCatalog`.
 - [Scheduled Backups](./scheduled-backups.md): six-field cron scheduling,
   deterministic Backup creation, owner modes, and retention notes.
 - [Point-In-Time Recovery](./pitr.md): architecture, components, recovery flow,
