@@ -151,8 +151,9 @@ Scheduling and pod shape are controlled through the Cluster spec:
 
 ## Status model
 
-The operator continuously polls instance-manager `/status` over mTLS and writes
-the observed topology into `Cluster.status`.
+During reconciliation and periodic resyncs, the operator queries each
+instance-manager `/status` endpoint over mTLS and combines that with Kubernetes
+Pod readiness before writing the observed topology into `Cluster.status`.
 
 Important fields include:
 
