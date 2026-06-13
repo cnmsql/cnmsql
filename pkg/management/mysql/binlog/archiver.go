@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
@@ -317,6 +318,16 @@ func (a *Archiver) updateIndex(ctx context.Context, bucket string, status object
 	}
 	seg.GTIDSet = status.CoveredGTIDSet
 	seg.EndedAt = a.now()
+
+	// Accumulate the binlog file names in this segment so that recovery's
+	// PlanReplay can discover which files to download. The status always carries
+	// the most recently shipped file; add it to the segment's list when it is
+	// new (deduplicated so retries and idempotent updates are safe).
+	if status.LastArchivedBinlog != "" {
+		if !slices.Contains(seg.Binlogs, status.LastArchivedBinlog) {
+			seg.Binlogs = append(seg.Binlogs, status.LastArchivedBinlog)
+		}
+	}
 
 	// Recompute the cumulative covered set across every segment.
 	cumulative := replication.GTIDSet{}
