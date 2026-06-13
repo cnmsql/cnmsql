@@ -298,6 +298,76 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 	}
 }
 
+func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	// Fresh recovery: no primary established yet.
+	cluster.Status.CurrentPrimary = ""
+	immediate := false
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{
+		Recovery: &mysqlv1alpha1.BootstrapRecovery{
+			Backup: &mysqlv1alpha1.LocalObjectReference{Name: "backup-sample"},
+			RecoveryTarget: &mysqlv1alpha1.RecoveryTarget{
+				TargetTime:      "2026-06-12T10:30:00Z",
+				TargetImmediate: &immediate,
+			},
+		},
+	}
+
+	backup := baseBackup()
+	backup.Status = mysqlv1alpha1.BackupStatus{
+		Phase:    mysqlv1alpha1.BackupPhaseCompleted,
+		BackupID: "backup-sample-123",
+	}
+
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, backup).Build(),
+		Scheme: scheme,
+	}
+
+	plan, err := reconciler.buildPlan(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Recovery == nil || !plan.Recovery.HasTarget {
+		t.Fatal("plan.Recovery.HasTarget should be set for a recovery with a target")
+	}
+	if plan.Recovery.SourceCluster != cluster.Name {
+		t.Fatalf("source cluster = %q, want %q", plan.Recovery.SourceCluster, cluster.Name)
+	}
+
+	spec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+	initArgs := strings.Join(spec.InitContainers[0].Args, " ")
+	for _, want := range []string{
+		"instance restore",
+		"--source-cluster=demo",
+		"--target-time=2026-06-12T10:30:00Z",
+	} {
+		if !strings.Contains(initArgs, want) {
+			t.Fatalf("PITR restore init args missing %q:\n%s", want, initArgs)
+		}
+	}
+	if strings.Contains(initArgs, "--target-immediate") {
+		t.Fatalf("targetImmediate=false must not emit the flag: %s", initArgs)
+	}
+
+	// The bucket/path env the replay worker needs to rebuild binlog keys.
+	var hasBucket, hasPath bool
+	for _, env := range spec.InitContainers[0].Env {
+		switch env.Name {
+		case "CNMYSQL_S3_BUCKET":
+			hasBucket = env.Value == "cluster-backups"
+		case "CNMYSQL_S3_PATH":
+			hasPath = env.Value == "clusters"
+		}
+	}
+	if !hasBucket || !hasPath {
+		t.Fatalf("recovery init container missing bucket/path env (bucket=%t path=%t)", hasBucket, hasPath)
+	}
+}
+
 func TestRecoveryBootstrapWaitsForCompletedBackup(t *testing.T) {
 	t.Parallel()
 

@@ -76,8 +76,21 @@ type recoveryPlan struct {
 	ArchiveKey  string
 	MetadataKey string
 	// StoreEnv carries the CNMYSQL_S3_* environment (endpoint, region, signing,
-	// credentials) the restore worker needs to reach the object store.
+	// credentials, bucket, path) the restore worker needs to reach the object
+	// store and reconstruct binlog archive keys.
 	StoreEnv []corev1.EnvVar
+
+	// The fields below drive point-in-time recovery (M7.2). HasTarget is set when
+	// spec.bootstrap.recovery.recoveryTarget is present; the restore worker then
+	// replays archived binlogs from SourceCluster's archive up to the target.
+	HasTarget       bool
+	SourceCluster   string
+	TargetTime      string
+	TargetGTID      string
+	TargetImmediate bool
+	// Store is the resolved (defaulted) recovery object store, used by the
+	// operator's up-front recovery-target satisfiability check.
+	Store mysqlv1alpha1.S3ObjectStore
 }
 
 // instancePlan holds the per-instance derived names and identity.
@@ -266,12 +279,30 @@ func (r *ClusterReconciler) resolveRecovery(
 	if err != nil {
 		return nil, err
 	}
-	return &recoveryPlan{
-		Bucket:      store.Bucket,
-		ArchiveKey:  keys.ArchiveKey,
-		MetadataKey: keys.MetadataKey,
-		StoreEnv:    backupObjectStoreEnv(*store),
-	}, nil
+
+	// The binlog archive is partitioned under the source cluster's prefix; the
+	// restore worker reconstructs its keys from the bucket/path env plus this name.
+	sourceCluster := backup.Spec.Cluster.Name
+	storeEnv := append(backupObjectStoreEnv(*store),
+		corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
+		corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
+	)
+
+	plan := &recoveryPlan{
+		Bucket:        store.Bucket,
+		ArchiveKey:    keys.ArchiveKey,
+		MetadataKey:   keys.MetadataKey,
+		StoreEnv:      storeEnv,
+		SourceCluster: sourceCluster,
+		Store:         *store,
+	}
+	if target := rec.RecoveryTarget; target != nil {
+		plan.HasTarget = true
+		plan.TargetTime = target.TargetTime
+		plan.TargetGTID = target.TargetGTID
+		plan.TargetImmediate = target.TargetImmediate != nil && *target.TargetImmediate
+	}
+	return plan, nil
 }
 
 // recoveryObjectStore picks the object store to recover from: the Backup's own

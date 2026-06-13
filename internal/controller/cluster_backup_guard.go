@@ -25,6 +25,7 @@ import (
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
 )
 
 // backupDestinationCheck reports the outcome of the empty-archive safety check.
@@ -82,6 +83,75 @@ func (r *ClusterReconciler) checkBackupDestination(
 			store.Bucket, prefix)}
 	}
 	return backupDestinationCheck{}
+}
+
+// recoveryTargetCheck reports the outcome of the up-front point-in-time recovery
+// satisfiability check.
+type recoveryTargetCheck struct {
+	// Blocked is a non-empty reason when the recovery target cannot be satisfied
+	// by the archive (e.g. a targetGTID beyond the archived coverage).
+	Blocked string
+	// Retry is set when satisfiability could not be verified (the object store is
+	// unreachable or the archive index is not present yet); the caller requeues.
+	Retry error
+}
+
+// checkRecoveryTarget validates, before any instance is provisioned, that a
+// point-in-time recovery target is reachable from the archive. It is the
+// operator-side complement to the init-container's PlanReplay guard: it gives
+// fast, clear feedback (a Blocked condition) instead of a CrashLooping Pod when
+// the target is obviously unsatisfiable.
+//
+// It only does work the operator can cheaply check from the cluster-level
+// archive index — chiefly that a targetGTID is within the cumulative coverage.
+// The precise "older than the base backup" / timeline checks need the base
+// backup's anchor GTID and run in the init container.
+func (r *ClusterReconciler) checkRecoveryTarget(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	plan clusterPlan,
+) recoveryTargetCheck {
+	if plan.Recovery == nil || !plan.Recovery.HasTarget {
+		return recoveryTargetCheck{}
+	}
+	if cluster.Status.CurrentPrimary != "" {
+		// The primary already recovered; don't re-validate on every resync.
+		return recoveryTargetCheck{}
+	}
+
+	store := plan.Recovery.Store
+	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, &store)
+	if err != nil {
+		return recoveryTargetCheck{Retry: err}
+	}
+	client, err := objectstore.NewClient(cfg)
+	if err != nil {
+		return recoveryTargetCheck{Retry: err}
+	}
+
+	indexKey := objectstore.ArchiveIndexKey(store, plan.Recovery.SourceCluster)
+	var index objectstore.ArchiveIndex
+	if err := client.GetJSON(ctx, store.Bucket, indexKey, &index); err != nil {
+		// The archive index is missing or unreadable. A recovery target needs a
+		// binlog archive; requeue so a still-initialising archive can appear.
+		return recoveryTargetCheck{Retry: fmt.Errorf("reading archive index %q: %w", indexKey, err)}
+	}
+
+	// The only cheap, anchor-free check: a targetGTID must be within the
+	// archive's cumulative coverage.
+	if plan.Recovery.TargetGTID != "" {
+		contained, err := replication.GTIDContains(index.CoveredGTIDSet, plan.Recovery.TargetGTID)
+		if err != nil {
+			return recoveryTargetCheck{Blocked: fmt.Sprintf(
+				"Invalid recovery targetGTID or archive coverage: %v", err)}
+		}
+		if !contained {
+			return recoveryTargetCheck{Blocked: fmt.Sprintf(
+				"Recovery targetGTID %q is beyond the archived binlog coverage %q; the archive cannot replay to it",
+				plan.Recovery.TargetGTID, index.CoveredGTIDSet)}
+		}
+	}
+	return recoveryTargetCheck{}
 }
 
 // objectStoreConfig resolves an object store plus its secret-backed credentials

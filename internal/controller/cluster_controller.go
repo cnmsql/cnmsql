@@ -200,6 +200,30 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		})
 	}
 
+	// For a point-in-time recovery, fail fast with a clear condition when the
+	// target is obviously unsatisfiable (e.g. a targetGTID beyond the archive)
+	// rather than provisioning a primary whose init container will CrashLoop.
+	if check := r.checkRecoveryTarget(ctx, cluster, plan); check.Retry != nil {
+		log.Info("Could not verify recovery target, will retry", "error", check.Retry.Error())
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseProvisioning,
+			PhaseReason: "Verifying recovery target is reachable from the archive",
+			Ready:       false,
+			Progressing: true,
+			Plan:        plan,
+		})
+	} else if check.Blocked != "" {
+		log.Info("Blocking cluster: recovery target is unsatisfiable", "reason", check.Blocked)
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "RecoveryTargetUnsatisfiable", check.Blocked)
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseBlocked,
+			PhaseReason: check.Blocked,
+			Ready:       false,
+			Progressing: false,
+			Plan:        plan,
+		})
+	}
+
 	// Remove replicas above the desired count (highest ordinal first), then
 	// provision instances in order, ramping up one replica at a time.
 	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {

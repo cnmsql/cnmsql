@@ -128,6 +128,57 @@ var _ = Describe("Cluster validation", func() {
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
 
+	recoveryCluster := func() *Cluster {
+		cluster := newValidCluster()
+		cluster.Spec.Backup = &BackupConfiguration{ObjectStore: &S3ObjectStore{Bucket: "backups"}}
+		cluster.Spec.Bootstrap = &BootstrapConfiguration{
+			Recovery: &BootstrapRecovery{Backup: &LocalObjectReference{Name: "base"}},
+		}
+		return cluster
+	}
+
+	It("accepts a recovery with a valid targetTime", func() {
+		cluster := recoveryCluster()
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{TargetTime: "2026-06-12T10:30:00Z"}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("accepts a recovery with a valid targetGTID", func() {
+		cluster := recoveryCluster()
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{
+			TargetGTID: "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-100",
+		}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects a malformed targetTime", func() {
+		cluster := recoveryCluster()
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{TargetTime: "yesterday"}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects a malformed targetGTID", func() {
+		cluster := recoveryCluster()
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{TargetGTID: "not-a-gtid"}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects more than one recovery target dimension", func() {
+		cluster := recoveryCluster()
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{
+			TargetTime: "2026-06-12T10:30:00Z",
+			TargetGTID: "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-100",
+		}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects a recovery target without an object store", func() {
+		cluster := recoveryCluster()
+		cluster.Spec.Backup = nil
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{TargetImmediate: ptrTo(true)}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
 	It("rejects a replica source missing from externalClusters", func() {
 		cluster := newValidCluster()
 		cluster.Spec.Replica = &ReplicaClusterConfiguration{Source: "origin"}

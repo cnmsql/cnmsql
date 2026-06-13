@@ -21,7 +21,11 @@ package integration
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"testing"
 
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
@@ -138,6 +142,126 @@ func TestBinlogArchivePrimitives(t *testing.T) {
 			t.Fatalf("previously active log %s should now be immutable", prevActive)
 		}
 	}
+}
+
+// TestBinlogReplayToTargetGTID proves the point-in-time recovery mechanism
+// end-to-end against real Percona: it generates writes on a source server,
+// copies the rotated binlog files onto a fresh target, and replays a
+// GTID-bounded range with the archiver's own ReplayArgs piped through
+// `mysqlbinlog | mysql`. The target must end with exactly the rows up to the
+// bound — the write past it must not appear.
+func TestBinlogReplayToTargetGTID(t *testing.T) {
+	ctx := context.Background()
+
+	net, err := tcnetwork.New(ctx)
+	if err != nil {
+		t.Fatalf("creating network: %v", err)
+	}
+	defer func() { _ = net.Remove(ctx) }()
+
+	source := startNode(ctx, t, net.Name, "pitr-source", 1)
+	defer source.close(ctx)
+
+	// Schema + three writes; rows 1 and 2 are the recovery target, row 3 is past it.
+	mustExec(ctx, t, source.db, "CREATE DATABASE demo")
+	mustExec(ctx, t, source.db, "CREATE TABLE demo.t (id INT PRIMARY KEY)")
+	mustExec(ctx, t, source.db, "INSERT INTO demo.t VALUES (1)")
+	mustExec(ctx, t, source.db, "INSERT INTO demo.t VALUES (2)")
+
+	// gtid_executed here is the recovery bound: everything up to and including
+	// row 2 (schema + rows 1,2). Row 3 is committed afterwards and excluded.
+	includeGTIDs := gtidExecuted(ctx, t, source.db)
+	mustExec(ctx, t, source.db, "INSERT INTO demo.t VALUES (3)")
+
+	// Rotate so every file carrying the writes is immutable and shippable.
+	mustExec(ctx, t, source.db, "FLUSH BINARY LOGS")
+	reader := binlog.NewReader(source.db)
+	logs, err := reader.ListBinaryLogs(ctx)
+	if err != nil {
+		t.Fatalf("ListBinaryLogs: %v", err)
+	}
+
+	target := startNode(ctx, t, net.Name, "pitr-target", 2)
+	defer target.close(ctx)
+
+	// Copy every immutable source file into the target container.
+	var targetFiles []string
+	for _, l := range logs {
+		if l.Active {
+			continue
+		}
+		data := copyOutOfContainer(ctx, t, source, "/var/lib/mysql/"+l.Name)
+		dst := "/tmp/" + l.Name
+		if err := target.container.CopyToContainer(ctx, data, dst, 0o644); err != nil {
+			t.Fatalf("copying %s into target: %v", l.Name, err)
+		}
+		targetFiles = append(targetFiles, dst)
+	}
+	sort.Strings(targetFiles)
+
+	// Replay the bounded range with the archiver's own ReplayArgs, piped through
+	// `mysqlbinlog | mysql` inside the target — the exact shape instance.Restore
+	// runs during recovery.
+	replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
+		Files:        targetFiles,
+		IncludeGTIDs: includeGTIDs,
+	})
+	if err != nil {
+		t.Fatalf("ReplayArgs: %v", err)
+	}
+	replay := fmt.Sprintf("mysqlbinlog %s | mysql -uroot -p%s",
+		strings.Join(replayArgs, " "), rootPassword)
+	code, out, err := target.container.Exec(ctx, []string{"sh", "-c", replay}, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("exec replay: %v", err)
+	}
+	if code != 0 {
+		data, _ := io.ReadAll(out)
+		t.Fatalf("replay exited %d: %s", code, string(data))
+	}
+
+	// The target must hold rows 1 and 2 (the bound) and not row 3 (past it).
+	rows, err := target.db.QueryContext(ctx, "SELECT id FROM demo.t ORDER BY id")
+	if err != nil {
+		t.Fatalf("querying target: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var got []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, id)
+	}
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("recovered rows = %v, want [1 2] (row 3 must be excluded)", got)
+	}
+}
+
+// gtidExecuted returns the server's current @@GLOBAL.gtid_executed.
+func gtidExecuted(ctx context.Context, t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var executed string
+	if err := db.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&executed); err != nil {
+		t.Fatalf("reading gtid_executed: %v", err)
+	}
+	return executed
+}
+
+// copyOutOfContainer reads a file out of a container and returns its bytes.
+func copyOutOfContainer(ctx context.Context, t *testing.T, node *perconaNode, path string) []byte {
+	t.Helper()
+	rc, err := node.container.CopyFileFromContainer(ctx, path)
+	if err != nil {
+		t.Fatalf("copying %s out of container: %v", path, err)
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return data
 }
 
 // mysqlbinlogInContainer runs mysqlbinlog inside the Percona container with the

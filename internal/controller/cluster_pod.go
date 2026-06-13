@@ -116,9 +116,10 @@ func bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instan
 }
 
 // restoreArgs builds the recovering primary's init-container command: download
-// and restore a physical backup from object storage into the data directory.
+// and restore a physical backup from object storage into the data directory,
+// then (for point-in-time recovery) replay archived binlogs up to the target.
 func restoreArgs(plan clusterPlan) []string {
-	return []string{
+	args := []string{
 		"instance", "restore",
 		"--data-dir=" + dataDir,
 		"--backup-dir=" + joinBackupDir,
@@ -134,6 +135,21 @@ func restoreArgs(plan clusterPlan) []string {
 		"--control-user=" + controlUser,
 		"--backup-user=" + backupUser,
 	}
+	// Point-in-time recovery: replay archived binlogs after the base restore.
+	// --source-cluster enables the replay; bucket/path come from CNMYSQL_S3_* env.
+	if plan.Recovery.HasTarget {
+		args = append(args, "--source-cluster="+plan.Recovery.SourceCluster)
+		if plan.Recovery.TargetTime != "" {
+			args = append(args, "--target-time="+plan.Recovery.TargetTime)
+		}
+		if plan.Recovery.TargetGTID != "" {
+			args = append(args, "--target-gtid="+plan.Recovery.TargetGTID)
+		}
+		if plan.Recovery.TargetImmediate {
+			args = append(args, "--target-immediate")
+		}
+	}
+	return args
 }
 
 func initdbArgs(initdb *mysqlv1alpha1.BootstrapInitDB) []string {

@@ -17,8 +17,19 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"regexp"
+	"time"
+
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
+
+// gtidSetSyntaxRe matches a MySQL GTID set: one or more comma-separated
+// "<uuid>:<interval[:interval...]>" terms, each interval being "n" or "m-n".
+// This is a syntactic gate for admission; semantic containment is checked in
+// the controller/instance recovery paths via replication.ParseGTIDSet.
+var gtidSetSyntaxRe = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+(-[0-9]+)?(:[0-9]+(-[0-9]+)?)*` +
+		`(,[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+(-[0-9]+)?(:[0-9]+(-[0-9]+)?)*)*$`)
 
 // SetDefaults fills in the unset fields of the Cluster spec with their default
 // values. It is idempotent. Defaults declared via kubebuilder markers are
@@ -166,6 +177,66 @@ func (spec *ClusterSpec) validateBootstrap(path *field.Path) field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(
 			path, spec.Bootstrap,
 			"only one of initdb or recovery can be specified"))
+	}
+	if spec.Bootstrap.Recovery != nil {
+		allErrs = append(allErrs, spec.validateRecovery(path.Child("recovery"))...)
+	}
+	return allErrs
+}
+
+// validateRecovery checks the recovery bootstrap, in particular the
+// point-in-time recovery target. PG-only targets (targetName/targetLSN) are
+// rejected by construction: RecoveryTarget has no such fields.
+func (spec *ClusterSpec) validateRecovery(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	rec := spec.Bootstrap.Recovery
+	if rec.Backup == nil || rec.Backup.Name == "" {
+		allErrs = append(allErrs, field.Required(
+			path.Child("backup"), "recovery requires a backup reference"))
+	}
+
+	target := rec.RecoveryTarget
+	if target == nil {
+		return allErrs
+	}
+	tPath := path.Child("recoveryTarget")
+
+	// A point-in-time target is replayed from the binlog archive, which only
+	// exists when continuous archiving is configured against an object store.
+	if spec.Backup == nil || spec.Backup.ObjectStore == nil {
+		allErrs = append(allErrs, field.Invalid(
+			tPath, target,
+			"recoveryTarget requires backup.objectStore to be configured for binlog replay"))
+	}
+
+	// At most one of targetTime / targetGTID / targetImmediate may be set.
+	set := 0
+	if target.TargetTime != "" {
+		set++
+	}
+	if target.TargetGTID != "" {
+		set++
+	}
+	if target.TargetImmediate != nil && *target.TargetImmediate {
+		set++
+	}
+	if set > 1 {
+		allErrs = append(allErrs, field.Invalid(
+			tPath, target,
+			"at most one of targetTime, targetGTID or targetImmediate may be specified"))
+	}
+
+	if target.TargetTime != "" {
+		if _, err := time.Parse(time.RFC3339, target.TargetTime); err != nil {
+			allErrs = append(allErrs, field.Invalid(
+				tPath.Child("targetTime"), target.TargetTime,
+				"must be an RFC3339 timestamp"))
+		}
+	}
+	if target.TargetGTID != "" && !gtidSetSyntaxRe.MatchString(target.TargetGTID) {
+		allErrs = append(allErrs, field.Invalid(
+			tPath.Child("targetGTID"), target.TargetGTID,
+			"must be a valid GTID set (e.g. \"uuid:1-100\")"))
 	}
 	return allErrs
 }

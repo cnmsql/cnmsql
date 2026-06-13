@@ -26,6 +26,8 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/binlog"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/xtrabackup"
 )
@@ -79,6 +81,24 @@ type RestoreOptions struct {
 	ControlPassword string
 	BackupUser      string
 	BackupPassword  string
+
+	// The fields below drive point-in-time recovery (M7.2): after the base
+	// backup is restored, archived binlogs are downloaded and replayed up to the
+	// recovery target. Replay is enabled only when SourceCluster is set.
+	//
+	// ObjectStore identifies the bucket/path the binlog archive lives under so
+	// per-file keys can be reconstructed (the Client alone does not carry it).
+	ObjectStore mysqlv1alpha1.S3ObjectStore
+	// SourceCluster is the name of the cluster whose archive is replayed. Its
+	// presence enables the replay step. For same-cluster DR it is the original
+	// cluster name; the archive keys are partitioned under it.
+	SourceCluster string
+	// Target bounds the replay (targetTime / targetGTID / latest).
+	Target binlog.RecoveryTarget
+	// MysqlbinlogPath and MysqlPath are the binaries used to decode and apply the
+	// archived binlogs (default "mysqlbinlog" / "mysql").
+	MysqlbinlogPath string
+	MysqlPath       string
 }
 
 func (o *RestoreOptions) applyDefaults() {
@@ -96,6 +116,12 @@ func (o *RestoreOptions) applyDefaults() {
 	}
 	if o.ReadyTimeout == 0 {
 		o.ReadyTimeout = 2 * time.Minute
+	}
+	if o.MysqlbinlogPath == "" {
+		o.MysqlbinlogPath = "mysqlbinlog"
+	}
+	if o.MysqlPath == "" {
+		o.MysqlPath = "mysql"
 	}
 }
 
@@ -195,6 +221,15 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 	if opts.RootPassword != "" {
 		if err := opts.reconcileCredentials(ctx); err != nil {
 			return fmt.Errorf("reconciling restored credentials: %w", err)
+		}
+	}
+
+	// 6. Point-in-time recovery: replay archived binlogs onto the restored data
+	// up to the recovery target. Enabled only when a source cluster is set; a
+	// plain M6 restore leaves the data at the base-backup point.
+	if opts.SourceCluster != "" {
+		if err := opts.replayBinlogs(ctx); err != nil {
+			return fmt.Errorf("replaying archived binlogs: %w", err)
 		}
 	}
 

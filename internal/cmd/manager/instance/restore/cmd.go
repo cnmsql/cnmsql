@@ -19,10 +19,13 @@ limitations under the License.
 package restore
 
 import (
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/binlog"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/instance"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
 )
@@ -45,6 +48,14 @@ func NewCommand() *cobra.Command {
 		serverVersion  string
 		controlUser    string
 		backupUser     string
+
+		// Point-in-time recovery (M7.2).
+		sourceCluster   string
+		targetTime      string
+		targetGTID      string
+		targetImmediate bool
+		mysqlbinlogPath string
+		mysqlPath       string
 	)
 
 	cmd := &cobra.Command{
@@ -62,6 +73,21 @@ func NewCommand() *cobra.Command {
 			if serverVersion == "" {
 				serverVersion = os.Getenv("MYSQL_VERSION")
 			}
+
+			// Resolve the optional point-in-time recovery target. Replay is enabled
+			// only when --source-cluster is set; the bucket/path come from the same
+			// CNMYSQL_S3_* env the run container receives.
+			var target binlog.RecoveryTarget
+			if targetTime != "" {
+				ts, err := time.Parse(time.RFC3339, targetTime)
+				if err != nil {
+					return fmt.Errorf("invalid --target-time %q: %w", targetTime, err)
+				}
+				target.Time = &ts
+			}
+			target.GTID = targetGTID
+			target.Immediate = targetImmediate
+
 			return instance.Restore(cmd.Context(), instance.RestoreOptions{
 				Store:          store,
 				Bucket:         bucket,
@@ -84,6 +110,13 @@ func NewCommand() *cobra.Command {
 				ControlPassword: os.Getenv("MYSQL_CONTROL_PASSWORD"),
 				BackupUser:      backupUser,
 				BackupPassword:  os.Getenv("MYSQL_BACKUP_PASSWORD"),
+				// Point-in-time recovery: object-store layout from env, archive
+				// cluster + target from flags.
+				ObjectStore:     objectstore.StoreFromEnv(),
+				SourceCluster:   sourceCluster,
+				Target:          target,
+				MysqlbinlogPath: mysqlbinlogPath,
+				MysqlPath:       mysqlPath,
 			})
 		},
 	}
@@ -103,6 +136,15 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version; gates ALTER USER vs SET PASSWORD syntax")
 	cmd.Flags().StringVar(&controlUser, "control-user", "", "Control account to reset to MYSQL_CONTROL_PASSWORD after restore")
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup account to reset to MYSQL_BACKUP_PASSWORD after restore")
+
+	// Point-in-time recovery (M7.2): replay archived binlogs after the base
+	// restore. Enabled by --source-cluster; bucket/path come from CNMYSQL_S3_*.
+	cmd.Flags().StringVar(&sourceCluster, "source-cluster", "", "Name of the cluster whose binlog archive to replay; enables point-in-time recovery")
+	cmd.Flags().StringVar(&targetTime, "target-time", "", "Replay archived binlogs up to this RFC3339 timestamp")
+	cmd.Flags().StringVar(&targetGTID, "target-gtid", "", "Replay archived binlogs up to this GTID set")
+	cmd.Flags().BoolVar(&targetImmediate, "target-immediate", false, "Stop replay as soon as a consistent state is reached")
+	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "mysqlbinlog", "Path to the mysqlbinlog binary used to decode archived binlogs")
+	cmd.Flags().StringVar(&mysqlPath, "mysql", "mysql", "Path to the mysql client binary used to apply the replay")
 
 	return cmd
 }
