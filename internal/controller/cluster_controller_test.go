@@ -38,6 +38,7 @@ import (
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
 
@@ -99,11 +100,32 @@ func (readyStatusClient) ConfigureReplica(context.Context, *mysqlv1alpha1.Cluste
 	return nil
 }
 
+func (readyStatusClient) ListUsers(context.Context, *mysqlv1alpha1.Cluster, string) (*user.ListUsersResponse, error) {
+	return &user.ListUsersResponse{}, nil
+}
+
+func (readyStatusClient) CreateUser(context.Context, *mysqlv1alpha1.Cluster, string, user.CreateUserRequest) error {
+	return nil
+}
+
+func (readyStatusClient) AlterUser(context.Context, *mysqlv1alpha1.Cluster, string, user.AlterUserRequest) error {
+	return nil
+}
+
+func (readyStatusClient) DropUser(context.Context, *mysqlv1alpha1.Cluster, string, user.DropUserRequest) error {
+	return nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
 	promoted   []string
 	configured map[string]replication.SourceOptions
+
+	users   []user.UserInfo
+	created []user.CreateUserRequest
+	altered []user.AlterUserRequest
+	dropped []user.DropUserRequest
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
@@ -125,6 +147,25 @@ func (c *recordingControlClient) ConfigureReplica(_ context.Context, _ *mysqlv1a
 		c.configured = map[string]replication.SourceOptions{}
 	}
 	c.configured[instanceName] = source
+	return nil
+}
+
+func (c *recordingControlClient) ListUsers(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string) (*user.ListUsersResponse, error) {
+	return &user.ListUsersResponse{Users: c.users}, nil
+}
+
+func (c *recordingControlClient) CreateUser(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.CreateUserRequest) error {
+	c.created = append(c.created, req)
+	return nil
+}
+
+func (c *recordingControlClient) AlterUser(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.AlterUserRequest) error {
+	c.altered = append(c.altered, req)
+	return nil
+}
+
+func (c *recordingControlClient) DropUser(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.DropUserRequest) error {
+	c.dropped = append(c.dropped, req)
 	return nil
 }
 

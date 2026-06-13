@@ -313,6 +313,49 @@ var _ = Describe("Cluster validation", func() {
 		}}
 		Expect(cluster.Validate()).To(BeEmpty())
 	})
+
+	It("accepts a valid managed role", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Managed = &ManagedConfiguration{Roles: []RoleConfiguration{
+			{Name: "app", Host: "%", RequireTLS: "x509",
+				Privileges: []RolePrivilege{{Privileges: []string{"SELECT"}, On: "app.*"}}},
+		}}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects a reserved managed role name", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Managed = &ManagedConfiguration{Roles: []RoleConfiguration{
+			{Name: "cnmysql_repl", Host: "%"},
+		}}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects duplicate managed role name+host", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Managed = &ManagedConfiguration{Roles: []RoleConfiguration{
+			{Name: "app", Host: "%"},
+			{Name: "app", Host: "%"},
+		}}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects superuser combined with explicit privileges", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Managed = &ManagedConfiguration{Roles: []RoleConfiguration{
+			{Name: "app", Host: "%", Superuser: true,
+				Privileges: []RolePrivilege{{Privileges: []string{"SELECT"}}}},
+		}}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects an invalid requireTLS value", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Managed = &ManagedConfiguration{Roles: []RoleConfiguration{
+			{Name: "app", Host: "%", RequireTLS: "bogus"},
+		}}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
 })
 
 var _ = Describe("Cluster helpers", func() {

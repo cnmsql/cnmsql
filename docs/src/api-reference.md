@@ -326,6 +326,58 @@ The service template's `spec` exposes `type`, `externalTrafficPolicy`,
 `sessionAffinity`, `loadBalancerSourceRanges`, `externalName`, and
 `healthCheckNodePort`. The selector, ports, and `clusterIP` are operator-managed.
 
+### Managed roles
+
+`spec.managed.roles` declares MySQL users (roles) the operator reconciles on the
+primary. The operator lists the live users, diffs them against the spec, and
+issues the minimal `CREATE USER` / `ALTER USER` / `DROP USER` needed. Passwords
+are read from a referenced Secret; when `passwordSecret` is omitted the operator
+generates a password and stores it in a Secret named `<cluster>-<roleName>`
+(key `password`).
+
+```yaml
+spec:
+  managed:
+    roles:
+      - name: app
+        host: "%"
+        ensure: present
+        passwordSecret:
+          name: app-credentials
+          key: password
+        requireTLS: x509
+        maxUserConnections: 50
+        privileges:
+          - privileges: [SELECT, INSERT, UPDATE, DELETE]
+            on: app.*
+      - name: readonly
+        ensure: present           # operator-generated password
+        privileges:
+          - privileges: [SELECT]
+            on: app.*
+      - name: legacy
+        ensure: absent            # dropped if present
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | string | MySQL user name (max 32 chars). Reserved names (`root`, `mysql.*`, `cnmysql_*`) are rejected. |
+| `host` | string | MySQL host part. Defaults to `%`. |
+| `ensure` | enum | `present` (default) or `absent`. |
+| `passwordSecret` | object | `{name, key}` selecting the password. Omit for an operator-generated password. |
+| `superuser` | bool | Grants `ALL PRIVILEGES ON *.* WITH GRANT OPTION`. Mutually exclusive with `privileges`. |
+| `maxUserConnections` | int32 | Per-account simultaneous-connection limit. `0` = no limit. |
+| `maxQueriesPerHour` | int32 | Hourly query limit. `0` = no limit. |
+| `maxUpdatesPerHour` | int32 | Hourly update limit. `0` = no limit. |
+| `maxConnectionsPerHour` | int32 | Hourly connection limit. `0` = no limit. |
+| `requireTLS` | enum | `none` (default), `ssl`, or `x509`. |
+| `privileges` | array | Grants: `{privileges: [...], on: "db.*"}`. `on` defaults to `*.*`. |
+
+Users present in MySQL but not declared in `spec.managed.roles` are left
+untouched. To remove one, declare it with `ensure: absent`. Reconciliation runs
+after the cluster reaches `Ready`; outcomes appear in
+`status.managedRolesStatus`.
+
 ### External clusters
 
 `externalClusters` defines named external sources for future replica or raw
@@ -371,6 +423,7 @@ current implementation status before relying on these fields.
 | `certificates` | Resolved certificate Secret names and managed certificate expirations. |
 | `continuousArchiving` | Binlog archive health and frontier. |
 | `lastRetentionRunTime` | Last retention GC pass time. |
+| `managedRolesStatus` | Per-role reconciliation state: `byStatus`, `cannotReconcile`, and applied `passwordStatus`. |
 | `observedGeneration` | Last reconciled generation. |
 | `conditions` | Kubernetes conditions such as `Ready`, `Progressing`, `Degraded`. |
 

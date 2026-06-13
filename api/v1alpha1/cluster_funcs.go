@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -189,8 +190,67 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateReplica(specPath.Child("replica"))...)
 	allErrs = append(allErrs, spec.validateBackup(specPath.Child("backup"))...)
 	allErrs = append(allErrs, spec.validateManagedServices(specPath.Child("managed", "services"))...)
+	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
 
 	return allErrs
+}
+
+// validateManagedRoles checks the declarative managed roles: names must be
+// unique per host, must not collide with reserved accounts, must specify a
+// host, must not mix superuser with explicit privileges, and must use a valid
+// RequireTLS value.
+func (spec *ClusterSpec) validateManagedRoles(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if spec.Managed == nil || len(spec.Managed.Roles) == 0 {
+		return allErrs
+	}
+
+	seen := map[string]bool{}
+	for i := range spec.Managed.Roles {
+		role := &spec.Managed.Roles[i]
+		rolePath := path.Index(i)
+
+		if role.Name == "" {
+			allErrs = append(allErrs, field.Required(rolePath.Child("name"), "role name is required"))
+			continue
+		}
+		if isReservedRoleName(role.Name) {
+			allErrs = append(allErrs, field.Invalid(
+				rolePath.Child("name"), role.Name,
+				"role name is reserved (root, mysql.*, cnmysql_*)"))
+		}
+		if role.Host == "" {
+			allErrs = append(allErrs, field.Required(rolePath.Child("host"), "role host is required"))
+		}
+		key := role.Name + "@" + role.Host
+		if seen[key] {
+			allErrs = append(allErrs, field.Duplicate(rolePath, key))
+		}
+		seen[key] = true
+
+		if role.Superuser && len(role.Privileges) > 0 {
+			allErrs = append(allErrs, field.Invalid(
+				rolePath.Child("privileges"), role.Privileges,
+				"privileges cannot be set when superuser is true"))
+		}
+		switch role.RequireTLS {
+		case "", "none", "ssl", "x509":
+		default:
+			allErrs = append(allErrs, field.Invalid(
+				rolePath.Child("requireTLS"), role.RequireTLS,
+				"requireTLS must be one of none, ssl, x509"))
+		}
+	}
+	return allErrs
+}
+
+// isReservedRoleName reports whether a MySQL user name is reserved by MySQL or
+// the operator and must not be declared as a managed role.
+func isReservedRoleName(name string) bool {
+	if name == "root" {
+		return true
+	}
+	return strings.HasPrefix(name, "mysql.") || strings.HasPrefix(name, "cnmysql_")
 }
 
 // validateManagedServices checks the user-defined service exposition: the rw

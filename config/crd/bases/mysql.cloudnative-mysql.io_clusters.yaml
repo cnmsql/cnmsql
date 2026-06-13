@@ -2111,6 +2111,113 @@ spec:
                   Managed describes the resources (roles, services) managed declaratively by
                   the operator.
                 properties:
+                  roles:
+                    description: |-
+                      Roles is the list of MySQL users (roles) managed declaratively on the
+                      primary instance.
+                    items:
+                      description: |-
+                        RoleConfiguration describes a MySQL user managed declaratively against the
+                        primary instance.
+                      properties:
+                        ensure:
+                          allOf:
+                          - enum:
+                            - present
+                            - absent
+                          - enum:
+                            - present
+                            - absent
+                          default: present
+                          description: Ensure controls whether the user should exist
+                            or be absent.
+                          type: string
+                        host:
+                          default: '%'
+                          description: Host is the MySQL host part. Defaults to "%".
+                          type: string
+                        maxConnectionsPerHour:
+                          description: MaxConnectionsPerHour resource limit. 0 = no
+                            limit.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        maxQueriesPerHour:
+                          description: MaxQueriesPerHour resource limit. 0 = no limit.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        maxUpdatesPerHour:
+                          description: MaxUpdatesPerHour resource limit. 0 = no limit.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        maxUserConnections:
+                          description: MaxUserConnections resource limit. 0 = no limit.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        name:
+                          description: Name is the MySQL user name.
+                          maxLength: 32
+                          type: string
+                        passwordSecret:
+                          description: |-
+                            PasswordSecret references a Secret key holding the user's password. When
+                            unset, the operator generates a password and stores it in a Secret named
+                            "<cluster>-<name>" with key "password".
+                          properties:
+                            key:
+                              description: Key within the Secret to select
+                              type: string
+                            name:
+                              description: Name of the Secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        privileges:
+                          description: |-
+                            Privileges are grants (global or per-database). Mutually exclusive with
+                            Superuser.
+                          items:
+                            description: RolePrivilege is a grant of one or more privileges
+                              on a target.
+                            properties:
+                              "on":
+                                description: On is the target (e.g. "*.*", "mydb.*").
+                                  Defaults to "*.*".
+                                type: string
+                              privileges:
+                                description: Privileges is the grant list (SELECT,
+                                  INSERT, ALL, etc.).
+                                items:
+                                  type: string
+                                minItems: 1
+                                type: array
+                            required:
+                            - privileges
+                            type: object
+                          type: array
+                        requireTLS:
+                          default: none
+                          description: 'RequireTLS sets the connection TLS requirement:
+                            x509, ssl, or none.'
+                          enum:
+                          - x509
+                          - ssl
+                          - none
+                          type: string
+                        superuser:
+                          default: false
+                          description: Superuser grants ALL PRIVILEGES on *.* WITH
+                            GRANT OPTION.
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    type: array
                   services:
                     description: Services describes the services managed for the cluster.
                     properties:
@@ -3587,6 +3694,46 @@ spec:
                 description: LatestGeneratedNode is the serial of the latest generated
                   instance.
                 type: integer
+              managedRolesStatus:
+                description: |-
+                  ManagedRolesStatus reports the reconciliation state of the declarative
+                  managed roles.
+                properties:
+                  byStatus:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: ByStatus groups managed role names by their reconciliation
+                      status.
+                    type: object
+                  cannotReconcile:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: CannotReconcile maps a role name to the reasons it
+                      could not be reconciled.
+                    type: object
+                  passwordStatus:
+                    additionalProperties:
+                      description: RolePasswordState records the password Secret version
+                        last applied for a role.
+                      properties:
+                        lastApplied:
+                          description: LastApplied is when the password was last applied.
+                          format: date-time
+                          type: string
+                        secretResourceVersion:
+                          description: |-
+                            SecretResourceVersion is the resourceVersion of the password Secret last
+                            applied.
+                          type: string
+                      type: object
+                    description: PasswordStatus tracks the applied password Secret
+                      version per role.
+                    type: object
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the generation observed by the
                   controller.

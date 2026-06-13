@@ -29,6 +29,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
 
@@ -82,6 +83,11 @@ const (
 // the operator only needs to read status.
 type InstanceControlClient interface {
 	Status(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error)
+
+	ListUsers(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListUsersResponse, error)
+	CreateUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.CreateUserRequest) error
+	AlterUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.AlterUserRequest) error
+	DropUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.DropUserRequest) error
 }
 
 // ClusterReconciler reconciles a Cluster object.
@@ -278,14 +284,23 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !provisioned || !observed.Ready {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
-	// Expire base backups and uncoverable binlogs past the retention window.
-	// Best-effort: a transient object-store error must not fail the reconcile.
-	if err := r.reconcileRetention(ctx, cluster); err != nil {
-		log.Info("Backup retention pass failed, will retry", "error", err.Error())
-	}
+	r.reconcileSteadyState(ctx, cluster)
 	// Keep re-polling the instance managers so status (GTID, roles, readiness)
 	// stays fresh even when no Kubernetes event triggers a reconcile.
 	return ctrl.Result{RequeueAfter: readyResync}, nil
+}
+
+// reconcileSteadyState runs the best-effort, post-Ready reconciliations:
+// declarative managed roles and backup retention. Failures here are logged and
+// retried on the next resync rather than failing the whole reconcile.
+func (r *ClusterReconciler) reconcileSteadyState(ctx context.Context, cluster *mysqlv1alpha1.Cluster) {
+	log := logf.FromContext(ctx)
+	if err := r.reconcileManagedRoles(ctx, cluster); err != nil {
+		log.Info("Managed roles reconciliation failed, will retry", "error", err.Error())
+	}
+	if err := r.reconcileRetention(ctx, cluster); err != nil {
+		log.Info("Backup retention pass failed, will retry", "error", err.Error())
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

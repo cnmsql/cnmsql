@@ -544,6 +544,84 @@ type ManagedConfiguration struct {
 	// Services describes the services managed for the cluster.
 	// +optional
 	Services *ManagedServices `json:"services,omitempty"`
+
+	// Roles is the list of MySQL users (roles) managed declaratively on the
+	// primary instance.
+	// +optional
+	Roles []RoleConfiguration `json:"roles,omitempty"`
+}
+
+// RoleConfiguration describes a MySQL user managed declaratively against the
+// primary instance.
+type RoleConfiguration struct {
+	// Name is the MySQL user name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=32
+	Name string `json:"name"`
+
+	// Host is the MySQL host part. Defaults to "%".
+	// +kubebuilder:default:="%"
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Ensure controls whether the user should exist or be absent.
+	// +kubebuilder:validation:Enum=present;absent
+	// +kubebuilder:default:=present
+	// +optional
+	Ensure EnsureOption `json:"ensure,omitempty"`
+
+	// PasswordSecret references a Secret key holding the user's password. When
+	// unset, the operator generates a password and stores it in a Secret named
+	// "<cluster>-<name>" with key "password".
+	// +optional
+	PasswordSecret *SecretKeySelector `json:"passwordSecret,omitempty"`
+
+	// Superuser grants ALL PRIVILEGES on *.* WITH GRANT OPTION.
+	// +kubebuilder:default:=false
+	// +optional
+	Superuser bool `json:"superuser,omitempty"`
+
+	// MaxUserConnections resource limit. 0 = no limit.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxUserConnections int32 `json:"maxUserConnections,omitempty"`
+
+	// MaxQueriesPerHour resource limit. 0 = no limit.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxQueriesPerHour int32 `json:"maxQueriesPerHour,omitempty"`
+
+	// MaxUpdatesPerHour resource limit. 0 = no limit.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxUpdatesPerHour int32 `json:"maxUpdatesPerHour,omitempty"`
+
+	// MaxConnectionsPerHour resource limit. 0 = no limit.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxConnectionsPerHour int32 `json:"maxConnectionsPerHour,omitempty"`
+
+	// RequireTLS sets the connection TLS requirement: x509, ssl, or none.
+	// +kubebuilder:validation:Enum=x509;ssl;none
+	// +kubebuilder:default:=none
+	// +optional
+	RequireTLS string `json:"requireTLS,omitempty"`
+
+	// Privileges are grants (global or per-database). Mutually exclusive with
+	// Superuser.
+	// +optional
+	Privileges []RolePrivilege `json:"privileges,omitempty"`
+}
+
+// RolePrivilege is a grant of one or more privileges on a target.
+type RolePrivilege struct {
+	// Privileges is the grant list (SELECT, INSERT, ALL, etc.).
+	// +kubebuilder:validation:MinItems=1
+	Privileges []string `json:"privileges"`
+
+	// On is the target (e.g. "*.*", "mydb.*"). Defaults to "*.*".
+	// +optional
+	On string `json:"on,omitempty"`
 }
 
 // ManagedServices controls the services generated for the cluster.
@@ -793,6 +871,52 @@ type ClusterStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ManagedRolesStatus reports the reconciliation state of the declarative
+	// managed roles.
+	// +optional
+	ManagedRolesStatus *ManagedRolesStatus `json:"managedRolesStatus,omitempty"`
+}
+
+// ManagedRolesStatus reports the reconciliation state of managed roles.
+type ManagedRolesStatus struct {
+	// ByStatus groups managed role names by their reconciliation status.
+	// +optional
+	ByStatus map[ManagedRoleStatus][]string `json:"byStatus,omitempty"`
+
+	// CannotReconcile maps a role name to the reasons it could not be reconciled.
+	// +optional
+	CannotReconcile map[string][]string `json:"cannotReconcile,omitempty"`
+
+	// PasswordStatus tracks the applied password Secret version per role.
+	// +optional
+	PasswordStatus map[string]RolePasswordState `json:"passwordStatus,omitempty"`
+}
+
+// ManagedRoleStatus is the reconciliation state of a single managed role.
+type ManagedRoleStatus string
+
+const (
+	// ManagedRoleReconciled means the role matches its desired state.
+	ManagedRoleReconciled ManagedRoleStatus = "reconciled"
+	// ManagedRoleNotManaged means the MySQL user exists but is not managed.
+	ManagedRoleNotManaged ManagedRoleStatus = "not-managed"
+	// ManagedRolePendingReconciliation means the role still needs work.
+	ManagedRolePendingReconciliation ManagedRoleStatus = "pending-reconciliation"
+	// ManagedRoleReserved means the role name is reserved by the operator.
+	ManagedRoleReserved ManagedRoleStatus = "reserved"
+)
+
+// RolePasswordState records the password Secret version last applied for a role.
+type RolePasswordState struct {
+	// SecretResourceVersion is the resourceVersion of the password Secret last
+	// applied.
+	// +optional
+	SecretResourceVersion string `json:"secretResourceVersion,omitempty"`
+
+	// LastApplied is when the password was last applied.
+	// +optional
+	LastApplied metav1.Time `json:"lastApplied,omitempty"`
 }
 
 // ContinuousArchivingStatus reports the health and frontier of continuous
