@@ -159,6 +159,43 @@ var managedKeys = map[string]struct{}{
 	"expire_logs_days":           {},
 }
 
+// deniedKeys are [mysqld] keys that the operator does not itself set but which
+// would break the managed topology, leak the administrative interface, subvert
+// TLS, or relocate on-disk paths the operator relies on. They are rejected on
+// top of managedKeys so a user override cannot destabilise an instance.
+var deniedKeys = map[string]struct{}{
+	"basedir":                {},
+	"pid_file":               {},
+	"port":                   {},
+	"tmpdir":                 {},
+	"plugin_dir":             {},
+	"secure_file_priv":       {},
+	"log_error":              {},
+	"log_bin_basename":       {},
+	"relay_log_basename":     {},
+	"general_log_file":       {},
+	"slow_query_log_file":    {},
+	"server_uuid":            {},
+	"skip_slave_start":       {},
+	"skip_replica_start":     {},
+	"report_port":            {},
+	"auto_generate_certs":    {},
+	"admin_ssl_ca":           {},
+	"admin_ssl_cert":         {},
+	"admin_ssl_key":          {},
+	"admin_tls_ciphersuites": {},
+	"tls_ciphersuites":       {},
+}
+
+// deprecatedKeys maps [mysqld] keys that are accepted but discouraged to a
+// human-readable replacement. They produce a warning rather than a rejection.
+var deprecatedKeys = map[string]string{
+	"master_info_repository":    "removed on 8.0.23+; replication metadata is stored in tables",
+	"relay_log_info_repository": "removed on 8.0.23+; replication metadata is stored in tables",
+	"slave_parallel_workers":    "renamed to replica_parallel_workers on 8.0+",
+	"slave_parallel_type":       "renamed to replica_parallel_type on 8.0+",
+}
+
 // normalizeKey lowercases and converts dashes to underscores so that the
 // dash/underscore variants of a key compare equal.
 func normalizeKey(key string) string {
@@ -171,12 +208,24 @@ func IsManagedKey(key string) bool {
 	return ok
 }
 
+// IsDeniedKey reports whether the given my.cnf key is forbidden to users,
+// whether because the operator manages it or because overriding it would
+// destabilise the instance.
+func IsDeniedKey(key string) bool {
+	k := normalizeKey(key)
+	if _, ok := managedKeys[k]; ok {
+		return true
+	}
+	_, ok := deniedKeys[k]
+	return ok
+}
+
 // ValidateUserParameters returns an error listing any user parameters that
-// collide with operator-managed keys.
+// collide with operator-managed keys or are otherwise denied.
 func ValidateUserParameters(params map[string]string) error {
 	var conflicts []string
 	for key := range params {
-		if IsManagedKey(key) {
+		if IsDeniedKey(key) {
 			conflicts = append(conflicts, key)
 		}
 	}
@@ -186,6 +235,19 @@ func ValidateUserParameters(params map[string]string) error {
 	sort.Strings(conflicts)
 	return fmt.Errorf("the following parameters are managed by the operator and cannot be set: %s",
 		strings.Join(conflicts, ", "))
+}
+
+// DeprecatedUserParameters returns human-readable warnings for any user
+// parameters that are accepted but discouraged, sorted by key.
+func DeprecatedUserParameters(params map[string]string) []string {
+	var warnings []string
+	for key := range params {
+		if hint, ok := deprecatedKeys[normalizeKey(key)]; ok {
+			warnings = append(warnings, fmt.Sprintf("%s: %s", key, hint))
+		}
+	}
+	sort.Strings(warnings)
+	return warnings
 }
 
 // Render produces the my.cnf content for the given server configuration. It

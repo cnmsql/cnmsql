@@ -256,6 +256,42 @@ func TestRenderRejectsInvalidRoleAndVersion(t *testing.T) {
 	}
 }
 
+func TestValidateUserParametersRejectsDeniedKeys(t *testing.T) {
+	deniedAttempts := []string{
+		"datadir", "tmpdir", "plugin_dir", "secure_file_priv",
+		"admin_ssl_cert", "tls_ciphersuites",
+		"log-error", "PORT", "skip_replica_start",
+	}
+	for _, key := range deniedAttempts {
+		if !IsDeniedKey(key) {
+			t.Errorf("IsDeniedKey(%q) = false, want true", key)
+		}
+		c := baseConfig()
+		c.UserParameters = map[string]string{key: "x"}
+		if _, err := c.Render(); err == nil {
+			t.Errorf("expected Render() to reject denied parameter %q", key)
+		}
+	}
+}
+
+func TestDeprecatedUserParameters(t *testing.T) {
+	warnings := DeprecatedUserParameters(map[string]string{
+		"master_info_repository": "TABLE",
+		"max_connections":        "100",
+		"slave_parallel_workers": "4",
+	})
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %v, want 2", warnings)
+	}
+	joined := strings.Join(warnings, "|")
+	if !strings.Contains(joined, "master_info_repository") || !strings.Contains(joined, "slave_parallel_workers") {
+		t.Errorf("missing expected deprecation warnings, got: %v", warnings)
+	}
+	if strings.Contains(joined, "max_connections") {
+		t.Errorf("non-deprecated key should not warn, got: %v", warnings)
+	}
+}
+
 func TestValidateUserParametersListsAllConflicts(t *testing.T) {
 	err := ValidateUserParameters(map[string]string{
 		"server-id":       "5",

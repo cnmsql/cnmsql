@@ -527,6 +527,32 @@ func TestUnsupportedReasonNamesDeferredMilestones(t *testing.T) {
 	if got := unsupportedReason(cluster); got != "" {
 		t.Fatalf("recovery from backup should be supported, got %q", got)
 	}
+
+	// A denied my.cnf parameter blocks the cluster.
+	cluster = baseCluster()
+	cluster.Spec.MySQL.Parameters = map[string]string{"datadir": "/evil"}
+	if got := unsupportedReason(cluster); !strings.Contains(got, "spec.mysql.parameters") || !strings.Contains(got, "datadir") {
+		t.Fatalf("denied parameter unsupported reason = %q", got)
+	}
+}
+
+func TestWarnDeprecatedParametersEmitsEvent(t *testing.T) {
+	t.Parallel()
+	recorder := record.NewFakeRecorder(10)
+	r := &ClusterReconciler{Recorder: recorder}
+
+	cluster := baseCluster()
+	cluster.Spec.MySQL.Parameters = map[string]string{"slave_parallel_workers": "4"}
+	r.warnDeprecatedParameters(cluster)
+
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "DeprecatedParameter") || !strings.Contains(event, "slave_parallel_workers") {
+			t.Fatalf("event = %q, want DeprecatedParameter naming the key", event)
+		}
+	default:
+		t.Fatal("expected a DeprecatedParameter event")
+	}
 }
 
 func TestReconcileBlocksUnsupportedClusterShape(t *testing.T) {

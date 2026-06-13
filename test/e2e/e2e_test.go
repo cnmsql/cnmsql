@@ -382,6 +382,53 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("44"))
 			}, 6*time.Minute, 5*time.Second).Should(Succeed())
 		})
+
+		It("should block a cluster that sets a denied my.cnf parameter", func() {
+			By("applying a Cluster whose spec.mysql.parameters overrides datadir")
+			manifest := `apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+kind: Cluster
+metadata:
+  name: denied-param
+spec:
+  instances: 1
+  imageName: cnmysql-instance:8.4
+  storage:
+    size: 1Gi
+  mysql:
+    parameters:
+      datadir: /evil
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+`
+			applyManifest("denied-param", manifest)
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "cluster", "denied-param", "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("verifying the cluster is Blocked with a reason naming the denied key")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "denied-param",
+					"-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Blocked"))
+
+				cmd = exec.Command("kubectl", "get", "cluster", "denied-param",
+					"-o", "jsonpath={.status.phaseReason}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("datadir"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying no instance Pod is ever created for the blocked cluster")
+			cmd := exec.Command("kubectl", "get", "pod", "denied-param-1", "--ignore-not-found")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(BeEmpty(), "blocked cluster must not provision instances")
+		})
 	})
 })
 

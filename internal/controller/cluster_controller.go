@@ -136,6 +136,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		})
 	}
 
+	r.warnDeprecatedParameters(cluster)
+
 	plan, err := r.buildPlan(ctx, cluster)
 	if err != nil {
 		return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{

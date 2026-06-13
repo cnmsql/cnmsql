@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	mysqlconfig "github.com/yyewolf/cnmysql/pkg/management/mysql/config"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 )
@@ -179,7 +180,22 @@ func unsupportedReason(cluster *mysqlv1alpha1.Cluster) string {
 	case cluster.Spec.BinlogStorage != nil:
 		return "separate binlog storage is kept for a later milestone"
 	}
+	if err := mysqlconfig.ValidateUserParameters(cluster.Spec.MySQL.Parameters); err != nil {
+		return "spec.mysql.parameters: " + err.Error()
+	}
 	return ""
+}
+
+// warnDeprecatedParameters emits a Warning event for any user-supplied my.cnf
+// parameters that are accepted but discouraged (renamed or removed on supported
+// server versions), guiding users to the current spelling without blocking.
+func (r *ClusterReconciler) warnDeprecatedParameters(cluster *mysqlv1alpha1.Cluster) {
+	if r.Recorder == nil {
+		return
+	}
+	if warnings := mysqlconfig.DeprecatedUserParameters(cluster.Spec.MySQL.Parameters); len(warnings) > 0 {
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "DeprecatedParameter", strings.Join(warnings, "; "))
+	}
 }
 
 func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (clusterPlan, error) {

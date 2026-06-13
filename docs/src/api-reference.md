@@ -135,11 +135,30 @@ spec:
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `parameters` | map string/string | MySQL settings rendered under `[mysqld]`. Managed keys are protected. |
+| `parameters` | map string/string | MySQL settings rendered under `[mysqld]`. Denied keys block the cluster (see below). |
 | `binlogFormat` | `ROW`, `STATEMENT`, `MIXED` | Binary-log format. Default `ROW`; required for safe replication and PITR. |
 | `semiSync.enabled` | bool | Enable semi-synchronous replication. |
 | `semiSync.timeoutMillis` | integer | Wait timeout before falling back to async behavior. |
 | `additionalConfigFiles` | map string/string | Extra config files rendered into the MySQL config directory. |
+
+#### Denied and deprecated parameters
+
+`spec.mysql.parameters` is validated before any instance is provisioned. Keys are
+compared case-insensitively with dashes and underscores treated as equivalent
+(`log-bin` ≡ `log_bin`).
+
+- **Denied keys** set the cluster `phase: Blocked` with a reason naming the
+  offending key(s). These are either keys the operator manages directly
+  (replication identity and topology, TLS material, binlog durability) or keys
+  that would relocate on-disk paths or expose the administrative interface —
+  e.g. `server_id`, `gtid_mode`, `read_only`, `log_bin`, `ssl_cert`,
+  `sync_binlog`, `datadir`, `socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`,
+  `log_error`, `admin_address`, `admin_ssl_cert`, `tls_ciphersuites`,
+  `skip_replica_start`, `auto_generate_certs`. `require_secure_transport` is
+  **not** denied — requiring TLS for client connections is the user's choice.
+- **Deprecated keys** are accepted but emit a `DeprecatedParameter` warning event
+  pointing at the current spelling — e.g. `slave_parallel_workers`
+  (→ `replica_parallel_workers`), `master_info_repository` (removed on 8.0.23+).
 
 ### Storage
 
