@@ -22,7 +22,12 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 		backupName      = "full-backup"
 	)
 
+	var ns, prevNS string
+
 	BeforeAll(func() {
+		prevNS = testNamespace
+		ns = createTestNamespace("backup")
+
 		setupMinio()
 		DeferCleanup(teardownMinio)
 
@@ -115,6 +120,10 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 		reason, err := clusterField(guardCluster, "{.status.phaseReason}")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reason).To(ContainSubstring("not empty"))
+	})
+
+	AfterAll(func() {
+		deleteTestNamespace(ns, prevNS)
 	})
 })
 

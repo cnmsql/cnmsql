@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,22 +37,46 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "e2e suite")
 }
 
-var _ = BeforeSuite(func() {
+// SynchronizedBeforeSuite runs the one-time shared setup (image builds, operator
+// deployment) on Ginkgo parallel process 1 only, then runs the per-process wait
+// on every process so they all see a ready operator before any spec runs.
+var _ = SynchronizedBeforeSuite(func() []byte {
+	doSuiteSetup()
+	return nil
+}, func([]byte) {
+	By("waiting for the operator to be ready")
+	Eventually(func() string {
+		out, err := kubectl("get", "pods", "-l", "control-plane=controller-manager",
+			"-n", namespace, "-o", "jsonpath={.items[*].status.phase}")
+		if err != nil {
+			return ""
+		}
+		return out
+	}, 5*time.Minute, 5*time.Second).Should(ContainSubstring("Running"),
+		"controller-manager did not become ready")
+})
+
+// SynchronizedAfterSuite tears down the operator and cert-manager on process 1
+// only, after every parallel process has finished its specs.
+var _ = SynchronizedAfterSuite(func() {
+	// Per-process teardown (no-op — each spec handles its own namespace cleanup).
+}, func() {
+	undeployOperator()
+	teardownCertManager()
+})
+
+// doSuiteSetup is the one-time shared setup that runs on Ginkgo parallel
+// process 1 only, via SynchronizedBeforeSuite.
+func doSuiteSetup() {
 	By("building the manager image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
-	// Build and load every instance image the suite needs: 8.4 for the sample
-	// cluster spec plus each version the archiving matrix exercises. Building all
-	// four Percona flavors is deliberate — continuous archiving must be proven
-	// broadly compatible, so the e2e runs the same catastrophic scenarios on each.
 	for _, version := range neededInstanceVersions() {
 		buildAndLoadInstanceImage(version)
 	}
@@ -59,12 +84,7 @@ var _ = BeforeSuite(func() {
 	configureKubectlKubeRC()
 	setupCertManager()
 	deployOperator()
-})
-
-var _ = AfterSuite(func() {
-	undeployOperator()
-	teardownCertManager()
-})
+}
 
 // buildAndLoadInstanceImage builds this version's slim instance image and loads
 // it into the Kind cluster, so a Cluster pinned to cnmysql-instance:<version>

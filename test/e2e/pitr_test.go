@@ -33,9 +33,13 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 	var (
 		password   string
 		targetGTID string
+		ns, prevNS string
 	)
 
 	BeforeAll(func() {
+		prevNS = testNamespace
+		ns = createTestNamespace("pitr")
+
 		setupMinio()
 		DeferCleanup(teardownMinio)
 		setupMC()
@@ -106,6 +110,10 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(parseSingleValue(out)).To(Equal("0"),
 			"recovered cluster contains a write past the recovery target")
+	})
+
+	AfterAll(func() {
+		deleteTestNamespace(ns, prevNS)
 	})
 })
 

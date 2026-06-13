@@ -22,7 +22,14 @@ import (
 // supporting objects. The controller runs in `namespace` (cnmysql-system) and
 // watches all namespaces, so user-facing resources live here, mirroring how a
 // real user would deploy a Cluster outside the operator's namespace.
-const testNamespace = "default"
+// defaultTestNamespace is the fallback namespace for tests that do not create
+// their own. It is kept for backward compatibility; new parallel-friendly tests
+// call createTestNamespace instead.
+const defaultTestNamespace = "default"
+
+// testNamespace is the namespace currently targeted by helpers. Each parallel
+// test group sets this to its own namespace before creating resources.
+var testNamespace = defaultTestNamespace
 
 // minioBucket is the bucket pre-created in the in-cluster MinIO and targeted by
 // the backup/recovery specs.
@@ -46,18 +53,41 @@ const e2eMySQLParameters = `    parameters:
       max_connections: "80"
 `
 
-var _ = AfterEach(func() {
-	if !CurrentSpecReport().Failed() {
-		return
-	}
+// generateTestNamespace returns a unique namespace name using the current
+// Ginkgo parallel process id, so parallel nodes never collide.
+func generateTestNamespace(prefix string) string {
+	return fmt.Sprintf("e2e-%s-%d", prefix, GinkgoParallelProcess())
+}
 
-	dumpE2EDiagnostics()
-})
+// createTestNamespace creates a Kubernetes namespace for test resources and
+// returns the name. The caller is responsible for calling deleteTestNamespace.
+// It sets testNamespace to the result so downstream helpers target it.
+func createTestNamespace(prefix string) string {
+	ns := generateTestNamespace(prefix)
+	By(fmt.Sprintf("creating test namespace %s", ns))
+	_, err := kubectl("create", "ns", ns)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create namespace %s", ns)
+	testNamespace = ns
+	return ns
+}
 
-// kubectl runs a kubectl command from the project directory and returns its
-// combined output.
-func kubectl(args ...string) (string, error) {
-	return utils.Run(exec.Command("kubectl", args...))
+// deleteTestNamespace removes a Kubernetes namespace and waits for it to fully
+// terminate. It restores the testNamespace global to the caller-provided prev.
+func deleteTestNamespace(ns, prev string) {
+	By(fmt.Sprintf("deleting test namespace %s", ns))
+	_, _ = kubectl("delete", "ns", ns, "--ignore-not-found", "--wait=true", "--timeout=120s")
+	testNamespace = prev
+}
+
+// useNamespace temporarily sets the global testNamespace. Call with a
+// defer-recovered pattern:
+//
+//	prev := useNamespace(myNs)
+//	defer func() { testNamespace = prev }()
+func useNamespace(ns string) string {
+	prev := testNamespace
+	testNamespace = ns
+	return prev
 }
 
 func dumpE2EDiagnostics() {
@@ -65,10 +95,10 @@ func dumpE2EDiagnostics() {
 		name string
 		args []string
 	}{
-		{name: "test namespace pods", args: []string{"get", "pods", "-n", testNamespace, "-o", "wide"}},
-		{name: "test namespace clusters", args: []string{"get", "clusters", "-n", testNamespace, "-o", "yaml"}},
-		{name: "test namespace events", args: []string{"get", "events", "-n", testNamespace, "--sort-by=.lastTimestamp"}},
-		{name: "test namespace pod descriptions", args: []string{"describe", "pods", "-n", testNamespace}},
+		{name: "all clusters", args: []string{"get", "clusters", "-A", "-o", "yaml"}},
+		{name: "all pods", args: []string{"get", "pods", "-A", "-o", "wide"}},
+		{name: "all events", args: []string{"get", "events", "-A", "--sort-by=.lastTimestamp"}},
+		{name: "operator pod logs", args: []string{"logs", "-l", "control-plane=controller-manager", "-n", namespace, "--tail=100"}},
 		{name: "node capacity and pressure", args: []string{"describe", "nodes"}},
 	}
 	for _, dump := range dumps {
@@ -79,6 +109,12 @@ func dumpE2EDiagnostics() {
 		}
 		_, _ = fmt.Fprintf(GinkgoWriter, "\n%s:\n%s\n", dump.name, out)
 	}
+}
+
+// kubectl runs a kubectl command from the project directory and returns its
+// combined output.
+func kubectl(args ...string) (string, error) {
+	return utils.Run(exec.Command("kubectl", args...))
 }
 
 // applyManifest writes the given manifest to a temporary file and applies it,
@@ -97,7 +133,7 @@ func deleteManifest(name, manifest string) {
 }
 
 func writeManifest(name, manifest string) string {
-	path := filepath.Join("/tmp", "cnmysql-e2e-"+name+".yaml")
+	path := filepath.Join("/tmp", fmt.Sprintf("cnmysql-e2e-%s-%d.yaml", name, GinkgoParallelProcess()))
 	Expect(os.WriteFile(path, []byte(manifest), 0o644)).To(Succeed(), "Failed to write manifest %s", name)
 	return path
 }

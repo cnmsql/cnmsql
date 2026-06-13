@@ -420,7 +420,7 @@ func serviceAccountToken() (string, error) {
 	}`
 
 	By("creating temporary file to store the token request")
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
+	secretName := fmt.Sprintf("%s-token-request-%d", serviceAccountName, GinkgoParallelProcess())
 	tokenRequestFile := filepath.Join("/tmp", secretName)
 	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
 	if err != nil {

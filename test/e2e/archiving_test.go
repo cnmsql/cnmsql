@@ -24,18 +24,35 @@ import (
 // cluster-level archive index (_index.json) in object storage must report a
 // covered GTID set that is a superset of the server's gtid_executed. No
 // committed transaction may be missing from the archive.
-var _ = Describe("Continuous binlog archiving", Ordered, func() {
-	BeforeAll(func() {
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
-	})
+//
+// Each Percona version is declared as a separate Describe container so that
+// Ginkgo's --procs can run them in parallel across different processes. Each
+// version gets its own namespace and its own in-cluster MinIO so there is no
+// resource contention.
 
+func init() {
 	for _, version := range archiveVersions() {
-		archivingVersionSpecs(version)
+		v := version
+		Describe(fmt.Sprintf("Continuous binlog archiving - %s", v), Ordered, func() {
+			var ns, prevNS string
+
+			BeforeAll(func() {
+				prevNS = testNamespace
+				ns = createTestNamespace("arch-" + sanitize(v))
+				setupMinio()
+				setupMC()
+			})
+
+			AfterAll(func() {
+				teardownMC()
+				teardownMinio()
+				deleteTestNamespace(ns, prevNS)
+			})
+
+			archivingVersionSpecs(v)
+		})
 	}
-})
+}
 
 // archivingVersionSpecs declares the full catastrophic-scenario matrix for one
 // Percona version. It uses two clusters: a single-instance "solo" cluster for
@@ -43,13 +60,6 @@ var _ = Describe("Continuous binlog archiving", Ordered, func() {
 // failover continuity. Each is created and torn down within its own context so
 // only one cluster for this version is live at a time.
 func archivingVersionSpecs(version string) {
-	Describe(fmt.Sprintf("Percona %s", version), Ordered, func() {
-		soloArchivingSpecs(version)
-		haArchivingSpecs(version)
-	})
-}
-
-func soloArchivingSpecs(version string) {
 	Context("single-instance archiving", Ordered, func() {
 		cluster := "arch-" + sanitize(version) + "-solo"
 		var password string
@@ -191,9 +201,7 @@ func soloArchivingSpecs(version string) {
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
-}
 
-func haArchivingSpecs(version string) {
 	Context("failover continuity", Ordered, func() {
 		cluster := "arch-" + sanitize(version) + "-ha"
 		var password string
