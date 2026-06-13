@@ -28,6 +28,7 @@ import (
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,6 +48,7 @@ type Controller struct {
 	name       string
 	conn       pool.Connection
 	repl       *replication.Manager
+	users      *user.Manager
 	version    version.Version
 	versionStr string
 	expected   webserver.Role
@@ -78,6 +80,7 @@ func NewController(
 		name:       name,
 		conn:       conn,
 		repl:       replication.NewManager(conn, v),
+		users:      user.NewManager(conn),
 		version:    v,
 		versionStr: versionStr,
 		expected:   expected,
@@ -244,6 +247,51 @@ func setInnodbFastShutdown(ctx context.Context, conn interface {
 }, value int) error {
 	_, err := conn.ExecContext(ctx, "SET GLOBAL innodb_fast_shutdown = ?", value)
 	return err
+}
+
+// CreateUser creates a MySQL user and applies its grants.
+func (c *Controller) CreateUser(ctx context.Context, req user.CreateUserRequest) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Creating user",
+		"instance", c.name, "user", req.Name, "host", req.Host)
+	return c.users.CreateUser(ctx, req)
+}
+
+// AlterUser mutates an existing MySQL user.
+func (c *Controller) AlterUser(ctx context.Context, req user.AlterUserRequest) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Altering user",
+		"instance", c.name, "user", req.Name, "host", req.Host)
+	return c.users.AlterUser(ctx, req)
+}
+
+// DropUser removes a MySQL user.
+func (c *Controller) DropUser(ctx context.Context, req user.DropUserRequest) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Dropping user",
+		"instance", c.name, "user", req.Name, "host", req.Host)
+	return c.users.DropUser(ctx, req)
+}
+
+// ListUsers reports the managed MySQL users and their attributes.
+func (c *Controller) ListUsers(ctx context.Context) (*user.ListUsersResponse, error) {
+	return c.users.ListUsers(ctx)
+}
+
+// CreateDatabase creates a MySQL schema.
+func (c *Controller) CreateDatabase(ctx context.Context, req user.CreateDatabaseRequest) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Creating database",
+		"instance", c.name, "database", req.Name)
+	return c.users.CreateDatabase(ctx, req)
+}
+
+// DropDatabase drops a MySQL schema.
+func (c *Controller) DropDatabase(ctx context.Context, req user.DropDatabaseRequest) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Dropping database",
+		"instance", c.name, "database", req.Name)
+	return c.users.DropDatabase(ctx, req)
+}
+
+// ListDatabases reports the user-managed MySQL schemas.
+func (c *Controller) ListDatabases(ctx context.Context) (*user.ListDatabasesResponse, error) {
+	return c.users.ListDatabases(ctx)
 }
 
 // role derives the reported role from the replica state.

@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
 )
 
 // fakeController is a configurable InstanceController for handler tests.
@@ -44,6 +45,42 @@ type fakeController struct {
 	demoteCalled    bool
 	configureSource *replication.SourceOptions
 	restartCalled   bool
+
+	userMgmtErr   error
+	createUserReq *user.CreateUserRequest
+	alterUserReq  *user.AlterUserRequest
+	dropUserReq   *user.DropUserRequest
+	listUsers     *user.ListUsersResponse
+	createDBReq   *user.CreateDatabaseRequest
+	dropDBReq     *user.DropDatabaseRequest
+	listDatabases *user.ListDatabasesResponse
+}
+
+func (f *fakeController) CreateUser(_ context.Context, req user.CreateUserRequest) error {
+	f.createUserReq = &req
+	return f.userMgmtErr
+}
+func (f *fakeController) AlterUser(_ context.Context, req user.AlterUserRequest) error {
+	f.alterUserReq = &req
+	return f.userMgmtErr
+}
+func (f *fakeController) DropUser(_ context.Context, req user.DropUserRequest) error {
+	f.dropUserReq = &req
+	return f.userMgmtErr
+}
+func (f *fakeController) ListUsers(context.Context) (*user.ListUsersResponse, error) {
+	return f.listUsers, f.userMgmtErr
+}
+func (f *fakeController) CreateDatabase(_ context.Context, req user.CreateDatabaseRequest) error {
+	f.createDBReq = &req
+	return f.userMgmtErr
+}
+func (f *fakeController) DropDatabase(_ context.Context, req user.DropDatabaseRequest) error {
+	f.dropDBReq = &req
+	return f.userMgmtErr
+}
+func (f *fakeController) ListDatabases(context.Context) (*user.ListDatabasesResponse, error) {
+	return f.listDatabases, f.userMgmtErr
 }
 
 func (f *fakeController) Healthz(context.Context) error { return f.healthErr }
@@ -108,10 +145,10 @@ func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRec
 	return rec
 }
 
-func doWithBody(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+func doWithBody(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	h.ServeHTTP(rec, req)
 	return rec
 }
@@ -215,7 +252,7 @@ func TestLifecycleActions(t *testing.T) {
 		t.Errorf("demote = %d called=%v", rec.Code, fc.demoteCalled)
 	}
 	body := `{"source":{"host":"demo-2.default.svc","port":3306,"user":"cnmysql_repl","autoPosition":true,"ssl":true}}`
-	rec := doWithBody(t, h, http.MethodPost, "/replica/source", body)
+	rec := doWithBody(t, h, "/replica/source", body)
 	if rec.Code != http.StatusOK || fc.configureSource == nil {
 		t.Errorf("configure replica = %d source=%#v", rec.Code, fc.configureSource)
 	}
@@ -232,6 +269,87 @@ func TestLifecycleActionError(t *testing.T) {
 	rec := do(t, h, http.MethodPost, "/promote")
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("promote err = %d, want 500", rec.Code)
+	}
+}
+
+func TestUserManagementRoutes(t *testing.T) {
+	fc := &fakeController{}
+	h := Handler(fc)
+
+	rec := doWithBody(t, h, "/user/create",
+		`{"name":"app","host":"%","password":"pw","maxUserConnections":5}`)
+	if rec.Code != http.StatusOK || fc.createUserReq == nil {
+		t.Fatalf("create user = %d req=%#v", rec.Code, fc.createUserReq)
+	}
+	if fc.createUserReq.Name != "app" || fc.createUserReq.MaxUserConnections != 5 {
+		t.Errorf("create user req = %#v", fc.createUserReq)
+	}
+
+	rec = doWithBody(t, h, "/user/alter", `{"name":"app","password":"newpw"}`)
+	if rec.Code != http.StatusOK || fc.alterUserReq == nil || fc.alterUserReq.Password == nil {
+		t.Errorf("alter user = %d req=%#v", rec.Code, fc.alterUserReq)
+	}
+
+	rec = doWithBody(t, h, "/user/drop", `{"name":"app","host":"%"}`)
+	if rec.Code != http.StatusOK || fc.dropUserReq == nil {
+		t.Errorf("drop user = %d req=%#v", rec.Code, fc.dropUserReq)
+	}
+
+	rec = doWithBody(t, h, "/database/create", `{"name":"appdb","characterSet":"utf8mb4"}`)
+	if rec.Code != http.StatusOK || fc.createDBReq == nil || fc.createDBReq.Name != "appdb" {
+		t.Errorf("create db = %d req=%#v", rec.Code, fc.createDBReq)
+	}
+
+	rec = doWithBody(t, h, "/database/drop", `{"name":"appdb"}`)
+	if rec.Code != http.StatusOK || fc.dropDBReq == nil {
+		t.Errorf("drop db = %d req=%#v", rec.Code, fc.dropDBReq)
+	}
+}
+
+func TestListUsersRoute(t *testing.T) {
+	fc := &fakeController{listUsers: &user.ListUsersResponse{
+		Users: []user.UserInfo{{Name: "app", Host: "%", RequireTLS: "x509"}},
+	}}
+	rec := do(t, Handler(fc), http.MethodGet, "/user/list")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list users = %d, want 200", rec.Code)
+	}
+	var got user.ListUsersResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Users) != 1 || got.Users[0].Name != "app" || got.Users[0].RequireTLS != "x509" {
+		t.Errorf("list users body = %+v", got)
+	}
+}
+
+func TestListDatabasesRoute(t *testing.T) {
+	fc := &fakeController{listDatabases: &user.ListDatabasesResponse{Databases: []string{"a", "b"}}}
+	rec := do(t, Handler(fc), http.MethodGet, "/database/list")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list databases = %d, want 200", rec.Code)
+	}
+	var got user.ListDatabasesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Databases) != 2 {
+		t.Errorf("list databases body = %+v", got)
+	}
+}
+
+func TestUserManagementBadBody(t *testing.T) {
+	rec := doWithBody(t, Handler(&fakeController{}), "/user/create", `{not json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("bad body = %d, want 400", rec.Code)
+	}
+}
+
+func TestUserManagementError(t *testing.T) {
+	h := Handler(&fakeController{userMgmtErr: errors.New("mysql down")})
+	rec := doWithBody(t, h, "/user/create", `{"name":"app"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("user mgmt err = %d, want 500", rec.Code)
 	}
 }
 

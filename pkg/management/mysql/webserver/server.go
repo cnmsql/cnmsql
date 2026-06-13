@@ -27,6 +27,7 @@ import (
 	"net/http"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
 )
 
 // InstanceController is the behaviour the HTTP layer drives. It is implemented
@@ -49,6 +50,20 @@ type InstanceController interface {
 	EnsureReplicaConfigured(ctx context.Context, opts replication.SourceOptions) error
 	// Restart restarts the managed mysqld process.
 	Restart(ctx context.Context) error
+	// CreateUser creates a MySQL user and applies its grants.
+	CreateUser(ctx context.Context, req user.CreateUserRequest) error
+	// AlterUser mutates an existing MySQL user.
+	AlterUser(ctx context.Context, req user.AlterUserRequest) error
+	// DropUser removes a MySQL user.
+	DropUser(ctx context.Context, req user.DropUserRequest) error
+	// ListUsers reports the managed MySQL users and their attributes.
+	ListUsers(ctx context.Context) (*user.ListUsersResponse, error)
+	// CreateDatabase creates a MySQL schema.
+	CreateDatabase(ctx context.Context, req user.CreateDatabaseRequest) error
+	// DropDatabase drops a MySQL schema.
+	DropDatabase(ctx context.Context, req user.DropDatabaseRequest) error
+	// ListDatabases reports the user-managed MySQL schemas.
+	ListDatabases(ctx context.Context) (*user.ListDatabasesResponse, error)
 }
 
 // BackupStreamer streams a consistent physical backup (xbstream archive) to the
@@ -71,6 +86,13 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /demote", actionHandler(controller.Demote))
 	mux.HandleFunc("POST /replica/source", configureReplicaHandler(controller))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
+	mux.HandleFunc("POST /user/create", bodyActionHandler(controller.CreateUser))
+	mux.HandleFunc("POST /user/alter", bodyActionHandler(controller.AlterUser))
+	mux.HandleFunc("POST /user/drop", bodyActionHandler(controller.DropUser))
+	mux.HandleFunc("GET /user/list", resultHandler(controller.ListUsers))
+	mux.HandleFunc("POST /database/create", bodyActionHandler(controller.CreateDatabase))
+	mux.HandleFunc("POST /database/drop", bodyActionHandler(controller.DropDatabase))
+	mux.HandleFunc("GET /database/list", resultHandler(controller.ListDatabases))
 	if streamer, ok := controller.(BackupStreamer); ok {
 		mux.HandleFunc("GET /cluster/backup", backupHandler(streamer))
 	}

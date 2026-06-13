@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
 )
 
@@ -61,6 +62,80 @@ func (c *HTTPControlClient) Status(ctx context.Context, cluster *mysqlv1alpha1.C
 		return nil, err
 	}
 	return &status, nil
+}
+
+// CreateUser creates a MySQL user on the named instance.
+func (c *HTTPControlClient) CreateUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.CreateUserRequest) error {
+	return c.action(ctx, cluster, instanceName, "/user/create", req)
+}
+
+// AlterUser mutates a MySQL user on the named instance.
+func (c *HTTPControlClient) AlterUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.AlterUserRequest) error {
+	return c.action(ctx, cluster, instanceName, "/user/alter", req)
+}
+
+// DropUser removes a MySQL user on the named instance.
+func (c *HTTPControlClient) DropUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.DropUserRequest) error {
+	return c.action(ctx, cluster, instanceName, "/user/drop", req)
+}
+
+// ListUsers reads the managed MySQL users from the named instance.
+func (c *HTTPControlClient) ListUsers(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListUsersResponse, error) {
+	var result user.ListUsersResponse
+	if err := c.fetch(ctx, cluster, instanceName, "/user/list", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// CreateDatabase creates a MySQL schema on the named instance.
+func (c *HTTPControlClient) CreateDatabase(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.CreateDatabaseRequest) error {
+	return c.action(ctx, cluster, instanceName, "/database/create", req)
+}
+
+// DropDatabase drops a MySQL schema on the named instance.
+func (c *HTTPControlClient) DropDatabase(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.DropDatabaseRequest) error {
+	return c.action(ctx, cluster, instanceName, "/database/drop", req)
+}
+
+// ListDatabases reads the user-managed MySQL schemas from the named instance.
+func (c *HTTPControlClient) ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error) {
+	var result user.ListDatabasesResponse
+	if err := c.fetch(ctx, cluster, instanceName, "/database/list", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// action POSTs a JSON body to an instance control endpoint and treats any
+// non-200 status as an error.
+func (c *HTTPControlClient) action(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, path string, body any) error {
+	resp, err := c.do(ctx, cluster, instanceName, http.MethodPost, path, body)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("instance %s returned %s", path, resp.Status)
+	}
+	return nil
+}
+
+// fetch GETs a JSON result from an instance control endpoint.
+func (c *HTTPControlClient) fetch(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, path string, result any) error {
+	resp, err := c.do(ctx, cluster, instanceName, http.MethodGet, path, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("instance %s returned %s", path, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(result)
 }
 
 func (c *HTTPControlClient) do(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, method, path string, body any) (*http.Response, error) {
