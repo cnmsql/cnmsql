@@ -69,6 +69,7 @@ rules:
   resources:
   - backups/status
   - clusters/status
+  - databases/status
   - scheduledbackups/status
   verbs:
   - get
@@ -88,11 +89,13 @@ rules:
   - mysql.cloudnative-mysql.io
   resources:
   - clusters/finalizers
+  - databases/finalizers
   verbs:
   - update
 - apiGroups:
   - mysql.cloudnative-mysql.io
   resources:
+  - databases
   - scheduledbackups
   verbs:
   - get

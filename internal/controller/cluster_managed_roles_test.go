@@ -58,7 +58,7 @@ func TestReconcileManagedRolesCreatesMissingUserWithGeneratedPassword(t *testing
 	control := &recordingControlClient{}
 	r, cluster := managedRolesReconciler(t, control)
 	cluster.Spec.Managed = &mysqlv1alpha1.ManagedConfiguration{Roles: []mysqlv1alpha1.RoleConfiguration{
-		{Name: "app", Host: "%", Ensure: mysqlv1alpha1.EnsurePresent,
+		{Name: appName, Host: "%", Ensure: mysqlv1alpha1.EnsurePresent,
 			Privileges: []mysqlv1alpha1.RolePrivilege{{Privileges: []string{"SELECT"}, On: "app.*"}}},
 	}}
 
@@ -68,7 +68,7 @@ func TestReconcileManagedRolesCreatesMissingUserWithGeneratedPassword(t *testing
 	if len(control.created) != 1 {
 		t.Fatalf("created = %d, want 1", len(control.created))
 	}
-	if control.created[0].Name != "app" || control.created[0].Password == "" {
+	if control.created[0].Name != appName || control.created[0].Password == "" {
 		t.Errorf("unexpected create request: %+v", control.created[0])
 	}
 
@@ -106,7 +106,7 @@ func TestReconcileManagedRolesNoChangeWhenMatching(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{
 		users: []user.UserInfo{{
-			Name: "app", Host: "%", RequireTLS: "none",
+			Name: appName, Host: "%", RequireTLS: "none",
 			Grants: []string{"GRANT SELECT ON `app`.* TO `app`@`%`"},
 		}},
 	}
@@ -116,7 +116,7 @@ func TestReconcileManagedRolesNoChangeWhenMatching(t *testing.T) {
 	}
 	r, cluster := managedRolesReconciler(t, control, secret)
 	cluster.Spec.Managed = &mysqlv1alpha1.ManagedConfiguration{Roles: []mysqlv1alpha1.RoleConfiguration{
-		{Name: "app", Host: "%", Ensure: mysqlv1alpha1.EnsurePresent,
+		{Name: appName, Host: "%", Ensure: mysqlv1alpha1.EnsurePresent,
 			PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: "pw", Key: "password"},
 			Privileges:     []mysqlv1alpha1.RolePrivilege{{Privileges: []string{"SELECT"}, On: "app.*"}}},
 	}}
@@ -147,7 +147,7 @@ func TestReconcileManagedRolesAltersChangedAttributes(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{
 		users: []user.UserInfo{{
-			Name: "app", Host: "%", MaxUserConnections: 0, RequireTLS: "none",
+			Name: appName, Host: "%", MaxUserConnections: 0, RequireTLS: "none",
 			Grants: []string{"GRANT SELECT ON `app`.* TO `app`@`%`"},
 		}},
 	}
@@ -157,7 +157,7 @@ func TestReconcileManagedRolesAltersChangedAttributes(t *testing.T) {
 	}
 	r, cluster := managedRolesReconciler(t, control, secret)
 	cluster.Spec.Managed = &mysqlv1alpha1.ManagedConfiguration{Roles: []mysqlv1alpha1.RoleConfiguration{
-		{Name: "app", Host: "%", Ensure: mysqlv1alpha1.EnsurePresent,
+		{Name: appName, Host: "%", Ensure: mysqlv1alpha1.EnsurePresent,
 			MaxUserConnections: 10, RequireTLS: "x509",
 			PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: "pw", Key: "password"},
 			Privileges:     []mysqlv1alpha1.RolePrivilege{{Privileges: []string{"SELECT"}, On: "app.*"}}},

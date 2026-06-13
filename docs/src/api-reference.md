@@ -621,6 +621,73 @@ spec:
     major: 8
 ```
 
+## Database
+
+A `Database` declaratively manages a single MySQL schema (and, optionally, its
+users) inside the cluster referenced by `spec.cluster`. The operator reconciles
+it against the cluster primary through the instance-manager control API. It is
+namespaced and intended for application teams.
+
+### Example
+
+```yaml
+apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+kind: Database
+metadata:
+  name: orders
+spec:
+  cluster:
+    name: demo
+  name: orders            # MySQL schema name; defaults to the resource name
+  ensure: present
+  characterSet: utf8mb4
+  collation: utf8mb4_0900_ai_ci
+  reclaimPolicy: retain   # keep the schema when this object is deleted
+  users:
+    - name: orders_app
+      host: "%"
+      ensure: present
+      passwordSecret:
+        name: orders-app-password
+        key: password
+      grants:
+        - privileges: ["SELECT", "INSERT", "UPDATE", "DELETE"]
+          # `on` defaults to "<database>.*" when omitted
+```
+
+### Spec fields
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `cluster.name` | string | **Required.** Cluster (same namespace) to reconcile against. |
+| `name` | string | MySQL schema name. Defaults to the resource name. |
+| `ensure` | `present`, `absent` | Whether the schema must exist. Default `present`. |
+| `characterSet` | string | Schema character set (applied on create). |
+| `collation` | string | Schema collation (applied on create). |
+| `reclaimPolicy` | `delete`, `retain` | What happens to the schema when the object is deleted. Default `retain`. |
+| `users[].name` | string | **Required.** MySQL user name. |
+| `users[].host` | string | Host the user connects from. Default `%`. |
+| `users[].ensure` | `present`, `absent` | Whether the user must exist. Default `present`. |
+| `users[].passwordSecret` | secret key selector | Secret holding the user's password. Required to create a user. |
+| `users[].grants[].privileges` | []string | Privileges to grant (e.g. `SELECT`). |
+| `users[].grants[].on` | string | Grant target. Defaults to `<database>.*`. |
+
+A finalizer holds the object until the reclaim policy runs: with
+`reclaimPolicy: delete` the schema is dropped from the primary before the object
+is removed; with `retain` (the default) the schema is left in place. The
+password recorded for each user is re-applied only when its source Secret
+changes (tracked in `status.passwordStatus`).
+
+### Status fields
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `applied` | bool | True once the desired state was reconciled. |
+| `message` | string | Detail, typically the last error. |
+| `observedGeneration` | int | Spec generation last reconciled. |
+| `passwordStatus` | map | Per-user (`name@host`) Secret resourceVersion last applied. |
+| `conditions` | []Condition | Standard conditions (`Ready`). |
+
 ## Shared object-store fields
 
 `S3ObjectStore` appears in `Cluster.spec.backup.objectStore`,

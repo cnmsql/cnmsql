@@ -189,6 +189,15 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "scheduledbackup")
 		os.Exit(1)
 	}
+	if err := (&controller.DatabaseReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		//nolint:staticcheck // DatabaseReconciler uses the typed EventRecorder interface.
+		Recorder: mgr.GetEventRecorderFor("database-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "database")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

@@ -118,6 +118,12 @@ type DatabaseStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// PasswordStatus records, per managed user ("name@host"), the source Secret
+	// resourceVersion last applied to MySQL. It lets the controller re-apply a
+	// password only when its Secret changes.
+	// +optional
+	PasswordStatus map[string]string `json:"passwordStatus,omitempty"`
+
 	// Conditions represent the latest observations of the database state.
 	// +listType=map
 	// +listMapKey=type

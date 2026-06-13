@@ -65,8 +65,8 @@ func baseCluster() *mysqlv1alpha1.Cluster {
 			Storage:   mysqlv1alpha1.StorageConfiguration{Size: "1Gi"},
 			Bootstrap: &mysqlv1alpha1.BootstrapConfiguration{
 				InitDB: &mysqlv1alpha1.BootstrapInitDB{
-					Database: "app",
-					Owner:    "app",
+					Database: appName,
+					Owner:    appName,
 				},
 			},
 		},
@@ -116,6 +116,18 @@ func (readyStatusClient) DropUser(context.Context, *mysqlv1alpha1.Cluster, strin
 	return nil
 }
 
+func (readyStatusClient) CreateDatabase(context.Context, *mysqlv1alpha1.Cluster, string, user.CreateDatabaseRequest) error {
+	return nil
+}
+
+func (readyStatusClient) DropDatabase(context.Context, *mysqlv1alpha1.Cluster, string, user.DropDatabaseRequest) error {
+	return nil
+}
+
+func (readyStatusClient) ListDatabases(context.Context, *mysqlv1alpha1.Cluster, string) (*user.ListDatabasesResponse, error) {
+	return &user.ListDatabasesResponse{}, nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -126,6 +138,10 @@ type recordingControlClient struct {
 	created []user.CreateUserRequest
 	altered []user.AlterUserRequest
 	dropped []user.DropUserRequest
+
+	databases       []string
+	createdDatabase []user.CreateDatabaseRequest
+	droppedDatabase []user.DropDatabaseRequest
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
@@ -167,6 +183,20 @@ func (c *recordingControlClient) AlterUser(_ context.Context, _ *mysqlv1alpha1.C
 func (c *recordingControlClient) DropUser(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.DropUserRequest) error {
 	c.dropped = append(c.dropped, req)
 	return nil
+}
+
+func (c *recordingControlClient) CreateDatabase(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.CreateDatabaseRequest) error {
+	c.createdDatabase = append(c.createdDatabase, req)
+	return nil
+}
+
+func (c *recordingControlClient) DropDatabase(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.DropDatabaseRequest) error {
+	c.droppedDatabase = append(c.droppedDatabase, req)
+	return nil
+}
+
+func (c *recordingControlClient) ListDatabases(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string) (*user.ListDatabasesResponse, error) {
+	return &user.ListDatabasesResponse{Databases: c.databases}, nil
 }
 
 func TestBuildPlanDefaultsToLocalInstanceImage(t *testing.T) {

@@ -804,6 +804,13 @@ func (in *DatabaseStatus) DeepCopyInto(out *DatabaseStatus) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.PasswordStatus != nil {
+		in, out := &in.PasswordStatus, &out.PasswordStatus
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

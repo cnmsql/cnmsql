@@ -228,6 +228,14 @@ spec:
                   controller.
                 format: int64
                 type: integer
+              passwordStatus:
+                additionalProperties:
+                  type: string
+                description: |-
+                  PasswordStatus records, per managed user ("name@host"), the source Secret
+                  resourceVersion last applied to MySQL. It lets the controller re-apply a
+                  password only when its Secret changes.
+                type: object
             type: object
         required:
         - spec

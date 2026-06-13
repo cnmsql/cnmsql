@@ -36,6 +36,7 @@ const (
 	testReplica2 = "demo-2"
 	testReplica3 = "demo-3"
 	testGTID     = "uuid:1-10"
+	appName      = "app"
 )
 
 func healthyReplicaStatus(name, gtid string) *webserver.Status {
