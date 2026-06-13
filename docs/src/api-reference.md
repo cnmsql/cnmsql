@@ -97,6 +97,31 @@ spec:
 | `securityContext` | Kubernetes `SecurityContext` | Container security context. |
 | `logLevel` | `error`, `warning`, `info`, `debug`, `trace` | Per-cluster operator log level. Default `info`. |
 
+### Monitoring
+
+```yaml
+spec:
+  monitoring:
+    enablePodMonitor: true
+    disableDefaultQueries: false
+    metricsQueriesTTL: 30s
+    tls:
+      enabled: false
+```
+
+Instances expose Prometheus metrics on the named container port `metrics`
+(`9187`) at `/metrics`. The endpoint is plain HTTP unless monitoring TLS is
+enabled.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `enablePodMonitor` | bool | Create an owned Prometheus Operator `PodMonitor`. Default `false`. |
+| `customQueriesConfigMap` | array | ConfigMap keys that hold custom monitoring query definitions. |
+| `customQueriesSecret` | array | Secret keys that hold custom monitoring query definitions. |
+| `disableDefaultQueries` | bool pointer | Disable the built-in default query set once default query loading is enabled. |
+| `metricsQueriesTTL` | Kubernetes `Duration` | Minimum interval between custom/default query executions. |
+| `tls.enabled` | bool | Serve the metrics endpoint over TLS. Default `false`. |
+
 ### Image selection
 
 Use either `imageName` or `imageCatalogRef`.

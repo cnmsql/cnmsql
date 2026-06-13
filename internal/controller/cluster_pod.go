@@ -62,6 +62,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				{Name: "mysql", ContainerPort: 3306},
 				{Name: "control", ContainerPort: 8080},
 				{Name: "health", ContainerPort: 8081},
+				{Name: metricsPortName, ContainerPort: 9187},
 			},
 			VolumeMounts:    volumeMounts(),
 			Resources:       cluster.Spec.Resources,
@@ -166,6 +167,7 @@ func initdbArgs(initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 		"--replication-require-x509",
 		"--backup-user=" + backupUser,
 		"--control-user=" + controlUser,
+		"--metrics-user=" + metricsUser,
 	}
 	if initdb.Database != "" {
 		args = append(args, "--database="+initdb.Database)

@@ -45,6 +45,7 @@ func NewCommand() *cobra.Command {
 		adminPort      int
 		webAddr        string
 		healthAddr     string
+		metricsAddr    string
 		serverCert     string
 		serverKey      string
 		clientCA       string
@@ -165,6 +166,7 @@ func NewCommand() *cobra.Command {
 				SourceTemplate:       sourceTemplate,
 				WebserverAddr:        webAddr,
 				HealthAddr:           healthAddr,
+				MetricsAddr:          metricsAddr,
 				Backup:               backup,
 				Archiving:            archive,
 				StopDelay:            time.Duration(stopDelay) * time.Second,
@@ -196,6 +198,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().IntVar(&adminPort, "admin-port", 0, "Administrative interface port (8.0.14+)")
 	cmd.Flags().StringVar(&webAddr, "web-addr", ":8080", "Control API listen address")
 	cmd.Flags().StringVar(&healthAddr, "health-addr", ":8081", "Plain HTTP health probe listen address")
+	cmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":9187", "Plain HTTP metrics listen address")
 	cmd.Flags().StringVar(&serverCert, "tls-cert", "", "Control API server certificate (enables mTLS)")
 	cmd.Flags().StringVar(&serverKey, "tls-key", "", "Control API server key")
 	cmd.Flags().StringVar(&clientCA, "tls-client-ca", "", "Control API client CA bundle")

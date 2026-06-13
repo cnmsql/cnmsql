@@ -1,0 +1,3 @@
+[submodule "pkg/vendor/prometheus/mysqld_exporter"]
+	path = pkg/vendor/prometheus/mysqld_exporter
+	url = https://github.com/prometheus/mysqld_exporter.git

@@ -439,6 +439,7 @@ func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName, role string) map[st
 		"app.kubernetes.io/instance":  cluster.Name,
 		"app.kubernetes.io/component": "mysql",
 		clusterLabel:                  cluster.Name,
+		podMonitorClusterLabel:        cluster.Name,
 	}
 	if cluster.Spec.InheritedMetadata != nil {
 		maps.Copy(labels, cluster.Spec.InheritedMetadata.Labels)

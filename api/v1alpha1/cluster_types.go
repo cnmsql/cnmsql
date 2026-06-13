@@ -765,6 +765,27 @@ type MonitoringConfiguration struct {
 	// CustomQueriesSecret references secrets holding custom monitoring queries.
 	// +optional
 	CustomQueriesSecret []SecretKeySelector `json:"customQueriesSecret,omitempty"`
+
+	// DisableDefaultQueries disables the built-in monitoring query set.
+	// +optional
+	DisableDefaultQueries *bool `json:"disableDefaultQueries,omitempty"`
+
+	// MetricsQueriesTTL is the minimum interval between executions of the
+	// default and custom monitoring queries.
+	// +optional
+	MetricsQueriesTTL *metav1.Duration `json:"metricsQueriesTTL,omitempty"`
+
+	// TLS configures TLS for the instance metrics endpoint.
+	// +optional
+	TLSConfig *ClusterMonitoringTLSConfig `json:"tls,omitempty"`
+}
+
+// ClusterMonitoringTLSConfig configures TLS for cluster metrics scraping.
+type ClusterMonitoringTLSConfig struct {
+	// Enabled serves metrics over TLS when true.
+	// +kubebuilder:default:=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // NodeMaintenanceWindow contains information that the operator will use while

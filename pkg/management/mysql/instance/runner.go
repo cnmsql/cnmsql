@@ -31,10 +31,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/instance/rolereconciler"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/metrics"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
+	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver/metricserver"
 )
 
 // RunOptions configures the PID1 run loop.
@@ -69,6 +71,8 @@ type RunOptions struct {
 	WebserverAddr string
 	// HealthAddr is the plain HTTP listen address for Kubernetes probes.
 	HealthAddr string
+	// MetricsAddr is the plain HTTP listen address for Prometheus metrics.
+	MetricsAddr string
 	// Backup, when set, enables the streaming physical-backup endpoint so this
 	// instance can clone replicas.
 	Backup *BackupConfig
@@ -111,11 +115,16 @@ func (o *RunOptions) applyDefaults() {
 	if o.HealthAddr == "" {
 		o.HealthAddr = ":8081"
 	}
+	if o.MetricsAddr == "" {
+		o.MetricsAddr = ":9187"
+	}
 }
 
 // Run is the PID1 entrypoint: it starts mysqld, waits for it to become
 // reachable, serves the control API, and shuts everything down cleanly on
 // SIGTERM/SIGINT or when mysqld exits.
+//
+//nolint:gocyclo // PID1 coordinates sibling servers and lifecycle exit paths in one select.
 func Run(ctx context.Context, opts RunOptions) error {
 	opts.applyDefaults()
 	log := logf.FromContext(ctx).WithName("instance-runner").WithValues(
@@ -127,6 +136,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		"socket", opts.Socket,
 		"controlAddr", opts.WebserverAddr,
 		"healthAddr", opts.HealthAddr,
+		"metricsAddr", opts.MetricsAddr,
 		"cluster", opts.ClusterName,
 		"namespace", opts.Namespace)
 
@@ -240,6 +250,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	healthSrv := buildHealthServer(opts, controller)
+	metricsSrv := metricserver.New(opts.MetricsAddr, metrics.NewExporter(db))
 
 	serverErr := make(chan error, 1)
 	log.Info("Starting control API server", "addr", opts.WebserverAddr, "tls", opts.TLS.ServerCertFile != "")
@@ -247,6 +258,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	healthErr := make(chan error, 1)
 	log.Info("Starting health API server", "addr", opts.HealthAddr)
 	go func() { healthErr <- servePlain(healthSrv) }()
+	metricsErr := make(chan error, 1)
+	log.Info("Starting metrics API server", "addr", opts.MetricsAddr)
+	go func() { metricsErr <- servePlain(metricsSrv) }()
 
 	// mysqld exit signals the supervisor's wait channel.
 	mysqldExit := make(chan error, 1)
@@ -284,6 +298,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	case err := <-healthErr:
 		log.Error(err, "Health API server failed")
 		runErr = fmt.Errorf("health API server failed: %w", err)
+	case err := <-metricsErr:
+		log.Error(err, "Metrics API server failed")
+		runErr = fmt.Errorf("metrics API server failed: %w", err)
 	case err := <-roleErr:
 		log.Error(err, "Role reconciler failed")
 		runErr = fmt.Errorf("role reconciler failed: %w", err)
@@ -299,6 +316,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	_ = healthSrv.Shutdown(shutdownCtx)
+	_ = metricsSrv.Shutdown(shutdownCtx)
 
 	// Close the control connection before shutting down mysqld so the
 	// graceful COM_QUIT handshake completes while the server is still alive.

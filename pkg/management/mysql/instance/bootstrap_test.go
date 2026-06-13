@@ -162,6 +162,22 @@ func TestBootstrapControlUserValidation(t *testing.T) {
 	}
 }
 
+func TestBootstrapMetricsUser(t *testing.T) {
+	out := joinStmts(t, BootstrapParams{
+		RootPassword: "rootpw",
+		MetricsUser:  "cnmysql_metrics_exporter",
+	})
+	for _, want := range []string{
+		"CREATE USER IF NOT EXISTS 'cnmysql_metrics_exporter'@'localhost'",
+		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cnmysql_metrics_exporter'@'localhost'",
+		"GRANT SELECT ON performance_schema.* TO 'cnmysql_metrics_exporter'@'localhost'",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestBootstrapLegacyDialectBefore576(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword: "rootpw",

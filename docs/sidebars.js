@@ -60,6 +60,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'monitoring',
+      label: 'Monitoring',
+    },
+    {
+      type: 'doc',
       id: 'api-reference',
       label: 'API Reference',
     },

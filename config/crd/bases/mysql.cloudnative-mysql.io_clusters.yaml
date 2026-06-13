@@ -2471,11 +2471,28 @@ spec:
                       - name
                       type: object
                     type: array
+                  disableDefaultQueries:
+                    description: DisableDefaultQueries disables the built-in monitoring
+                      query set.
+                    type: boolean
                   enablePodMonitor:
                     default: false
                     description: EnablePodMonitor creates a PodMonitor for the cluster
                       pods.
                     type: boolean
+                  metricsQueriesTTL:
+                    description: |-
+                      MetricsQueriesTTL is the minimum interval between executions of the
+                      default and custom monitoring queries.
+                    type: string
+                  tls:
+                    description: TLS configures TLS for the instance metrics endpoint.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled serves metrics over TLS when true.
+                        type: boolean
+                    type: object
                 type: object
               mysql:
                 description: |-

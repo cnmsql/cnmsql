@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -49,6 +50,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	if err := mysqlv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitoringv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	return scheme

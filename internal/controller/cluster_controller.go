@@ -20,9 +20,12 @@ import (
 	"context"
 	"time"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,9 +39,10 @@ import (
 const (
 	defaultInstanceImage = "cnmysql-instance:8.0"
 
-	clusterLabel  = "mysql.cloudnative-mysql.io/cluster"
-	instanceLabel = "mysql.cloudnative-mysql.io/instance"
-	roleLabel     = "mysql.cloudnative-mysql.io/role"
+	clusterLabel           = "mysql.cloudnative-mysql.io/cluster"
+	podMonitorClusterLabel = "cnmysql.io/cluster"
+	instanceLabel          = "mysql.cloudnative-mysql.io/instance"
+	roleLabel              = "mysql.cloudnative-mysql.io/role"
 
 	rolePrimary = "primary"
 	roleReplica = "replica"
@@ -69,6 +73,7 @@ const (
 	replicationUser = "cnmysql_repl"
 	backupUser      = "cnmysql_backup"
 	controlUser     = "cnmysql_control"
+	metricsUser     = "cnmysql_metrics_exporter"
 	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// provisioningRequeue paces reconciles while the instance is still coming up.
@@ -100,6 +105,11 @@ type ClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	Recorder      record.EventRecorder
 	ControlClient InstanceControlClient
+	// podMonitorAvailable records whether the Prometheus Operator PodMonitor CRD
+	// is installed. PodMonitor support is fully opt-in: when the CRD is absent we
+	// neither watch nor reconcile PodMonitors, so the operator runs without the
+	// Prometheus Operator present. Set in SetupWithManager.
+	podMonitorAvailable bool
 }
 
 // +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch
@@ -111,6 +121,7 @@ type ClusterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps;pods;pods/status;persistentvolumeclaims;secrets;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -184,6 +195,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if err := r.ensureDefaultServices(ctx, cluster, plan); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.reconcilePodMonitor(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -321,13 +335,31 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.ControlClient == nil {
 		r.ControlClient = &HTTPControlClient{Client: r.Client}
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	r.podMonitorAvailable = podMonitorCRDInstalled(mgr.GetRESTMapper())
+
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&mysqlv1alpha1.Cluster{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.Secret{}).
-		Owns(&corev1.Service{}).
-		Named("cluster").
-		Complete(r)
+		Owns(&corev1.Service{})
+	// Only watch PodMonitors when the Prometheus Operator CRD is installed;
+	// otherwise the informer fails to start with a no-matches error.
+	if r.podMonitorAvailable {
+		builder = builder.Owns(&monitoringv1.PodMonitor{})
+	} else {
+		mgr.GetLogger().Info("PodMonitor CRD not installed; PodMonitor reconciliation disabled")
+	}
+	return builder.Named("cluster").Complete(r)
+}
+
+// podMonitorCRDInstalled reports whether the PodMonitor CRD is registered in the
+// cluster, via the manager's RESTMapper.
+func podMonitorCRDInstalled(mapper meta.RESTMapper) bool {
+	_, err := mapper.RESTMapping(schema.GroupKind{
+		Group: monitoringv1.SchemeGroupVersion.Group,
+		Kind:  monitoringv1.PodMonitorsKind,
+	}, monitoringv1.SchemeGroupVersion.Version)
+	return err == nil
 }

@@ -48,8 +48,13 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./api/..." paths="./cmd/..." paths="./internal/controller/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen generate-scrapers ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object paths="./api/..."
+
+.PHONY: generate-scrapers
+generate-scrapers: ## Re-vendor the mysqld_exporter scrapers from the git submodule.
+	git submodule update --init pkg/vendor/prometheus/mysqld_exporter
+	go generate ./pkg/management/mysql/metrics/scrapers/...
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

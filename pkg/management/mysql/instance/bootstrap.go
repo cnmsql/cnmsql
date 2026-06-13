@@ -52,6 +52,9 @@ type BootstrapParams struct {
 	// must be set together, or empty to skip.
 	ControlUser     string
 	ControlPassword string
+	// MetricsUser creates the local passwordless account used by the Prometheus
+	// metrics exporter over the Unix socket.
+	MetricsUser string
 	// SupportsDynamicPrivileges enables the MySQL 8.0+ dynamic privilege grants
 	// the control user needs (admin-interface access, super_read_only, etc.).
 	SupportsDynamicPrivileges bool
@@ -182,6 +185,17 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 		}
 	}
 
+	// Metrics account used by the local Prometheus exporter. It is scoped to
+	// localhost so socket auth can stay passwordless inside the Pod.
+	if p.MetricsUser != "" {
+		account := fmt.Sprintf("'%s'@'localhost'", escapeName(p.MetricsUser))
+		stmts = append(stmts,
+			d.createUserAtHost(p.MetricsUser, "localhost", ""),
+			fmt.Sprintf("GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO %s", account),
+			fmt.Sprintf("GRANT SELECT ON performance_schema.* TO %s", account),
+		)
+	}
+
 	stmts = append(stmts, "FLUSH PRIVILEGES")
 	stmts = append(stmts, p.PostInitSQL...)
 
@@ -210,11 +224,19 @@ func newBootstrapDialect(versionStr string) bootstrapDialect {
 }
 
 func (d bootstrapDialect) createUser(name, idClause string) string {
+	return d.createUserAtHost(name, "%", idClause)
+}
+
+func (d bootstrapDialect) createUserAtHost(name, host, idClause string) string {
 	keyword := "CREATE USER "
 	if d.ifNotExists {
 		keyword += "IF NOT EXISTS "
 	}
-	return fmt.Sprintf("%s'%s'@'%%' %s", keyword, escapeName(name), idClause)
+	statement := fmt.Sprintf("%s'%s'@'%s'", keyword, escapeName(name), host)
+	if idClause != "" {
+		statement += " " + idClause
+	}
+	return statement
 }
 
 func (d bootstrapDialect) setRootPassword(password string) string {
