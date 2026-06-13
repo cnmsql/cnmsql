@@ -153,7 +153,7 @@ spec:
       - name: %s
         privileges:
           - privileges: ["SELECT"]
-            on: "app.*"
+            "on": "app.*"
   bootstrap:
     initdb:
       database: app

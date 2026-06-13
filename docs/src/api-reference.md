@@ -368,12 +368,12 @@ spec:
         maxUserConnections: 50
         privileges:
           - privileges: [SELECT, INSERT, UPDATE, DELETE]
-            on: app.*
+            "on": app.*
       - name: readonly
         ensure: present           # operator-generated password
         privileges:
           - privileges: [SELECT]
-            on: app.*
+            "on": app.*
       - name: legacy
         ensure: absent            # dropped if present
 ```
@@ -391,6 +391,9 @@ spec:
 | `maxConnectionsPerHour` | int32 | Hourly connection limit. `0` = no limit. |
 | `requireTLS` | enum | `none` (default), `ssl`, or `x509`. |
 | `privileges` | array | Grants: `{privileges: [...], on: "db.*"}`. `on` defaults to `*.*`. |
+
+Quote the `on` key (`"on": app.*`). Unquoted, YAML parses `on` as the boolean
+`true`, and the API server rejects the manifest with a strict-decoding error.
 
 Users present in MySQL but not declared in `spec.managed.roles` are left
 untouched. To remove one, declare it with `ensure: absent`. Reconciliation runs
