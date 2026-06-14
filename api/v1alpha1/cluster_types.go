@@ -226,6 +226,12 @@ type ClusterSpec struct {
 	// +optional
 	FailoverDelay int32 `json:"failoverDelay,omitempty"`
 
+	// EnablePrimaryLease, when true (default), makes the acting primary hold a
+	// per-cluster Lease before accepting writes.
+	// +kubebuilder:default:=true
+	// +optional
+	EnablePrimaryLease *bool `json:"enablePrimaryLease,omitempty"`
+
 	// Backup configures continuous archiving and the object store target.
 	// +optional
 	Backup *BackupConfiguration `json:"backup,omitempty"`

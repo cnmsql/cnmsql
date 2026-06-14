@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -370,6 +371,45 @@ func TestReconcileFailoverWaitsForFailoverDelay(t *testing.T) {
 	}
 	if gotCluster.Status.Phase != phaseDegraded {
 		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, phaseDegraded)
+	}
+}
+
+func TestReconcileFailoverWaitsForActivePrimaryLease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler, _ := failoverCluster(t, 0)
+	holder := testPrimary
+	duration := int32(15)
+	renewed := metav1.MicroTime{Time: time.Now()}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: "default"},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			RenewTime:            &renewed,
+			LeaseDurationSeconds: &duration,
+		},
+	}
+	if err := reconciler.Create(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	observed := unreachablePrimaryObserved()
+
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("failover was not handled")
+	}
+	if result.RequeueAfter != primaryLeaseDuration {
+		t.Fatalf("requeue = %s, want %s", result.RequeueAfter, primaryLeaseDuration)
+	}
+	gotPod := &corev1.Pod{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testPrimary}, gotPod); err != nil {
+		t.Fatal(err)
+	}
+	if gotPod.DeletionTimestamp != nil {
+		t.Fatal("old primary Pod should not be deleted until the lease expires")
 	}
 }
 

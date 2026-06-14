@@ -1591,6 +1591,12 @@ spec:
                   EnablePDB, when true (default), makes the operator create a
                   PodDisruptionBudget for the cluster.
                 type: boolean
+              enablePrimaryLease:
+                default: true
+                description: |-
+                  EnablePrimaryLease, when true (default), makes the acting primary hold a
+                  per-cluster Lease before accepting writes.
+                type: boolean
               enableSuperuserAccess:
                 default: false
                 description: |-

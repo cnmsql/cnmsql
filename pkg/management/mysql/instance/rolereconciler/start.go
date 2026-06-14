@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -102,6 +103,13 @@ func Start(ctx context.Context, opts StartOptions) error {
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return err
 	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := reconciler.releaseLease(releaseCtx); err != nil {
+			logf.FromContext(ctx).Error(err, "Could not release primary lease during shutdown")
+		}
+	}()
 
 	// Run an independent API-server reachability prober. It must not rely on the
 	// controller-runtime cache (which keeps serving the last-known Cluster while
@@ -163,6 +171,10 @@ func clusterCacheOptions(opts StartOptions) cache.Options {
 			&mysqlv1alpha1.Cluster{}: {
 				Namespaces: map[string]cache.Config{opts.Namespace: {}},
 				Field:      fields.OneTermEqualSelector("metadata.name", opts.ClusterName),
+			},
+			&coordinationv1.Lease{}: {
+				Namespaces: map[string]cache.Config{opts.Namespace: {}},
+				Field:      fields.OneTermEqualSelector("metadata.name", opts.ClusterName+"-primary"),
 			},
 		},
 	}

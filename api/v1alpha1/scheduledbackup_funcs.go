@@ -23,6 +23,7 @@ import (
 	"github.com/robfig/cron/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 )
 
 // scheduleParser parses the 6-field cron expression used by ScheduledBackup.
@@ -45,10 +46,10 @@ func ParseSchedule(schedule string) (cron.Schedule, error) {
 func (s *ScheduledBackup) SetDefaults() {
 	spec := &s.Spec
 	if spec.Suspend == nil {
-		spec.Suspend = ptrTo(false)
+		spec.Suspend = ptr.To(false)
 	}
 	if spec.Immediate == nil {
-		spec.Immediate = ptrTo(false)
+		spec.Immediate = ptr.To(false)
 	}
 	if spec.BackupOwnerReference == "" {
 		spec.BackupOwnerReference = "self"
@@ -60,7 +61,7 @@ func (s *ScheduledBackup) SetDefaults() {
 		spec.Target = BackupTargetPreferStandby
 	}
 	if spec.Online == nil {
-		spec.Online = ptrTo(true)
+		spec.Online = ptr.To(true)
 	}
 }
 

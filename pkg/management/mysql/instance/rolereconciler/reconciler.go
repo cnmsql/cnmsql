@@ -77,6 +77,8 @@ type Reconciler struct {
 	SourceTemplate replication.SourceOptions
 	// Local drives the local mysqld.
 	Local LocalInstance
+	// primaryLeaseEnabled controls the optional primary Lease fencing layer.
+	primaryLeaseEnabled bool
 }
 
 // Reconcile drives one role reconciliation pass.
@@ -87,6 +89,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	if err := r.Get(ctx, r.ClusterKey, cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	r.primaryLeaseEnabled = cluster.Spec.EnablePrimaryLease == nil || *cluster.Spec.EnablePrimaryLease
 
 	status, err := r.Local.Status(ctx)
 	if err != nil {
@@ -105,6 +108,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// later reconcile resume normal role convergence.
 	if isFenced(cluster, me) {
 		if amPrimary {
+			_ = r.releaseLease(ctx)
 			_ = r.Local.Demote(ctx)
 		}
 		log.Info("Instance is fenced; staying read-only", "instance", me)
@@ -115,6 +119,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	if target == me {
 		// Already a writable primary: just keep currentPrimary in step.
 		if amPrimary && !status.ReadOnly && !status.SuperReadOnly {
+			if err := r.acquireOrRenewLease(ctx); err != nil {
+				log.Error(err, "Could not secure primary lease; will retry", "instance", me)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
 			if current != me {
 				return ctrl.Result{RequeueAfter: steadyRequeue}, r.setCurrentPrimary(ctx, me)
 			}
@@ -125,6 +133,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		// this converges; for a failover the source is gone and the relay drains.
 		if !amPrimary && !caughtUp(status) {
 			log.Info("Waiting to catch up before promotion", "instance", me)
+			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		}
+		if err := r.acquireOrRenewLease(ctx); err != nil {
+			log.Error(err, "Could not secure primary lease; will retry", "instance", me)
 			return ctrl.Result{RequeueAfter: waitRequeue}, nil
 		}
 		// Promote: stop/reset any replication and clear read-only. Idempotent on a
@@ -140,6 +152,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// primary. A diverged former primary stays read-only and does not follow.
 	if isDiverged(cluster, me) {
 		if amPrimary {
+			_ = r.releaseLease(ctx)
 			_ = r.Local.Demote(ctx)
 		}
 		log.Info("Instance is diverged; staying read-only, not following", "instance", me)
@@ -150,6 +163,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// to be superseded: stop accepting writes and wait.
 	if current == "" || current == me {
 		if amPrimary {
+			if err := r.releaseLease(ctx); err != nil {
+				log.Error(err, "Could not release primary lease during demotion", "instance", me)
+			}
 			if err := r.Local.Demote(ctx); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -162,6 +178,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	if amPrimary {
 		// Former primary: demote then follow live. If live demotion fails, fall
 		// back to a restart so the Pod comes back clean as a replica.
+		if err := r.releaseLease(ctx); err != nil {
+			log.Error(err, "Could not release primary lease during demotion", "instance", me)
+		}
 		if err := r.Local.Demote(ctx); err != nil {
 			log.Error(err, "Live demotion failed; requesting shutdown to rejoin clean", "instance", me)
 			return ctrl.Result{}, r.Local.Shutdown(ctx)

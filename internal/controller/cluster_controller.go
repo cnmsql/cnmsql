@@ -159,6 +159,7 @@ type ClusterReconciler struct {
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -219,6 +220,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.ensurePrimaryLease(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
 	}
 	if ok, result, err := r.blockOnInvalidCertificate(ctx, cluster, plan); ok {

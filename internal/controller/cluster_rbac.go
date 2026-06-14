@@ -58,6 +58,12 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 				Verbs:         []string{"get", "update", "patch"},
 				ResourceNames: []string{cluster.Name},
 			},
+			{
+				APIGroups:     []string{"coordination.k8s.io"},
+				Resources:     []string{"leases"},
+				Verbs:         []string{"get", "create", "update", "patch", "delete", "watch"},
+				ResourceNames: []string{primaryLeaseName(cluster)},
+			},
 		}
 		return controllerutil.SetControllerReference(cluster, role, r.Scheme)
 	}); err != nil {

@@ -84,6 +84,15 @@ func (r *ClusterReconciler) reconcileFailover(
 		return true, ctrl.Result{RequeueAfter: readyResync}, r.patchOperationPhase(ctx, cluster, observed, phaseBlocked, blockReason, false)
 	}
 
+	held, err := r.isPrimaryLeaseHeld(ctx, cluster, observed.PrimaryName)
+	if err != nil {
+		return true, ctrl.Result{}, err
+	}
+	if held {
+		reason := fmt.Sprintf("Primary lease still held by %s; waiting for expiry", observed.PrimaryName)
+		return true, ctrl.Result{RequeueAfter: primaryLeaseDuration}, r.patchOperationPhase(ctx, cluster, observed, phaseDegraded, reason, false)
+	}
+
 	// Fence the old primary before moving the primary role so a recovered node
 	// cannot accept writes (split brain). The PVC is retained for rejoin.
 	if err := r.fenceInstancePod(ctx, cluster, observed.PrimaryName); err != nil {

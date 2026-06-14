@@ -528,6 +528,11 @@ func (in *ClusterSpec) DeepCopyInto(out *ClusterSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.EnablePrimaryLease != nil {
+		in, out := &in.EnablePrimaryLease, &out.EnablePrimaryLease
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Backup != nil {
 		in, out := &in.Backup, &out.Backup
 		*out = new(BackupConfiguration)

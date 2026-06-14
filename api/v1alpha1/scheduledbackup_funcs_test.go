@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("ScheduledBackup defaulting", func() {
@@ -40,12 +41,12 @@ var _ = Describe("ScheduledBackup defaulting", func() {
 	It("does not override explicitly set values", func() {
 		sb := &ScheduledBackup{
 			Spec: ScheduledBackupSpec{
-				Suspend:              ptrTo(true),
-				Immediate:            ptrTo(true),
+				Suspend:              ptr.To(true),
+				Immediate:            ptr.To(true),
 				BackupOwnerReference: "cluster",
 				Method:               BackupMethodXtrabackup,
 				Target:               BackupTargetPrimary,
-				Online:               ptrTo(false),
+				Online:               ptr.To(false),
 			},
 		}
 		sb.SetDefaults()
@@ -72,8 +73,8 @@ var _ = Describe("ScheduledBackup accessors", func() {
 		Expect(sb.IsSuspended()).To(BeFalse())
 		Expect(sb.IsImmediate()).To(BeFalse())
 
-		sb.Spec.Suspend = ptrTo(true)
-		sb.Spec.Immediate = ptrTo(true)
+		sb.Spec.Suspend = ptr.To(true)
+		sb.Spec.Immediate = ptr.To(true)
 		Expect(sb.IsSuspended()).To(BeTrue())
 		Expect(sb.IsImmediate()).To(BeTrue())
 	})
@@ -109,7 +110,7 @@ var _ = Describe("ScheduledBackup BackupName", func() {
 
 var _ = Describe("ScheduledBackup CreateBackup", func() {
 	It("propagates the cluster, method, target and online settings", func() {
-		online := ptrTo(false)
+		online := ptr.To(false)
 		sb := &ScheduledBackup{
 			ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"},
 			Spec: ScheduledBackupSpec{

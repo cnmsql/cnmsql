@@ -20,12 +20,15 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
@@ -61,6 +64,7 @@ func newReconciler(
 	instanceName string,
 	status *mysqlv1alpha1.ClusterStatus,
 	local *fakeLocal,
+	objects ...client.Object,
 ) *Reconciler {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -80,7 +84,7 @@ func newReconciler(
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
-		WithObjects(cluster).
+		WithObjects(append([]client.Object{cluster}, objects...)...).
 		Build()
 	return &Reconciler{
 		Client:         c,
@@ -89,6 +93,111 @@ func newReconciler(
 		ServiceDomain:  "default.svc",
 		SourceTemplate: replication.SourceOptions{User: "repl", Port: 3306, SSL: true},
 		Local:          local,
+	}
+}
+
+func TestAcquireOrRenewLeaseCreatesLease(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RoleReplica}}
+	r := newReconciler(t, "demo-2", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local)
+	r.primaryLeaseEnabled = true
+	if err := r.acquireOrRenewLease(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease := &coordinationv1.Lease{}
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "demo-primary"}, lease); err != nil {
+		t.Fatal(err)
+	}
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != "demo-2" {
+		t.Fatalf("holder = %v, want demo-2", lease.Spec.HolderIdentity)
+	}
+	if lease.Spec.AcquireTime == nil || lease.Spec.RenewTime == nil {
+		t.Fatal("lease acquireTime and renewTime must be set")
+	}
+	if lease.Spec.LeaseTransitions == nil || *lease.Spec.LeaseTransitions != 1 {
+		t.Fatalf("leaseTransitions = %v, want 1", lease.Spec.LeaseTransitions)
+	}
+}
+
+func TestAcquireOrRenewLeaseRenewsOwnLease(t *testing.T) {
+	t.Parallel()
+	holder := "demo-1"
+	transitions := int32(4)
+	duration := int32(15)
+	acquired := metav1.MicroTime{Time: time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)}
+	renewed := metav1.MicroTime{Time: time.Date(2026, 6, 14, 12, 0, 5, 0, time.UTC)}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: "default"},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			AcquireTime:          &acquired,
+			RenewTime:            &renewed,
+			LeaseDurationSeconds: &duration,
+			LeaseTransitions:     &transitions,
+		},
+	}
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	r := newReconciler(t, "demo-1", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-1"}, local, lease)
+	r.primaryLeaseEnabled = true
+	if err := r.acquireOrRenewLease(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := &coordinationv1.Lease{}
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "demo-primary"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Spec.AcquireTime.Time.Equal(acquired.Time) {
+		t.Fatalf("acquireTime changed: %s", got.Spec.AcquireTime.Time)
+	}
+	if got.Spec.LeaseTransitions == nil || *got.Spec.LeaseTransitions != transitions {
+		t.Fatalf("leaseTransitions = %v, want %d", got.Spec.LeaseTransitions, transitions)
+	}
+	if !got.Spec.RenewTime.After(renewed.Time) {
+		t.Fatalf("renewTime = %s, want after %s", got.Spec.RenewTime.Time, renewed.Time)
+	}
+}
+
+func TestAcquireOrRenewLeaseWaitsWhenAnotherHolderIsCurrent(t *testing.T) {
+	t.Parallel()
+	holder := "demo-1"
+	duration := int32(15)
+	renewed := metav1.MicroTime{Time: time.Now()}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: "default"},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			RenewTime:            &renewed,
+			LeaseDurationSeconds: &duration,
+		},
+	}
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RoleReplica}}
+	r := newReconciler(t, "demo-2", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local, lease)
+	r.primaryLeaseEnabled = true
+	if err := r.acquireOrRenewLease(context.Background()); !errors.Is(err, errPrimaryLeaseHeld) {
+		t.Fatalf("error = %v, want errPrimaryLeaseHeld", err)
+	}
+}
+
+func TestReleaseLeaseDeletesOnlyOwnLease(t *testing.T) {
+	t.Parallel()
+	holder := "demo-1"
+	duration := int32(15)
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: "default"},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			LeaseDurationSeconds: &duration,
+		},
+	}
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	r := newReconciler(t, "demo-1", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local, lease)
+	r.primaryLeaseEnabled = true
+	if err := r.releaseLease(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := &coordinationv1.Lease{}
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "demo-primary"}, got); err == nil {
+		t.Fatal("lease still exists after release")
 	}
 }
 
@@ -104,24 +213,37 @@ func reconcile(t *testing.T, r *Reconciler) ctrl.Result {
 func TestClusterCacheOptionsSelectsSingleClusterByName(t *testing.T) {
 	t.Parallel()
 	opts := clusterCacheOptions(StartOptions{Namespace: "default", ClusterName: "demo"})
-	if len(opts.ByObject) != 1 {
-		t.Fatalf("ByObject entries = %d, want 1", len(opts.ByObject))
+	if len(opts.ByObject) != 2 {
+		t.Fatalf("ByObject entries = %d, want 2", len(opts.ByObject))
 	}
-	var found bool
+	var foundCluster, foundLease bool
 	for obj, cfg := range opts.ByObject {
-		if _, ok := obj.(*mysqlv1alpha1.Cluster); !ok {
-			t.Fatalf("ByObject key = %T, want *Cluster", obj)
-		}
-		found = true
-		if _, ok := cfg.Namespaces["default"]; !ok {
-			t.Fatalf("namespaces = %#v, want default", cfg.Namespaces)
-		}
-		if got := cfg.Field.String(); got != "metadata.name=demo" {
-			t.Fatalf("field selector = %q, want metadata.name=demo", got)
+		switch obj.(type) {
+		case *mysqlv1alpha1.Cluster:
+			foundCluster = true
+			if _, ok := cfg.Namespaces["default"]; !ok {
+				t.Fatalf("cluster namespaces = %#v, want default", cfg.Namespaces)
+			}
+			if got := cfg.Field.String(); got != "metadata.name=demo" {
+				t.Fatalf("cluster field selector = %q, want metadata.name=demo", got)
+			}
+		case *coordinationv1.Lease:
+			foundLease = true
+			if _, ok := cfg.Namespaces["default"]; !ok {
+				t.Fatalf("lease namespaces = %#v, want default", cfg.Namespaces)
+			}
+			if got := cfg.Field.String(); got != "metadata.name=demo-primary" {
+				t.Fatalf("lease field selector = %q, want metadata.name=demo-primary", got)
+			}
+		default:
+			t.Fatalf("ByObject key = %T, want *Cluster or *Lease", obj)
 		}
 	}
-	if !found {
+	if !foundCluster {
 		t.Fatal("cluster cache config not found")
+	}
+	if !foundLease {
+		t.Fatal("lease cache config not found")
 	}
 }
 
