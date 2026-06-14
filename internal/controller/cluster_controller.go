@@ -172,6 +172,7 @@ type ClusterReconciler struct {
 // deferred to later milestones.
 func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	log.V(1).Info("Reconciling Cluster")
 
 	cluster := &mysqlv1alpha1.Cluster{}
 	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
@@ -212,8 +213,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// reconciler: it promotes itself when it is the target and follows the
 	// current primary otherwise.
 	if cluster.Status.TargetPrimary == "" {
+		bootstrapPrimary := instanceName(cluster, 1)
+		log.Info("Electing bootstrap primary", "primary", bootstrapPrimary)
 		if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
-			s.TargetPrimary = instanceName(cluster, 1)
+			s.TargetPrimary = bootstrapPrimary
 			s.TargetPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
 		}); err != nil {
 			return ctrl.Result{}, err

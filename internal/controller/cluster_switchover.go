@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
@@ -136,6 +137,7 @@ func (r *ClusterReconciler) ensureSwitchoverStarted(ctx context.Context, cluster
 func (r *ClusterReconciler) abortSwitchover(ctx context.Context, cluster *mysqlv1alpha1.Cluster, current, target string) (bool, error) {
 	reason := fmt.Sprintf("switchover to %s aborted: not promoted within maxSwitchoverDelay (%ds)",
 		target, cluster.Spec.MaxSwitchoverDelay)
+	logf.FromContext(ctx).Info("Aborting switchover", "target", target, "restoredPrimary", current, "reason", reason)
 	if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 		s.TargetPrimary = current
 		s.TargetPrimaryTimestamp = ""

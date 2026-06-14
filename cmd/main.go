@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"os"
 
@@ -51,6 +52,12 @@ func main() {
 	var enableHTTP2 bool
 	var operatorImage string
 
+	// zap options are bound to the persistent flags below, so verbosity can be
+	// raised at runtime (e.g. --zap-log-level=debug for the V(1) reconcile trace).
+	zapOpts := zap.Options{}
+	zapFlagSet := flag.NewFlagSet("zap", flag.ContinueOnError)
+	zapOpts.BindFlags(zapFlagSet)
+
 	root := &cobra.Command{
 		Use:           "manager",
 		SilenceUsage:  true,
@@ -59,7 +66,7 @@ func main() {
 		// `instance` subcommands share this binary); otherwise subcommands run
 		// without a logger and controller-runtime silently drops their logs.
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tlsOpts []func(*tls.Config)
@@ -202,6 +209,7 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	root.PersistentFlags().StringVar(&operatorImage, "operator-image", "",
 		"Operator image name (used for bootstrap-controller init container)")
+	root.PersistentFlags().AddGoFlagSet(zapFlagSet)
 
 	root.AddCommand(bootstrap.NewCommand())
 	root.AddCommand(instance.NewCommand())

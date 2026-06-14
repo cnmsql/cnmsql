@@ -372,6 +372,7 @@ func (r *BackupReconciler) createBackupJob(ctx context.Context, job *batchv1.Job
 	current := &batchv1.Job{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: job.Namespace, Name: job.Name}, current)
 	if apierrors.IsNotFound(err) {
+		logf.FromContext(ctx).Info("Starting backup worker Job", "job", job.Name)
 		return r.Create(ctx, job)
 	}
 	return err

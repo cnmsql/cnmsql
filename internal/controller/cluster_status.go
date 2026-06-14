@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
@@ -288,6 +289,11 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	}
 	if reflect.DeepEqual(before.Status, latest.Status) {
 		return nil
+	}
+	if before.Status.Phase != observed.Phase {
+		logf.FromContext(ctx).Info("Cluster phase changed",
+			"from", before.Status.Phase, "to", observed.Phase,
+			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
 	return r.Status().Patch(ctx, latest, client.MergeFrom(before))

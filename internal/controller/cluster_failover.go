@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
@@ -100,6 +101,7 @@ func (r *ClusterReconciler) reconcileFailover(
 	}
 	// Point targetPrimary at the chosen candidate. Its in-Pod reconciler promotes
 	// it and sets currentPrimary; the surviving replicas re-point themselves.
+	logf.FromContext(ctx).Info("Failing over primary", "from", observed.PrimaryName, "to", candidate)
 	if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 		s.TargetPrimary = candidate
 		s.TargetPrimaryTimestamp = metav1.Now().Format(time.RFC3339)

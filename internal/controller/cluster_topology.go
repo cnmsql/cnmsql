@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
 )
@@ -92,6 +93,7 @@ func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysq
 		if !ok || ordinal <= plan.Instances || pod.Name == plan.primaryName(cluster) {
 			continue
 		}
+		logf.FromContext(ctx).Info("Scaling down instance", "instance", pod.Name, "desiredInstances", plan.Instances)
 		if err := r.removeInstanceResources(ctx, cluster, plan.instanceFor(cluster, ordinal)); err != nil {
 			return err
 		}

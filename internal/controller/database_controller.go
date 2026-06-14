@@ -392,7 +392,24 @@ func (r *DatabaseReconciler) patchDatabaseStatus(
 	before := latest.DeepCopy()
 	mutate(&latest.Status)
 	db.Status = latest.Status
+	if !appliedEqual(before.Status.Applied, latest.Status.Applied) {
+		logf.FromContext(ctx).Info("Database applied state changed",
+			"database", latest.Name, "applied", boolValue(latest.Status.Applied), "message", latest.Status.Message)
+	}
 	return r.Status().Patch(ctx, latest, client.MergeFrom(before))
+}
+
+// appliedEqual reports whether two *bool Applied states are equivalent, treating
+// nil (not yet observed) as distinct from both true and false.
+func appliedEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func boolValue(b *bool) bool {
+	return b != nil && *b
 }
 
 func setDatabaseCondition(status *mysqlv1alpha1.DatabaseStatus, conditionType string, conditionStatus metav1.ConditionStatus, reason, message string, generation int64) {
