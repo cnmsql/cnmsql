@@ -48,6 +48,9 @@ type InstanceController interface {
 	// EnsureReplicaConfigured points the instance at a source and starts
 	// replication.
 	EnsureReplicaConfigured(ctx context.Context, opts replication.SourceOptions) error
+	// SetSemiSyncWaitForReplicaCount adjusts the semi-sync source's required
+	// acknowledgement count at runtime (semi-sync self-healing).
+	SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error
 	// Restart restarts the managed mysqld process.
 	Restart(ctx context.Context) error
 	// CreateUser creates a MySQL user and applies its grants.
@@ -85,6 +88,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /promote", actionHandler(controller.Promote))
 	mux.HandleFunc("POST /demote", actionHandler(controller.Demote))
 	mux.HandleFunc("POST /replica/source", configureReplicaHandler(controller))
+	mux.HandleFunc("POST /semisync/wait", semiSyncWaitHandler(controller))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
 	mux.HandleFunc("POST /user/create", bodyActionHandler(controller.CreateUser))
 	mux.HandleFunc("POST /user/alter", bodyActionHandler(controller.AlterUser))
@@ -112,6 +116,27 @@ func HealthHandler(controller InstanceController) http.Handler {
 // ConfigureReplicaRequest is the JSON body accepted by POST /replica/source.
 type ConfigureReplicaRequest struct {
 	Source replication.SourceOptions `json:"source"`
+}
+
+// SemiSyncWaitRequest is the JSON body accepted by POST /semisync/wait. Count is
+// the number of replica acknowledgements the semi-sync source should wait for.
+type SemiSyncWaitRequest struct {
+	Count int `json:"count"`
+}
+
+func semiSyncWaitHandler(controller InstanceController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req SemiSyncWaitRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := controller.SetSemiSyncWaitForReplicaCount(r.Context(), req.Count); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func configureReplicaHandler(controller InstanceController) http.HandlerFunc {

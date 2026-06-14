@@ -51,7 +51,7 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	maintenance := inNodeMaintenance(cluster)
 	singleInstance := plan.Instances <= 1
 
-	wantPrimary := pdbEnabled && !(maintenance && singleInstance)
+	wantPrimary := pdbEnabled && (!maintenance || !singleInstance)
 	wantReplica := pdbEnabled && !singleInstance && !maintenance
 
 	if err := r.reconcileOnePDB(ctx, cluster, primaryPDBName(cluster), wantPrimary, func() *policyv1.PodDisruptionBudget {

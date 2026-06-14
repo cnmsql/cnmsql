@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -183,8 +184,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	// Catch termination signals to shut down mysqld gracefully.
+	// SIGHUP triggers certificate reload.
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer signal.Stop(signals)
 
 	// Establish the privileged control connection.
@@ -206,6 +208,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// transitions dynamically; the run loop only resumes persisted replication.
 	// Otherwise fall back to the static --role/--source bootstrap.
 	roleManaged := opts.ClusterName != "" && opts.Namespace != ""
+
+	// Under cluster management the instance can detect API-server isolation and
+	// fail its liveness probe so the kubelet restarts a partitioned container.
+	var isolationDetector *IsolationDetector
+	if roleManaged {
+		isolationDetector = NewIsolationDetector(DefaultIsolationTimeout)
+		controller.SetIsolationDetector(isolationDetector)
+	}
 	if roleManaged {
 		log.Info("Resuming configured replication if needed")
 		if err := controller.EnsureReplicaStarted(ctx); err != nil {
@@ -250,10 +260,27 @@ func Run(ctx context.Context, opts RunOptions) error {
 		archiveErr = errCh
 	}
 
+	var cm *webserver.TLSCertManager
 	srv, err := buildServer(opts, controller)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		return err
+	}
+	if opts.TLS.ServerCertFile != "" {
+		cm, err = webserver.NewTLSCertManager(opts.TLS)
+		if err != nil {
+			_ = sup.Shutdown(ctx)
+			return fmt.Errorf("loading TLS certificates: %w", err)
+		}
+		cm.OnReload = func(ctx context.Context) error {
+			log.Info("Reloading mysqld TLS certificates")
+			if _, err := db.ExecContext(ctx, "ALTER INSTANCE RELOAD TLS"); err != nil {
+				return fmt.Errorf("ALTER INSTANCE RELOAD TLS: %w", err)
+			}
+			return nil
+		}
+		srv = webserver.NewServerDynamic(opts.WebserverAddr, controller, cm)
+		startCertWatcher(ctx, cm)
 	}
 	healthSrv := buildHealthServer(opts, controller)
 
@@ -262,10 +289,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// to be present. Scrapers authenticate with a client cert signed by that CA.
 	var metricsTLSConfig *tls.Config
 	if opts.MetricsTLS {
-		metricsTLSConfig, err = opts.TLS.MTLSConfig()
-		if err != nil {
-			_ = sup.Shutdown(ctx)
-			return fmt.Errorf("configuring metrics TLS: %w", err)
+		if cm != nil {
+			metricsTLSConfig = cm.TLSConfig()
+		} else {
+			metricsTLSConfig, err = opts.TLS.MTLSConfig()
+			if err != nil {
+				_ = sup.Shutdown(ctx)
+				return fmt.Errorf("configuring metrics TLS: %w", err)
+			}
 		}
 	}
 	metricsSrv := metricserver.New(opts.MetricsAddr, metrics.NewExporter(db), metricsTLSConfig)
@@ -299,38 +330,52 @@ func Run(ctx context.Context, opts RunOptions) error {
 		log.Info("Starting role reconciler")
 		go func() {
 			roleErr <- rolereconciler.Start(mgrCtx, rolereconciler.StartOptions{
-				Namespace:      opts.Namespace,
-				ClusterName:    opts.ClusterName,
-				InstanceName:   opts.InstanceName,
-				SourceTemplate: opts.SourceTemplate,
-				Local:          controller,
+				Namespace:          opts.Namespace,
+				ClusterName:        opts.ClusterName,
+				InstanceName:       opts.InstanceName,
+				SourceTemplate:     opts.SourceTemplate,
+				Local:              controller,
+				OnAPIServerContact: isolationDetector.RecordContact,
 			})
 		}()
 	}
 
 	var runErr error
-	select {
-	case sig := <-signals:
-		log.Info("Received signal", "signal", sig.String())
-		runErr = fmt.Errorf("received signal %s", sig)
-	case err := <-mysqldExit:
-		log.Error(err, "Mysqld exited")
-		runErr = fmt.Errorf("mysqld exited: %w", err)
-	case err := <-serverErr:
-		log.Error(err, "Control API server failed")
-		runErr = fmt.Errorf("control API server failed: %w", err)
-	case err := <-healthErr:
-		log.Error(err, "Health API server failed")
-		runErr = fmt.Errorf("health API server failed: %w", err)
-	case err := <-metricsErr:
-		log.Error(err, "Metrics API server failed")
-		runErr = fmt.Errorf("metrics API server failed: %w", err)
-	case err := <-roleErr:
-		log.Error(err, "Role reconciler failed")
-		runErr = fmt.Errorf("role reconciler failed: %w", err)
-	case err := <-archiveErr:
-		log.Error(err, "Continuous archiver failed")
-		runErr = fmt.Errorf("continuous archiver failed: %w", err)
+	for runErr == nil {
+		select {
+		case sig := <-signals:
+			if sig == syscall.SIGHUP {
+				log.Info("Received SIGHUP, reloading TLS certificates")
+				if cm != nil {
+					if err := cm.Reload(ctx); err != nil {
+						log.Error(err, "Failed to reload TLS certificates")
+					} else {
+						log.Info("TLS certificates reloaded")
+					}
+				}
+				continue
+			}
+			log.Info("Received signal", "signal", sig.String())
+			runErr = fmt.Errorf("received signal %s", sig)
+		case err := <-mysqldExit:
+			log.Error(err, "Mysqld exited")
+			runErr = fmt.Errorf("mysqld exited: %w", err)
+		case err := <-serverErr:
+			log.Error(err, "Control API server failed")
+			runErr = fmt.Errorf("control API server failed: %w", err)
+		case err := <-healthErr:
+			log.Error(err, "Health API server failed")
+			runErr = fmt.Errorf("health API server failed: %w", err)
+		case err := <-metricsErr:
+			log.Error(err, "Metrics API server failed")
+			runErr = fmt.Errorf("metrics API server failed: %w", err)
+		case err := <-roleErr:
+			log.Error(err, "Role reconciler failed")
+			runErr = fmt.Errorf("role reconciler failed: %w", err)
+		case err := <-archiveErr:
+			log.Error(err, "Continuous archiver failed")
+			runErr = fmt.Errorf("continuous archiver failed: %w", err)
+		}
 	}
 	cancelMgr()
 	cancelArchive()
@@ -357,6 +402,73 @@ func buildHealthServer(opts RunOptions, controller webserver.InstanceController)
 		Handler:           webserver.HealthHandler(controller),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+}
+
+// startCertWatcher watches the certificate files managed by cm and calls
+// cm.Reload() whenever any of them are modified. Debouncing handles short-lived
+// write bursts (e.g. atomic rename, multiple Secrets updating).
+func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to start certificate file watcher")
+		return
+	}
+
+	log := logf.FromContext(ctx).WithName("cert-watcher")
+
+	seen := map[string]struct{}{}
+	for _, f := range cm.WatchedFiles() {
+		if _, ok := seen[f]; ok {
+			continue
+		}
+		seen[f] = struct{}{}
+		if err := watcher.Add(f); err != nil {
+			log.Error(err, "Failed to watch certificate file, reload only via SIGHUP",
+				"file", f)
+			_ = watcher.Close()
+			return
+		}
+	}
+
+	go func() {
+		defer func() { _ = watcher.Close() }()
+		debounce := 500 * time.Millisecond
+		var timer *time.Timer
+		var reloadC <-chan time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				if timer != nil {
+					timer.Stop()
+				}
+				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0 {
+					if timer != nil {
+						timer.Stop()
+					}
+					timer = time.NewTimer(debounce)
+					reloadC = timer.C
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Error(err, "Certificate file watcher error")
+			case <-reloadC:
+				reloadC = nil
+				log.Info("Certificate files changed, reloading")
+				if err := cm.Reload(ctx); err != nil {
+					log.Error(err, "Failed to reload TLS certificates")
+				} else {
+					log.Info("TLS certificates reloaded")
+				}
+			}
+		}
+	}()
 }
 
 // buildServer constructs the control API server, with or without mTLS.

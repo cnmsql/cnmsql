@@ -32,19 +32,21 @@ import (
 
 // fakeController is a configurable InstanceController for handler tests.
 type fakeController struct {
-	healthErr    error
-	readyErr     error
-	status       *Status
-	statusErr    error
-	promoteErr   error
-	demoteErr    error
-	configureErr error
-	restartErr   error
+	healthErr       error
+	readyErr        error
+	status          *Status
+	statusErr       error
+	promoteErr      error
+	demoteErr       error
+	configureErr    error
+	restartErr      error
+	semiSyncWaitErr error
 
-	promoteCalled   bool
-	demoteCalled    bool
-	configureSource *replication.SourceOptions
-	restartCalled   bool
+	promoteCalled     bool
+	demoteCalled      bool
+	configureSource   *replication.SourceOptions
+	semiSyncWaitCount *int
+	restartCalled     bool
 
 	userMgmtErr   error
 	createUserReq *user.CreateUserRequest
@@ -93,6 +95,10 @@ func (f *fakeController) Demote(context.Context) error  { f.demoteCalled = true;
 func (f *fakeController) EnsureReplicaConfigured(_ context.Context, opts replication.SourceOptions) error {
 	f.configureSource = &opts
 	return f.configureErr
+}
+func (f *fakeController) SetSemiSyncWaitForReplicaCount(_ context.Context, count int) error {
+	f.semiSyncWaitCount = &count
+	return f.semiSyncWaitErr
 }
 func (f *fakeController) Restart(context.Context) error { f.restartCalled = true; return f.restartErr }
 
@@ -261,6 +267,10 @@ func TestLifecycleActions(t *testing.T) {
 	}
 	if rec := do(t, h, http.MethodPost, "/restart"); rec.Code != http.StatusOK || !fc.restartCalled {
 		t.Errorf("restart = %d called=%v", rec.Code, fc.restartCalled)
+	}
+	rec = doWithBody(t, h, "/semisync/wait", `{"count":2}`)
+	if rec.Code != http.StatusOK || fc.semiSyncWaitCount == nil || *fc.semiSyncWaitCount != 2 {
+		t.Errorf("semisync wait = %d count=%v", rec.Code, fc.semiSyncWaitCount)
 	}
 }
 

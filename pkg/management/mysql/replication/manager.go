@@ -19,6 +19,7 @@ package replication
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
@@ -197,6 +198,16 @@ func (m *Manager) InstallSemiSyncSource(ctx context.Context) error {
 // error raised when it is already installed.
 func (m *Manager) InstallSemiSyncReplica(ctx context.Context) error {
 	return m.installPlugin(ctx, InstallSemiSyncReplicaStatement(m.version))
+}
+
+// SetSemiSyncWaitForReplicaCount sets, at runtime, how many replica
+// acknowledgements the semi-sync source waits for before committing
+// (rpl_semi_sync_source_wait_for_replica_count / the legacy slave-count
+// variable). The operator lowers this below minSyncReplicas while replicas are
+// unhealthy under "preferred" data durability, then restores it as they recover.
+func (m *Manager) SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error {
+	naming := m.version.SemiSync()
+	return m.exec(ctx, SetGlobalStatement(naming.WaitForCountVar, strconv.Itoa(count)))
 }
 
 func (m *Manager) installPlugin(ctx context.Context, stmt string) error {

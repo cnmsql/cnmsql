@@ -98,6 +98,8 @@ type InstanceControlClient interface {
 	CreateDatabase(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.CreateDatabaseRequest) error
 	DropDatabase(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.DropDatabaseRequest) error
 	ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error)
+
+	SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error
 }
 
 // ClusterReconciler reconciles a Cluster object.
@@ -309,22 +311,26 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !provisioned || !observed.Ready {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
-	r.reconcileSteadyState(ctx, cluster)
+	r.reconcileSteadyState(ctx, cluster, observed)
 	// Keep re-polling the instance managers so status (GTID, roles, readiness)
 	// stays fresh even when no Kubernetes event triggers a reconcile.
 	return ctrl.Result{RequeueAfter: readyResync}, nil
 }
 
 // reconcileSteadyState runs the best-effort, post-Ready reconciliations:
-// declarative managed roles and backup retention. Failures here are logged and
-// retried on the next resync rather than failing the whole reconcile.
-func (r *ClusterReconciler) reconcileSteadyState(ctx context.Context, cluster *mysqlv1alpha1.Cluster) {
+// declarative managed roles, backup retention and semi-sync self-healing.
+// Failures here are logged and retried on the next resync rather than failing
+// the whole reconcile.
+func (r *ClusterReconciler) reconcileSteadyState(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) {
 	log := logf.FromContext(ctx)
 	if err := r.reconcileManagedRoles(ctx, cluster); err != nil {
 		log.Info("Managed roles reconciliation failed, will retry", "error", err.Error())
 	}
 	if err := r.reconcileRetention(ctx, cluster); err != nil {
 		log.Info("Backup retention pass failed, will retry", "error", err.Error())
+	}
+	if err := r.reconcileSemiSync(ctx, cluster, observed); err != nil {
+		log.Info("Semi-sync self-healing pass failed, will retry", "error", err.Error())
 	}
 }
 

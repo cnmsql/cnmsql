@@ -98,6 +98,12 @@ func (c *HTTPControlClient) DropDatabase(ctx context.Context, cluster *mysqlv1al
 	return c.action(ctx, cluster, instanceName, "/database/drop", req)
 }
 
+// SetSemiSyncWaitForReplicaCount adjusts the semi-sync acknowledgement count on
+// the named instance (used to self-heal semi-sync under "preferred" durability).
+func (c *HTTPControlClient) SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error {
+	return c.action(ctx, cluster, instanceName, "/semisync/wait", webserver.SemiSyncWaitRequest{Count: count})
+}
+
 // ListDatabases reads the user-managed MySQL schemas from the named instance.
 func (c *HTTPControlClient) ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error) {
 	var result user.ListDatabasesResponse

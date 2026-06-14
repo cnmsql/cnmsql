@@ -66,6 +66,47 @@ reach at least one replica. Without that guarantee, an acknowledged write that
 only existed on a lost primary can be lost before a replica or the object store
 sees it.
 
+### Semi-sync self-healing (data durability)
+
+With semi-sync on, the primary blocks each commit until `minSyncReplicas`
+replicas acknowledge it. If a synchronous replica becomes unhealthy, that floor
+can stall writes. `spec.mysql.semiSync.dataDurability` decides how the operator
+responds:
+
+```yaml
+spec:
+  minSyncReplicas: 2
+  mysql:
+    semiSync:
+      enabled: true
+      dataDurability: preferred # or "required"
+```
+
+With `preferred` (the default), the operator keeps lowering the primary's
+required acknowledgement count
+(`rpl_semi_sync_source_wait_for_replica_count`) to the number of healthy
+replicas, never below one, so writes keep flowing during a replica outage. It
+raises the count back to `minSyncReplicas` as replicas recover. This favours
+availability over strict durability.
+
+With `required`, the count stays pinned to `minSyncReplicas`. When fewer healthy
+replicas can acknowledge, writes block until `timeoutMillis` elapses and
+replication falls back to async. This favours durability over availability.
+
+The operator applies the change on the primary over the mTLS control API during
+its steady-state reconcile. It is a runtime adjustment only; the static
+`my.cnf` floor does not change.
+
+### Liveness isolation check
+
+Each cluster-managed instance keeps probing the Kubernetes API server. If it
+cannot reach the API server for 30 seconds it treats itself as network-isolated
+and fails its liveness probe, so the kubelet restarts the container. This is a
+last-resort guard against a partitioned primary the operator can no longer
+coordinate, which is a split-brain risk. The check runs locally inside the
+instance, so a genuinely isolated node still restarts itself even while it is
+unreachable from the control plane.
+
 ## Role services
 
 CNMySQL creates three default Services:

@@ -152,6 +152,7 @@ spec:
     semiSync:
       enabled: true
       timeoutMillis: 1000
+      dataDurability: preferred
     additionalConfigFiles:
       custom.cnf: |
         [mysqld]
@@ -164,6 +165,7 @@ spec:
 | `binlogFormat` | `ROW`, `STATEMENT`, `MIXED` | Binary-log format. Default `ROW`; required for safe replication and PITR. |
 | `semiSync.enabled` | bool | Enable semi-synchronous replication. |
 | `semiSync.timeoutMillis` | integer | Wait timeout before falling back to async behavior. |
+| `semiSync.dataDurability` | `preferred`, `required` | How strictly `minSyncReplicas` is enforced when replicas are unhealthy. `preferred` (default) self-heals the acknowledgement count down to keep the primary writable; `required` keeps it fixed so writes block. |
 | `additionalConfigFiles` | map string/string | Extra config files rendered into the MySQL config directory. |
 
 #### Denied and deprecated parameters

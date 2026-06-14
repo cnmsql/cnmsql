@@ -2526,6 +2526,18 @@ spec:
                   semiSync:
                     description: SemiSync configures semi-synchronous replication.
                     properties:
+                      dataDurability:
+                        default: preferred
+                        description: |-
+                          DataDurability controls how strictly minSyncReplicas is enforced when
+                          replicas are unhealthy. "preferred" (the default) keeps the primary
+                          writable by self-healing the acknowledgement count down to the number of
+                          healthy replicas; "required" leaves it fixed so writes block until enough
+                          replicas acknowledge.
+                        enum:
+                        - preferred
+                        - required
+                        type: string
                       enabled:
                         default: false
                         description: Enabled turns on semi-synchronous replication.

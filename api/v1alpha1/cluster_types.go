@@ -313,6 +313,21 @@ type MySQLConfiguration struct {
 	AdditionalConfigFiles map[string]string `json:"additionalConfigFiles,omitempty"`
 }
 
+// Data durability levels for semi-synchronous replication. They control how
+// strictly the configured number of synchronous replicas is enforced when some
+// replicas are unhealthy.
+const (
+	// DataDurabilityPreferred keeps the primary writable during a replica
+	// outage by temporarily lowering the number of acknowledgements the primary
+	// waits for to the number of healthy replicas. Availability is favoured over
+	// strict durability. This is the default.
+	DataDurabilityPreferred = "preferred"
+	// DataDurabilityRequired strictly enforces minSyncReplicas: writes block
+	// (until rpl_semi_sync_*_timeout) when fewer healthy replicas can
+	// acknowledge. Durability is favoured over availability.
+	DataDurabilityRequired = "required"
+)
+
 // SemiSyncConfiguration configures semi-synchronous replication.
 type SemiSyncConfiguration struct {
 	// Enabled turns on semi-synchronous replication.
@@ -325,6 +340,16 @@ type SemiSyncConfiguration struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	TimeoutMillis *int32 `json:"timeoutMillis,omitempty"`
+
+	// DataDurability controls how strictly minSyncReplicas is enforced when
+	// replicas are unhealthy. "preferred" (the default) keeps the primary
+	// writable by self-healing the acknowledgement count down to the number of
+	// healthy replicas; "required" leaves it fixed so writes block until enough
+	// replicas acknowledge.
+	// +kubebuilder:validation:Enum=preferred;required
+	// +kubebuilder:default:=preferred
+	// +optional
+	DataDurability string `json:"dataDurability,omitempty"`
 }
 
 // ImageCatalogRef references an ImageCatalog or ClusterImageCatalog entry to

@@ -132,6 +132,10 @@ func (readyStatusClient) ListDatabases(context.Context, *mysqlv1alpha1.Cluster, 
 	return &user.ListDatabasesResponse{}, nil
 }
 
+func (readyStatusClient) SetSemiSyncWaitForReplicaCount(context.Context, *mysqlv1alpha1.Cluster, string, int) error {
+	return nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -146,6 +150,8 @@ type recordingControlClient struct {
 	databases       []string
 	createdDatabase []user.CreateDatabaseRequest
 	droppedDatabase []user.DropDatabaseRequest
+
+	semiSyncWaits map[string]int
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
@@ -201,6 +207,14 @@ func (c *recordingControlClient) DropDatabase(_ context.Context, _ *mysqlv1alpha
 
 func (c *recordingControlClient) ListDatabases(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string) (*user.ListDatabasesResponse, error) {
 	return &user.ListDatabasesResponse{Databases: c.databases}, nil
+}
+
+func (c *recordingControlClient) SetSemiSyncWaitForReplicaCount(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string, count int) error {
+	if c.semiSyncWaits == nil {
+		c.semiSyncWaits = map[string]int{}
+	}
+	c.semiSyncWaits[instanceName] = count
+	return nil
 }
 
 func TestBuildPlanDefaultsToLocalInstanceImage(t *testing.T) {

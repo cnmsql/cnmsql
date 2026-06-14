@@ -19,15 +19,18 @@ package rolereconciler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
@@ -49,6 +52,13 @@ type StartOptions struct {
 	SourceTemplate replication.SourceOptions
 	// Local drives the local mysqld.
 	Local LocalInstance
+	// OnAPIServerContact, when set, is called every time the in-Pod manager
+	// confirms it can reach the Kubernetes API server. It feeds the isolation
+	// detector that backs the liveness probe.
+	OnAPIServerContact func()
+	// APIServerProbeInterval paces the reachability prober (default 5s). Ignored
+	// when OnAPIServerContact is nil.
+	APIServerProbeInterval time.Duration
 }
 
 // Start builds a controller-runtime manager scoped to the owning Cluster's
@@ -92,7 +102,59 @@ func Start(ctx context.Context, opts StartOptions) error {
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return err
 	}
+
+	// Run an independent API-server reachability prober. It must not rely on the
+	// controller-runtime cache (which keeps serving the last-known Cluster while
+	// partitioned); a direct round-trip to the API server is the only honest
+	// isolation signal.
+	if opts.OnAPIServerContact != nil {
+		if err := startAPIServerProber(ctx, cfg, opts); err != nil {
+			return err
+		}
+	}
+
 	return mgr.Start(ctx)
+}
+
+// startAPIServerProber periodically round-trips to the API server and reports
+// each success through opts.OnAPIServerContact. It runs until ctx is cancelled.
+//
+// It calls /version (via ServerVersion), which is reachable by any authenticated
+// client through the system:discovery role. /readyz and /healthz are not bound
+// to a Pod ServiceAccount by default, so probing them would fail with 403 and
+// make a perfectly healthy instance declare itself isolated.
+func startAPIServerProber(ctx context.Context, cfg *rest.Config, opts StartOptions) error {
+	interval := opts.APIServerProbeInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	// Bound each probe so a hung connection cannot stall detection past the
+	// isolation timeout.
+	probeCfg := rest.CopyConfig(cfg)
+	probeCfg.Timeout = interval
+	clientset, err := kubernetes.NewForConfig(probeCfg)
+	if err != nil {
+		return fmt.Errorf("building API-server probe client: %w", err)
+	}
+
+	go func() {
+		log := logf.FromContext(ctx).WithName("apiserver-prober")
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := clientset.Discovery().ServerVersion(); err != nil {
+					log.V(1).Info("API server unreachable", "error", err.Error())
+					continue
+				}
+				opts.OnAPIServerContact()
+			}
+		}
+	}()
+	return nil
 }
 
 func clusterCacheOptions(opts StartOptions) cache.Options {

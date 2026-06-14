@@ -57,6 +57,9 @@ type Controller struct {
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus
+	// isolation, when set, fails the liveness probe once the instance has lost
+	// contact with the Kubernetes API server for too long. nil disables the check.
+	isolation *IsolationDetector
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -94,9 +97,20 @@ func (c *Controller) SetArchivingProvider(provider func() *webserver.ArchivingSt
 	c.archiving = provider
 }
 
-// Healthz reports liveness: the server answers a ping.
+// SetIsolationDetector wires the API-server isolation detector into the liveness
+// probe. When set, Healthz fails if the instance can no longer reach the API
+// server, so the kubelet restarts a partitioned container as a last resort.
+func (c *Controller) SetIsolationDetector(detector *IsolationDetector) {
+	c.isolation = detector
+}
+
+// Healthz reports liveness: the server answers a ping and the instance is not
+// isolated from the Kubernetes API server.
 func (c *Controller) Healthz(ctx context.Context) error {
-	return c.conn.PingContext(ctx)
+	if err := c.conn.PingContext(ctx); err != nil {
+		return err
+	}
+	return c.isolation.Check()
 }
 
 // Readyz reports readiness: the server answers a ping and, if it is a replica,
@@ -183,6 +197,13 @@ func (c *Controller) Promote(ctx context.Context) error {
 	c.expected = webserver.RolePrimary
 	log.Info("Promoted instance")
 	return nil
+}
+
+// SetSemiSyncWaitForReplicaCount adjusts, at runtime, how many replica
+// acknowledgements the semi-sync source waits for. Used by the operator to
+// self-heal semi-sync availability under "preferred" data durability.
+func (c *Controller) SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error {
+	return c.repl.SetSemiSyncWaitForReplicaCount(ctx, count)
 }
 
 // Demote makes a primary read-only.
