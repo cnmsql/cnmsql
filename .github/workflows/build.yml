@@ -1,0 +1,124 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches:
+    - main
+    tags:
+    - v*
+  workflow_dispatch:
+
+
+permissions: {}
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-operator:
+    name: Operator image (cnmysql)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to ${{ env.REGISTRY }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Compute image tags
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmysql
+        tags: |
+          type=ref,event=branch
+          type=ref,event=tag
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,format=short
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  prepare-instance-matrix:
+    name: Read instance version matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.matrix.outputs.versions }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Build matrix from images/versions.json
+      id: matrix
+      run: |
+        versions=$(jq -c '[.[].version]' images/versions.json)
+        echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+
+  build-instance:
+    name: MySQL instance image (${{ matrix.version }})
+    needs: prepare-instance-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.prepare-instance-matrix.outputs.versions) }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Log in to ${{ env.REGISTRY }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push instance image
+      run: |
+        repo="${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmysql-instance"
+        # Lowercase the owner: GHCR repositories must be lowercase.
+        repo="$(echo "$repo" | tr '[:upper:]' '[:lower:]')"
+        CONTAINER_TOOL=docker REGISTRY="$repo" PUSH=1 ./images/build.sh "${{ matrix.version }}"
+        # On a version tag, also publish an immutable <mysql>-<tag> image.
+        if [ "${{ github.ref_type }}" = "tag" ]; then
+          docker tag  "$repo:${{ matrix.version }}" "$repo:${{ matrix.version }}-${{ github.ref_name }}"
+          docker push "$repo:${{ matrix.version }}-${{ github.ref_name }}"
+        fi

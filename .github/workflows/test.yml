@@ -1,4 +1,4 @@
-name: Tests
+name: Unit Tests
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  unit:
     permissions:
       contents: read
-    name: Run on Ubuntu
+    name: Run unit tests (envtest)
     runs-on: ubuntu-latest
     steps:
     - name: Clone the code
