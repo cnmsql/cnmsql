@@ -631,6 +631,10 @@ func (in *ClusterStatus) DeepCopyInto(out *ClusterStatus) {
 			(*out)[key] = val
 		}
 	}
+	if in.GTIDExecutedUpdatedAt != nil {
+		in, out := &in.GTIDExecutedUpdatedAt, &out.GTIDExecutedUpdatedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Certificates != nil {
 		in, out := &in.Certificates, &out.Certificates
 		*out = new(CertificatesStatus)

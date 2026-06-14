@@ -3712,6 +3712,14 @@ spec:
                 description: GTIDExecutedByInstance maps an instance name to its gtid_executed
                   set.
                 type: object
+              gtidExecutedUpdatedAt:
+                description: |-
+                  GTIDExecutedUpdatedAt records when GTIDExecutedByInstance was last
+                  refreshed. Because gtid_executed advances on every write, the operator
+                  throttles how often it persists the map; this timestamp marks the last
+                  persisted snapshot.
+                format: date-time
+                type: string
               image:
                 description: Image is the resolved image currently in use.
                 type: string

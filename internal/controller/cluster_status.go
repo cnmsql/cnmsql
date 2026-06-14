@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -240,9 +242,6 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	latest.Status.ReadyInstances = observed.ReadyInstances
 	latest.Status.DivergedInstances = observed.DivergedInstances
 	latest.Status.FencedInstances = observed.FencedInstances
-	if len(observed.GTIDByInstance) > 0 {
-		latest.Status.GTIDExecutedByInstance = observed.GTIDByInstance
-	}
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)
 	latest.Status.ContinuousArchiving = observed.ContinuousArchiving
 	if observed.ContinuousArchiving != nil {
@@ -275,8 +274,33 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		Message:            observed.PhaseReason,
 		ObservedGeneration: latest.Generation,
 	})
+	// gtid_executed advances on every write, so persisting it on every reconcile
+	// would patch the Cluster status (an etcd write) continuously under load. It
+	// is purely informational — failover and switchover decisions read the live
+	// gtid_executed, never this field. So we refresh it only when (a) some other
+	// part of the status is already changing and the write is happening anyway, or
+	// (b) the last persisted snapshot is older than gtidPersistInterval, so it
+	// stays reasonably fresh without writing on every reconcile.
+	otherChanged := !reflect.DeepEqual(before.Status, latest.Status)
+	if len(observed.GTIDByInstance) > 0 && (otherChanged || gtidSnapshotStale(before.Status.GTIDExecutedUpdatedAt)) {
+		latest.Status.GTIDExecutedByInstance = observed.GTIDByInstance
+		latest.Status.GTIDExecutedUpdatedAt = &metav1.Time{Time: time.Now()}
+	}
+	if reflect.DeepEqual(before.Status, latest.Status) {
+		return nil
+	}
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
 	return r.Status().Patch(ctx, latest, client.MergeFrom(before))
+}
+
+// gtidPersistInterval bounds how often the operator persists the gtid_executed
+// snapshot when nothing else in the status is changing.
+const gtidPersistInterval = 5 * time.Minute
+
+// gtidSnapshotStale reports whether the persisted gtid_executed snapshot is old
+// enough to be refreshed. A nil timestamp (never persisted) counts as stale.
+func gtidSnapshotStale(updatedAt *metav1.Time) bool {
+	return updatedAt == nil || time.Since(updatedAt.Time) >= gtidPersistInterval
 }
 
 func (r *ClusterReconciler) certificateStatus(

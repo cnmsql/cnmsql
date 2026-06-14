@@ -901,6 +901,13 @@ type ClusterStatus struct {
 	// +optional
 	GTIDExecutedByInstance map[string]string `json:"gtidExecutedByInstance,omitempty"`
 
+	// GTIDExecutedUpdatedAt records when GTIDExecutedByInstance was last
+	// refreshed. Because gtid_executed advances on every write, the operator
+	// throttles how often it persists the map; this timestamp marks the last
+	// persisted snapshot.
+	// +optional
+	GTIDExecutedUpdatedAt *metav1.Time `json:"gtidExecutedUpdatedAt,omitempty"`
+
 	// Certificates reports the status of the managed certificates.
 	// +optional
 	Certificates *CertificatesStatus `json:"certificates,omitempty"`
