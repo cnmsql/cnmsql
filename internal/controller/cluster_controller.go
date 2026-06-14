@@ -221,18 +221,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.validateUserCertificates(ctx, cluster); err != nil {
-		log.Info("Blocking cluster: user-provided certificate secret is invalid", "reason", err.Error())
-		if r.Recorder != nil {
-			r.Recorder.Event(cluster, corev1.EventTypeWarning, "InvalidUserCertificate", err.Error())
-		}
-		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
-			PhaseReason: err.Error(),
-			Ready:       false,
-			Progressing: false,
-			Plan:        plan,
-		})
+	if ok, result, err := r.blockOnInvalidCertificate(ctx, cluster, plan); ok {
+		return result, err
 	}
 	if err := r.ensureCertificates(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err
@@ -264,49 +254,15 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Guard against a fresh cluster adopting (and overwriting) an object-store
 	// destination that already holds another cluster's backups. Block before any
 	// instance is provisioned so the primary never archives over existing data.
-	if check := r.checkBackupDestination(ctx, cluster); check.Retry != nil {
-		log.Info("Could not verify backup destination, will retry", "error", check.Retry.Error())
-		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseProvisioning,
-			PhaseReason: "Verifying backup destination is empty",
-			Ready:       false,
-			Progressing: true,
-			Plan:        plan,
-		})
-	} else if check.Blocked != "" {
-		log.Info("Blocking cluster: backup destination is not empty", "reason", check.Blocked)
-		r.Recorder.Event(cluster, corev1.EventTypeWarning, "BackupDestinationNotEmpty", check.Blocked)
-		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
-			PhaseReason: check.Blocked,
-			Ready:       false,
-			Progressing: false,
-			Plan:        plan,
-		})
+	if result, err, handled := r.handleBackupCheck(ctx, cluster, plan); handled {
+		return result, err
 	}
 
 	// For a point-in-time recovery, fail fast with a clear condition when the
 	// target is obviously unsatisfiable (e.g. a targetGTID beyond the archive)
 	// rather than provisioning a primary whose init container will CrashLoop.
-	if check := r.checkRecoveryTarget(ctx, cluster, plan); check.Retry != nil {
-		log.Info("Could not verify recovery target, will retry", "error", check.Retry.Error())
-		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseProvisioning,
-			PhaseReason: "Verifying recovery target is reachable from the archive",
-			Ready:       false,
-			Progressing: true,
-			Plan:        plan,
-		})
-	} else if check.Blocked != "" {
-		log.Info("Blocking cluster: recovery target is unsatisfiable", "reason", check.Blocked)
-		r.Recorder.Event(cluster, corev1.EventTypeWarning, "RecoveryTargetUnsatisfiable", check.Blocked)
-		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
-			PhaseReason: check.Blocked,
-			Ready:       false,
-			Progressing: false,
-			Plan:        plan,
-		})
+	if result, err, handled := r.handleRecoveryCheck(ctx, cluster, plan); handled {
+		return result, err
 	}
 
 	// Remove replicas above the desired count (highest ordinal first), then
@@ -363,6 +319,87 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Keep re-polling the instance managers so status (GTID, roles, readiness)
 	// stays fresh even when no Kubernetes event triggers a reconcile.
 	return ctrl.Result{RequeueAfter: readyResync}, nil
+}
+
+// handleBackupCheck guards a fresh cluster from adopting a non-empty backup
+// destination. Returns a result to return and a boolean indicating the caller
+// should stop reconciliation.
+func (r *ClusterReconciler) handleBackupCheck(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (ctrl.Result, error, bool) {
+	log := logf.FromContext(ctx)
+	check := r.checkBackupDestination(ctx, cluster)
+	if check.Retry != nil {
+		log.Info("Could not verify backup destination, will retry", "error", check.Retry.Error())
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseProvisioning,
+			PhaseReason: "Verifying backup destination is empty",
+			Ready:       false,
+			Progressing: true,
+			Plan:        plan,
+		}), true
+	}
+	if check.Blocked != "" {
+		log.Info("Blocking cluster: backup destination is not empty", "reason", check.Blocked)
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "BackupDestinationNotEmpty", check.Blocked)
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseBlocked,
+			PhaseReason: check.Blocked,
+			Ready:       false,
+			Progressing: false,
+			Plan:        plan,
+		}), true
+	}
+	return ctrl.Result{}, nil, false
+}
+
+// handleRecoveryCheck validates that a point-in-time recovery target is
+// satisfiable before provisioning. Returns a result to return and a boolean
+// indicating the caller should stop reconciliation.
+func (r *ClusterReconciler) handleRecoveryCheck(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (ctrl.Result, error, bool) {
+	log := logf.FromContext(ctx)
+	check := r.checkRecoveryTarget(ctx, cluster, plan)
+	if check.Retry != nil {
+		log.Info("Could not verify recovery target, will retry", "error", check.Retry.Error())
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseProvisioning,
+			PhaseReason: "Verifying recovery target is reachable from the archive",
+			Ready:       false,
+			Progressing: true,
+			Plan:        plan,
+		}), true
+	}
+	if check.Blocked != "" {
+		log.Info("Blocking cluster: recovery target is unsatisfiable", "reason", check.Blocked)
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "RecoveryTargetUnsatisfiable", check.Blocked)
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseBlocked,
+			PhaseReason: check.Blocked,
+			Ready:       false,
+			Progressing: false,
+			Plan:        plan,
+		}), true
+	}
+	return ctrl.Result{}, nil, false
+}
+
+// blockOnInvalidCertificate checks whether user-provided TLS certificate
+// Secrets are valid. When invalid the cluster is blocked until the user fixes
+// them, avoiding instance provisioning with broken TLS configuration.
+func (r *ClusterReconciler) blockOnInvalidCertificate(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (bool, ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	if err := r.validateUserCertificates(ctx, cluster); err != nil {
+		log.Info("Blocking cluster: user-provided certificate secret is invalid", "reason", err.Error())
+		if r.Recorder != nil {
+			r.Recorder.Event(cluster, corev1.EventTypeWarning, "InvalidUserCertificate", err.Error())
+		}
+		return true, ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       phaseBlocked,
+			PhaseReason: err.Error(),
+			Ready:       false,
+			Progressing: false,
+			Plan:        plan,
+		})
+	}
+	return false, ctrl.Result{}, nil
 }
 
 // reconcileAvailability runs best-effort availability adjustments that must

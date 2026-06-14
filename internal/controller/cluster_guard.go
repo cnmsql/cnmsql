@@ -153,7 +153,7 @@ func replicaPDBName(cluster *mysqlv1alpha1.Cluster) string {
 // isPodFenced reports whether an instance Pod carries the fencing annotation set
 // to "true".
 func isPodFenced(pod *corev1.Pod) bool {
-	return pod.Annotations[fencingAnnotation] == "true"
+	return pod.Annotations[fencingAnnotation] == routableTrue
 }
 
 // reconcileFencing keeps each instance Pod's routable label in step with its
@@ -203,4 +203,3 @@ func (r *ClusterReconciler) reconcileFencing(ctx context.Context, cluster *mysql
 	}
 	return nil
 }
-

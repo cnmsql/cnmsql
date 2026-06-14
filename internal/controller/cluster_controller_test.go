@@ -548,7 +548,7 @@ func TestEnsurePodPreservesFencingAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	annotations[fencingAnnotation] = "true"
+	annotations[fencingAnnotation] = routableTrue
 	existingPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        inst.Name,
@@ -571,7 +571,7 @@ func TestEnsurePodPreservesFencingAnnotation(t *testing.T) {
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Annotations[fencingAnnotation] != "true" {
+	if got.Annotations[fencingAnnotation] != routableTrue {
 		t.Fatalf("fencing annotation = %q, want true", got.Annotations[fencingAnnotation])
 	}
 }

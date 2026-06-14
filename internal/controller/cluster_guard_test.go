@@ -209,7 +209,7 @@ func fencedPod(cluster *mysqlv1alpha1.Cluster, name string, fenced bool) *corev1
 	pod := readyPod(cluster, name, roleReplica)
 	pod.Labels[routableLabel] = routableTrue
 	if fenced {
-		pod.Annotations = map[string]string{fencingAnnotation: "true"}
+		pod.Annotations = map[string]string{fencingAnnotation: routableTrue}
 	}
 	return pod
 }
@@ -297,4 +297,3 @@ func TestSelectFailoverCandidateSkipsFenced(t *testing.T) {
 		t.Fatalf("candidate = %q (reason %q), want demo-3 (demo-2 is fenced)", got, reason)
 	}
 }
-

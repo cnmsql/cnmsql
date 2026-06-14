@@ -563,9 +563,9 @@ func buildServer(opts RunOptions, controller webserver.InstanceController) (*htt
 }
 
 // serve starts the server, returning nil on a clean shutdown.
-func serve(srv *http.Server, tls webserver.TLSOptions) error {
+func serve(srv *http.Server, tlsOpts webserver.TLSOptions) error {
 	var err error
-	if tls.ServerCertFile != "" {
+	if tlsOpts.ServerCertFile != "" {
 		err = srv.ListenAndServeTLS("", "")
 	} else {
 		err = srv.ListenAndServe()
