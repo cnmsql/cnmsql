@@ -24,8 +24,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
+	mysqlconfig "github.com/yyewolf/cnmysql/pkg/management/mysql/config"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
 	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
@@ -243,6 +247,51 @@ func (c *Controller) Restart(ctx context.Context) error {
 	}
 	logf.FromContext(ctx).WithName("instance-controller").Info("Restarting mysqld", "instance", c.name)
 	return c.supervisor.Restart(ctx)
+}
+
+// validVariableName matches a MySQL system-variable identifier. Variable names
+// cannot be passed as a bound parameter to SET GLOBAL, so they are validated
+// against this allowlist before being interpolated into the statement.
+var validVariableName = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+// Reload re-applies dynamic configuration parameters to the running mysqld via
+// SET GLOBAL, without restarting. Parameters that are operator-managed, are not
+// valid identifiers, or are not settable at runtime (non-dynamic variables) are
+// reported in the response's Skipped map rather than failing the whole request.
+func (c *Controller) Reload(ctx context.Context, req webserver.ReloadRequest) (*webserver.ReloadResponse, error) {
+	log := logf.FromContext(ctx).WithName("instance-controller")
+	resp := &webserver.ReloadResponse{Skipped: map[string]string{}}
+
+	// Apply in a deterministic order so logs and responses are stable.
+	names := make([]string, 0, len(req.Parameters))
+	for name := range req.Parameters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		value := req.Parameters[name]
+		variable := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_")
+		if mysqlconfig.IsDeniedKey(variable) {
+			resp.Skipped[name] = "operator-managed parameter, cannot be set at runtime"
+			continue
+		}
+		if !validVariableName.MatchString(variable) {
+			resp.Skipped[name] = "not a valid system-variable name"
+			continue
+		}
+		if _, err := c.conn.ExecContext(ctx, "SET GLOBAL "+variable+" = ?", value); err != nil {
+			// A non-dynamic variable (or a bad value) is reported per-parameter so
+			// the operator can surface it; it does not fail the reload.
+			resp.Skipped[name] = err.Error()
+			continue
+		}
+		resp.Applied = append(resp.Applied, name)
+	}
+
+	log.Info("Reloaded dynamic parameters", "instance", c.name,
+		"applied", len(resp.Applied), "skipped", len(resp.Skipped))
+	return resp, nil
 }
 
 // Shutdown stops mysqld via the supervisor. It sets innodb_fast_shutdown=2 for

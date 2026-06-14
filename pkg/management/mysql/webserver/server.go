@@ -53,6 +53,9 @@ type InstanceController interface {
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error
 	// Restart restarts the managed mysqld process.
 	Restart(ctx context.Context) error
+	// Reload re-applies dynamic configuration parameters to the running mysqld
+	// via SET GLOBAL, without restarting the process.
+	Reload(ctx context.Context, req ReloadRequest) (*ReloadResponse, error)
 	// CreateUser creates a MySQL user and applies its grants.
 	CreateUser(ctx context.Context, req user.CreateUserRequest) error
 	// AlterUser mutates an existing MySQL user.
@@ -90,6 +93,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /replica/source", configureReplicaHandler(controller))
 	mux.HandleFunc("POST /semisync/wait", semiSyncWaitHandler(controller))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
+	mux.HandleFunc("POST /reload", reloadHandler(controller))
 	mux.HandleFunc("POST /user/create", bodyActionHandler(controller.CreateUser))
 	mux.HandleFunc("POST /user/alter", bodyActionHandler(controller.AlterUser))
 	mux.HandleFunc("POST /user/drop", bodyActionHandler(controller.DropUser))
@@ -122,6 +126,39 @@ type ConfigureReplicaRequest struct {
 // the number of replica acknowledgements the semi-sync source should wait for.
 type SemiSyncWaitRequest struct {
 	Count int `json:"count"`
+}
+
+// ReloadRequest is the JSON body accepted by POST /reload. Parameters are the
+// user-supplied my.cnf [mysqld] settings the operator wants applied at runtime.
+type ReloadRequest struct {
+	Parameters map[string]string `json:"parameters"`
+}
+
+// ReloadResponse reports the outcome of a reload. Applied lists the parameters
+// successfully set via SET GLOBAL; Skipped maps each parameter that could not be
+// applied at runtime (e.g. a non-dynamic variable) to the reason.
+type ReloadResponse struct {
+	Applied []string          `json:"applied,omitempty"`
+	Skipped map[string]string `json:"skipped,omitempty"`
+}
+
+func reloadHandler(controller InstanceController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req ReloadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp, err := controller.Reload(r.Context(), req)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			writeError(w, err)
+		}
+	}
 }
 
 func semiSyncWaitHandler(controller InstanceController) http.HandlerFunc {

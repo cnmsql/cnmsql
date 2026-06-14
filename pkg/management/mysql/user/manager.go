@@ -54,6 +54,9 @@ func (m *Manager) execAll(ctx context.Context, stmts []string) error {
 
 // CreateUser creates the user and applies its grants.
 func (m *Manager) CreateUser(ctx context.Context, req CreateUserRequest) error {
+	if IsReservedUser(req.Name) {
+		return fmt.Errorf("refusing to create reserved account %q", req.Name)
+	}
 	stmts, err := CreateUserStatements(req)
 	if err != nil {
 		return err
@@ -63,6 +66,9 @@ func (m *Manager) CreateUser(ctx context.Context, req CreateUserRequest) error {
 
 // AlterUser applies the non-nil fields of the request to an existing user.
 func (m *Manager) AlterUser(ctx context.Context, req AlterUserRequest) error {
+	if IsReservedUser(req.Name) {
+		return fmt.Errorf("refusing to alter reserved account %q", req.Name)
+	}
 	stmts, err := AlterUserStatements(req)
 	if err != nil {
 		return err
@@ -72,6 +78,9 @@ func (m *Manager) AlterUser(ctx context.Context, req AlterUserRequest) error {
 
 // DropUser removes the user.
 func (m *Manager) DropUser(ctx context.Context, req DropUserRequest) error {
+	if IsReservedUser(req.Name) {
+		return fmt.Errorf("refusing to drop reserved account %q", req.Name)
+	}
 	return m.exec(ctx, DropUserStatement(req.Name, req.Host))
 }
 
@@ -140,6 +149,9 @@ func (m *Manager) CreateDatabase(ctx context.Context, req CreateDatabaseRequest)
 
 // DropDatabase drops the schema.
 func (m *Manager) DropDatabase(ctx context.Context, req DropDatabaseRequest) error {
+	if IsReservedDatabase(req.Name) {
+		return fmt.Errorf("refusing to drop system database %q", req.Name)
+	}
 	return m.exec(ctx, DropDatabaseStatement(req.Name))
 }
 

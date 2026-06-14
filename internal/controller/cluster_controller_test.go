@@ -136,6 +136,10 @@ func (readyStatusClient) SetSemiSyncWaitForReplicaCount(context.Context, *mysqlv
 	return nil
 }
 
+func (readyStatusClient) Reload(context.Context, *mysqlv1alpha1.Cluster, string, webserver.ReloadRequest) (*webserver.ReloadResponse, error) {
+	return &webserver.ReloadResponse{}, nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -152,6 +156,7 @@ type recordingControlClient struct {
 	droppedDatabase []user.DropDatabaseRequest
 
 	semiSyncWaits map[string]int
+	reloaded      map[string]webserver.ReloadRequest
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
@@ -215,6 +220,18 @@ func (c *recordingControlClient) SetSemiSyncWaitForReplicaCount(_ context.Contex
 	}
 	c.semiSyncWaits[instanceName] = count
 	return nil
+}
+
+func (c *recordingControlClient) Reload(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string, req webserver.ReloadRequest) (*webserver.ReloadResponse, error) {
+	if c.reloaded == nil {
+		c.reloaded = map[string]webserver.ReloadRequest{}
+	}
+	c.reloaded[instanceName] = req
+	applied := make([]string, 0, len(req.Parameters))
+	for name := range req.Parameters {
+		applied = append(applied, name)
+	}
+	return &webserver.ReloadResponse{Applied: applied}, nil
 }
 
 func TestBuildPlanDefaultsToLocalInstanceImage(t *testing.T) {

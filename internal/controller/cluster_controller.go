@@ -63,6 +63,20 @@ const (
 	// skipDeleteGuardAnnotation, when "true" on the Cluster, bypasses the deletion
 	// guard so the Cluster (and its instances) can be torn down.
 	skipDeleteGuardAnnotation = "cnmysql.cloudnative-mysql.io/skipDeleteGuard"
+	// restartAnnotation, when set to an RFC3339 timestamp on the Cluster, triggers
+	// a rolling restart of every instance: its value is folded into the Pod
+	// template hash, so bumping it rolls the Pods one at a time (gated on the
+	// previous instance becoming Ready) without otherwise changing the spec.
+	restartAnnotation = "cnmysql.cloudnative-mysql.io/restart"
+	// reloadAnnotation, when set to an RFC3339 timestamp on the Cluster, requests
+	// that dynamic my.cnf parameters be re-applied to the running mysqld via the
+	// instance manager control API, without restarting the process.
+	reloadAnnotation = "cnmysql.cloudnative-mysql.io/reload"
+	// reloadAppliedAnnotation records, on each instance Pod, the reload token that
+	// was last applied to that instance. The reconciler compares it to the
+	// Cluster's reloadAnnotation to decide whether a reload is still pending,
+	// making the SET GLOBAL pass idempotent without a CRD status change.
+	reloadAppliedAnnotation = "cnmysql.cloudnative-mysql.io/reload-applied"
 	// clusterFinalizer holds Cluster deletion until the guard releases it, so an
 	// accidental `kubectl delete cluster` does not immediately destroy running
 	// instances and their data.
@@ -120,6 +134,8 @@ type InstanceControlClient interface {
 	ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error)
 
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error
+
+	Reload(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req webserver.ReloadRequest) (*webserver.ReloadResponse, error)
 }
 
 // ClusterReconciler reconciles a Cluster object.
@@ -380,6 +396,9 @@ func (r *ClusterReconciler) reconcileSteadyState(ctx context.Context, cluster *m
 	}
 	if err := r.reconcileRetention(ctx, cluster); err != nil {
 		log.Info("Backup retention pass failed, will retry", "error", err.Error())
+	}
+	if err := r.reconcileReload(ctx, cluster); err != nil {
+		log.Info("Configuration reload pass failed, will retry", "error", err.Error())
 	}
 }
 

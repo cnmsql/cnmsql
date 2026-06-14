@@ -98,6 +98,26 @@ func (c *HTTPControlClient) DropDatabase(ctx context.Context, cluster *mysqlv1al
 	return c.action(ctx, cluster, instanceName, "/database/drop", req)
 }
 
+// Reload re-applies dynamic configuration parameters to the named instance via
+// its control API and returns the per-parameter outcome.
+func (c *HTTPControlClient) Reload(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req webserver.ReloadRequest) (*webserver.ReloadResponse, error) {
+	resp, err := c.do(ctx, cluster, instanceName, http.MethodPost, "/reload", req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("instance /reload returned %s", resp.Status)
+	}
+	var result webserver.ReloadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // SetSemiSyncWaitForReplicaCount adjusts the semi-sync acknowledgement count on
 // the named instance (used to self-heal semi-sync under "preferred" durability).
 func (c *HTTPControlClient) SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error {

@@ -101,6 +101,32 @@ func TestManagerListDatabases(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsReservedUsers(t *testing.T) {
+	// No SQL is expected: the guard must reject before touching the connection.
+	for _, name := range []string{"cnmysql_control", "cnmysql_repl", "cnmysql_backup", "root", "mysql.sys"} {
+		m, _ := newManager(t)
+		ctx := context.Background()
+		if err := m.CreateUser(ctx, CreateUserRequest{Name: name, Password: "pw"}); err == nil {
+			t.Errorf("CreateUser(%q) = nil, want error", name)
+		}
+		if err := m.AlterUser(ctx, AlterUserRequest{Name: name}); err == nil {
+			t.Errorf("AlterUser(%q) = nil, want error", name)
+		}
+		if err := m.DropUser(ctx, DropUserRequest{Name: name}); err == nil {
+			t.Errorf("DropUser(%q) = nil, want error", name)
+		}
+	}
+}
+
+func TestManagerRejectsDroppingSystemDatabases(t *testing.T) {
+	for _, name := range []string{"mysql", "information_schema", "performance_schema", "sys", "SYS"} {
+		m, _ := newManager(t)
+		if err := m.DropDatabase(context.Background(), DropDatabaseRequest{Name: name}); err == nil {
+			t.Errorf("DropDatabase(%q) = nil, want error", name)
+		}
+	}
+}
+
 func TestManagerDropDatabase(t *testing.T) {
 	m, mock := newManager(t)
 	mock.ExpectExec(regexp.QuoteMeta("DROP DATABASE IF EXISTS `app`")).WillReturnResult(sqlmock.NewResult(0, 0))

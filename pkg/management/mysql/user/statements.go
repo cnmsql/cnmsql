@@ -33,6 +33,45 @@ const (
 	requireX509 = "x509"
 )
 
+// reservedUsers are the operator- and server-owned accounts that must never be
+// created, altered or dropped through the declarative/control API. They mirror
+// the account names the operator provisions during bootstrap (see
+// internal/controller constants and instance/bootstrap.go); touching them would
+// break the control plane, replication, backups or monitoring.
+var reservedUsers = map[string]struct{}{
+	"cnmysql_control":          {},
+	"cnmysql_repl":             {},
+	"cnmysql_backup":           {},
+	"cnmysql_metrics_exporter": {},
+	"root":                     {},
+}
+
+// IsReservedUser reports whether name is an operator/server-managed account that
+// the user-management API must refuse to mutate. The internal mysql.* accounts
+// (mysql.sys, mysql.session, mysql.infoschema) are covered by the prefix check.
+func IsReservedUser(name string) bool {
+	if strings.HasPrefix(name, "mysql.") {
+		return true
+	}
+	_, ok := reservedUsers[name]
+	return ok
+}
+
+// reservedDatabases are the MySQL system schemas that must never be dropped.
+var reservedDatabases = map[string]struct{}{
+	"mysql":              {},
+	"information_schema": {},
+	"performance_schema": {},
+	"sys":                {},
+}
+
+// IsReservedDatabase reports whether name is a MySQL system schema that the
+// database-management API must refuse to drop.
+func IsReservedDatabase(name string) bool {
+	_, ok := reservedDatabases[strings.ToLower(name)]
+	return ok
+}
+
 // CreateUserRequest describes the desired state of a MySQL user to create.
 type CreateUserRequest struct {
 	Name                  string      `json:"name"`
@@ -274,6 +313,7 @@ func ListUsersQuery() string {
 	return "SELECT User, Host, max_user_connections, max_questions, max_updates, " +
 		"max_connections, ssl_type FROM mysql.user " +
 		"WHERE User NOT LIKE 'mysql.%' AND User <> 'root' " +
+		"AND User NOT IN ('cnmysql_control', 'cnmysql_repl', 'cnmysql_backup', 'cnmysql_metrics_exporter') " +
 		"ORDER BY User, Host"
 }
 
