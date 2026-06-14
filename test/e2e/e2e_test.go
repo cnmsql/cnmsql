@@ -230,9 +230,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply sample Cluster")
 
 			DeferCleanup(func() {
-				cmd := exec.Command("kubectl", "delete", "-f", "config/samples/mysql_v1alpha1_cluster.yaml",
-					"--ignore-not-found")
-				_, _ = utils.Run(cmd)
+				deleteCluster("cluster-sample")
 			})
 
 			By("waiting for all instances to become ready")
@@ -404,8 +402,7 @@ spec:
 `
 			applyManifest("denied-param", manifest)
 			DeferCleanup(func() {
-				cmd := exec.Command("kubectl", "delete", "cluster", "denied-param", "--ignore-not-found")
-				_, _ = utils.Run(cmd)
+				deleteCluster("denied-param")
 			})
 
 			By("verifying the cluster is Blocked with a reason naming the denied key")

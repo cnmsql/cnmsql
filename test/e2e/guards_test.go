@@ -106,10 +106,7 @@ var _ = Describe("Guards", Ordered, func() {
 	})
 })
 
-const (
-	fencingAnnotation = "cnmysql.cloudnative-mysql.io/fencing"
-	skipDeleteGuard   = "cnmysql.cloudnative-mysql.io/skipDeleteGuard"
-)
+const fencingAnnotation = "cnmysql.cloudnative-mysql.io/fencing"
 
 // clusterPrimaryName returns the cluster's bootstrap primary Pod name without
 // requiring an elected primary (used while the cluster is terminating).

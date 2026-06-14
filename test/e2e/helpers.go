@@ -39,6 +39,8 @@ const minioBucket = "cnmysql-backups"
 // by Clusters and Backups through their object-store configuration.
 const minioCredsSecret = "minio-creds"
 
+const skipDeleteGuard = "cnmysql.cloudnative-mysql.io/skipDeleteGuard"
+
 const e2eInstanceResources = `  resources:
     requests:
       cpu: 100m
@@ -131,6 +133,13 @@ func applyManifest(name, manifest string) {
 func deleteManifest(name, manifest string) {
 	path := writeManifest(name, manifest)
 	_, _ = kubectl("delete", "-f", path, "--ignore-not-found", "--wait=false")
+}
+
+func deleteCluster(name string) {
+	_, _ = kubectl("annotate", "cluster", name, "-n", testNamespace,
+		skipDeleteGuard+"=true", "--overwrite")
+	_, _ = kubectl("delete", "cluster", name, "-n", testNamespace,
+		"--ignore-not-found", "--wait=false")
 }
 
 func writeManifest(name, manifest string) string {
