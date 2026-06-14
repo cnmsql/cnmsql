@@ -37,7 +37,8 @@ func newBackupCommand() *cobra.Command {
 		Short: "Take an on-demand backup of a cluster",
 		Long: "Create a Backup resource referencing the cluster. The operator runs " +
 			"the backup Job and reports progress in the Backup's status.",
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()

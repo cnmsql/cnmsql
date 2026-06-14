@@ -35,6 +35,18 @@ func newFenceCommand() *cobra.Command {
 			"which the operator picks up to remove it from routing and exclude it " +
 			"from failover. Use '*' as INSTANCE to fence every instance.",
 		Args: cobra.ExactArgs(3),
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return []string{"on", "off"}, cobra.ShellCompDirectiveNoFileComp
+			case 1:
+				return completeCluster(cmd.Context(), toComplete)
+			case 2:
+				return completeInstance(cmd.Context(), args[1], toComplete)
+			default:
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state := args[0]
 			if state != "on" && state != "off" {

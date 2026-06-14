@@ -33,7 +33,8 @@ func newMetricsCommand() *cobra.Command {
 		Long: "Port-forward to an instance's metrics endpoint and print the raw " +
 			"Prometheus scrape. CLUSTER defaults to the sole cluster in the " +
 			"namespace; without INSTANCE, the primary is used.",
-		Args: cobra.MaximumNArgs(2),
+		Args:              cobra.MaximumNArgs(2),
+		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()

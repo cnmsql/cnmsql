@@ -38,9 +38,10 @@ func newDatabaseCommand() *cobra.Command {
 func newDatabaseCreateCommand() *cobra.Command {
 	var charset, collation string
 	cmd := &cobra.Command{
-		Use:   "create [CLUSTER] --name=DB",
-		Short: "Create a MySQL database",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "create [CLUSTER] --name=DB",
+		Short:             "Create a MySQL database",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			if name == "" {
@@ -68,9 +69,10 @@ func newDatabaseCreateCommand() *cobra.Command {
 
 func newDatabaseDropCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "drop [CLUSTER] --name=DB",
-		Short: "Drop a MySQL database",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "drop [CLUSTER] --name=DB",
+		Short:             "Drop a MySQL database",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			if name == "" {
@@ -95,9 +97,10 @@ func newDatabaseDropCommand() *cobra.Command {
 
 func newDatabaseListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list [CLUSTER]",
-		Short: "List user-managed MySQL databases",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "list [CLUSTER]",
+		Short:             "List user-managed MySQL databases",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			cc, closeFn, err := userTarget(ctx, firstArg(args))

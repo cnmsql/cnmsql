@@ -35,7 +35,8 @@ func newReloadCommand() *cobra.Command {
 			"dynamic configuration parameters to the running mysqld instances. " +
 			"Parameters that require a restart are not applied by reload; use " +
 			"'restart' for those.",
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReload(cmd.Context(), firstArg(args))
 		},

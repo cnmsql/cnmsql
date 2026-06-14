@@ -40,7 +40,8 @@ func newLogsCommand() *cobra.Command {
 		Short: "Stream logs from a cluster's instances",
 		Long: "Stream container logs from the cluster's Pods. Without INSTANCE, " +
 			"logs from all instances are merged with a per-instance prefix.",
-		Args: cobra.MaximumNArgs(2),
+		Args:              cobra.MaximumNArgs(2),
+		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()

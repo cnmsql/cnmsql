@@ -31,9 +31,10 @@ import (
 func newStatusCommand() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
-		Use:   "status [CLUSTER]",
-		Short: "Show the status of a cluster and its instances",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "status [CLUSTER]",
+		Short:             "Show the status of a cluster and its instances",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd.Context(), firstArg(args), output)
 		},

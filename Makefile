@@ -175,8 +175,9 @@ build-plugin: fmt vet ## Build the kubectl-cnmysql plugin binary.
 	go build -ldflags "$(PLUGIN_LDFLAGS)" -o bin/kubectl-cnmysql ./cmd/kubectl-cnmysql
 
 .PHONY: install-plugin
-install-plugin: build-plugin ## Install the plugin onto your PATH (~/.local/bin).
+install-plugin: build-plugin ## Install the plugin + completion shim onto your PATH (~/.local/bin).
 	install -D -m 0755 bin/kubectl-cnmysql $(HOME)/.local/bin/kubectl-cnmysql
+	install -D -m 0755 hack/kubectl_complete-cnmysql $(HOME)/.local/bin/kubectl_complete-cnmysql
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

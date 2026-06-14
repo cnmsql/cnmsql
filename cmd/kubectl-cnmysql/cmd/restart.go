@@ -36,7 +36,8 @@ func newRestartCommand() *cobra.Command {
 			"operator performs a rolling restart. With INSTANCE, delete that Pod so " +
 			"Kubernetes recreates it (the PVC is retained). CLUSTER defaults to the " +
 			"sole cluster in the namespace; pass INSTANCE only together with CLUSTER.",
-		Args: cobra.MaximumNArgs(2),
+		Args:              cobra.MaximumNArgs(2),
+		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			instance := ""
 			if len(args) == 2 {

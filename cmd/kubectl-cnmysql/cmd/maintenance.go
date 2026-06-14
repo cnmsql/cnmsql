@@ -41,9 +41,10 @@ func newMaintenanceCommand() *cobra.Command {
 func newMaintenanceSetCommand() *cobra.Command {
 	var reusePVC bool
 	cmd := &cobra.Command{
-		Use:   "set [CLUSTER]",
-		Short: "Begin a node maintenance window",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "set [CLUSTER]",
+		Short:             "Begin a node maintenance window",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMaintenance(cmd.Context(), firstArg(args), true, reusePVC)
 		},
@@ -54,9 +55,10 @@ func newMaintenanceSetCommand() *cobra.Command {
 
 func newMaintenanceUnsetCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unset [CLUSTER]",
-		Short: "End a node maintenance window",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "unset [CLUSTER]",
+		Short:             "End a node maintenance window",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMaintenance(cmd.Context(), firstArg(args), false, false)
 		},

@@ -39,7 +39,8 @@ func newDestroyCommand() *cobra.Command {
 		Long: "Delete an instance's Pod and, unless --keep-pvc is given, its data " +
 			"PVC. With --keep-pvc the PVC's owner references are removed so it " +
 			"survives, letting you re-import the data later.",
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDestroy(cmd.Context(), args[0], args[1], keepPVC, yes)
 		},

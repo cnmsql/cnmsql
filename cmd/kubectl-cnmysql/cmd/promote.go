@@ -35,7 +35,8 @@ func newPromoteCommand() *cobra.Command {
 		Long: "Request a planned switchover by setting status.targetPrimary on the " +
 			"Cluster. The operator coordinates demotion of the old primary, GTID " +
 			"catch-up and routing.",
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPromote(cmd.Context(), args[0], args[1])
 		},

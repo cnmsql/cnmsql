@@ -68,9 +68,10 @@ func newUserCreateCommand() *cobra.Command {
 		requireTLS  string
 	)
 	cmd := &cobra.Command{
-		Use:   "create [CLUSTER] --name=USER",
-		Short: "Create a MySQL user",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "create [CLUSTER] --name=USER",
+		Short:             "Create a MySQL user",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			if name == "" {
@@ -123,9 +124,10 @@ func newUserAlterCommand() *cobra.Command {
 		requireTLS  string
 	)
 	cmd := &cobra.Command{
-		Use:   "alter [CLUSTER] --name=USER",
-		Short: "Alter a MySQL user",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "alter [CLUSTER] --name=USER",
+		Short:             "Alter a MySQL user",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			if name == "" {
@@ -165,9 +167,10 @@ func newUserAlterCommand() *cobra.Command {
 func newUserDropCommand() *cobra.Command {
 	var host string
 	cmd := &cobra.Command{
-		Use:   "drop [CLUSTER] --name=USER",
-		Short: "Drop a MySQL user",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "drop [CLUSTER] --name=USER",
+		Short:             "Drop a MySQL user",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("name")
 			if name == "" {
@@ -193,9 +196,10 @@ func newUserDropCommand() *cobra.Command {
 
 func newUserListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list [CLUSTER]",
-		Short: "List managed MySQL users",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "list [CLUSTER]",
+		Short:             "List managed MySQL users",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			cc, closeFn, err := userTarget(ctx, firstArg(args))
