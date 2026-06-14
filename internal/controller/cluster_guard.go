@@ -26,7 +26,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -205,85 +204,3 @@ func (r *ClusterReconciler) reconcileFencing(ctx context.Context, cluster *mysql
 	return nil
 }
 
-// reconcileDeletionGuard implements the Cluster deletion guard. While the
-// skipDeleteGuard annotation is unset it keeps a finalizer on the Cluster, so an
-// accidental `kubectl delete cluster` leaves the object Terminating with its
-// instances (and data) intact rather than tearing everything down. Setting the
-// annotation to "true" releases the finalizer so the deletion completes.
-//
-// It returns handled=true when the Cluster is being deleted; the caller should
-// stop reconciling and return the given result.
-func (r *ClusterReconciler) reconcileDeletionGuard(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (bool, ctrl.Result, error) {
-	bypass := cluster.Annotations[skipDeleteGuardAnnotation] == "true"
-
-	namespaceDeleting, err := r.namespaceDeleting(ctx, cluster.Namespace)
-	if err != nil {
-		return false, ctrl.Result{}, err
-	}
-	if namespaceDeleting {
-		if controllerutil.ContainsFinalizer(cluster, clusterFinalizer) {
-			return true, ctrl.Result{}, r.removeClusterFinalizer(ctx, cluster)
-		}
-		return true, ctrl.Result{}, nil
-	}
-
-	if cluster.DeletionTimestamp.IsZero() {
-		// Not being deleted: hold the finalizer unless the user opted out, in which
-		// case drop it so a later delete is unguarded.
-		switch {
-		case bypass && controllerutil.ContainsFinalizer(cluster, clusterFinalizer):
-			return false, ctrl.Result{}, r.removeClusterFinalizer(ctx, cluster)
-		case !bypass && !controllerutil.ContainsFinalizer(cluster, clusterFinalizer):
-			return false, ctrl.Result{}, r.addClusterFinalizer(ctx, cluster)
-		}
-		return false, ctrl.Result{}, nil
-	}
-
-	// Being deleted.
-	if !controllerutil.ContainsFinalizer(cluster, clusterFinalizer) {
-		return true, ctrl.Result{}, nil
-	}
-	if bypass {
-		return true, ctrl.Result{}, r.removeClusterFinalizer(ctx, cluster)
-	}
-	// Block: keep the finalizer and surface why. The user must set
-	// skipDeleteGuard=true to actually delete the cluster.
-	reason := fmt.Sprintf(
-		"Deletion of cluster %s is blocked by the deletion guard; set annotation %s=true to proceed",
-		cluster.Name, skipDeleteGuardAnnotation)
-	if r.Recorder != nil {
-		r.Recorder.Event(cluster, corev1.EventTypeWarning, "DeletionBlocked", reason)
-	}
-	return true, ctrl.Result{RequeueAfter: readyResync}, nil
-}
-
-func (r *ClusterReconciler) namespaceDeleting(ctx context.Context, name string) (bool, error) {
-	reader := r.APIReader
-	if reader == nil {
-		reader = r.Client
-	}
-	ns := &corev1.Namespace{}
-	if err := reader.Get(ctx, types.NamespacedName{Name: name}, ns); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return !ns.DeletionTimestamp.IsZero(), nil
-}
-
-func (r *ClusterReconciler) addClusterFinalizer(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
-	before := cluster.DeepCopy()
-	if !controllerutil.AddFinalizer(cluster, clusterFinalizer) {
-		return nil
-	}
-	return r.Patch(ctx, cluster, client.MergeFrom(before))
-}
-
-func (r *ClusterReconciler) removeClusterFinalizer(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
-	before := cluster.DeepCopy()
-	if !controllerutil.RemoveFinalizer(cluster, clusterFinalizer) {
-		return nil
-	}
-	return r.Patch(ctx, cluster, client.MergeFrom(before))
-}

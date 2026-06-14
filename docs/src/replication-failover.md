@@ -129,23 +129,16 @@ Fencing the primary stops writes for the whole cluster, because the rw Service
 loses its only endpoint. That is deliberate: use it to freeze an instance for
 inspection or maintenance rather than as a failover trigger.
 
-## Deletion guard
+## Deleting a cluster
 
-By default the operator keeps a finalizer on every Cluster so an accidental
-`kubectl delete cluster` does not immediately tear down running instances. The
-delete is accepted by the API server, but the Cluster stays in `Terminating`
-with its Pods and PVCs intact while the guard holds the finalizer. The operator
-records a `DeletionBlocked` event explaining what to do.
+Deleting a Cluster tears down its instances. Like CloudNativePG, the operator
+does not hold a finalizer to block the delete: `kubectl delete cluster <cluster>`
+removes the Pods immediately, and owned resources are garbage-collected via owner
+references.
 
-To actually delete the cluster, set the bypass annotation, which releases the
-finalizer and lets the deletion complete:
-
-```bash
-kubectl annotate cluster <cluster> cnmysql.cloudnative-mysql.io/skipDeleteGuard=true
-kubectl delete cluster <cluster>
-```
-
-Setting the annotation before the first delete skips the guard entirely.
+To protect the data, rely on the standard Kubernetes mechanisms — set a
+`Retain` reclaim policy on the StorageClass (or retain the PVCs) so the volumes
+survive the Cluster deletion, and use RBAC to restrict who can delete Clusters.
 
 ## Role services
 

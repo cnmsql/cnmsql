@@ -60,9 +60,6 @@ const (
 	// instance: it is removed from routing, kept read-only, and not eligible as a
 	// failover candidate. Clearing it restores the instance.
 	fencingAnnotation = "cnmysql.cloudnative-mysql.io/fencing"
-	// skipDeleteGuardAnnotation, when "true" on the Cluster, bypasses the deletion
-	// guard so the Cluster (and its instances) can be torn down.
-	skipDeleteGuardAnnotation = "cnmysql.cloudnative-mysql.io/skipDeleteGuard"
 	// restartAnnotation, when set to an RFC3339 timestamp on the Cluster, triggers
 	// a rolling restart of every instance: its value is folded into the Pod
 	// template hash, so bumping it rolls the Pods one at a time (gated on the
@@ -77,10 +74,6 @@ const (
 	// Cluster's reloadAnnotation to decide whether a reload is still pending,
 	// making the SET GLOBAL pass idempotent without a CRD status change.
 	reloadAppliedAnnotation = "cnmysql.cloudnative-mysql.io/reload-applied"
-	// clusterFinalizer holds Cluster deletion until the guard releases it, so an
-	// accidental `kubectl delete cluster` does not immediately destroy running
-	// instances and their data.
-	clusterFinalizer = "cnmysql.cloudnative-mysql.io/delete-guard"
 
 	configMapAnnotation       = "cnmysql.cloudnative-mysql.io/config-map"
 	configHashAnnotation      = "cnmysql.cloudnative-mysql.io/config-hash"
@@ -181,15 +174,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	cluster.SetDefaults()
 
-	// The deletion guard runs first: it holds a finalizer so an accidental delete
-	// leaves instances intact, and it takes over the reconcile while the Cluster
-	// is being deleted.
-	deleting, guardResult, err := r.reconcileDeletionGuard(ctx, cluster)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if deleting {
-		return guardResult, nil
+	// Nothing to do while the Cluster is being deleted: owned resources are
+	// garbage-collected via owner references, like CloudNativePG.
+	if !cluster.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
 	}
 
 	if reason := unsupportedReason(cluster); reason != "" {
