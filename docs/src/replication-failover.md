@@ -129,6 +129,74 @@ Fencing the primary stops writes for the whole cluster, because the rw Service
 loses its only endpoint. That is deliberate: use it to freeze an instance for
 inspection or maintenance rather than as a failover trigger.
 
+## Primary lease fencing
+
+Each cluster creates a standard `coordination.k8s.io/v1` Lease named
+`{cluster}-primary`. Before an instance promotes itself to primary, it must
+acquire this lease. While it is primary, it renews the lease every 30 seconds.
+When it demotes or shuts down, it releases (deletes) the lease.
+
+During automatic failover, the operator checks whether the old primary's lease is
+still held before promoting a candidate. If the lease is still active, failover
+waits for the lease TTL (15 seconds) before proceeding. This prevents the
+operator from promoting a new primary while the old one might still be accepting
+writes on a network-partitioned node.
+
+Combined with Pod deletion, this gives two independent timeouts before the old
+primary can be replaced: the lease TTL and the kubelet Pod termination grace
+period. The split-brain window narrows to whichever expires first.
+
+### Feature gate
+
+```yaml
+spec:
+  enablePrimaryLease: false
+```
+
+The feature is on by default. Set it to `false` to skip all lease management.
+This is safe for single-instance or test clusters where the extra API call is
+unnecessary.
+
+### Lifecycle
+
+| Event | Lease action |
+|-------|-------------|
+| Instance promotes itself | Acquire (create or take over the lease, set `holderIdentity`) |
+| Instance is already primary | Renew `renewTime` |
+| Instance demotes or is fenced | Delete the lease |
+| Instance shuts down | Delete the lease (graceful shutdown handler) |
+| Lease acquisition fails | Instance does not promote; retries on next reconcile |
+| API server unreachable | Lease cannot be renewed. The instance's liveness probe eventually fails (isolation detector) and kubelet restarts the container. |
+
+### Failover interaction
+
+The lease adds a 15-second wait to failover when the old primary is still
+renewing. The operator sequence becomes:
+
+1. Detect primary failure, wait for `failoverDelay`.
+2. Select a candidate.
+3. Check the old primary's lease: if still held, requeue for 15 seconds.
+4. Fence the old primary Pod.
+5. Set `targetPrimary` and let the candidate promote.
+
+If the old primary's Pod is deleted quickly (step 4), the lease is also released
+because the in-Pod shutdown handler fires. In that case the wait in step 3 is
+negligible. The lease guard is a backstop for when the Pod takes longer than 15
+seconds to terminate.
+
+### Monitoring
+
+The lease exists in the same namespace as the Cluster. Inspect it:
+
+```bash
+kubectl get lease <cluster>-primary -o yaml
+```
+
+The `holderIdentity`, `renewTime`, and `leaseTransitions` fields show which
+instance holds the lease and when it last renewed. An expired lease (renewTime
+older than 15 seconds with a different holderIdentity) means the holder stopped
+renewing and the lease is safe to take.
+
 ## Deleting a cluster
 
 Deleting a Cluster tears down its instances. Like CloudNativePG, the operator
