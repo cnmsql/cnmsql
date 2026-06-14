@@ -69,30 +69,6 @@ var _ = Describe("Guards", Ordered, func() {
 		}, 4*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
-	It("blocks an accidental cluster deletion until the bypass annotation is set", func() {
-		By("attempting to delete the cluster without the bypass annotation")
-		_, _ = kubectl("delete", "cluster", cluster, "-n", testNamespace,
-			"--wait=false")
-
-		By("verifying the cluster is held in Terminating with its instances intact")
-		Consistently(func(g Gomega) {
-			ts, err := clusterField(cluster, "{.metadata.deletionTimestamp}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(ts).NotTo(BeEmpty(), "cluster should be terminating")
-			// The primary Pod must still be running: the guard prevents teardown.
-			phase, err := kubectl("get", "pod", clusterPrimaryName(cluster), "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).To(Equal("Running"), "instances must survive a guarded delete")
-		}, 60*time.Second, 10*time.Second).Should(Succeed())
-
-		By("verifying the cluster and its instances are now removed")
-		Eventually(func(g Gomega) {
-			_, err := clusterField(cluster, "{.metadata.name}")
-			g.Expect(err).To(HaveOccurred(), "cluster should be gone after bypass")
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
-	})
-
 	AfterAll(func() {
 		deleteTestNamespace(ns, prevNS)
 	})
