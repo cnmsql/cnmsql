@@ -30,9 +30,6 @@ var _ = Describe("Guards", Ordered, func() {
 		By("creating a 3-instance cluster")
 		applyManifest(cluster, basicClusterManifest(cluster, replicas))
 		DeferCleanup(func() {
-			// Bypass the deletion guard so cleanup can tear the cluster down.
-			_, _ = kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-				skipDeleteGuard+"=true", "--overwrite")
 			deleteManifest(cluster, basicClusterManifest(cluster, replicas))
 		})
 		expectClusterReady(cluster, replicas, 15*time.Minute)
@@ -88,11 +85,6 @@ var _ = Describe("Guards", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).To(Equal("Running"), "instances must survive a guarded delete")
 		}, 60*time.Second, 10*time.Second).Should(Succeed())
-
-		By("setting the bypass annotation so the deletion can complete")
-		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			skipDeleteGuard+"=true", "--overwrite")
-		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the cluster and its instances are now removed")
 		Eventually(func(g Gomega) {
