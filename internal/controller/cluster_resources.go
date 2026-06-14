@@ -409,10 +409,14 @@ func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst insta
 		Labels      map[string]string
 		Annotations map[string]string
 		Spec        corev1.PodSpec
+		Restart     string
 	}{
 		Labels:      templateLabels,
 		Annotations: templateAnnotations,
 		Spec:        restartTriggeringPodSpec(cluster, stablePlan, stableInst, spec),
+		// Folding the user-requested restart token into the template hash makes a
+		// bump roll every Pod through the existing hash-mismatch path.
+		Restart: cluster.Annotations[restartAnnotation],
 	})
 	if err != nil {
 		return nil, err

@@ -48,6 +48,10 @@ type fakeController struct {
 	semiSyncWaitCount *int
 	restartCalled     bool
 
+	reloadReq  *ReloadRequest
+	reloadResp *ReloadResponse
+	reloadErr  error
+
 	userMgmtErr   error
 	createUserReq *user.CreateUserRequest
 	alterUserReq  *user.AlterUserRequest
@@ -101,6 +105,10 @@ func (f *fakeController) SetSemiSyncWaitForReplicaCount(_ context.Context, count
 	return f.semiSyncWaitErr
 }
 func (f *fakeController) Restart(context.Context) error { f.restartCalled = true; return f.restartErr }
+func (f *fakeController) Reload(_ context.Context, req ReloadRequest) (*ReloadResponse, error) {
+	f.reloadReq = &req
+	return f.reloadResp, f.reloadErr
+}
 
 // backupController is an InstanceController that also streams a backup.
 type backupController struct {
@@ -271,6 +279,31 @@ func TestLifecycleActions(t *testing.T) {
 	rec = doWithBody(t, h, "/semisync/wait", `{"count":2}`)
 	if rec.Code != http.StatusOK || fc.semiSyncWaitCount == nil || *fc.semiSyncWaitCount != 2 {
 		t.Errorf("semisync wait = %d count=%v", rec.Code, fc.semiSyncWaitCount)
+	}
+}
+
+func TestReloadHandler(t *testing.T) {
+	fc := &fakeController{reloadResp: &ReloadResponse{
+		Applied: []string{"max_connections"},
+		Skipped: map[string]string{"innodb_buffer_pool_size": "not dynamic"},
+	}}
+	h := Handler(fc)
+	rec := doWithBody(t, h, "/reload", `{"parameters":{"max_connections":"200"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload = %d, want 200", rec.Code)
+	}
+	if fc.reloadReq == nil || fc.reloadReq.Parameters["max_connections"] != "200" {
+		t.Fatalf("reload req = %#v", fc.reloadReq)
+	}
+	var got ReloadResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Applied) != 1 || got.Applied[0] != "max_connections" {
+		t.Errorf("applied = %v", got.Applied)
+	}
+	if got.Skipped["innodb_buffer_pool_size"] == "" {
+		t.Errorf("skipped = %v", got.Skipped)
 	}
 }
 

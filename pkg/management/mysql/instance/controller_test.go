@@ -18,6 +18,7 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -270,6 +271,39 @@ func TestPromoteDemoteDelegate(t *testing.T) {
 		t.Fatalf("Demote: %v", err)
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestReloadAppliesDynamicParameters(t *testing.T) {
+	c, mock := newController(t, nil)
+
+	// Reload applies parameters in sorted order. A non-dynamic variable fails at
+	// runtime and is reported, not fatal; a settable one is applied.
+	mock.ExpectExec("SET GLOBAL innodb_buffer_pool_size = ?").
+		WithArgs("1G").WillReturnError(errors.New("read-only variable"))
+	mock.ExpectExec("SET GLOBAL max_connections = ?").
+		WithArgs("200").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	resp, err := c.Reload(context.Background(), webserver.ReloadRequest{Parameters: map[string]string{
+		"max_connections":         "200",
+		"innodb_buffer_pool_size": "1G",
+		// Operator-managed: skipped before ever touching MySQL.
+		"server-id": "5",
+	}})
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(resp.Applied) != 1 || resp.Applied[0] != "max_connections" {
+		t.Errorf("applied = %v", resp.Applied)
+	}
+	if resp.Skipped["server-id"] == "" {
+		t.Errorf("expected server-id to be skipped as managed, got %v", resp.Skipped)
+	}
+	if resp.Skipped["innodb_buffer_pool_size"] == "" {
+		t.Errorf("expected innodb_buffer_pool_size to be skipped, got %v", resp.Skipped)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
 	}

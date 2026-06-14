@@ -163,6 +163,21 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
+# kubectl-cnmysql plugin.
+PLUGIN_PKG := github.com/yyewolf/cnmysql/cmd/kubectl-cnmysql/cmd
+PLUGIN_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+PLUGIN_COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+PLUGIN_DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PLUGIN_LDFLAGS := -X $(PLUGIN_PKG).Version=$(PLUGIN_VERSION) -X $(PLUGIN_PKG).Commit=$(PLUGIN_COMMIT) -X $(PLUGIN_PKG).BuildDate=$(PLUGIN_DATE)
+
+.PHONY: build-plugin
+build-plugin: fmt vet ## Build the kubectl-cnmysql plugin binary.
+	go build -ldflags "$(PLUGIN_LDFLAGS)" -o bin/kubectl-cnmysql ./cmd/kubectl-cnmysql
+
+.PHONY: install-plugin
+install-plugin: build-plugin ## Install the plugin onto your PATH (~/.local/bin).
+	install -D -m 0755 bin/kubectl-cnmysql $(HOME)/.local/bin/kubectl-cnmysql
+
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
