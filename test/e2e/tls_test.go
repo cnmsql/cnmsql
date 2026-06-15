@@ -26,7 +26,7 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(cluster, tlsRenewalClusterManifest(cluster))
 		})
-		expectClusterReady(cluster, 1, 15*time.Minute)
+		expectClusterReady(cluster, 1, 2*time.Minute)
 		rootPass = secretPassword(cluster + "-root")
 	})
 

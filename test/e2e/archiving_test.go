@@ -212,7 +212,7 @@ func archivingVersionSpecs(version string) {
 			DeferCleanup(func() {
 				deleteManifest(cluster, continuousArchivingClusterManifest(cluster, version, 3))
 			})
-			expectClusterReady(cluster, 3, 15*time.Minute)
+			expectClusterReady(cluster, 3, 2*time.Minute)
 			password = appPassword(cluster)
 
 			By("seeding and archiving under the original primary")

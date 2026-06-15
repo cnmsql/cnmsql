@@ -133,9 +133,13 @@ func deleteManifest(name, manifest string) {
 	_, _ = kubectl("delete", "-f", path, "--ignore-not-found", "--wait=false")
 }
 
+// deleteCluster removes a Cluster and blocks until its instance Pods and PVCs
+// are gone, so the next spec's instances aren't scheduled against a node still
+// pinned by the previous cluster's resources. A bounded timeout keeps a stuck
+// finalizer from hanging cleanup indefinitely.
 func deleteCluster(name string) {
 	_, _ = kubectl("delete", "cluster", name, "-n", testNamespace,
-		"--ignore-not-found", "--wait=false")
+		"--ignore-not-found", "--wait=true", "--timeout=120s")
 }
 
 func writeManifest(name, manifest string) string {

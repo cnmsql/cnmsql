@@ -51,7 +51,7 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(sourceCluster, continuousArchivingClusterManifest(sourceCluster, version, 3))
 		})
-		expectClusterReady(sourceCluster, 3, 15*time.Minute)
+		expectClusterReady(sourceCluster, 3, 2*time.Minute)
 		password = appPassword(sourceCluster)
 
 		By("taking a base backup before any application data exists")
