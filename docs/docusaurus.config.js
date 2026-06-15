@@ -8,9 +8,9 @@ const config = {
   title: 'cloudnative-mysql',
   tagline: 'Kubernetes operator for Cloudnative MySQL',
   favicon: 'img/favicon.svg',
-  url: 'https://yyewolf.github.io',
-  baseUrl: '/cloudnative-mysql/',
-  organizationName: 'yyewolf',
+  url: 'https://cloudnative-mysql.io',
+  baseUrl: '/',
+  organizationName: 'CloudNative-MySQL',
   projectName: 'cloudnative-mysql',
   onBrokenLinks: 'throw',
 
