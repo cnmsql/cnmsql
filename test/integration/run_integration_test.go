@@ -1,7 +1,7 @@
 //go:build integration
 
 /*
-Copyright 2026 The cloudnative-mysql Authors.
+Copyright 2026 The CloudNative M,ySQL Authors.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -61,7 +61,7 @@ exec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
 `, f.myCnf(t, 1), f.version, f.version)
 
 	req := testcontainers.ContainerRequest{
-		Image:          ensureInstanceImage(t, f),
+		Image:        ensureInstanceImage(t, f),
 		ExposedPorts: []string{"8080/tcp"},
 		Entrypoint:   []string{"bash", "-lc"},
 		Cmd:          []string{script},

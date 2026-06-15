@@ -1,7 +1,7 @@
 //go:build integration
 
 /*
-Copyright 2026 The cloudnative-mysql Authors.
+Copyright 2026 The CloudNative M,ySQL Authors.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -79,7 +79,7 @@ exec /usr/sbin/mysqld --datadir=$REP --socket=/tmp/rep.sock --port=3307 --server
 `, appPass, f.gtidArgs(t), appUser, f.version, f.version)
 
 	req := testcontainers.ContainerRequest{
-		Image:          ensureInstanceImage(t, f),
+		Image:        ensureInstanceImage(t, f),
 		ExposedPorts: []string{"3306/tcp", "3307/tcp"},
 		Entrypoint:   []string{"bash", "-lc"},
 		Cmd:          []string{script},

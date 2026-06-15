@@ -1,7 +1,7 @@
 //go:build integration
 
 /*
-Copyright 2026 The cloudnative-mysql Authors.
+Copyright 2026 The CloudNative MySQL Authors.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -83,11 +83,11 @@ var flavors = []flavor{
 		joinSupported:     true,
 	},
 	{
-		name:              "9.x",
-		base:              "debian:bookworm-slim",
-		ps:                "ps-9x-innovation",
-		pxb:               "pxb-9x-innovation",
-		pxbPackage:        "percona-xtrabackup-96",
+		name:       "9.x",
+		base:       "debian:bookworm-slim",
+		ps:         "ps-9x-innovation",
+		pxb:        "pxb-9x-innovation",
+		pxbPackage: "percona-xtrabackup-96",
 		// Percona Server 9.x is only published in the testing channel so far.
 		component:         "testing",
 		version:           "9.6.0",
