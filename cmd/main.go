@@ -132,7 +132,7 @@ func main() {
 				Client:            mgr.GetClient(),
 				Scheme:            mgr.GetScheme(),
 				APIReader:         mgr.GetAPIReader(),
-				Recorder:          mgr.GetEventRecorderFor("cluster-controller"),
+				Recorder:          mgr.GetEventRecorderFor("cluster-controller"), //nolint:staticcheck
 				OperatorImageName: operatorImage,
 			}
 			if err := clusterReconciler.SetupWithManager(mgr); err != nil {
@@ -142,7 +142,7 @@ func main() {
 			if err := (&controller.BackupReconciler{
 				Client:            mgr.GetClient(),
 				Scheme:            mgr.GetScheme(),
-				Recorder:          mgr.GetEventRecorderFor("backup-controller"),
+				Recorder:          mgr.GetEventRecorderFor("backup-controller"), //nolint:staticcheck
 				OperatorImageName: operatorImage,
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "backup")
@@ -151,7 +151,7 @@ func main() {
 			if err := (&controller.ScheduledBackupReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("scheduledbackup-controller"),
+				Recorder: mgr.GetEventRecorderFor("scheduledbackup-controller"), //nolint:staticcheck
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "scheduledbackup")
 				return err
@@ -159,7 +159,7 @@ func main() {
 			if err := (&controller.DatabaseReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("database-controller"),
+				Recorder: mgr.GetEventRecorderFor("database-controller"), //nolint:staticcheck
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "database")
 				return err

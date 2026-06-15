@@ -31,7 +31,11 @@ func TestBackupStreamUnconfiguredErrors(t *testing.T) {
 
 func TestSetBackupConfigDefaults(t *testing.T) {
 	c := &Controller{}
-	c.SetBackupConfig(BackupConfig{DataDir: "/var/lib/mysql", Socket: "/run/mysqld.sock", User: "cloudnative-mysql_backup"})
+	c.SetBackupConfig(BackupConfig{
+		DataDir: "/var/lib/mysql",
+		Socket:  "/run/mysqld.sock",
+		User:    "cloudnative-mysql_backup",
+	})
 	if c.backup == nil {
 		t.Fatal("backup config not set")
 	}

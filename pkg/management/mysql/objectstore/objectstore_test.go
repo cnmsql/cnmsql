@@ -40,7 +40,8 @@ func TestBuildBackupKeys(t *testing.T) {
 	if keys.MetadataKey != "cloudnative-mysql/prod/cluster-sample/backup-sample/backup-sample-123/metadata.json" {
 		t.Fatalf("metadata key = %q", keys.MetadataKey)
 	}
-	if keys.ArchiveURI != "s3://backups/cloudnative-mysql/prod/cluster-sample/backup-sample/backup-sample-123/backup.xbstream" {
+	wantURI := "s3://backups/cloudnative-mysql/prod/cluster-sample/backup-sample/backup-sample-123/backup.xbstream"
+	if keys.ArchiveURI != wantURI {
 		t.Fatalf("archive URI = %q", keys.ArchiveURI)
 	}
 }

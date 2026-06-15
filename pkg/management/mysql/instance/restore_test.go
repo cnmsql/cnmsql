@@ -22,7 +22,11 @@ import (
 )
 
 func TestCredentialReconcileStatements(t *testing.T) {
-	stmts := credentialReconcileStatements("8.4.0", "rootpw", "cloudnative-mysql_control", "ctlpw", "cloudnative-mysql_backup", "bkppw")
+	stmts := credentialReconcileStatements(
+		"8.4.0", "rootpw",
+		"cloudnative-mysql_control", "ctlpw",
+		"cloudnative-mysql_backup", "bkppw",
+	)
 	out := strings.Join(stmts, "\n")
 
 	// FLUSH PRIVILEGES must come first so the grant system is re-enabled after
@@ -46,7 +50,11 @@ func TestCredentialReconcileStatements(t *testing.T) {
 }
 
 func TestCredentialReconcileStatementsEmptyWhenNoPasswords(t *testing.T) {
-	if stmts := credentialReconcileStatements("8.4.0", "", "cloudnative-mysql_control", "", "cloudnative-mysql_backup", ""); stmts != nil {
+	if stmts := credentialReconcileStatements(
+		"8.4.0", "",
+		"cloudnative-mysql_control", "",
+		"cloudnative-mysql_backup", "",
+	); stmts != nil {
 		t.Fatalf("expected no statements without passwords, got: %v", stmts)
 	}
 }

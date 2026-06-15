@@ -103,7 +103,11 @@ func TestManagerListDatabases(t *testing.T) {
 
 func TestManagerRejectsReservedUsers(t *testing.T) {
 	// No SQL is expected: the guard must reject before touching the connection.
-	for _, name := range []string{"cloudnative-mysql_control", "cloudnative-mysql_repl", "cloudnative-mysql_backup", "root", "mysql.sys"} {
+	reserved := []string{
+		"cloudnative-mysql_control", "cloudnative-mysql_repl",
+		"cloudnative-mysql_backup", "root", "mysql.sys",
+	}
+	for _, name := range reserved {
 		m, _ := newManager(t)
 		ctx := context.Background()
 		if err := m.CreateUser(ctx, CreateUserRequest{Name: name, Password: "pw"}); err == nil {

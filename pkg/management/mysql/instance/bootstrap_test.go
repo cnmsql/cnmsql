@@ -142,7 +142,8 @@ func TestBootstrapBackupUserLegacyHasNoBackupAdmin(t *testing.T) {
 		BackupUser:     "cloudnative-mysql_backup",
 		BackupPassword: "bkpw",
 	})
-	if !strings.Contains(out, "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cloudnative-mysql_backup'@'%'") {
+	want := "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cloudnative-mysql_backup'@'%'"
+	if !strings.Contains(out, want) {
 		t.Errorf("backup user should still get static grants:\n%s", out)
 	}
 	if strings.Contains(out, "BACKUP_ADMIN") {
@@ -151,7 +152,10 @@ func TestBootstrapBackupUserLegacyHasNoBackupAdmin(t *testing.T) {
 }
 
 func TestBootstrapBackupUserValidation(t *testing.T) {
-	if _, err := BootstrapStatements(BootstrapParams{RootPassword: "x", BackupUser: "cloudnative-mysql_backup"}); err == nil {
+	if _, err := BootstrapStatements(BootstrapParams{
+		RootPassword: "x",
+		BackupUser:   "cloudnative-mysql_backup",
+	}); err == nil {
 		t.Error("expected error when backup password missing")
 	}
 }

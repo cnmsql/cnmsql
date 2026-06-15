@@ -32,9 +32,10 @@ var configFlags = genericclioptions.NewConfigFlags(true)
 // NewRootCommand builds the top-level `kubectl cloudnative-mysql` command.
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "cloudnative-mysql",
-		Short:         "Manage and inspect cloudnative-mysql clusters",
-		Long:          "kubectl cloudnative-mysql is a kubectl plugin for managing cloudnative-mysql (Percona Server) clusters.",
+		Use:   "cloudnative-mysql",
+		Short: "Manage and inspect cloudnative-mysql clusters",
+		Long: "kubectl cloudnative-mysql is a kubectl plugin for managing " +
+			"cloudnative-mysql (Percona Server) clusters.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

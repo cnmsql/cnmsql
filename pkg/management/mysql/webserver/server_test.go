@@ -265,7 +265,7 @@ func TestLifecycleActions(t *testing.T) {
 	if rec := do(t, h, http.MethodPost, "/demote"); rec.Code != http.StatusOK || !fc.demoteCalled {
 		t.Errorf("demote = %d called=%v", rec.Code, fc.demoteCalled)
 	}
-	body := `{"source":{"host":"demo-2.default.svc","port":3306,"user":"cloudnative-mysql_repl","autoPosition":true,"ssl":true}}`
+	body := `{"source":{"host":"demo-2.default.svc","port":3306,"user":"cloudnative-mysql_repl","autoPosition":true,"ssl":true}}` //nolint:lll
 	rec := doWithBody(t, h, "/replica/source", body)
 	if rec.Code != http.StatusOK || fc.configureSource == nil {
 		t.Errorf("configure replica = %d source=%#v", rec.Code, fc.configureSource)

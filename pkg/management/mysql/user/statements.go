@@ -43,7 +43,7 @@ var reservedUsers = map[string]struct{}{
 	"cloudnative-mysql_repl":             {},
 	"cloudnative-mysql_backup":           {},
 	"cloudnative-mysql_metrics_exporter": {},
-	"root":                     {},
+	"root":                               {},
 }
 
 // IsReservedUser reports whether name is an operator/server-managed account that
@@ -313,7 +313,8 @@ func ListUsersQuery() string {
 	return "SELECT User, Host, max_user_connections, max_questions, max_updates, " +
 		"max_connections, ssl_type FROM mysql.user " +
 		"WHERE User NOT LIKE 'mysql.%' AND User <> 'root' " +
-		"AND User NOT IN ('cloudnative-mysql_control', 'cloudnative-mysql_repl', 'cloudnative-mysql_backup', 'cloudnative-mysql_metrics_exporter') " +
+		"AND User NOT IN ('cloudnative-mysql_control', 'cloudnative-mysql_repl', " +
+		"'cloudnative-mysql_backup', 'cloudnative-mysql_metrics_exporter') " +
 		"ORDER BY User, Host"
 }
 

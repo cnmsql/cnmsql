@@ -148,7 +148,8 @@ func TestArchivePendingShipsRotatedFiles(t *testing.T) {
 		t.Fatal("active log was uploaded")
 	}
 	// Body + manifest landed for the rotated files.
-	if got := store.objects["backups/cloudnative-mysql/demo/binlogs/"+testUUID+"/binlog.000001"]; !bytes.Equal(got, []byte("one")) {
+	key := "backups/cloudnative-mysql/demo/binlogs/" + testUUID + "/binlog.000001"
+	if got := store.objects[key]; !bytes.Equal(got, []byte("one")) {
 		t.Fatalf("binlog body = %q", got)
 	}
 	if _, ok := store.objects["backups/cloudnative-mysql/demo/binlogs/"+testUUID+"/binlog.000001.json"]; !ok {
@@ -227,7 +228,8 @@ func TestArchivePendingStopsOnUploadError(t *testing.T) {
 	writeBinlog(t, dir, "binlog.000002", "two")
 	writeBinlog(t, dir, "binlog.000003", "active")
 
-	store := &failingStore{memStore: newMemStore(), failOnKey: "cloudnative-mysql/demo/binlogs/" + testUUID + "/binlog.000002"}
+	failKey := "cloudnative-mysql/demo/binlogs/" + testUUID + "/binlog.000002"
+	store := &failingStore{memStore: newMemStore(), failOnKey: failKey}
 	scan := staticScan(map[string]string{
 		"binlog.000001": testUUID + ":1-3",
 		"binlog.000002": testUUID + ":4-6",
