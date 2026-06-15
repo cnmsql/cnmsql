@@ -3,7 +3,7 @@ kind: Namespace
 metadata:
   labels:
     control-plane: controller-manager
-    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/name: cloudnative-mysql
     app.kubernetes.io/managed-by: kustomize
   name: system
 ---
@@ -14,13 +14,13 @@ metadata:
   namespace: system
   labels:
     control-plane: controller-manager
-    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/name: cloudnative-mysql
     app.kubernetes.io/managed-by: kustomize
 spec:
   selector:
     matchLabels:
       control-plane: controller-manager
-      app.kubernetes.io/name: cnmysql
+      app.kubernetes.io/name: cloudnative-mysql
   replicas: 1
   template:
     metadata:
@@ -28,7 +28,7 @@ spec:
         kubectl.kubernetes.io/default-container: manager
       labels:
         control-plane: controller-manager
-        app.kubernetes.io/name: cnmysql
+        app.kubernetes.io/name: cloudnative-mysql
     spec:
       # TODO(user): Uncomment the following code to configure the nodeAffinity expression
       # according to the platforms which are supported by your solution.
@@ -61,9 +61,9 @@ spec:
       - command:
         - /manager
         args:
-          - --leader-elect
-          - --health-probe-bind-address=:8081
-          - --operator-image=controller:latest
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --operator-image=controller:latest
         image: controller:latest
         name: manager
         ports:

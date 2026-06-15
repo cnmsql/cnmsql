@@ -1,12 +1,12 @@
 ---
-title: "CNMySQL Documentation"
+title: "cloudnative-mysql Documentation"
 description: "Architecture and integration notes for operating CloudNative MySQL on Kubernetes."
 sidebar_position: 1
 ---
 
-# CNMySQL Documentation
+# cloudnative-mysql Documentation
 
-CNMySQL is a Kubernetes operator for Percona Server for MySQL, designed around
+cloudnative-mysql is a Kubernetes operator for Percona Server for MySQL, designed around
 operator-owned lifecycle management, physical backups, failover, and
 point-in-time recovery.
 

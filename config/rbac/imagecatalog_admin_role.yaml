@@ -1,4 +1,4 @@
-# This rule is not used by the project cnmysql itself.
+# This rule is not used by the project cloudnative-mysql itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
 # Grants full permissions ('*') over mysql.cloudnative-mysql.io.
@@ -9,7 +9,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/name: cloudnative-mysql
     app.kubernetes.io/managed-by: kustomize
   name: imagecatalog-admin-role
 rules:

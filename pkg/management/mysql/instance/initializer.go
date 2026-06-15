@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 )
 
 // InitOptions configures a fresh data-directory initialisation.

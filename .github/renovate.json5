@@ -1,0 +1,34 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    // Pin every GitHub Action to a commit SHA, then keep the SHA fresh.
+    'helpers:pinGitHubActionDigests',
+  ],
+  semanticCommits: 'enabled',
+  postUpdateOptions: [
+    'gomodTidy',
+  ],
+  labels: [
+    'automated',
+  ],
+  // The kind_versions.json *array* (the spread of k8s minors the e2e matrix
+  // sweeps) is NOT managed here: Renovate would collapse every entry onto the
+  // single newest tag. It is refreshed by .github/workflows/k8s-versions-check.yml.
+  //
+  // This custom manager only handles single-version pins annotated in workflows,
+  // e.g. the kind *binary*:
+  //   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
+  //   KIND_VERSION: v0.30.0
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^\\.github\\/workflows\\/[^/]+\\.ya?ml$/',
+      ],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Za-z0-9_]+?_VERSION\\s*:\\s*["\']?(?<currentValue>.+?)["\']?\\s',
+      ],
+    },
+  ],
+}

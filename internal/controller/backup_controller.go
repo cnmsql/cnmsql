@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
 )
 
 const (
@@ -266,8 +266,8 @@ func backupJob(
 			Name:      jobName,
 			Namespace: backup.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":            "cnmysql",
-				"app.kubernetes.io/managed-by":      "cnmysql",
+				"app.kubernetes.io/name":            "cloudnative-mysql",
+				"app.kubernetes.io/managed-by":      "cloudnative-mysql",
 				clusterLabel:                        cluster.Name,
 				"mysql.cloudnative-mysql.io/backup": backup.Name,
 			},
@@ -323,21 +323,21 @@ func backupJob(
 
 func backupObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: "CNMYSQL_S3_ENDPOINT", Value: store.Endpoint},
-		{Name: "CNMYSQL_S3_REGION", Value: store.Region},
-		{Name: "CNMYSQL_S3_SIGNATURE_VERSION", Value: string(store.SignatureVersion)},
+		{Name: "cloudnative-mysql_S3_ENDPOINT", Value: store.Endpoint},
+		{Name: "cloudnative-mysql_S3_REGION", Value: store.Region},
+		{Name: "cloudnative-mysql_S3_SIGNATURE_VERSION", Value: string(store.SignatureVersion)},
 	}
 	if store.ForcePathStyle != nil {
-		env = append(env, corev1.EnvVar{Name: "CNMYSQL_S3_FORCE_PATH_STYLE", Value: fmt.Sprintf("%t", *store.ForcePathStyle)})
+		env = append(env, corev1.EnvVar{Name: "cloudnative-mysql_S3_FORCE_PATH_STYLE", Value: fmt.Sprintf("%t", *store.ForcePathStyle)})
 	}
 	if store.Credentials.AccessKeyID != nil {
-		env = append(env, secretKeyEnv("CNMYSQL_S3_ACCESS_KEY_ID", *store.Credentials.AccessKeyID))
+		env = append(env, secretKeyEnv("cloudnative-mysql_S3_ACCESS_KEY_ID", *store.Credentials.AccessKeyID))
 	}
 	if store.Credentials.SecretAccessKey != nil {
-		env = append(env, secretKeyEnv("CNMYSQL_S3_SECRET_ACCESS_KEY", *store.Credentials.SecretAccessKey))
+		env = append(env, secretKeyEnv("cloudnative-mysql_S3_SECRET_ACCESS_KEY", *store.Credentials.SecretAccessKey))
 	}
 	if store.Credentials.SessionToken != nil {
-		env = append(env, secretKeyEnv("CNMYSQL_S3_SESSION_TOKEN", *store.Credentials.SessionToken))
+		env = append(env, secretKeyEnv("cloudnative-mysql_S3_SESSION_TOKEN", *store.Credentials.SessionToken))
 	}
 	return env
 }

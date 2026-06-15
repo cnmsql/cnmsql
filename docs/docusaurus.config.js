@@ -5,13 +5,13 @@ const darkCodeTheme = require('prism-react-renderer').themes.dracula;
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'CNMySQL',
+  title: 'cloudnative-mysql',
   tagline: 'Kubernetes operator for Cloudnative MySQL',
   favicon: 'img/favicon.svg',
   url: 'https://yyewolf.github.io',
-  baseUrl: '/cnmysql/',
+  baseUrl: '/cloudnative-mysql/',
   organizationName: 'yyewolf',
-  projectName: 'cnmysql',
+  projectName: 'cloudnative-mysql',
   onBrokenLinks: 'throw',
 
   markdown: {
@@ -46,9 +46,9 @@ const config = {
     ({
       image: 'img/social-card.svg',
       navbar: {
-        title: 'CNMySQL',
+        title: 'cloudnative-mysql',
         logo: {
-          alt: 'CNMySQL',
+          alt: 'cloudnative-mysql',
           src: 'img/logo.svg',
         },
         items: [
@@ -59,7 +59,7 @@ const config = {
             label: 'Documentation',
           },
           {
-            href: 'https://github.com/yyewolf/cnmysql',
+            href: 'https://github.com/CloudNative-MySQL/cloudnative-mysql',
             position: 'right',
             label: 'GitHub',
           },
@@ -86,12 +86,12 @@ const config = {
             items: [
               {
                 label: 'GitHub',
-                href: 'https://github.com/yyewolf/cnmysql',
+                href: 'https://github.com/CloudNative-MySQL/cloudnative-mysql',
               },
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} The CNMySQL Authors.`,
+        copyright: `Copyright © ${new Date().getFullYear()} The cloudnative-mysql Authors.`,
       },
       prism: {
         theme: lightCodeTheme,

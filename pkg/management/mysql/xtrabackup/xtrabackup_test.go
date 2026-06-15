@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@ func TestBackupArgsStreamCompress(t *testing.T) {
 	args, err := BackupArgs(BackupOptions{
 		TargetDir: "/tmp/work",
 		Socket:    "/run/mysqld.sock",
-		User:      "cnmysql_backup",
+		User:      "cloudnative-mysql_backup",
 		Stream:    true,
 		Compress:  true,
 	})

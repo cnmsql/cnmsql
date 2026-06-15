@@ -1,20 +1,20 @@
 ---
 title: "Troubleshooting"
-description: "Common CNMySQL symptoms, likely causes, and first commands to run."
+description: "Common cloudnative-mysql symptoms, likely causes, and first commands to run."
 sidebar_position: 16
 ---
 
 # Troubleshooting
 
-This page starts with symptoms and points to the first places to inspect. CNMySQL
+This page starts with symptoms and points to the first places to inspect. cloudnative-mysql
 surfaces most issues through Cluster/Backup status, Kubernetes Events, and the
 instance-manager logs.
 
 ## First commands
 
 ```bash
-kubectl cnmysql status <cluster>
-kubectl cnmysql logs <cluster>
+kubectl cloudnative-mysql status <cluster>
+kubectl cloudnative-mysql logs <cluster>
 kubectl describe cluster <cluster>
 kubectl get events --sort-by=.lastTimestamp
 kubectl get backup
@@ -24,7 +24,7 @@ kubectl get scheduledbackup
 Operator logs:
 
 ```bash
-kubectl logs -n cnmysql-system deployment/cnmysql-controller-manager -c manager
+kubectl logs -n cloudnative-mysql-system deployment/cloudnative-mysql-controller-manager -c manager
 ```
 
 Instance logs:
@@ -38,8 +38,8 @@ kubectl logs pod/<cluster>-1 -c manager
 Check:
 
 ```bash
-kubectl cnmysql status <cluster>
-kubectl cnmysql logs <cluster>
+kubectl cloudnative-mysql status <cluster>
+kubectl cloudnative-mysql logs <cluster>
 kubectl describe pod <pod>
 ```
 
@@ -79,7 +79,7 @@ port. Network policies or service DNS issues can break the join path.
 Inspect:
 
 ```bash
-kubectl cnmysql status <cluster>
+kubectl cloudnative-mysql status <cluster>
 ```
 
 Common causes:
@@ -95,12 +95,12 @@ Check `status.currentPrimary`, `status.targetPrimary`,
 
 ## Automatic failover did not happen
 
-CNMySQL blocks failover when it cannot prove a safe candidate.
+cloudnative-mysql blocks failover when it cannot prove a safe candidate.
 
 Check:
 
 ```bash
-kubectl cnmysql status <cluster>
+kubectl cloudnative-mysql status <cluster>
 ```
 
 Likely explanations:

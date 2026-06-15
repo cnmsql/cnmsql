@@ -2,12 +2,12 @@ apiVersion: mysql.cloudnative-mysql.io/v1alpha1
 kind: Cluster
 metadata:
   labels:
-    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/name: cloudnative-mysql
     app.kubernetes.io/managed-by: kustomize
   name: cluster-sample
 spec:
   instances: 3
-  imageName: cnmysql-instance:8.4
+  imageName: cloudnative-mysql-instance:8.4
   storage:
     size: 10Gi
   mysql:

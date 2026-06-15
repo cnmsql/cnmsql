@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,15 +33,15 @@ import (
 
 	"golang.org/x/term"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 )
 
 // Annotation and label keys understood by the operator (kept in sync with the
 // controller).
 const (
-	FencingAnnotation = "cnmysql.cloudnative-mysql.io/fencing"
-	RestartAnnotation = "cnmysql.cloudnative-mysql.io/restart"
-	ReloadAnnotation  = "cnmysql.cloudnative-mysql.io/reload"
+	FencingAnnotation = "cloudnative-mysql.cloudnative-mysql.io/fencing"
+	RestartAnnotation = "cloudnative-mysql.cloudnative-mysql.io/restart"
+	ReloadAnnotation  = "cloudnative-mysql.cloudnative-mysql.io/reload"
 
 	ClusterLabel = "mysql.cloudnative-mysql.io/cluster"
 	RoleLabel    = "mysql.cloudnative-mysql.io/role"

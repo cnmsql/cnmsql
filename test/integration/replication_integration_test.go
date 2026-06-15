@@ -1,5 +1,7 @@
+//go:build integration
+
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,8 +15,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-//go:build integration
 
 // Package integration holds tests that validate the management packages against
 // real Percona Server containers. They require Docker and are excluded from the
@@ -34,9 +34,9 @@ import (
 	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 )
 
 const (

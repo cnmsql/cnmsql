@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/binlog"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/binlog"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
 // ArchivingConfig configures the in-Pod continuous binlog archiver.
@@ -34,7 +34,7 @@ type ArchivingConfig struct {
 	// Enabled turns the archiver on. The loop still only ships from the primary.
 	Enabled bool
 	// ObjectStore is the destination bucket + key prefix. Credentials/endpoint
-	// come from the CNMYSQL_S3_* environment.
+	// come from the cloudnative-mysql_S3_* environment.
 	ObjectStore mysqlv1alpha1.S3ObjectStore
 	// ClusterName and InstanceName identify this segment of the archive.
 	ClusterName  string

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,16 +32,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
 const (
-	defaultInstanceImage = "cnmysql-instance:8.0"
+	defaultInstanceImage = "cloudnative-mysql-instance:8.0"
 
 	clusterLabel           = "mysql.cloudnative-mysql.io/cluster"
-	podMonitorClusterLabel = "cnmysql.io/cluster"
+	podMonitorClusterLabel = "cloudnative-mysql.io/cluster"
 	instanceLabel          = "mysql.cloudnative-mysql.io/instance"
 	roleLabel              = "mysql.cloudnative-mysql.io/role"
 	// routableLabel gates membership of the rw/ro/r routing Services. Every
@@ -59,25 +59,25 @@ const (
 	// fencingAnnotation, when set to "true" on an instance Pod, fences that
 	// instance: it is removed from routing, kept read-only, and not eligible as a
 	// failover candidate. Clearing it restores the instance.
-	fencingAnnotation = "cnmysql.cloudnative-mysql.io/fencing"
+	fencingAnnotation = "cloudnative-mysql.cloudnative-mysql.io/fencing"
 	// restartAnnotation, when set to an RFC3339 timestamp on the Cluster, triggers
 	// a rolling restart of every instance: its value is folded into the Pod
 	// template hash, so bumping it rolls the Pods one at a time (gated on the
 	// previous instance becoming Ready) without otherwise changing the spec.
-	restartAnnotation = "cnmysql.cloudnative-mysql.io/restart"
+	restartAnnotation = "cloudnative-mysql.cloudnative-mysql.io/restart"
 	// reloadAnnotation, when set to an RFC3339 timestamp on the Cluster, requests
 	// that dynamic my.cnf parameters be re-applied to the running mysqld via the
 	// instance manager control API, without restarting the process.
-	reloadAnnotation = "cnmysql.cloudnative-mysql.io/reload"
+	reloadAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reload"
 	// reloadAppliedAnnotation records, on each instance Pod, the reload token that
 	// was last applied to that instance. The reconciler compares it to the
 	// Cluster's reloadAnnotation to decide whether a reload is still pending,
 	// making the SET GLOBAL pass idempotent without a CRD status change.
-	reloadAppliedAnnotation = "cnmysql.cloudnative-mysql.io/reload-applied"
+	reloadAppliedAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reload-applied"
 
-	configMapAnnotation       = "cnmysql.cloudnative-mysql.io/config-map"
-	configHashAnnotation      = "cnmysql.cloudnative-mysql.io/config-hash"
-	podTemplateHashAnnotation = "cnmysql.cloudnative-mysql.io/pod-template-hash"
+	configMapAnnotation       = "cloudnative-mysql.cloudnative-mysql.io/config-map"
+	configHashAnnotation      = "cloudnative-mysql.cloudnative-mysql.io/config-hash"
+	podTemplateHashAnnotation = "cloudnative-mysql.cloudnative-mysql.io/pod-template-hash"
 
 	conditionReady               = "Ready"
 	conditionProgressing         = "Progressing"
@@ -94,14 +94,14 @@ const (
 	dataDir       = "/var/lib/mysql"
 	socketPath    = "/var/run/mysqld/mysqld.sock"
 	configPath    = "/etc/mysql/my.cnf"
-	serverTLSPath = "/etc/cnmysql/tls/server"
-	clientCAPath  = "/etc/cnmysql/tls/client-ca"
+	serverTLSPath = "/etc/cloudnative-mysql/tls/server"
+	clientCAPath  = "/etc/cloudnative-mysql/tls/client-ca"
 	joinBackupDir = "/backup"
 
-	replicationUser = "cnmysql_repl"
-	backupUser      = "cnmysql_backup"
-	controlUser     = "cnmysql_control"
-	metricsUser     = "cnmysql_metrics_exporter"
+	replicationUser = "cloudnative-mysql_repl"
+	backupUser      = "cloudnative-mysql_backup"
+	controlUser     = "cloudnative-mysql_control"
+	metricsUser     = "cloudnative-mysql_metrics_exporter"
 	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// provisioningRequeue paces reconciles while the instance is still coming up.

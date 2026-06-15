@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yyewolf/cnmysql/cmd/kubectl-cnmysql/plugin"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/plugin"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
 )
 
 func newUserCommand() *cobra.Command {

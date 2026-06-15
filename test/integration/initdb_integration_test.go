@@ -1,5 +1,7 @@
+//go:build integration
+
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +16,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//go:build integration
-
 package integration
 
 import (
@@ -28,7 +28,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
 )
 
 // TestInitdbBootstrapsWorkingServer runs `manager instance initdb` to initialise

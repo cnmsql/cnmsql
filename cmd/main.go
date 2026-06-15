@@ -22,10 +22,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
-	"github.com/yyewolf/cnmysql/internal/cmd/manager/bootstrap"
-	"github.com/yyewolf/cnmysql/internal/cmd/manager/instance"
-	"github.com/yyewolf/cnmysql/internal/controller"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/bootstrap"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/instance"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 

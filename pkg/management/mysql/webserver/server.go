@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/user"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
 )
 
 // InstanceController is the behaviour the HTTP layer drives. It is implemented

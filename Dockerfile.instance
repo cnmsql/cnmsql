@@ -14,7 +14,7 @@
 #     --build-arg PS_REPO=ps-80 \
 #     --build-arg PXB_REPO=pxb-80 \
 #     --build-arg PXB_PACKAGE=percona-xtrabackup-80 \
-#     -t cnmysql-instance:8.0 .
+#     -t cloudnative-mysql-instance:8.0 .
 #
 # The runtime stage runs as an unprivileged user (uid 1001); mysqld and the
 # manager never need root, and every port they bind is above 1024.

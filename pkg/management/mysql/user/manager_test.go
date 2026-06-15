@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -103,7 +103,7 @@ func TestManagerListDatabases(t *testing.T) {
 
 func TestManagerRejectsReservedUsers(t *testing.T) {
 	// No SQL is expected: the guard must reject before touching the connection.
-	for _, name := range []string{"cnmysql_control", "cnmysql_repl", "cnmysql_backup", "root", "mysql.sys"} {
+	for _, name := range []string{"cloudnative-mysql_control", "cloudnative-mysql_repl", "cloudnative-mysql_backup", "root", "mysql.sys"} {
 		m, _ := newManager(t)
 		ctx := context.Background()
 		if err := m.CreateUser(ctx, CreateUserRequest{Name: name, Password: "pw"}); err == nil {

@@ -1,12 +1,12 @@
 ---
 title: "Replication and Failover"
-description: "How CNMySQL manages GTID replicas, service routing, planned switchovers, and automatic failover."
+description: "How cloudnative-mysql manages GTID replicas, service routing, planned switchovers, and automatic failover."
 sidebar_position: 9
 ---
 
 # Replication and failover architecture
 
-CNMySQL builds a primary-replica topology with Percona Server for MySQL GTID
+cloudnative-mysql builds a primary-replica topology with Percona Server for MySQL GTID
 replication. The operator owns topology policy, while each instance manager
 owns local mysqld role changes. This split keeps primary changes declarative:
 the operator writes the intended primary in Cluster status, and the pods
@@ -113,8 +113,8 @@ Fencing takes a single instance out of service without deleting it or its data.
 Use the plugin:
 
 ```bash
-kubectl cnmysql fence on <cluster> <cluster>-2
-kubectl cnmysql fence off <cluster> <cluster>-2
+kubectl cloudnative-mysql fence on <cluster> <cluster>-2
+kubectl cloudnative-mysql fence off <cluster> <cluster>-2
 ```
 
 The operator drops the Pod from every routing Service (rw, ro, r, and any
@@ -210,7 +210,7 @@ survive the Cluster deletion, and use RBAC to restrict who can delete Clusters.
 
 ## Role services
 
-CNMySQL creates three default Services:
+cloudnative-mysql creates three default Services:
 
 - `<cluster>-rw`: selects the current primary.
 - `<cluster>-ro`: selects ready replicas.
@@ -301,7 +301,7 @@ re-cloned over its retained PVC.
 
 ## Planned switchover
 
-A planned switchover promotes a named healthy replica. CNMySQL models this like
+A planned switchover promotes a named healthy replica. cloudnative-mysql models this like
 CloudNativePG: the request is a status transition rather than a spec change.
 The normal trigger is to set `status.targetPrimary` to a replica name.
 
@@ -348,7 +348,7 @@ follow the promoted primary.
 
 If its GTID set is contained in the new primary's GTID set, it can safely rejoin
 as a replica. If it contains errant transactions that the promoted primary never
-saw, CNMySQL marks it diverged and keeps it out of service. The retained PVC is
+saw, cloudnative-mysql marks it diverged and keeps it out of service. The retained PVC is
 left for deliberate human recovery instead of being destroyed.
 
 ## Status and events

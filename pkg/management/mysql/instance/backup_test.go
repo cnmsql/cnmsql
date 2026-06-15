@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ func TestBackupStreamUnconfiguredErrors(t *testing.T) {
 
 func TestSetBackupConfigDefaults(t *testing.T) {
 	c := &Controller{}
-	c.SetBackupConfig(BackupConfig{DataDir: "/var/lib/mysql", Socket: "/run/mysqld.sock", User: "cnmysql_backup"})
+	c.SetBackupConfig(BackupConfig{DataDir: "/var/lib/mysql", Socket: "/run/mysqld.sock", User: "cloudnative-mysql_backup"})
 	if c.backup == nil {
 		t.Fatal("backup config not set")
 	}

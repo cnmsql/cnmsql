@@ -14,15 +14,22 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 )
 
 // archiveVersions is the set of Percona versions the continuous-archiving specs
-// run against. It defaults to the full supported matrix so archiving is proven
-// broadly compatible; override with E2E_ARCHIVE_VERSIONS (comma-separated) to
-// narrow it for a faster local run.
+// run against. Precedence:
+//   - E2E_MYSQL_VERSION (single version): the CI matrix model — each job pins
+//     one MySQL version and the whole suite runs against it.
+//   - E2E_ARCHIVE_VERSIONS (comma-separated list): explicit local override to
+//     exercise several versions in one cluster.
+//   - default: the full supported matrix, so a bare local run proves archiving
+//     broadly compatible.
 func archiveVersions() []string {
+	if v := strings.TrimSpace(os.Getenv("E2E_MYSQL_VERSION")); v != "" {
+		return []string{v}
+	}
 	if raw := strings.TrimSpace(os.Getenv("E2E_ARCHIVE_VERSIONS")); raw != "" {
 		var out []string
 		for v := range strings.SplitSeq(raw, ",") {
@@ -35,10 +42,21 @@ func archiveVersions() []string {
 	return []string{"8.0", "8.4", "9.x"}
 }
 
+// sampleVersion is the MySQL version used by the non-archiving sample Clusters
+// (the bulk of the suite). Under the CI matrix model it follows
+// E2E_MYSQL_VERSION so every spec runs against the job's pinned version;
+// otherwise it defaults to 8.4 (the historical sample version).
+func sampleVersion() string {
+	if v := strings.TrimSpace(os.Getenv("E2E_MYSQL_VERSION")); v != "" {
+		return v
+	}
+	return "8.4"
+}
+
 // instanceImageFor returns the locally-built slim instance image tag for a
-// version. It mirrors images/build.sh's default REGISTRY (cnmysql-instance).
+// version. It mirrors images/build.sh's default REGISTRY (cloudnative-mysql-instance).
 func instanceImageFor(version string) string {
-	return "cnmysql-instance:" + version
+	return "cloudnative-mysql-instance:" + version
 }
 
 // setupMC deploys a long-lived mc (MinIO client) toolbox Pod with the bucket

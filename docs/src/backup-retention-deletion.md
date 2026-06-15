@@ -6,7 +6,7 @@ sidebar_position: 11
 
 # Backup retention and deletion
 
-CNMySQL currently separates Kubernetes object lifecycle from object-store
+cloudnative-mysql currently separates Kubernetes object lifecycle from object-store
 artifact lifecycle. This is deliberate: a Kubernetes object deletion should not
 silently destroy the only copy of a recovery point unless the user explicitly
 opts into that behavior.
@@ -45,7 +45,7 @@ accidentally, by namespace cleanup, by owner-reference cascade, or by a GitOps
 prune. Automatically deleting `backup.xbstream` and `metadata.json` in those
 cases could destroy the recovery window.
 
-CNMySQL therefore needs an explicit policy before adding remote deletion.
+cloudnative-mysql therefore needs an explicit policy before adding remote deletion.
 
 ## Planned finalizer behavior
 
@@ -121,7 +121,7 @@ archive.
   to inspect.
 - Preserve both `backup.xbstream` and `metadata.json`.
 - Test recovery before deleting old prefixes manually.
-- Document any external cleanup automation outside CNMySQL.
+- Document any external cleanup automation outside cloudnative-mysql.
 
 ## Manual cleanup checklist
 

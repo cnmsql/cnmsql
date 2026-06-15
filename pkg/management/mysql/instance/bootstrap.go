@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 )
 
 // BootstrapParams describes the desired state of a freshly initialised server.

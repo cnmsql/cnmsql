@@ -13,14 +13,16 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/yyewolf/cnmysql/test/utils"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
 )
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/cnmysql:v0.0.1"
-	// instanceImage is the local M3 instance image consumed by the sample Cluster.
-	instanceImage = "cnmysql-instance:8.4"
+	managerImage = "example.com/cloudnative-mysql:v0.0.1"
+	// instanceImage is the local instance image consumed by the sample Cluster.
+	// It tracks sampleVersion so a matrix job pinning E2E_MYSQL_VERSION runs the
+	// whole suite against that one version.
+	instanceImage = instanceImageFor(sampleVersion())
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -33,7 +35,7 @@ var (
 // To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting cnmysql e2e test suite\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting cloudnative-mysql e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 
@@ -87,7 +89,7 @@ func doSuiteSetup() {
 }
 
 // buildAndLoadInstanceImage builds this version's slim instance image and loads
-// it into the Kind cluster, so a Cluster pinned to cnmysql-instance:<version>
+// it into the Kind cluster, so a Cluster pinned to cloudnative-mysql-instance:<version>
 // boots without pulling from a registry.
 func buildAndLoadInstanceImage(version string) {
 	By(fmt.Sprintf("building the instance image (%s)", version))
@@ -101,11 +103,13 @@ func buildAndLoadInstanceImage(version string) {
 }
 
 // neededInstanceVersions is the deduplicated set of instance versions the suite
-// builds: 8.4 (the sample Cluster spec) plus every archiving-matrix version.
+// builds: the sample Cluster version plus every archiving-matrix version. Under
+// E2E_MYSQL_VERSION both collapse to a single version, so the suite builds and
+// loads exactly one instance image.
 func neededInstanceVersions() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, v := range append([]string{"8.4"}, archiveVersions()...) {
+	for _, v := range append([]string{sampleVersion()}, archiveVersions()...) {
 		if !seen[v] {
 			seen[v] = true
 			out = append(out, v)

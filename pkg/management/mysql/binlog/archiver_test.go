@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
 )
 
 // memStore is an in-memory Store for archiver tests.
@@ -82,7 +82,7 @@ func newTestArchiver(t *testing.T, store Store, dir string, scan Scanner) *Archi
 	t.Helper()
 	a, err := NewArchiver(ArchiverOptions{
 		Store:        store,
-		ObjectStore:  mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cnmysql"},
+		ObjectStore:  mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cloudnative-mysql"},
 		ClusterName:  "demo",
 		InstanceName: "demo-1",
 		ServerUUID:   testUUID,
@@ -144,14 +144,14 @@ func TestArchivePendingShipsRotatedFiles(t *testing.T) {
 		t.Fatalf("covered = %q", res.CoveredGTIDSet)
 	}
 	// The active tail must never be uploaded.
-	if _, ok := store.objects["backups/cnmysql/demo/binlogs/"+testUUID+"/binlog.000003"]; ok {
+	if _, ok := store.objects["backups/cloudnative-mysql/demo/binlogs/"+testUUID+"/binlog.000003"]; ok {
 		t.Fatal("active log was uploaded")
 	}
 	// Body + manifest landed for the rotated files.
-	if got := store.objects["backups/cnmysql/demo/binlogs/"+testUUID+"/binlog.000001"]; !bytes.Equal(got, []byte("one")) {
+	if got := store.objects["backups/cloudnative-mysql/demo/binlogs/"+testUUID+"/binlog.000001"]; !bytes.Equal(got, []byte("one")) {
 		t.Fatalf("binlog body = %q", got)
 	}
-	if _, ok := store.objects["backups/cnmysql/demo/binlogs/"+testUUID+"/binlog.000001.json"]; !ok {
+	if _, ok := store.objects["backups/cloudnative-mysql/demo/binlogs/"+testUUID+"/binlog.000001.json"]; !ok {
 		t.Fatal("manifest missing")
 	}
 
@@ -227,7 +227,7 @@ func TestArchivePendingStopsOnUploadError(t *testing.T) {
 	writeBinlog(t, dir, "binlog.000002", "two")
 	writeBinlog(t, dir, "binlog.000003", "active")
 
-	store := &failingStore{memStore: newMemStore(), failOnKey: "cnmysql/demo/binlogs/" + testUUID + "/binlog.000002"}
+	store := &failingStore{memStore: newMemStore(), failOnKey: "cloudnative-mysql/demo/binlogs/" + testUUID + "/binlog.000002"}
 	scan := staticScan(map[string]string{
 		"binlog.000001": testUUID + ":1-3",
 		"binlog.000002": testUUID + ":4-6",

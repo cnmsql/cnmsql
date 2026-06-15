@@ -8,11 +8,48 @@ on:
 permissions: {}
 
 jobs:
-  unit:
+  generate-jobs:
+    name: Generate k8s version matrix
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    name: Run unit tests (envtest)
+    outputs:
+      k8sMatrix: ${{ steps.versions.outputs.k8s_versions }}
+      latest: ${{ steps.versions.outputs.latest }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Compute k8s versions from scope
+      id: versions
+      run: |
+        # Expand unit_test.min..unit_test.max into 1.<minor>.x values for envtest.
+        k8s_versions=$(jq -c '
+          .unit_test.max as $max |
+          .unit_test.min as $min |
+          $min | [ while(. <= $max;
+              . | split(".") | .[1] |= (.|tonumber|.+1|tostring) | join(".")
+            )
+          ] |
+          .[] |= .+".x"
+        ' < .github/k8s_versions_scope.json)
+        echo "k8s_versions=${k8s_versions}" >> "$GITHUB_OUTPUT"
+        echo "latest=$(jq -r '.|last' <<< "$k8s_versions")" >> "$GITHUB_OUTPUT"
+
+  unit:
+    name: envtest (k8s ${{ matrix.k8s-version }})
+    needs: generate-jobs
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        k8s-version: ${{ fromJSON(needs.generate-jobs.outputs.k8sMatrix) }}
+    env:
+      ENVTEST_K8S_VERSION: ${{ matrix.k8s-version }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

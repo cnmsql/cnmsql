@@ -14,7 +14,7 @@ data path.
 For one-off on-demand backups, skip the YAML and use the plugin:
 
 ```bash
-kubectl cnmysql backup <cluster>
+kubectl cloudnative-mysql backup <cluster>
 ```
 
 This page covers recurring scheduled backups.
@@ -87,7 +87,7 @@ second one.
 
 ## Concurrency guard
 
-CNMySQL never overlaps backups for the same ScheduledBackup. Before evaluating
+cloudnative-mysql never overlaps backups for the same ScheduledBackup. Before evaluating
 the next cron slot, the controller lists child Backups for that schedule. If any
 child Backup is not done, meaning its phase is neither `completed` nor `failed`,
 the scheduler requeues and waits.
@@ -108,7 +108,7 @@ idempotent: if a previous reconcile created the Backup but missed the status
 update, the next reconcile observes and adopts the same child.
 
 If another Backup already occupies the deterministic name and is not labelled as
-owned by this ScheduledBackup, CNMySQL refuses adoption, emits a warning Event,
+owned by this ScheduledBackup, cloudnative-mysql refuses adoption, emits a warning Event,
 skips that iteration, and resumes with the next schedule slot.
 
 ## Owner reference modes

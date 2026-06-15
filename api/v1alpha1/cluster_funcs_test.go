@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -327,7 +327,7 @@ var _ = Describe("Cluster validation", func() {
 	It("rejects a reserved managed role name", func() {
 		cluster := newValidCluster()
 		cluster.Spec.Managed = &ManagedConfiguration{Roles: []RoleConfiguration{
-			{Name: "cnmysql_repl", Host: "%"},
+			{Name: "cloudnative-mysql_repl", Host: "%"},
 		}}
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})

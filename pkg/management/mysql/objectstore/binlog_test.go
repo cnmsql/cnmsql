@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,18 +19,18 @@ package objectstore
 import (
 	"testing"
 
-	mysqlv1alpha1 "github.com/yyewolf/cnmysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 )
 
 func TestBuildBinlogKeys(t *testing.T) {
 	t.Parallel()
 
-	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "/cnmysql//prod/"}
+	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "/cloudnative-mysql//prod/"}
 	keys, err := BuildBinlogKeys(store, "demo", "3e11fa47-71ca-11e1-9e33-c80aa9429562", "binlog.000004")
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantBinlog := "cnmysql/prod/demo/binlogs/3e11fa47-71ca-11e1-9e33-c80aa9429562/binlog.000004"
+	wantBinlog := "cloudnative-mysql/prod/demo/binlogs/3e11fa47-71ca-11e1-9e33-c80aa9429562/binlog.000004"
 	if keys.BinlogKey != wantBinlog {
 		t.Fatalf("binlog key = %q", keys.BinlogKey)
 	}
@@ -81,18 +81,18 @@ func TestBuildBinlogKeysRequiresFields(t *testing.T) {
 func TestArchiveKeys(t *testing.T) {
 	t.Parallel()
 
-	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cnmysql"}
-	if got, want := BinlogPrefix(store, "demo"), "cnmysql/demo/binlogs/"; got != want {
+	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cloudnative-mysql"}
+	if got, want := BinlogPrefix(store, "demo"), "cloudnative-mysql/demo/binlogs/"; got != want {
 		t.Fatalf("BinlogPrefix = %q, want %q", got, want)
 	}
-	if got, want := ServerPrefix(store, "demo", "uuid"), "cnmysql/demo/binlogs/uuid/"; got != want {
+	if got, want := ServerPrefix(store, "demo", "uuid"), "cloudnative-mysql/demo/binlogs/uuid/"; got != want {
 		t.Fatalf("ServerPrefix = %q, want %q", got, want)
 	}
-	wantStatus := "cnmysql/demo/binlogs/uuid/_archive_status.json"
+	wantStatus := "cloudnative-mysql/demo/binlogs/uuid/_archive_status.json"
 	if got := ArchiveStatusKey(store, "demo", "uuid"); got != wantStatus {
 		t.Fatalf("ArchiveStatusKey = %q, want %q", got, wantStatus)
 	}
-	if got, want := ArchiveIndexKey(store, "demo"), "cnmysql/demo/binlogs/_index.json"; got != want {
+	if got, want := ArchiveIndexKey(store, "demo"), "cloudnative-mysql/demo/binlogs/_index.json"; got != want {
 		t.Fatalf("ArchiveIndexKey = %q, want %q", got, want)
 	}
 }

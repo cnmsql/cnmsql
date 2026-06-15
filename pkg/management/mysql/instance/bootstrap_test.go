@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -107,17 +107,17 @@ func TestBootstrapControlUserWithoutDynamicPrivileges(t *testing.T) {
 func TestBootstrapBackupUserWithDynamicPrivileges(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:              "rootpw",
-		BackupUser:                "cnmysql_backup",
+		BackupUser:                "cloudnative-mysql_backup",
 		BackupPassword:            "bkpw",
 		SupportsDynamicPrivileges: true,
 	})
 	for _, want := range []string{
-		"CREATE USER IF NOT EXISTS 'cnmysql_backup'@'%' IDENTIFIED BY 'bkpw'",
-		"GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cnmysql_backup'@'%'",
-		"GRANT BACKUP_ADMIN ON *.* TO 'cnmysql_backup'@'%'",
-		"GRANT SELECT ON performance_schema.log_status TO 'cnmysql_backup'@'%'",
-		"GRANT SELECT ON performance_schema.keyring_component_status TO 'cnmysql_backup'@'%'",
-		"GRANT SELECT ON performance_schema.replication_group_members TO 'cnmysql_backup'@'%'",
+		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_backup'@'%' IDENTIFIED BY 'bkpw'",
+		"GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cloudnative-mysql_backup'@'%'",
+		"GRANT BACKUP_ADMIN ON *.* TO 'cloudnative-mysql_backup'@'%'",
+		"GRANT SELECT ON performance_schema.log_status TO 'cloudnative-mysql_backup'@'%'",
+		"GRANT SELECT ON performance_schema.keyring_component_status TO 'cloudnative-mysql_backup'@'%'",
+		"GRANT SELECT ON performance_schema.replication_group_members TO 'cloudnative-mysql_backup'@'%'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -128,7 +128,7 @@ func TestBootstrapBackupUserWithDynamicPrivileges(t *testing.T) {
 func TestBootstrapBackupUserLegacyHasNoPerfSchemaGrants(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:   "rootpw",
-		BackupUser:     "cnmysql_backup",
+		BackupUser:     "cloudnative-mysql_backup",
 		BackupPassword: "bkpw",
 	})
 	if strings.Contains(out, "performance_schema") {
@@ -139,10 +139,10 @@ func TestBootstrapBackupUserLegacyHasNoPerfSchemaGrants(t *testing.T) {
 func TestBootstrapBackupUserLegacyHasNoBackupAdmin(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:   "rootpw",
-		BackupUser:     "cnmysql_backup",
+		BackupUser:     "cloudnative-mysql_backup",
 		BackupPassword: "bkpw",
 	})
-	if !strings.Contains(out, "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cnmysql_backup'@'%'") {
+	if !strings.Contains(out, "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cloudnative-mysql_backup'@'%'") {
 		t.Errorf("backup user should still get static grants:\n%s", out)
 	}
 	if strings.Contains(out, "BACKUP_ADMIN") {
@@ -151,7 +151,7 @@ func TestBootstrapBackupUserLegacyHasNoBackupAdmin(t *testing.T) {
 }
 
 func TestBootstrapBackupUserValidation(t *testing.T) {
-	if _, err := BootstrapStatements(BootstrapParams{RootPassword: "x", BackupUser: "cnmysql_backup"}); err == nil {
+	if _, err := BootstrapStatements(BootstrapParams{RootPassword: "x", BackupUser: "cloudnative-mysql_backup"}); err == nil {
 		t.Error("expected error when backup password missing")
 	}
 }
@@ -165,12 +165,12 @@ func TestBootstrapControlUserValidation(t *testing.T) {
 func TestBootstrapMetricsUser(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword: "rootpw",
-		MetricsUser:  "cnmysql_metrics_exporter",
+		MetricsUser:  "cloudnative-mysql_metrics_exporter",
 	})
 	for _, want := range []string{
-		"CREATE USER IF NOT EXISTS 'cnmysql_metrics_exporter'@'localhost'",
-		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cnmysql_metrics_exporter'@'localhost'",
-		"GRANT SELECT ON performance_schema.* TO 'cnmysql_metrics_exporter'@'localhost'",
+		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_metrics_exporter'@'localhost'",
+		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cloudnative-mysql_metrics_exporter'@'localhost'",
+		"GRANT SELECT ON performance_schema.* TO 'cloudnative-mysql_metrics_exporter'@'localhost'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

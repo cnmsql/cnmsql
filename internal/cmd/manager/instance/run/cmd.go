@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,11 +24,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/instance"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/objectstore"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/pool"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/replication"
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/webserver"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/instance"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
 // NewCommand builds the `instance run` command.
@@ -223,7 +223,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "xtrabackup", "Path to the xtrabackup binary")
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Owning Cluster name; enables the in-Pod role reconciler (dynamic role)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Cluster namespace (defaults to POD_NAMESPACE)")
-	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from CNMYSQL_S3_* env)")
+	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from cloudnative-mysql_S3_* env)")
 	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")
 	cmd.Flags().BoolVar(&archivePurge, "archive-purge", true, "Purge binary logs once archived (the active purge gate)")
 	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "mysqlbinlog", "Path to the mysqlbinlog binary")

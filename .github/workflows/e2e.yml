@@ -1,0 +1,84 @@
+name: E2E Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+  # Nightly run at 02:17 UTC against the full pull_request-style matrix.
+  - cron: "17 2 * * *"
+
+permissions: {}
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kind
+  KIND_VERSION: v0.30.0
+
+jobs:
+  generate-jobs:
+    name: Generate E2E matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      kindMatrix: ${{ steps.generate.outputs.kindMatrix }}
+      kindEnabled: ${{ steps.generate.outputs.kindEnabled }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Generate jobs
+      id: generate
+      run: |
+        # Map the triggering event onto a matrix depth. Pushes run the cheap
+        # two-corner smoke set; everything else runs the full cross.
+        case "${{ github.event_name }}" in
+          push)               mode=push ;;
+          schedule)           mode=schedule ;;
+          workflow_dispatch)  mode=workflow_dispatch ;;
+          *)                  mode=pull_request ;;
+        esac
+        python3 .github/e2e-matrix-generator.py -m "$mode"
+
+  e2e:
+    name: ${{ matrix.id }}
+    needs: generate-jobs
+    if: needs.generate-jobs.outputs.kindEnabled == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate-jobs.outputs.kindMatrix) }}
+    env:
+      K8S_VERSION: ${{ matrix.k8s_version }}
+      E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
+      CERT_MANAGER_INSTALL_SKIP: "false"
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Setup Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install kind
+      run: |
+        curl -fsSL -o ./kind \
+          "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+        kind version
+
+    - name: Run e2e suite (k8s ${{ matrix.k8s_version }}, MySQL ${{ matrix.mysql_version }})
+      run: |
+        make test-e2e

@@ -20,7 +20,7 @@ env:
 
 jobs:
   build-operator:
-    name: Operator image (cnmysql)
+    name: Operator image (cloudnative-mysql)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,7 +48,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmysql
+        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cloudnative-mysql
         tags: |
           type=ref,event=branch
           type=ref,event=tag
@@ -113,7 +113,7 @@ jobs:
 
     - name: Build and push instance image
       run: |
-        repo="${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmysql-instance"
+        repo="${{ env.REGISTRY }}/${{ github.repository_owner }}/cloudnative-mysql-instance"
         # Lowercase the owner: GHCR repositories must be lowercase.
         repo="$(echo "$repo" | tr '[:upper:]' '[:lower:]')"
         CONTAINER_TOOL=docker REGISTRY="$repo" PUSH=1 ./images/build.sh "${{ matrix.version }}"

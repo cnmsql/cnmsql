@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build the cnmysql slim instance image(s) from images/versions.json.
+# Build the cloudnative-mysql slim instance image(s) from images/versions.json.
 #
 # Usage:
 #   images/build.sh                 # build every version in the matrix
 #   images/build.sh 8.0 8.4         # build only the named versions
 #
 # Environment:
-#   REGISTRY   image name prefix      (default: cnmysql-instance)
+#   REGISTRY   image name prefix      (default: cloudnative-mysql-instance)
 #   PUSH       set to 1 to push       (default: unset)
 #   CONTAINER_TOOL                    (default: docker)
 set -euo pipefail
@@ -15,7 +15,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${here}/.." && pwd)"
 versions_json="${here}/versions.json"
 
-REGISTRY="${REGISTRY:-cnmysql-instance}"
+REGISTRY="${REGISTRY:-cloudnative-mysql-instance}"
 CONTAINER_TOOL="${CONTAINER_TOOL:-docker}"
 
 # Print "version base ps pxb pxbPackage" for each requested version (or all).

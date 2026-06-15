@@ -7,8 +7,8 @@ domain: cloudnative-mysql.io
 layout:
 - go.kubebuilder.io/v4
 - helm.kubebuilder.io/v2-alpha
-projectName: cnmysql
-repo: github.com/yyewolf/cnmysql
+projectName: cloudnative-mysql
+repo: github.com/CloudNative-MySQL/cloudnative-mysql
 resources:
 - api:
     crdVersion: v1
@@ -17,7 +17,7 @@ resources:
   domain: cloudnative-mysql.io
   group: mysql
   kind: Cluster
-  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -25,7 +25,7 @@ resources:
   domain: cloudnative-mysql.io
   group: mysql
   kind: Backup
-  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -33,7 +33,7 @@ resources:
   domain: cloudnative-mysql.io
   group: mysql
   kind: ScheduledBackup
-  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -41,7 +41,7 @@ resources:
   domain: cloudnative-mysql.io
   group: mysql
   kind: Database
-  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -49,13 +49,13 @@ resources:
   domain: cloudnative-mysql.io
   group: mysql
   kind: ImageCatalog
-  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
   domain: cloudnative-mysql.io
   group: mysql
   kind: ClusterImageCatalog
-  path: github.com/yyewolf/cnmysql/api/v1alpha1
+  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
   version: v1alpha1
 version: "3"

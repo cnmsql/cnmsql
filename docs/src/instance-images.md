@@ -6,9 +6,9 @@ sidebar_position: 4
 
 # Instance images and versions
 
-CNMySQL runs Percona Server for MySQL, not Oracle MySQL. The database Pods use a
-custom CNMySQL instance image that contains Percona Server, Percona XtraBackup,
-the CNMySQL manager binary, and only the runtime tools needed by the operator.
+cloudnative-mysql runs Percona Server for MySQL, not Oracle MySQL. The database Pods use a
+custom cloudnative-mysql instance image that contains Percona Server, Percona XtraBackup,
+the cloudnative-mysql manager binary, and only the runtime tools needed by the operator.
 
 This mirrors the CloudNativePG model: the operator controls a database image
 with the instance manager built in instead of relying directly on upstream
@@ -43,7 +43,7 @@ make docker-build-instance
 Push images:
 
 ```bash
-make docker-push-instance INSTANCE_REGISTRY=registry.example.com/cnmysql-instance
+make docker-push-instance INSTANCE_REGISTRY=registry.example.com/cloudnative-mysql-instance
 ```
 
 The generated tags are intended to be selected directly in `Cluster.spec.imageName`
@@ -55,7 +55,7 @@ Direct image selection:
 
 ```yaml
 spec:
-  imageName: cnmysql-instance:8.4
+  imageName: cloudnative-mysql-instance:8.4
 ```
 
 Catalog-based selection:
@@ -68,7 +68,7 @@ metadata:
 spec:
   images:
     - major: 8
-      image: cnmysql-instance:8.4
+      image: cloudnative-mysql-instance:8.4
 ---
 apiVersion: mysql.cloudnative-mysql.io/v1alpha1
 kind: Cluster
@@ -96,7 +96,7 @@ The image keeps:
 - `mysqld` and version-specific initialization tools;
 - `mysql`, `mysqladmin`, and `mysqlbinlog`;
 - XtraBackup and `xbstream`;
-- the CNMySQL `manager` binary.
+- the cloudnative-mysql `manager` binary.
 
 The image trims documentation, debug binaries, test fixtures, unused client
 utilities, static libraries, and similar non-runtime payloads.
@@ -111,12 +111,12 @@ The manager renders configuration and SQL differently by server version. Example
 - `super_read_only`, semi-sync plugin names, bootstrap SQL, and privilege grants
   are gated by server capability.
 
-This version-aware layer is why CNMySQL builds and tests the full matrix instead
+This version-aware layer is why cloudnative-mysql builds and tests the full matrix instead
 of assuming all supported Percona majors behave the same way.
 
 ## Backup and restore compatibility
 
-Backup workers and restore init containers use the same CNMySQL instance image
+Backup workers and restore init containers use the same cloudnative-mysql instance image
 as the Cluster. This keeps XtraBackup version-aligned with the server version
 and avoids moving backup payloads through the controller-manager process.
 

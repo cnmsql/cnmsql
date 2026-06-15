@@ -6,7 +6,7 @@ sidebar_position: 12
 
 # Monitoring
 
-CNMySQL instances expose Prometheus metrics on port `9187` at `/metrics`.
+cloudnative-mysql instances expose Prometheus metrics on port `9187` at `/metrics`.
 The metrics server is separate from the mTLS control API and the health probe
 server.
 
@@ -19,10 +19,10 @@ query loading are planned as M13.1 continues.
 Scrape an instance's current metrics directly from your terminal:
 
 ```bash
-kubectl cnmysql metrics <cluster>                # primary
-kubectl cnmysql metrics <cluster> <instance>     # specific instance
-kubectl cnmysql metrics <cluster> -w             # refresh every 2s
-kubectl cnmysql metrics <cluster> --filter=mysql_global_status_threads
+kubectl cloudnative-mysql metrics <cluster>                # primary
+kubectl cloudnative-mysql metrics <cluster> <instance>     # specific instance
+kubectl cloudnative-mysql metrics <cluster> -w             # refresh every 2s
+kubectl cloudnative-mysql metrics <cluster> --filter=mysql_global_status_threads
 ```
 
 The plugin opens an mTLS port-forward to the instance manager and scrapes
@@ -31,7 +31,7 @@ monitoring. Use the `PodMonitor` for Prometheus integration.
 
 ## PodMonitor
 
-When the Prometheus Operator CRDs are installed, CNMySQL can create an owned
+When the Prometheus Operator CRDs are installed, cloudnative-mysql can create an owned
 `PodMonitor` for a cluster:
 
 ```yaml
@@ -47,7 +47,7 @@ spec:
 The generated `PodMonitor` selects pods with:
 
 ```yaml
-cnmysql.io/cluster: <cluster-name>
+cloudnative-mysql.io/cluster: <cluster-name>
 ```
 
 and scrapes the named container port `metrics`.
@@ -73,7 +73,7 @@ spec:
 
 No extra certificates are needed. The instance Pods already mount the
 `server-tls` certificate and the `client-ca` bundle. When a `PodMonitor` is
-generated, CNMySQL wires the scrape-side TLS configuration automatically:
+generated, cloudnative-mysql wires the scrape-side TLS configuration automatically:
 
 - the endpoint scheme becomes `https`;
 - the cluster CA secret (`<cluster>-ca`, key `ca.crt`) verifies the server cert;

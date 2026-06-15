@@ -1,4 +1,4 @@
-module github.com/yyewolf/cnmysql
+module github.com/CloudNative-MySQL/cloudnative-mysql
 
 go 1.25.7
 

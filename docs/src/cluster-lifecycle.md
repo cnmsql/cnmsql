@@ -1,25 +1,25 @@
 ---
 title: "Cluster Lifecycle"
-description: "How CNMySQL turns a Cluster object into Percona Server instances, storage, credentials, TLS, and status."
+description: "How cloudnative-mysql turns a Cluster object into Percona Server instances, storage, credentials, TLS, and status."
 sidebar_position: 3
 ---
 
 # Cluster lifecycle architecture
 
-This document explains how CNMySQL reconciles a `Cluster` into running Percona
+This document explains how cloudnative-mysql reconciles a `Cluster` into running Percona
 Server for MySQL instances. The operator follows the CloudNativePG pattern:
 Kubernetes owns the desired state, while each database pod runs an instance
 manager that owns local mysqld lifecycle and reports database state back to the
 operator.
 
-CNMySQL does not use StatefulSets. It creates one Pod and one PVC per instance
+cloudnative-mysql does not use StatefulSets. It creates one Pod and one PVC per instance
 so it can control cloning, promotion, fencing, retained storage, and recovery
 explicitly.
 
 ```mermaid
 flowchart LR
     Cluster["Cluster CR"]
-    Operator["CNMySQL Operator"]
+    Operator["cloudnative-mysql Operator"]
     subgraph K8s["Kubernetes Resources"]
         Secrets["Generated/User Secrets"]
         TLS["cert-manager TLS"]
@@ -58,7 +58,7 @@ metadata:
   name: cluster-sample
 spec:
   instances: 3
-  imageName: cnmysql-instance:8.4
+  imageName: cloudnative-mysql-instance:8.4
   storage:
     size: 10Gi
   mysql:
@@ -70,7 +70,7 @@ spec:
 ```
 
 `spec.imageName` selects the exact instance image. Alternatively, an
-`imageCatalogRef` can resolve an image by MySQL major version. CNMySQL is built
+`imageCatalogRef` can resolve an image by MySQL major version. cloudnative-mysql is built
 for Percona Server for MySQL; the instance image includes mysqld, XtraBackup,
 the manager binary, and the small tool set needed for backup and recovery.
 
@@ -113,7 +113,7 @@ configuring GTID replication.
 
 ## Instance manager
 
-Each Pod runs a CNMySQL instance manager as PID 1. It is responsible for:
+Each Pod runs a cloudnative-mysql instance manager as PID 1. It is responsible for:
 
 - rendering version-aware MySQL configuration;
 - starting and stopping mysqld cleanly;
@@ -129,7 +129,7 @@ back to local socket access and reserved privileges.
 
 ## Configuration surface
 
-CNMySQL renders the managed MySQL configuration and lets users add safe MySQL
+cloudnative-mysql renders the managed MySQL configuration and lets users add safe MySQL
 settings through:
 
 ```yaml
@@ -166,7 +166,7 @@ spec:
 ```
 
 Partial overrides are allowed. For example, setting only `serverTLSSecret`
-reuses your server certificate while CNMySQL still generates the CA issuer and
+reuses your server certificate while cloudnative-mysql still generates the CA issuer and
 operator client certificate.
 
 ## Status model
@@ -196,7 +196,7 @@ for it to become healthy before adding the next one. This bounds load on the
 primary and makes failures easier to diagnose.
 
 Scale-down removes highest-ordinal replicas first. The Pod is deleted, but the
-PVC is retained so the user can inspect or delete data deliberately. CNMySQL
+PVC is retained so the user can inspect or delete data deliberately. cloudnative-mysql
 never scales below one instance and never removes the current primary as part of
 ordinary scale-down.
 
@@ -205,7 +205,7 @@ ordinary scale-down.
 - Use at least three instances when relying on automatic failover.
 - Keep `binlogFormat: ROW` for replication and PITR safety.
 - Set `require_secure_transport` yourself if applications must be forced onto
-  TLS; CNMySQL renders TLS material but does not force the setting by default.
+  TLS; cloudnative-mysql renders TLS material but does not force the setting by default.
 - Treat retained PVCs after scale-down or failed rejoin as database data, not
   disposable scratch space.
 - Watch Events and conditions during bootstrap. Unsupported shapes are reported

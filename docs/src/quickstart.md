@@ -1,12 +1,12 @@
 ---
 title: "Quickstart"
-description: "Build the CNMySQL images, deploy the operator, create a cluster, and verify write and read endpoints."
+description: "Build the cloudnative-mysql images, deploy the operator, create a cluster, and verify write and read endpoints."
 sidebar_position: 2
 ---
 
 # Quickstart
 
-This guide brings up CNMySQL in a development Kubernetes cluster and creates a
+This guide brings up cloudnative-mysql in a development Kubernetes cluster and creates a
 three-instance Percona Server for MySQL cluster.
 
 The commands assume a Kind-style local environment and the default development
@@ -22,7 +22,7 @@ image names used by the repository.
 - `cert-manager` in the target cluster, unless you install it as part of your
   local e2e setup
 
-CNMySQL uses cert-manager-issued certificates for instance-manager mTLS and
+cloudnative-mysql uses cert-manager-issued certificates for instance-manager mTLS and
 MySQL TLS.
 
 ## Build images
@@ -30,7 +30,7 @@ MySQL TLS.
 Build the operator image:
 
 ```bash
-make docker-build IMG=cnmysql-controller:dev
+make docker-build IMG=cloudnative-mysql-controller:dev
 ```
 
 Build one instance image:
@@ -42,14 +42,14 @@ make docker-build-instance INSTANCE_VERSION=8.4
 By default this creates an image named like:
 
 ```text
-cnmysql-instance:8.4
+cloudnative-mysql-instance:8.4
 ```
 
 For a local Kind cluster, load both images:
 
 ```bash
-kind load docker-image cnmysql-controller:dev --name cnmysql-test-e2e
-kind load docker-image cnmysql-instance:8.4 --name cnmysql-test-e2e
+kind load docker-image cloudnative-mysql-controller:dev --name cloudnative-mysql-test-e2e
+kind load docker-image cloudnative-mysql-instance:8.4 --name cloudnative-mysql-test-e2e
 ```
 
 ## Deploy the operator
@@ -58,13 +58,13 @@ Install CRDs and deploy the controller:
 
 ```bash
 make install
-make deploy IMG=cnmysql-controller:dev
+make deploy IMG=cloudnative-mysql-controller:dev
 ```
 
 Check the controller manager:
 
 ```bash
-kubectl get pods -n cnmysql-system
+kubectl get pods -n cloudnative-mysql-system
 ```
 
 ## Install the CLI plugin
@@ -76,10 +76,10 @@ make install-plugin
 Verify:
 
 ```bash
-kubectl cnmysql version
+kubectl cloudnative-mysql version
 ```
 
-The plugin is now available as `kubectl cnmysql`. Most commands default to the
+The plugin is now available as `kubectl cloudnative-mysql`. Most commands default to the
 only cluster in the current namespace, so you can often skip the cluster name.
 
 ## Create a cluster
@@ -93,7 +93,7 @@ metadata:
   name: cluster-sample
 spec:
   instances: 3
-  imageName: cnmysql-instance:8.4
+  imageName: cloudnative-mysql-instance:8.4
   storage:
     size: 10Gi
   mysql:
@@ -108,7 +108,7 @@ Wait for readiness:
 
 ```bash
 kubectl wait --for=condition=Ready cluster/cluster-sample --timeout=15m
-kubectl cnmysql status cluster-sample
+kubectl cloudnative-mysql status cluster-sample
 ```
 
 Expected topology:
@@ -120,7 +120,7 @@ Expected topology:
 
 ## Connect through services
 
-CNMySQL creates role-routed Services:
+cloudnative-mysql creates role-routed Services:
 
 - `cluster-sample-rw`: read-write endpoint for the current primary.
 - `cluster-sample-ro`: read-only endpoint for replicas.
@@ -163,7 +163,7 @@ Delete retained PVCs only after you are sure the data is no longer needed.
 ## Take a backup
 
 ```bash
-kubectl cnmysql backup cluster-sample
+kubectl cloudnative-mysql backup cluster-sample
 ```
 
 This creates a `Backup` object with defaults (xtrabackup, prefer-standby, online).

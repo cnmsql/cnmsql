@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 # kubectl plugin completion shim.
 #
-# When a user types `kubectl cnmysql <TAB>`, kubectl (>= 1.26) looks for an
-# executable named `kubectl_complete-cnmysql` on the PATH and runs it to obtain
+# When a user types `kubectl cloudnative-mysql <TAB>`, kubectl (>= 1.26) looks for an
+# executable named `kubectl_complete-cloudnative-mysql` on the PATH and runs it to obtain
 # completions. cobra already ships a hidden `__complete` command on the plugin
 # binary that speaks exactly the protocol kubectl expects, so this shim just
 # forwards to it.
 #
 # Install this file (chmod +x) somewhere on your PATH alongside the
-# `kubectl-cnmysql` binary; `make install-plugin` does this for you.
-exec kubectl-cnmysql __complete "$@"
+# `kubectl-cloudnative-mysql` binary; `make install-plugin` does this for you.
+exec kubectl-cloudnative-mysql __complete "$@"

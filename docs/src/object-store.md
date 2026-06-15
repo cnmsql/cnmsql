@@ -6,7 +6,7 @@ sidebar_position: 12
 
 # Object store configuration
 
-CNMySQL uses an S3-compatible object store for physical backups and continuous
+cloudnative-mysql uses an S3-compatible object store for physical backups and continuous
 binlog archiving. The same `S3ObjectStore` API is used by one-shot Backups,
 ScheduledBackup-generated Backups, recovery, and PITR.
 
@@ -16,7 +16,7 @@ ScheduledBackup-generated Backups, recovery, and PITR.
 spec:
   backup:
     objectStore:
-      bucket: cnmysql-backups
+      bucket: cloudnative-mysql-backups
       path: production
       endpoint: http://minio.minio.svc:9000
       region: us-east-1
@@ -39,7 +39,7 @@ many S3-compatible providers such as MinIO and Ceph RGW.
 spec:
   backup:
     objectStore:
-      bucket: cnmysql-prod-backups
+      bucket: cloudnative-mysql-prod-backups
       path: clusters
       region: eu-west-1
       forcePathStyle: false
@@ -47,7 +47,7 @@ spec:
         inheritFromIAMRole: true
 ```
 
-When `endpoint` is empty, CNMySQL targets AWS S3. When static credentials are
+When `endpoint` is empty, cloudnative-mysql targets AWS S3. When static credentials are
 omitted and IAM inheritance is enabled, workers use the environment's default
 credential chain.
 
@@ -64,7 +64,7 @@ spec:
   cluster:
     name: cluster-sample
   objectStore:
-    bucket: cnmysql-dr-backups
+    bucket: cloudnative-mysql-dr-backups
     path: manual
     endpoint: https://s3.example.com
     credentials:
@@ -135,7 +135,7 @@ Continuous binlog archive:
 <path>/<cluster>/binlogs/_index.json
 ```
 
-The `path` value should be unique per environment. CNMySQL checks for existing
+The `path` value should be unique per environment. cloudnative-mysql checks for existing
 cluster archive prefixes in some recovery/archive paths to avoid adopting an
 unrelated destination.
 
@@ -152,7 +152,7 @@ need object-store write credentials when archiving is enabled.
 
 ## Integrity
 
-CNMySQL records SHA256 checksums in metadata. S3 ETag is not treated as the
+cloudnative-mysql records SHA256 checksums in metadata. S3 ETag is not treated as the
 integrity source of truth because multipart uploads and provider behavior make
 ETag semantics inconsistent.
 

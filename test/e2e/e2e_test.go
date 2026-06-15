@@ -16,20 +16,20 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/yyewolf/cnmysql/test/utils"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
 )
 
 // namespace where the project is deployed in
-const namespace = "cnmysql-system"
+const namespace = "cloudnative-mysql-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "cnmysql-controller-manager"
+const serviceAccountName = "cloudnative-mysql-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "cnmysql-controller-manager-metrics-service"
+const metricsServiceName = "cloudnative-mysql-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "cnmysql-metrics-binding"
+const metricsRoleBindingName = "cloudnative-mysql-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -129,7 +129,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=cnmysql-metrics-reader",
+				"--clusterrole=cloudnative-mysql-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err := utils.Run(cmd)
@@ -383,13 +383,13 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should block a cluster that sets a denied my.cnf parameter", func() {
 			By("applying a Cluster whose spec.mysql.parameters overrides datadir")
-			manifest := `apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+			manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
 kind: Cluster
 metadata:
   name: denied-param
 spec:
   instances: 1
-  imageName: cnmysql-instance:8.4
+  imageName: %s
   storage:
     size: 1Gi
   mysql:
@@ -399,7 +399,7 @@ spec:
     initdb:
       database: app
       owner: app
-`
+`, instanceImage)
 			applyManifest("denied-param", manifest)
 			DeferCleanup(func() {
 				deleteCluster("denied-param")

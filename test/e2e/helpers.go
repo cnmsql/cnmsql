@@ -15,11 +15,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/yyewolf/cnmysql/test/utils"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
 )
 
 // testNamespace is the namespace that hosts the test Clusters and their
-// supporting objects. The controller runs in `namespace` (cnmysql-system) and
+// supporting objects. The controller runs in `namespace` (cloudnative-mysql-system) and
 // watches all namespaces, so user-facing resources live here, mirroring how a
 // real user would deploy a Cluster outside the operator's namespace.
 // defaultTestNamespace is the fallback namespace for tests that do not create
@@ -33,7 +33,7 @@ var testNamespace = defaultTestNamespace
 
 // minioBucket is the bucket pre-created in the in-cluster MinIO and targeted by
 // the backup/recovery specs.
-const minioBucket = "cnmysql-backups"
+const minioBucket = "cloudnative-mysql-backups"
 
 // minioCredsSecret is the Secret holding the MinIO access credentials consumed
 // by Clusters and Backups through their object-store configuration.
@@ -139,7 +139,7 @@ func deleteCluster(name string) {
 }
 
 func writeManifest(name, manifest string) string {
-	path := filepath.Join("/tmp", fmt.Sprintf("cnmysql-e2e-%s-%d.yaml", name, GinkgoParallelProcess()))
+	path := filepath.Join("/tmp", fmt.Sprintf("cloudnative-mysql-e2e-%s-%d.yaml", name, GinkgoParallelProcess()))
 	Expect(os.WriteFile(path, []byte(manifest), 0o644)).To(Succeed(), "Failed to write manifest %s", name)
 	return path
 }
@@ -254,7 +254,7 @@ spec:
         - -c
         - |
           until mc alias set local http://minio.%[2]s.svc:9000 minioadmin minioadmin; do sleep 2; done
-          echo cnmysql-guard-marker | mc pipe local/%[3]s/%[4]s
+          echo cloudnative-mysql-guard-marker | mc pipe local/%[3]s/%[4]s
 `, name, testNamespace, minioBucket, key)
 	applyManifest(name, manifest)
 	DeferCleanup(func() {

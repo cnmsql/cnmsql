@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,15 +20,15 @@ package manager
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/yyewolf/cnmysql/internal/cmd/manager/instance"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/instance"
 )
 
 // NewRootCommand builds the root cobra command for the instance manager binary.
 func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "manager",
-		Short:         "CNMySQL in-pod instance manager",
-		Long:          "manager supervises mysqld and orchestrates bootstrap, replication and lifecycle for a CNMySQL instance.",
+		Short:         "cloudnative-mysql in-pod instance manager",
+		Long:          "manager supervises mysqld and orchestrates bootstrap, replication and lifecycle for a cloudnative-mysql instance.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

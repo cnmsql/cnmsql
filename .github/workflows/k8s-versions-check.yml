@@ -1,0 +1,66 @@
+name: k8s-versions-check
+
+# Refreshes .github/kind_versions.json with the newest published kindest/node
+# patch for each Kubernetes minor within the e2e_test scope
+# (.github/k8s_versions_scope.json), and opens a PR when it changes. This is the
+# multi-version analogue of Renovate (which only tracks single pins).
+
+on:
+  schedule:
+  - cron: "30 0 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: 'bash -Eeuo pipefail {0}'
+
+jobs:
+  check-kind-versions:
+    name: Update kind node versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Refresh kind_versions.json
+      run: |
+        export LC_ALL=C
+        min=$(jq -r '.e2e_test.min' .github/k8s_versions_scope.json)
+        max=$(jq -r '.e2e_test.max // ""' .github/k8s_versions_scope.json)
+
+        # Walk minors from the floor upward. For each, ask Docker Hub for the
+        # newest non-prerelease kindest/node tag. Stop at the first minor that
+        # has no tag yet (we've passed the latest release) or when we exceed max.
+        for minor in $(seq "$min" 0.01 99); do
+          if [[ -n "$max" ]] && awk "BEGIN{exit !($minor > $max)}"; then
+            break
+          fi
+          url="https://registry.hub.docker.com/v2/repositories/kindest/node/tags?name=${minor}&ordering=last_updated&page_size=100"
+          v=$(curl -SsL "$url" | jq -rc '.results[].name' \
+                | grep -E "^v${minor}\.[0-9]+$" | sort -Vr | head -n1) || true
+          if [[ -z "$v" ]]; then
+            break
+          fi
+          echo "$v"
+        done | jq -Rs 'split("\n") | map(select(length>0)) | sort | reverse' \
+             | tee .github/kind_versions.json
+
+    - name: Create Pull Request if versions changed
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+      with:
+        title: "ci: update tested kind node versions"
+        body: |
+          Refresh `.github/kind_versions.json` with the latest `kindest/node`
+          patch releases within the supported e2e scope.
+        branch: "ci/kind-versions-update"
+        commit-message: "ci: update tested kind node versions"
+        add-paths: .github/kind_versions.json
+        delete-branch: true
+        signoff: true

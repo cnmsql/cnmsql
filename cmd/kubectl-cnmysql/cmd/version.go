@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ func newVersionCommand() *cobra.Command {
 		Short: "Print plugin version information",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Printf("kubectl-cnmysql version %s\n", Version)
+			fmt.Printf("kubectl-cloudnative-mysql version %s\n", Version)
 			fmt.Printf("  commit:     %s\n", Commit)
 			fmt.Printf("  build date: %s\n", BuildDate)
 			fmt.Printf("  go version: %s\n", runtime.Version())

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cmd implements the kubectl-cnmysql command tree.
+// Package cmd implements the kubectl-cloudnative-mysql command tree.
 package cmd
 
 import (
@@ -22,19 +22,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	"github.com/yyewolf/cnmysql/cmd/kubectl-cnmysql/plugin"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/plugin"
 )
 
 // configFlags carries the shared kubectl-style connection flags
 // (--kubeconfig, --context, -n/--namespace, ...).
 var configFlags = genericclioptions.NewConfigFlags(true)
 
-// NewRootCommand builds the top-level `kubectl cnmysql` command.
+// NewRootCommand builds the top-level `kubectl cloudnative-mysql` command.
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "cnmysql",
-		Short:         "Manage and inspect cnmysql clusters",
-		Long:          "kubectl cnmysql is a kubectl plugin for managing cnmysql (Percona Server) clusters.",
+		Use:           "cloudnative-mysql",
+		Short:         "Manage and inspect cloudnative-mysql clusters",
+		Long:          "kubectl cloudnative-mysql is a kubectl plugin for managing cloudnative-mysql (Percona Server) clusters.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

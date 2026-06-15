@@ -6,7 +6,7 @@ sidebar_position: 13
 
 # API reference
 
-This page is a practical field guide for the CNMySQL CRDs that are used to run
+This page is a practical field guide for the cloudnative-mysql CRDs that are used to run
 clusters, choose images, and manage backups.
 
 The API group is:
@@ -40,7 +40,7 @@ metadata:
   name: cluster-sample
 spec:
   instances: 3
-  imageName: cnmysql-instance:8.4
+  imageName: cloudnative-mysql-instance:8.4
   storage:
     size: 10Gi
   mysql:
@@ -128,7 +128,7 @@ Use either `imageName` or `imageCatalogRef`.
 
 ```yaml
 spec:
-  imageName: cnmysql-instance:8.4
+  imageName: cloudnative-mysql-instance:8.4
 ```
 
 ```yaml
@@ -261,7 +261,7 @@ spec:
   externalClusters:
     - name: prod-cluster
       objectStore:
-        bucket: cnmysql-backups
+        bucket: cloudnative-mysql-backups
         path: production
         endpoint: http://minio.minio.svc:9000
         credentials:
@@ -295,7 +295,7 @@ An empty `recoveryTarget: {}` means replay to the latest archived point. No
 spec:
   backup:
     objectStore:
-      bucket: cnmysql-backups
+      bucket: cloudnative-mysql-backups
       path: production
       endpoint: http://minio.minio.svc:9000
       credentials:
@@ -407,7 +407,7 @@ spec:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `name` | string | MySQL user name (max 32 chars). Reserved names (`root`, `mysql.*`, `cnmysql_*`) are rejected. |
+| `name` | string | MySQL user name (max 32 chars). Reserved names (`root`, `mysql.*`, `cloudnative-mysql_*`) are rejected. |
 | `host` | string | MySQL host part. Defaults to `%`. |
 | `ensure` | enum | `present` (default) or `absent`. |
 | `passwordSecret` | object | `{name, key}` selecting the password. Omit for an operator-generated password. |
@@ -668,7 +668,7 @@ mysql.cloudnative-mysql.io/immediate-backup=true
 
 ## ImageCatalog
 
-`ImageCatalog` is a namespaced mapping from MySQL major version to CNMySQL
+`ImageCatalog` is a namespaced mapping from MySQL major version to cloudnative-mysql
 instance image.
 
 Short name:
@@ -687,9 +687,9 @@ metadata:
 spec:
   images:
     - major: 8
-      image: registry.example.com/cnmysql-instance:8.4
+      image: registry.example.com/cloudnative-mysql-instance:8.4
     - major: 9
-      image: registry.example.com/cnmysql-instance:9.x
+      image: registry.example.com/cloudnative-mysql-instance:9.x
 ```
 
 ### Fields
@@ -723,9 +723,9 @@ metadata:
 spec:
   images:
     - major: 8
-      image: registry.example.com/cnmysql-instance:8.4
+      image: registry.example.com/cloudnative-mysql-instance:8.4
     - major: 9
-      image: registry.example.com/cnmysql-instance:9.x
+      image: registry.example.com/cloudnative-mysql-instance:9.x
 ```
 
 Reference it from a Cluster:
@@ -763,7 +763,7 @@ spec:
 
 ## Shared condition types
 
-CNMySQL resources use Kubernetes `metav1.Condition` entries. Common condition
+cloudnative-mysql resources use Kubernetes `metav1.Condition` entries. Common condition
 types are:
 
 | Condition | Meaning |

@@ -1,5 +1,7 @@
+//go:build integration
+
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +16,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//go:build integration
-
 package integration
 
 import (
@@ -25,7 +25,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yyewolf/cnmysql/pkg/management/mysql/version"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 )
 
 // flavor describes a supported MySQL/Percona version under test. Each one builds
@@ -120,7 +120,7 @@ func ensureInstanceImage(t *testing.T, f flavor) string {
 			br.err = err
 			return
 		}
-		tag := "cnmysql-instance-test:" + f.name
+		tag := "cloudnative-mysql-instance-test:" + f.name
 		cmd := exec.Command("docker", "build",
 			"-f", "Dockerfile.instance",
 			"--build-arg", "BASE_IMAGE="+f.base,

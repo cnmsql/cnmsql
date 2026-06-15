@@ -1,9 +1,9 @@
 # Image URL to use all building/pushing image targets.
-# Defaults to ghcr.io/yyewolf/cnmysql tagged with the current commit, with a
+# Defaults to ghcr.io/CloudNative-MySQL/cloudnative-mysql tagged with the current commit, with a
 # "-dirty" suffix appended when the working tree has uncommitted changes.
 # ("+" is not a valid character in an OCI image tag, so we use "-dirty".)
 COMMIT_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet 2>/dev/null || echo "-dirty")
-IMG ?= ghcr.io/yyewolf/cnmysql:$(COMMIT_TAG)
+IMG ?= ghcr.io/CloudNative-MySQL/cloudnative-mysql:$(COMMIT_TAG)
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -82,10 +82,14 @@ test-integration: ## Run the instance-manager integration tests against real Per
 # - KUBECTL_KUBERC=true
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= cnmysql-test-e2e
+KIND_CLUSTER ?= cloudnative-mysql-test-e2e
+# K8S_VERSION pins the kindest/node image (e.g. K8S_VERSION=v1.34.0) so the e2e
+# matrix can exercise a specific Kubernetes version. Empty uses Kind's default.
+K8S_VERSION ?=
+KIND_IMAGE_ARG = $(if $(K8S_VERSION),--image kindest/node:$(K8S_VERSION),)
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Optional: K8S_VERSION=v1.34.0.
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
@@ -94,8 +98,8 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "Creating Kind cluster '$(KIND_CLUSTER)' $(if $(K8S_VERSION),(kindest/node:$(K8S_VERSION)),(default node image))..."; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) $(KIND_IMAGE_ARG) ;; \
 	esac
 
 GINKGO_VERSION ?= v2.27.2
@@ -167,21 +171,21 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
-# kubectl-cnmysql plugin.
-PLUGIN_PKG := github.com/yyewolf/cnmysql/cmd/kubectl-cnmysql/cmd
+# kubectl-cloudnative-mysql plugin.
+PLUGIN_PKG := github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cloudnative-mysql/cmd
 PLUGIN_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PLUGIN_COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 PLUGIN_DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 PLUGIN_LDFLAGS := -X $(PLUGIN_PKG).Version=$(PLUGIN_VERSION) -X $(PLUGIN_PKG).Commit=$(PLUGIN_COMMIT) -X $(PLUGIN_PKG).BuildDate=$(PLUGIN_DATE)
 
 .PHONY: build-plugin
-build-plugin: fmt vet ## Build the kubectl-cnmysql plugin binary.
-	go build -ldflags "$(PLUGIN_LDFLAGS)" -o bin/kubectl-cnmysql ./cmd/kubectl-cnmysql
+build-plugin: fmt vet ## Build the kubectl-cloudnative-mysql plugin binary.
+	go build -ldflags "$(PLUGIN_LDFLAGS)" -o bin/kubectl-cloudnative-mysql ./cmd/kubectl-cloudnative-mysql
 
 .PHONY: install-plugin
 install-plugin: build-plugin ## Install the plugin + completion shim onto your PATH (~/.local/bin).
-	install -D -m 0755 bin/kubectl-cnmysql $(HOME)/.local/bin/kubectl-cnmysql
-	install -D -m 0755 hack/kubectl_complete-cnmysql $(HOME)/.local/bin/kubectl_complete-cnmysql
+	install -D -m 0755 bin/kubectl-cloudnative-mysql $(HOME)/.local/bin/kubectl-cloudnative-mysql
+	install -D -m 0755 hack/kubectl_complete-cloudnative-mysql $(HOME)/.local/bin/kubectl_complete-cloudnative-mysql
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -204,7 +208,7 @@ docker-build-instance: ## Build the slim instance image(s). INSTANCE_VERSION=8.0
 docker-push-instance: ## Build and push the slim instance image(s).
 	CONTAINER_TOOL=$(CONTAINER_TOOL) REGISTRY=$(INSTANCE_REGISTRY) PUSH=1 ./images/build.sh $(INSTANCE_VERSION)
 
-INSTANCE_REGISTRY ?= cnmysql-instance
+INSTANCE_REGISTRY ?= cloudnative-mysql-instance
 INSTANCE_VERSION ?=
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
@@ -218,10 +222,10 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name cnmysql-builder
-	$(CONTAINER_TOOL) buildx use cnmysql-builder
+	- $(CONTAINER_TOOL) buildx create --name cloudnative-mysql-builder
+	$(CONTAINER_TOOL) buildx use cloudnative-mysql-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm cnmysql-builder
+	- $(CONTAINER_TOOL) buildx rm cloudnative-mysql-builder
 	rm Dockerfile.cross
 
 .PHONY: build-installer

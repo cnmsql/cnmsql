@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CNMySQL Authors.
+Copyright 2026 The cloudnative-mysql Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command kubectl-cnmysql is a kubectl plugin for managing cnmysql clusters.
-// Installed in $PATH it is invoked as `kubectl cnmysql <command>`.
+// Command kubectl-cloudnative-mysql is a kubectl plugin for managing cloudnative-mysql clusters.
+// Installed in $PATH it is invoked as `kubectl cloudnative-mysql <command>`.
 package main
 
 import (
@@ -26,7 +26,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/yyewolf/cnmysql/cmd/kubectl-cnmysql/cmd"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd"
 )
 
 func main() {

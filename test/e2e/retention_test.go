@@ -81,7 +81,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 
 		By("nudging a reconcile so the retention pass runs promptly")
 		_, err = kubectl("annotate", "cluster", retCluster, "-n", testNamespace,
-			"cnmysql.io/retention-nudge="+fmt.Sprint(time.Now().Unix()), "--overwrite")
+			"cloudnative-mysql.io/retention-nudge="+fmt.Sprint(time.Now().Unix()), "--overwrite")
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the stale backup directory is GC'd")

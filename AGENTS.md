@@ -1,4 +1,4 @@
-# cnmysql - AI Agent Guide
+# cloudnative-mysql - AI Agent Guide
 
 ## Project Structure
 

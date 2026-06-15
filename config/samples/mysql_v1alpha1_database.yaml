@@ -2,7 +2,7 @@ apiVersion: mysql.cloudnative-mysql.io/v1alpha1
 kind: Database
 metadata:
   labels:
-    app.kubernetes.io/name: cnmysql
+    app.kubernetes.io/name: cloudnative-mysql
     app.kubernetes.io/managed-by: kustomize
   name: testdb
 spec:
