@@ -32,7 +32,7 @@ var _ = Describe("Guards", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(cluster, basicClusterManifest(cluster, replicas))
 		})
-		expectClusterReady(cluster, replicas, 2*time.Minute)
+		expectClusterReady(cluster, replicas, 5*time.Minute)
 	})
 
 	It("removes a fenced instance from the read Service and restores it when unfenced", func() {

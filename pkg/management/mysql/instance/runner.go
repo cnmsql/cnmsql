@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -96,6 +97,10 @@ type RunOptions struct {
 	// client certificate signed by the cluster CA. When false metrics are served
 	// over plain HTTP.
 	MetricsTLS bool
+	// PIDFile is where the supervisor records the running mysqld PID so a
+	// re-exec'd manager image can find and adopt it. Defaults to mysqld.pid
+	// alongside the socket.
+	PIDFile string
 	// ShutdownTimeout bounds the graceful mysqld shutdown.
 	ShutdownTimeout time.Duration
 	// StopDelay is the maximum time in seconds allowed for complete Pod stop.
@@ -111,6 +116,13 @@ type RunOptions struct {
 func (o *RunOptions) applyDefaults() {
 	if o.MysqldPath == "" {
 		o.MysqldPath = defaultMysqldBinary
+	}
+	if o.PIDFile == "" {
+		if o.Socket != "" {
+			o.PIDFile = filepath.Join(filepath.Dir(o.Socket), "mysqld.pid")
+		} else {
+			o.PIDFile = "/var/run/mysqld/mysqld.pid"
+		}
 	}
 	if o.ShutdownTimeout == 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout
@@ -248,11 +260,24 @@ func Run(ctx context.Context, opts RunOptions) error {
 		}
 	}
 
-	mysqldOut, mysqldErr := newProcessLogWriters(log.WithName("mysqld"))
-	sup := NewProcessSupervisor(opts.MysqldPath, args,
-		WithShutdownTimeout(opts.ShutdownTimeout),
-		WithOutput(mysqldOut, mysqldErr))
-	log.Info("Starting mysqld", "binary", opts.MysqldPath)
+	// The long-lived mysqld is supervised out-of-band (by PID, with inherited
+	// output descriptors and a pidfile) so the manager can later re-exec itself
+	// in place without disturbing mysqld. A named FIFO (re-openable, CLOEXEC
+	// cleared on the read end) pipes mysqld output through the structured
+	// processLogWriter, preserving the log format even across a re-exec.
+	fifoPath := opts.PIDFile + ".fifo"
+	fifoLog, err := NewFifoLog(fifoPath, log)
+	if err != nil {
+		return err
+	}
+	fifoLog.Start(ctx)
+	defer fifoLog.Close()
+
+	sup := NewDetachedSupervisor(opts.MysqldPath, args,
+		WithDetachedShutdownTimeout(opts.ShutdownTimeout),
+		WithFIFO(fifoLog),
+		WithPIDFile(opts.PIDFile))
+	log.Info("Starting mysqld", "binary", opts.MysqldPath, "pidFile", opts.PIDFile, "fifo", fifoPath)
 	if err := sup.Start(ctx); err != nil {
 		return err
 	}
@@ -621,7 +646,7 @@ func servePlain(srv *http.Server) error {
 // kubelet does not SIGKILL the Pod out from under us first.
 func shutdownMysqld(
 	log logr.Logger,
-	sup *ProcessSupervisor,
+	sup *DetachedSupervisor,
 	opts RunOptions,
 ) {
 	log.Info("Requesting mysqld shutdown",
