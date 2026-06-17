@@ -118,7 +118,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			},
 			StartupProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-					Path: "/livez",
+					Path: "/startupz",
 					Port: intstr.FromString("health"),
 				}},
 				PeriodSeconds:    2,

@@ -65,6 +65,9 @@ type Controller struct {
 	// isolation, when set, fails the liveness probe once the instance has lost
 	// contact with the Kubernetes API server for too long. nil disables the check.
 	isolation *IsolationDetector
+	// fence, when set, lets the instance be fenced: mysqld is stopped while the
+	// manager stays alive. nil disables fencing (no supervisor, e.g. in tests).
+	fence *FenceGate
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -109,13 +112,57 @@ func (c *Controller) SetIsolationDetector(detector *IsolationDetector) {
 	c.isolation = detector
 }
 
-// Healthz reports liveness: the server answers a ping and the instance is not
-// isolated from the Kubernetes API server.
-func (c *Controller) Healthz(ctx context.Context) error {
-	if err := c.conn.PingContext(ctx); err != nil {
-		return err
+// SetFenceGate wires the fence gate shared with the run loop's mysqld
+// supervisor, enabling Fence/Unfence.
+func (c *Controller) SetFenceGate(gate *FenceGate) {
+	c.fence = gate
+}
+
+// Fence stops mysqld while keeping the manager (PID 1) alive, so an operator can
+// inspect or maintain the instance's data with the database down. It is
+// idempotent: calling it while already fenced re-asserts the stopped state. The
+// run loop's supervisor sees the intentional stop and does not treat it as a
+// crash; Unfence restarts mysqld.
+func (c *Controller) Fence(ctx context.Context) error {
+	if c.fence == nil || c.supervisor == nil {
+		return errors.New("fencing is not available in this context")
+	}
+	c.fence.Fence()
+	// Shutdown is idempotent: a no-op once mysqld is already stopped.
+	return c.supervisor.Shutdown(ctx)
+}
+
+// Unfence clears the fence so the supervisor restarts mysqld. It is idempotent
+// and a no-op when the instance is not fenced.
+func (c *Controller) Unfence(_ context.Context) error {
+	if c.fence == nil {
+		return nil
+	}
+	c.fence.Unfence()
+	return nil
+}
+
+// Healthz reports liveness. liveness deliberately does
+// not depend on mysqld being up: the manager answering this probe is itself the
+// liveness signal, and the database may legitimately be stopped (for example
+// while the instance is fenced). The only failure mode that warrants a kubelet
+// restart is a primary that has lost contact with the Kubernetes API server,
+// because a partitioned primary is a split-brain risk. A replica (or a
+// non-cluster-managed instance) always passes; there is no point restarting an
+// isolated replica.
+func (c *Controller) Healthz(_ context.Context) error {
+	if c.expected != webserver.RolePrimary {
+		return nil
 	}
 	return c.isolation.Check()
+}
+
+// Startupz reports startup completion: mysqld is up and answering. Unlike
+// readiness it does not gate on replication health, so a freshly cloned replica
+// is considered "started" as soon as its server accepts connections, before it
+// has caught up. This mirrors CloudNativePG's pg_isready-based startup probe.
+func (c *Controller) Startupz(ctx context.Context) error {
+	return c.conn.PingContext(ctx)
 }
 
 // Readyz reports readiness: the server answers a ping and, if it is a replica,

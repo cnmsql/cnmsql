@@ -34,6 +34,7 @@ import (
 // fakeController is a configurable InstanceController for handler tests.
 type fakeController struct {
 	healthErr       error
+	startupErr      error
 	readyErr        error
 	status          *Status
 	statusErr       error
@@ -90,8 +91,9 @@ func (f *fakeController) ListDatabases(context.Context) (*user.ListDatabasesResp
 	return f.listDatabases, f.userMgmtErr
 }
 
-func (f *fakeController) Healthz(context.Context) error { return f.healthErr }
-func (f *fakeController) Readyz(context.Context) error  { return f.readyErr }
+func (f *fakeController) Healthz(context.Context) error  { return f.healthErr }
+func (f *fakeController) Startupz(context.Context) error { return f.startupErr }
+func (f *fakeController) Readyz(context.Context) error   { return f.readyErr }
 func (f *fakeController) Status(context.Context) (*Status, error) {
 	return f.status, f.statusErr
 }

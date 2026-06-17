@@ -97,15 +97,25 @@ The operator applies the change on the primary over the mTLS control API during
 its steady-state reconcile. It is a runtime adjustment only; the static
 `my.cnf` floor does not change.
 
-### Liveness isolation check
+### Probes
 
-Each cluster-managed instance keeps probing the Kubernetes API server. If it
-cannot reach the API server for 30 seconds it treats itself as network-isolated
-and fails its liveness probe, so the kubelet restarts the container. This is a
-last-resort guard against a partitioned primary the operator can no longer
-coordinate, which is a split-brain risk. The check runs locally inside the
-instance, so a genuinely isolated node still restarts itself even while it is
-unreachable from the control plane.
+The liveness probe (`/livez`) does not depend on mysqld being up. The manager
+answering the probe is itself the liveness signal, so a deliberately stopped
+mysqld (for example while the instance is fenced) does not trigger a kubelet
+restart. The only failure mode that restarts a container is a primary that has
+lost contact with the Kubernetes API server: each cluster-managed primary keeps
+probing the API server, and if it cannot reach it for 30 seconds it treats
+itself as network-isolated and fails liveness. This is a last-resort guard
+against a partitioned primary the operator can no longer coordinate, which is a
+split-brain risk. The check runs locally inside the instance, so a genuinely
+isolated primary still restarts itself even while it is unreachable from the
+control plane. A replica never restarts itself on isolation; there is nothing to
+protect against.
+
+The startup probe (`/startupz`) gates on mysqld first accepting connections, so
+the container is considered started only once the server is up. The readiness
+probe (`/readyz`) additionally requires healthy replication on a replica, so a
+replica that is up but not replicating is held out of routing.
 
 ## Fencing an instance
 
@@ -120,10 +130,12 @@ kubectl cnmysql fence off <cluster> <cluster>-2
 The operator drops the Pod from every routing Service (rw, ro, r, and any
 user-defined ones) by clearing its `routable` label, and records it under
 `status.fencedInstances`. The instance's in-Pod reconciler reads that list and
-holds the instance read-only, so it accepts no writes and its continuous
-archiver stands down. A fenced instance is also skipped as a failover candidate,
-so the operator never promotes it. Unfencing reverses all of this and the
-instance rejoins normal routing and role reconciliation.
+stops mysqld. The manager stays alive as PID 1 so the Pod keeps running and keeps
+answering its control and liveness endpoints; only the database is down. The
+continuous archiver stands down with it, and a fenced instance is skipped as a
+failover candidate, so the operator never promotes it. Because mysqld is
+stopped, the Pod reports NotReady and shows as `0/1 Running`. Unfencing restarts
+mysqld and the instance rejoins normal routing and role reconciliation.
 
 Fencing the primary stops writes for the whole cluster, because the rw Service
 loses its only endpoint. That is deliberate: use it to freeze an instance for
@@ -427,7 +439,7 @@ Useful status fields during topology changes:
 - `divergedInstances`: instances excluded because their GTID set is unsafe.
 - `replicationBrokenInstances`: reachable replicas whose replication aborted with
   a recorded SQL/IO error.
-- `fencedInstances`: instances fenced out of routing and held read-only.
+- `fencedInstances`: instances fenced out of routing, with mysqld stopped.
 - `gtidExecutedByInstance`: last observed GTID state per instance.
 
 Watch Events for phase transitions such as switchover, failover, fencing, and

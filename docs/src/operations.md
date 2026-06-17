@@ -112,18 +112,27 @@ kubectl patch cluster cluster-sample --subresource=status --type merge \
 ## Fence an instance
 
 Fencing takes an instance out of service without deleting it or its data. The
-Pod stays, the PVC stays, but the instance drops out of all routing Services and
-is held read only:
+Pod stays and the PVC stays, but the instance drops out of all routing Services
+and mysqld is stopped:
 
 ```bash
 kubectl cnmysql fence on cluster-sample cluster-sample-2
 ```
 
-Unfence it to restore normal routing and role reconciliation:
+Unfence it to restart mysqld and restore normal routing and role
+reconciliation:
 
 ```bash
 kubectl cnmysql fence off cluster-sample cluster-sample-2
 ```
+
+The in-Pod manager stops mysqld while
+staying alive as PID 1, so the Pod keeps answering its control and liveness
+endpoints. The liveness probe does not depend on mysqld being up, so a fenced
+instance is not restarted by the kubelet. Because mysqld is down, the Pod
+reports NotReady and shows as `0/1 Running`, which is expected. The data
+directory is untouched, so you can mount the PVC elsewhere or restart the
+instance by unfencing.
 
 The operator tracks fenced instances in `status.fencedInstances`. A fenced
 instance is skipped as a failover candidate. Fencing the primary stops writes

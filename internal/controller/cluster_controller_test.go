@@ -402,8 +402,8 @@ func testProbeEndpoints(t *testing.T, spec *corev1.PodSpec) {
 	if got := spec.Containers[0].LivenessProbe.HTTPGet; got == nil || got.Path != "/livez" || got.Port.String() != healthPortName {
 		t.Fatalf("liveness probe = %#v, want HTTP /livez on health", got)
 	}
-	if got := spec.Containers[0].StartupProbe.HTTPGet; got == nil || got.Path != "/livez" || got.Port.String() != healthPortName {
-		t.Fatalf("startup probe = %#v, want HTTP /livez on health", got)
+	if got := spec.Containers[0].StartupProbe.HTTPGet; got == nil || got.Path != "/startupz" || got.Port.String() != healthPortName {
+		t.Fatalf("startup probe = %#v, want HTTP /startupz on health", got)
 	}
 }
 

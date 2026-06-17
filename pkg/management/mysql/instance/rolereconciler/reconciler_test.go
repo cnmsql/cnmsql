@@ -48,6 +48,8 @@ type fakeLocal struct {
 	demoteErr      error
 	configured     *replication.SourceOptions
 	shutdownCalled bool
+	fenceCalled    bool
+	unfenceCalled  bool
 }
 
 func (f *fakeLocal) Status(context.Context) (*webserver.Status, error) { return f.status, f.statusErr }
@@ -62,6 +64,8 @@ func (f *fakeLocal) EnsureReplicaConfigured(_ context.Context, s replication.Sou
 	return nil
 }
 func (f *fakeLocal) Shutdown(context.Context) error { f.shutdownCalled = true; return nil }
+func (f *fakeLocal) Fence(context.Context) error    { f.fenceCalled = true; return nil }
+func (f *fakeLocal) Unfence(context.Context) error  { f.unfenceCalled = true; return nil }
 
 func newReconciler(
 	t *testing.T,
@@ -378,25 +382,41 @@ func TestDivergedInstanceStaysReadOnly(t *testing.T) {
 	}
 }
 
-func TestFencedInstanceStaysReadOnlyAndDoesNotPromote(t *testing.T) {
+func TestFencedInstanceStopsMysqldAndDoesNotPromote(t *testing.T) {
 	t.Parallel()
-	// Even though demo-1 is the target primary, being fenced keeps it read-only:
-	// it must not promote, and a fenced primary is demoted to stop writes (which
-	// also stands the continuous archiver down).
+	// Even though demo-1 is the target primary, being fenced stops mysqld: the
+	// instance must not promote or configure replication, and Fence is called to
+	// take the database down while the manager stays alive.
 	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
 	r := newReconciler(t, instDemo1, &mysqlv1alpha1.ClusterStatus{
 		TargetPrimary:   instDemo1,
 		FencedInstances: []string{instDemo1},
 	}, local)
 	reconcile(t, r)
+	if !local.fenceCalled {
+		t.Fatal("a fenced instance should stop mysqld via Fence")
+	}
 	if local.promoted {
 		t.Fatal("a fenced instance must never promote")
 	}
-	if !local.demoted {
-		t.Fatal("a fenced primary should be demoted to stop writes")
-	}
 	if local.configured != nil {
 		t.Fatal("a fenced instance must not configure replication")
+	}
+}
+
+func TestUnfencedInstanceRestartsMysqld(t *testing.T) {
+	t.Parallel()
+	// A normal (unfenced) reconcile calls Unfence so a previously fenced instance
+	// brings mysqld back before role convergence. Unfence is a no-op when the
+	// instance was never fenced.
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RoleReplica}}
+	r := newReconciler(t, instDemo1, &mysqlv1alpha1.ClusterStatus{
+		TargetPrimary:  "demo-2",
+		CurrentPrimary: "demo-2",
+	}, local)
+	reconcile(t, r)
+	if !local.unfenceCalled {
+		t.Fatal("an unfenced reconcile should call Unfence")
 	}
 }
 

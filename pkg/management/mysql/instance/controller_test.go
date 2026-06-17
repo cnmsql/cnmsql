@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 
@@ -207,11 +208,46 @@ func TestStatusExpectedReplicaWithoutSource(t *testing.T) {
 	}
 }
 
-func TestHealthzPing(t *testing.T) {
-	c, mock := newController(t, nil)
-	mock.ExpectPing()
+// Liveness does not depend on mysqld being up: a non-primary
+// instance always passes without touching the database, so a stopped mysqld
+// (e.g. while fenced) does not trip a kubelet restart.
+func TestHealthzReplicaDoesNotPing(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
 	if err := c.Healthz(context.Background()); err != nil {
 		t.Errorf("Healthz: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("liveness should issue no database calls: %v", err)
+	}
+}
+
+// A primary liveness check exercises only the API-server isolation detector,
+// never mysqld. With no detector wired it is healthy.
+func TestHealthzPrimaryChecksIsolationNotMysqld(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RolePrimary, nil)
+	if err := c.Healthz(context.Background()); err != nil {
+		t.Errorf("Healthz: %v", err)
+	}
+	c.SetIsolationDetector(NewIsolationDetector(time.Nanosecond))
+	time.Sleep(time.Millisecond)
+	if err := c.Healthz(context.Background()); err == nil {
+		t.Error("expected isolated primary liveness to fail")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("liveness should issue no database calls: %v", err)
+	}
+}
+
+// Startup gates on mysqld answering a ping, without the replication-health gate
+// readiness applies.
+func TestStartupzPings(t *testing.T) {
+	c, mock := newController(t, nil)
+	mock.ExpectPing()
+	if err := c.Startupz(context.Background()); err != nil {
+		t.Errorf("Startupz: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("ExpectationsWereMet: %v", err)
 	}
 }
 

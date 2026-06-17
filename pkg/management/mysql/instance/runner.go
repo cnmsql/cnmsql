@@ -296,6 +296,13 @@ func Run(ctx context.Context, opts RunOptions) error {
 		isolationDetector = NewIsolationDetector(DefaultIsolationTimeout)
 		controller.SetIsolationDetector(isolationDetector)
 	}
+
+	// The fence gate lets the in-Pod role reconciler stop mysqld for a fenced
+	// instance while the manager stays alive. It is shared with the mysqld
+	// supervisor watcher below so an intentional fence-stop is not mistaken for a
+	// crash.
+	fence := NewFenceGate()
+	controller.SetFenceGate(fence)
 	if roleManaged {
 		log.Info("Resuming configured replication if needed")
 		if err := controller.EnsureReplicaStarted(ctx); err != nil {
@@ -397,9 +404,30 @@ func Run(ctx context.Context, opts RunOptions) error {
 		}
 	}()
 
-	// mysqld exit signals the supervisor's wait channel.
+	// mysqld exit signals the supervisor's wait channel. A crash is fatal to the
+	// run loop (PID 1 exits, the kubelet restarts the Pod). An intentional stop
+	// while the instance is fenced is not: the manager stays alive with mysqld
+	// down and restarts it once the instance is unfenced.
 	mysqldExit := make(chan error, 1)
-	go func() { mysqldExit <- sup.Wait() }()
+	go func() {
+		for {
+			err := sup.Wait()
+			if !fence.IsFenced() {
+				mysqldExit <- err
+				return
+			}
+			log.Info("mysqld stopped while fenced; manager staying alive")
+			if werr := fence.WaitUntilUnfenced(ctx); werr != nil {
+				// Context cancelled during shutdown; stop supervising.
+				return
+			}
+			log.Info("Restarting mysqld after unfence")
+			if serr := sup.Start(ctx); serr != nil {
+				mysqldExit <- fmt.Errorf("restarting mysqld after unfence: %w", serr)
+				return
+			}
+		}
+	}()
 
 	// In-Pod role reconciler (CNPG pull-model). Runs until its context is
 	// cancelled during shutdown.

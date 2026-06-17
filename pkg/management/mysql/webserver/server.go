@@ -36,8 +36,11 @@ import (
 // package) and faked in tests, keeping the HTTP handlers free of MySQL
 // specifics.
 type InstanceController interface {
-	// Healthz reports liveness: the managed process is up.
+	// Healthz reports liveness: the manager is up and the instance is not a
+	// partitioned primary. It does not depend on mysqld being up.
 	Healthz(ctx context.Context) error
+	// Startupz reports startup completion: mysqld is up and answering.
+	Startupz(ctx context.Context) error
 	// Readyz reports readiness: the instance can serve its role.
 	Readyz(ctx context.Context) error
 	// Status returns the full instance status.
@@ -87,6 +90,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(controller.Healthz))
 	mux.HandleFunc("GET /livez", healthHandler(controller.Healthz))
+	mux.HandleFunc("GET /startupz", healthHandler(controller.Startupz))
 	mux.HandleFunc("GET /readyz", healthHandler(controller.Readyz))
 	mux.HandleFunc("GET /status", statusHandler(controller))
 	mux.HandleFunc("POST /promote", actionHandler(controller.Promote))
@@ -114,6 +118,7 @@ func Handler(controller InstanceController) http.Handler {
 func HealthHandler(controller InstanceController) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", healthHandler(controller.Healthz))
+	mux.HandleFunc("GET /startupz", healthHandler(controller.Startupz))
 	mux.HandleFunc("GET /readyz", healthHandler(controller.Readyz))
 	return mux
 }

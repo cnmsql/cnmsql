@@ -53,6 +53,11 @@ type LocalInstance interface {
 	EnsureReplicaConfigured(ctx context.Context, source replication.SourceOptions) error
 	// Shutdown stops mysqld so the Pod restarts clean (demotion fallback).
 	Shutdown(ctx context.Context) error
+	// Fence stops mysqld while keeping the manager alive (fenced instance).
+	Fence(ctx context.Context) error
+	// Unfence restarts mysqld after a fence is cleared. It is a no-op when the
+	// instance is not fenced.
+	Unfence(ctx context.Context) error
 }
 
 const (
@@ -92,29 +97,40 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	}
 	r.primaryLeaseEnabled = cluster.Spec.EnablePrimaryLease == nil || *cluster.Spec.EnablePrimaryLease
 
+	me := r.InstanceName
+
+	// Fencing is handled before anything else: a fenced instance has mysqld
+	// stopped, so the Status call below would fail. The operator has already
+	// pulled this Pod out of routing; here the in-Pod side releases the primary
+	// lease (so a fenced primary stops anchoring writes) and stops mysqld while
+	// the manager stays alive. Fence is idempotent, so this re-asserts the
+	// stopped state on every resync until the fence is cleared.
+	if isFenced(cluster, me) {
+		_ = r.releaseLease(ctx)
+		if err := r.Local.Fence(ctx); err != nil {
+			log.Error(err, "Could not fence instance; will retry", "instance", me)
+			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		}
+		log.Info("Instance is fenced; mysqld stopped", "instance", me)
+		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+	}
+
+	// Not fenced: if a prior fence stopped mysqld, restart it before reconciling
+	// role. Unfence is a no-op when the instance was never fenced.
+	if err := r.Local.Unfence(ctx); err != nil {
+		log.Error(err, "Could not unfence instance; will retry", "instance", me)
+		return ctrl.Result{RequeueAfter: waitRequeue}, nil
+	}
+
 	status, err := r.Local.Status(ctx)
 	if err != nil {
 		// mysqld not reachable yet; try again shortly.
 		return ctrl.Result{RequeueAfter: waitRequeue}, nil //nolint:nilerr // transient, retried
 	}
 
-	me := r.InstanceName
 	target := cluster.Status.TargetPrimary
 	current := cluster.Status.CurrentPrimary
 	amPrimary := status.Role == webserver.RolePrimary
-
-	// I am fenced: stay read-only regardless of role so I accept no writes and the
-	// continuous archiver (which only ships from a writable primary) stands down.
-	// The operator has already pulled me out of routing. Clearing the fence lets a
-	// later reconcile resume normal role convergence.
-	if isFenced(cluster, me) {
-		if amPrimary {
-			_ = r.releaseLease(ctx)
-			_ = r.Local.Demote(ctx)
-		}
-		log.Info("Instance is fenced; staying read-only", "instance", me)
-		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
-	}
 
 	// I am the designated primary.
 	if target == me {
