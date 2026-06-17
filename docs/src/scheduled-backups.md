@@ -14,7 +14,7 @@ data path.
 For one-off on-demand backups, skip the YAML and use the plugin:
 
 ```bash
-kubectl cloudnative-mysql backup <cluster>
+kubectl cnmysql backup <cluster>
 ```
 
 This page covers recurring scheduled backups.

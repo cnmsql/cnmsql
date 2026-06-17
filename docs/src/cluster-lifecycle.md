@@ -187,7 +187,12 @@ Important fields include:
 
 `Ready=True` means the desired topology is available. `Progressing=True` means
 the cluster is still creating, cloning, restoring, or changing primary.
-`Degraded=True` surfaces a failure that needs operator attention.
+`Degraded=True` surfaces a failure that needs operator attention. Two examples
+are a Pod stuck failing to start (`failedInstances`) and a reachable replica
+whose replication has aborted with a recorded error (`replicationBrokenInstances`).
+This holds even before the cluster first finishes provisioning, so a replica that
+comes up but cannot replicate is reported instead of looking like it is still
+bootstrapping.
 
 ## Scale behavior
 

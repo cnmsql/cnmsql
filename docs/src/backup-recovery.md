@@ -68,7 +68,7 @@ A one-shot Backup references its Cluster. Use the plugin for a quick on-demand
 backup with sensible defaults:
 
 ```bash
-kubectl cloudnative-mysql backup cluster-sample
+kubectl cnmysql backup cluster-sample
 ```
 
 This creates a `Backup` object with `xtrabackup` method, `prefer-standby`

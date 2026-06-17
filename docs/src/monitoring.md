@@ -19,10 +19,10 @@ query loading are planned as M13.1 continues.
 Scrape an instance's current metrics directly from your terminal:
 
 ```bash
-kubectl cloudnative-mysql metrics <cluster>                # primary
-kubectl cloudnative-mysql metrics <cluster> <instance>     # specific instance
-kubectl cloudnative-mysql metrics <cluster> -w             # refresh every 2s
-kubectl cloudnative-mysql metrics <cluster> --filter=mysql_global_status_threads
+kubectl cnmysql metrics <cluster>                # primary
+kubectl cnmysql metrics <cluster> <instance>     # specific instance
+kubectl cnmysql metrics <cluster> -w             # refresh every 2s
+kubectl cnmysql metrics <cluster> --filter=mysql_global_status_threads
 ```
 
 The plugin opens an mTLS port-forward to the instance manager and scrapes

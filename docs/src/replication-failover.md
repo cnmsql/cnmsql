@@ -113,8 +113,8 @@ Fencing takes a single instance out of service without deleting it or its data.
 Use the plugin:
 
 ```bash
-kubectl cloudnative-mysql fence on <cluster> <cluster>-2
-kubectl cloudnative-mysql fence off <cluster> <cluster>-2
+kubectl cnmysql fence on <cluster> <cluster>-2
+kubectl cnmysql fence off <cluster> <cluster>-2
 ```
 
 The operator drops the Pod from every routing Service (rw, ro, r, and any
@@ -329,6 +329,7 @@ is safe enough:
 
 - the candidate must be ready and a replica;
 - replication SQL state must be healthy and free of a last error;
+- the candidate must not be a known-diverged instance;
 - GTID sets must be comparable;
 - the chosen candidate must contain the best known GTID history among
   candidates.
@@ -339,6 +340,27 @@ instead of risking data loss.
 During failover, the old primary is fenced by removing its primary role and
 deleting its Pod while retaining the PVC. The promoted replica becomes
 `currentPrimary`, and surviving replicas follow it.
+
+### Excluding diverged candidates
+
+A diverged replica carries errant transactions, so its GTID set is a *superset*
+of the clean replicas'. The "contains the best known GTID history" rule would
+therefore pick it, and promoting it makes those errant transactions canonical and
+strands the clean replicas. To prevent this, the operator filters known-diverged
+instances out of the candidate pool *before* the GTID comparison.
+
+The subtlety is that divergence is detected by comparing each replica against the
+primary's GTID set, but during a failover the primary is unreachable, so there is
+no live baseline. The operator therefore consults `status.divergedInstances` as
+it was recorded on an earlier reconcile, while the primary was still reachable.
+That persisted signal survives the outage.
+
+If every surviving candidate is known-diverged, failover blocks with "every
+replica candidate has diverged from the failed primary (errant transactions);
+manual recovery required". Re-initialise a survivor (see below) to recover. One
+case it cannot catch is a replica that diverged during the same outage, with no
+earlier reconcile to record it. That is the fundamental limit of MySQL
+replication once the old primary is gone to compare against.
 
 ## Former primary rejoin
 
@@ -351,6 +373,48 @@ as a replica. If it contains errant transactions that the promoted primary never
 saw, cloudnative-mysql marks it diverged and keeps it out of service. The retained PVC is
 left for deliberate human recovery instead of being destroyed.
 
+## Detecting a silently broken replica
+
+Divergence is detected by comparing GTID sets, but a replica can also stop
+replicating at the SQL layer without diverging. A duplicate-key conflict (error
+1062), for example, halts the SQL thread with a recorded last error. Such a
+replica may still report Running, so it would otherwise sit unnoticed while
+falling further behind.
+
+The operator polls the control API of every reachable instance, including pods
+that are Running but not yet Ready, and surfaces any replica with a stopped IO or
+SQL thread and a recorded error under `status.replicationBrokenInstances`. That
+marks the cluster `Degraded` with a reason naming the instance and its
+replication error, rather than leaving it to look like an instance still
+finishing provisioning. Re-initialise the instance to recover.
+
+## Re-initialising an instance
+
+MySQL has no `pg_rewind`, so a diverged or irrecoverably broken replica cannot be
+surgically realigned. The remediation, which mirrors CloudNativePG's
+destroy-and-rebootstrap fallback, is to re-initialise the instance. The operator
+deletes its Pod and PVC and recreates them empty, so the bootstrap re-clones a
+fresh copy from a backup and rejoins replication. The instance keeps its name and
+ordinal, so it keeps its `server_id`; only its data is discarded.
+
+This is always human-triggered. The operator never re-clones an instance over its
+retained PVC on its own, so errant data is preserved for diagnosis until you
+decide to discard it. Trigger it with the plugin or the annotation:
+
+```bash
+kubectl cnmysql reinit <cluster> <cluster>-2
+# or, equivalently:
+kubectl annotate cluster <cluster> \
+  cloudnative-mysql.cloudnative-mysql.io/reinit=<cluster>-2
+```
+
+The annotation is a comma-separated list of instance names the operator consumes,
+tearing each down and recreating it before clearing the entry. The current
+primary is refused, because it is the replication source, so switch over first if
+you need to rebuild a former primary. See the
+[operations runbook](./operations.md#re-initialise-an-instance-from-scratch) for
+the full procedure.
+
 ## Status and events
 
 Useful status fields during topology changes:
@@ -361,6 +425,8 @@ Useful status fields during topology changes:
 - `targetPrimaryTimestamp`: when a primary change was requested.
 - `primaryFailingSince`: when the current primary became unhealthy.
 - `divergedInstances`: instances excluded because their GTID set is unsafe.
+- `replicationBrokenInstances`: reachable replicas whose replication aborted with
+  a recorded SQL/IO error.
 - `fencedInstances`: instances fenced out of routing and held read-only.
 - `gtidExecutedByInstance`: last observed GTID state per instance.
 

@@ -1,12 +1,12 @@
 ---
 title: "Operations Runbooks"
-description: "Common cloudnative-mysql operational tasks with the kubectl cloudnative-mysql plugin: status, scaling, switchovers, failover, restart, backup, user and database management."
+description: "Common cloudnative-mysql operational tasks with the kubectl cnmysql plugin: status, scaling, switchovers, failover, restart, backup, user and database management."
 sidebar_position: 8
 ---
 
 # Operations runbooks
 
-cloudnative-mysql ships a kubectl plugin, `kubectl-cloudnative-mysql`, that wraps common day-two
+cloudnative-mysql ships a kubectl plugin, `kubectl-cnmysql`, that wraps common day-two
 operations. Install it once:
 
 ```bash
@@ -22,15 +22,15 @@ Commands in this guide use `cluster-sample` as the Cluster name.
 ## Inspect cluster state
 
 ```bash
-kubectl cloudnative-mysql status
-kubectl cloudnative-mysql status cluster-sample
+kubectl cnmysql status
+kubectl cnmysql status cluster-sample
 ```
 
 Add `-w` or `--watch` to refresh every 2s, like watch(1):
 
 ```bash
-kubectl cloudnative-mysql status -w
-kubectl cloudnative-mysql status -w --watch-interval=5s
+kubectl cnmysql status -w
+kubectl cnmysql status -w --watch-interval=5s
 ```
 
 The status command shows instance topology, phase, conditions, and health. For
@@ -44,14 +44,15 @@ Key status fields on the Cluster resource:
 - `status.targetPrimary`
 - `status.gtidExecutedByInstance`
 - `status.divergedInstances`
+- `status.replicationBrokenInstances`
 - `status.continuousArchiving`
 - `status.phase` and `status.phaseReason`
 
 ## Stream logs
 
 ```bash
-kubectl cloudnative-mysql logs cluster-sample          # all instances, merged with a prefix
-kubectl cloudnative-mysql logs cluster-sample cluster-sample-2  # single instance
+kubectl cnmysql logs cluster-sample          # all instances, merged with a prefix
+kubectl cnmysql logs cluster-sample cluster-sample-2  # single instance
 ```
 
 ## Scale up
@@ -88,13 +89,13 @@ cloudnative-mysql follows the CNPG-style status transition model. A planned swit
 promotes a named healthy replica. Use the plugin:
 
 ```bash
-kubectl cloudnative-mysql promote cluster-sample cluster-sample-2
+kubectl cnmysql promote cluster-sample cluster-sample-2
 ```
 
 Watch progress:
 
 ```bash
-kubectl cloudnative-mysql status -w
+kubectl cnmysql status -w
 ```
 
 The operator validates the target, waits for GTID containment, bounds the
@@ -115,13 +116,13 @@ Pod stays, the PVC stays, but the instance drops out of all routing Services and
 is held read only:
 
 ```bash
-kubectl cloudnative-mysql fence on cluster-sample cluster-sample-2
+kubectl cnmysql fence on cluster-sample cluster-sample-2
 ```
 
 Unfence it to restore normal routing and role reconciliation:
 
 ```bash
-kubectl cloudnative-mysql fence off cluster-sample cluster-sample-2
+kubectl cnmysql fence off cluster-sample cluster-sample-2
 ```
 
 The operator tracks fenced instances in `status.fencedInstances`. A fenced
@@ -144,13 +145,26 @@ spec:
 During failover cloudnative-mysql:
 
 1. chooses a ready replica with healthy replication SQL state;
-2. checks that candidate GTID sets are comparable;
-3. fences the old primary Pod while retaining its PVC;
-4. sets `targetPrimary` to the safe candidate;
-5. updates role labels and Services after promotion.
+2. excludes any replica already known to be diverged (see below);
+3. checks that candidate GTID sets are comparable;
+4. fences the old primary Pod while retaining its PVC;
+5. sets `targetPrimary` to the safe candidate;
+6. updates role labels and Services after promotion.
 
 If GTID sets are divergent or no safe candidate exists, failover is blocked
 instead of risking data loss.
+
+Known-diverged replicas are excluded explicitly, before the GTID comparison.
+This matters because a diverged replica's GTID set is a *superset*: it carries
+errant transactions the others never saw. The candidate selection would otherwise
+pick it as the most up to date, and promoting it makes those errant transactions
+canonical. The primary is unreachable during a failover, so divergence cannot be
+computed live; instead the operator relies on `status.divergedInstances` recorded
+earlier, while the primary was still reachable. If every surviving candidate is
+known-diverged, failover blocks with "every replica candidate has diverged ...
+manual recovery required" rather than promoting one. Re-initialise a survivor
+(see [Re-initialise an instance](#re-initialise-an-instance-from-scratch)) to
+recover.
 
 ## Former primary rejoin
 
@@ -164,18 +178,28 @@ recovery is required.
 Check:
 
 ```bash
-kubectl cloudnative-mysql status cluster-sample
+kubectl cnmysql status cluster-sample
 ```
 
-Look for entries under `divergedInstances`.
+Look for entries under `divergedInstances`. To bring a diverged instance back
+into service, re-initialise it (see
+[Re-initialise an instance](#re-initialise-an-instance-from-scratch)), which
+discards its data and re-clones from a backup.
+
+A replica whose replication has aborted at the SQL layer (a stopped IO or SQL
+thread with a recorded error, such as a duplicate-key conflict) is reported under
+`replicationBrokenInstances` and marks the cluster `Degraded`, even while the Pod
+is still Running. This catches a replica that is up but silently no longer
+replicating, which would otherwise sit unnoticed. Re-initialise it when the break
+is not transient.
 
 ## Restart an instance
 
 Restart all instances in a rolling fashion, or a single instance:
 
 ```bash
-kubectl cloudnative-mysql restart cluster-sample          # rolling restart
-kubectl cloudnative-mysql restart cluster-sample cluster-sample-2  # single instance
+kubectl cnmysql restart cluster-sample          # rolling restart
+kubectl cnmysql restart cluster-sample cluster-sample-2  # single instance
 ```
 
 The command prompts for confirmation. Skip the prompt with `--yes` or `-y`.
@@ -189,12 +213,50 @@ primary.
 Delete a single instance Pod and its PVC:
 
 ```bash
-kubectl cloudnative-mysql destroy cluster-sample cluster-sample-3
+kubectl cnmysql destroy cluster-sample cluster-sample-3
 ```
 
 This command also prompts for confirmation. Use it to clean up a failed or
 diverged instance you have decided to discard. The remaining instances keep
 running unaffected.
+
+## Re-initialise an instance from scratch
+
+When a replica is diverged (errant GTIDs) or its replication is irrecoverably
+broken, you can re-initialise it instead of destroying it. MySQL has no
+`pg_rewind` to surgically realign a divergent replica, so the remediation is the
+same as CloudNativePG's destroy-and-rebootstrap fallback: discard the local data
+and re-clone a fresh copy from a backup.
+
+```bash
+kubectl cnmysql reinit cluster-sample cluster-sample-2
+```
+
+The operator deletes the instance's Pod and PVC and recreates them empty, so the
+bootstrap re-clones from a backup and rejoins replication. The instance keeps its
+name and ordinal, so it keeps its `server_id`; only its data is discarded.
+
+This is destructive and irreversible. Any data that exists only on that instance,
+such as errant transactions, is lost. It prompts for confirmation; skip the
+prompt with `--yes`/`-y`.
+
+The current primary cannot be re-initialised this way. It is the replication
+source, so the command refuses it. To replace a primary, switch over first, then
+re-initialise the former primary as a replica.
+
+Under the hood the command appends the instance to the Cluster's
+`cloudnative-mysql.cloudnative-mysql.io/reinit` annotation, a comma-separated
+list the operator consumes. Re-initialisation is always human-triggered; the
+operator never re-clones an instance over its retained PVC on its own. You can set
+the annotation directly if you prefer:
+
+```bash
+kubectl annotate cluster cluster-sample \
+  cloudnative-mysql.cloudnative-mysql.io/reinit=cluster-sample-2
+```
+
+The operator clears the entry once the teardown completes and the instance has
+been recreated.
 
 ## Reload MySQL parameters
 
@@ -202,7 +264,7 @@ After you change `spec.mysql.parameters`, apply dynamic parameters without
 restarting:
 
 ```bash
-kubectl cloudnative-mysql reload cluster-sample
+kubectl cnmysql reload cluster-sample
 ```
 
 This connects to each instance over mTLS and issues the equivalent of reloading
@@ -225,7 +287,7 @@ configuration layer.
 Instead of crafting a Backup YAML by hand, use the plugin:
 
 ```bash
-kubectl cloudnative-mysql backup cluster-sample
+kubectl cnmysql backup cluster-sample
 ```
 
 This creates a `Backup` object with sensible defaults: `xtrabackup` method,
@@ -233,7 +295,7 @@ This creates a `Backup` object with sensible defaults: `xtrabackup` method,
 XtraBackup job. Track it:
 
 ```bash
-kubectl cloudnative-mysql status cluster-sample
+kubectl cnmysql status cluster-sample
 kubectl get backup -l mysql.cloudnative-mysql.io/cluster=cluster-sample
 ```
 
@@ -249,10 +311,10 @@ cloudnative-mysql manages MySQL users through the control-tier API, reached over
 port-forwarding inside the cluster:
 
 ```bash
-kubectl cloudnative-mysql user create cluster-sample --name=app --password-stdin < secret.txt
-kubectl cloudnative-mysql user alter cluster-sample --name=app        # prompt for new password
-kubectl cloudnative-mysql user list cluster-sample
-kubectl cloudnative-mysql user drop cluster-sample --name=old-user
+kubectl cnmysql user create cluster-sample --name=app --password-stdin < secret.txt
+kubectl cnmysql user alter cluster-sample --name=app        # prompt for new password
+kubectl cnmysql user list cluster-sample
+kubectl cnmysql user drop cluster-sample --name=old-user
 ```
 
 Passwords are never accepted as flags. Use `--password-stdin` for piping from a
@@ -266,15 +328,15 @@ Users can be created with optional grants (`--superuser`), TLS requirements
 Manage MySQL databases the same way:
 
 ```bash
-kubectl cloudnative-mysql database create cluster-sample --name=analytics
-kubectl cloudnative-mysql database list cluster-sample
-kubectl cloudnative-mysql database drop cluster-sample --name=analytics
+kubectl cnmysql database create cluster-sample --name=analytics
+kubectl cnmysql database list cluster-sample
+kubectl cnmysql database drop cluster-sample --name=analytics
 ```
 
 You can specify character set and collation on create:
 
 ```bash
-kubectl cloudnative-mysql database create cluster-sample --name=utf8db --charset=utf8mb4 --collation=utf8mb4_unicode_ci
+kubectl cnmysql database create cluster-sample --name=utf8db --charset=utf8mb4 --collation=utf8mb4_unicode_ci
 ```
 
 ## Node maintenance window
@@ -283,8 +345,8 @@ Toggle the maintenance window before draining a node or performing Kubernetes
 node maintenance:
 
 ```bash
-kubectl cloudnative-mysql maintenance set cluster-sample
-kubectl cloudnative-mysql maintenance unset cluster-sample
+kubectl cnmysql maintenance set cluster-sample
+kubectl cnmysql maintenance unset cluster-sample
 ```
 
 Use `--reuse-pvc` to retain the existing PVC across node restarts. This is
@@ -293,9 +355,9 @@ useful when the underlying storage is durable and you want to avoid a full clone
 ## Scrape Prometheus metrics
 
 ```bash
-kubectl cloudnative-mysql metrics cluster-sample              # primary
-kubectl cloudnative-mysql metrics cluster-sample cluster-sample-2  # specific instance
-kubectl cloudnative-mysql metrics -w --filter=mysql_global_status_threads  # watch mode, filtered
+kubectl cnmysql metrics cluster-sample              # primary
+kubectl cnmysql metrics cluster-sample cluster-sample-2  # specific instance
+kubectl cnmysql metrics -w --filter=mysql_global_status_threads  # watch mode, filtered
 ```
 
 Add `-w` for continuous refresh. Use `--filter` with a pattern to narrow the
@@ -306,7 +368,7 @@ output to matching metric names (grep-style substring match).
 When continuous archiving is enabled, inspect:
 
 ```bash
-kubectl cloudnative-mysql status cluster-sample
+kubectl cnmysql status cluster-sample
 ```
 
 Look for `continuousArchiving` in the output. Growing pending files or a

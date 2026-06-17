@@ -464,6 +464,9 @@ current implementation status before relying on these fields.
 | `currentPrimaryTimestamp` | When the current primary was elected. |
 | `targetPrimaryTimestamp` | When the current primary-change request started. |
 | `divergedInstances` | Instances excluded because of errant GTIDs. |
+| `fencedInstances` | Instances fenced out of routing and held read-only. |
+| `failedInstances` | Instances with positive failure evidence (Failed phase or CrashLoopBackOff). |
+| `replicationBrokenInstances` | Reachable replicas whose replication aborted with a recorded SQL/IO error. |
 | `primaryFailingSince` | When the current primary first became unhealthy. |
 | `latestGeneratedNode` | Latest generated instance ordinal. |
 | `phase` / `phaseReason` | Human-readable reconciliation state. |

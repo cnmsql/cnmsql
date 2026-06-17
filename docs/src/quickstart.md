@@ -71,10 +71,10 @@ make install-plugin
 Verify:
 
 ```bash
-kubectl cloudnative-mysql version
+kubectl cnmysql version
 ```
 
-The plugin is now available as `kubectl cloudnative-mysql`. Most commands default to the
+The plugin is now available as `kubectl cnmysql`. Most commands default to the
 only cluster in the current namespace, so you can often skip the cluster name.
 
 ## Create a cluster
@@ -103,7 +103,7 @@ Wait for readiness:
 
 ```bash
 kubectl wait --for=condition=Ready cluster/cluster-sample --timeout=15m
-kubectl cloudnative-mysql status cluster-sample
+kubectl cnmysql status cluster-sample
 ```
 
 Expected topology:
@@ -158,7 +158,7 @@ Delete retained PVCs only after you are sure the data is no longer needed.
 ## Take a backup
 
 ```bash
-kubectl cloudnative-mysql backup cluster-sample
+kubectl cnmysql backup cluster-sample
 ```
 
 This creates a `Backup` object with defaults (xtrabackup, prefer-standby, online).

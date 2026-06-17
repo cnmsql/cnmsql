@@ -1,8 +1,8 @@
-# kubectl-cloudnative-mysql
+# kubectl-cnmysql
 
 A `kubectl` plugin for managing and inspecting cloudnative-mysql (Percona Server) clusters.
-The binary is `kubectl-cloudnative-mysql`; once on your `PATH` it is invoked as
-`kubectl cloudnative-mysql ...`.
+The binary is `kubectl-cnmysql`; once on your `PATH` it is invoked as
+`kubectl cnmysql ...`.
 
 ## Install
 
@@ -12,14 +12,14 @@ make install-plugin   # builds and installs into ~/.local/bin
 
 This installs two files (make sure `~/.local/bin` is on your `PATH`):
 
-- `kubectl-cloudnative-mysql` — the plugin binary
-- `kubectl_complete-cloudnative-mysql` — the shell-completion shim (see below)
+- `kubectl-cnmysql` — the plugin binary
+- `kubectl_complete-cnmysql` — the shell-completion shim (see below)
 
 Verify:
 
 ```sh
-kubectl cloudnative-mysql version
-kubectl plugin list | grep cloudnative-mysql
+kubectl cnmysql version
+kubectl plugin list | grep cnmysql
 ```
 
 ## Commands
@@ -35,6 +35,7 @@ several).
 | `promote CLUSTER INSTANCE` | API | Planned switchover |
 | `fence on\|off CLUSTER INSTANCE` | API | Isolate / restore an instance |
 | `restart [CLUSTER] [INSTANCE]` | API | Rolling restart, or one Pod |
+| `reinit CLUSTER INSTANCE` | API | Re-init a replica from scratch (destroys data, re-clones) |
 | `reload [CLUSTER]` | API | Re-apply dynamic `my.cnf` params (no restart) |
 | `backup [CLUSTER]` | API | Create a `Backup` |
 | `maintenance set\|unset [CLUSTER]` | API | Toggle the node maintenance window |
@@ -49,8 +50,8 @@ several).
 2s) to refresh continuously until interrupted, like `watch(1)`:
 
 ```sh
-kubectl cloudnative-mysql status -w
-kubectl cloudnative-mysql metrics -w --watch-interval=5s --filter=mysql_global_status_threads
+kubectl cnmysql status -w
+kubectl cnmysql metrics -w --watch-interval=5s --filter=mysql_global_status_threads
 ```
 
 ### Passwords
@@ -60,7 +61,7 @@ kubectl cloudnative-mysql metrics -w --watch-interval=5s --filter=mysql_global_s
 terminal with echo disabled:
 
 ```sh
-printf '%s' "$PASSWORD" | kubectl cloudnative-mysql user create mydb --name=app --password-stdin
+printf '%s' "$PASSWORD" | kubectl cnmysql user create mydb --name=app --password-stdin
 ```
 
 ## Shell completion
@@ -68,21 +69,21 @@ printf '%s' "$PASSWORD" | kubectl cloudnative-mysql user create mydb --name=app 
 Dynamic completion is supported for `CLUSTER` and `INSTANCE` arguments (it lists
 clusters/pods in the current namespace).
 
-### As a kubectl plugin (`kubectl cloudnative-mysql <TAB>`)
+### As a kubectl plugin (`kubectl cnmysql <TAB>`)
 
 kubectl (>= 1.26) delegates plugin completion to an executable named
-`kubectl_complete-cloudnative-mysql` on your `PATH`. `make install-plugin` installs it.
-Once kubectl's own completion is enabled, `kubectl cloudnative-mysql <TAB>` just works:
+`kubectl_complete-cnmysql` on your `PATH`. `make install-plugin` installs it.
+Once kubectl's own completion is enabled, `kubectl cnmysql <TAB>` just works:
 
 ```sh
 # if not already set up:
 source <(kubectl completion zsh)   # or bash
 ```
 
-### Standalone (`kubectl-cloudnative-mysql <TAB>`)
+### Standalone (`kubectl-cnmysql <TAB>`)
 
 The binary also generates standard cobra completion scripts:
 
 ```sh
-source <(kubectl-cloudnative-mysql completion zsh)    # or bash / fish / powershell
+source <(kubectl-cnmysql completion zsh)    # or bash / fish / powershell
 ```

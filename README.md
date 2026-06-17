@@ -20,7 +20,7 @@ The API is `mysql.cloudnative-mysql.io/v1alpha1` and covers `Cluster`, `Database
 
 ## CLI plugin
 
-The repository ships a `kubectl` plugin, `kubectl cloudnative-mysql`, for day-to-day operations: cluster status, fencing, promotion, restart, reload, backups, and more. Install it with `make install-plugin`, then run `kubectl cloudnative-mysql status <cluster>`.
+The repository ships a `kubectl` plugin, `kubectl cnmysql`, for day-to-day operations: cluster status, fencing, promotion, restart, reload, backups, and more. Install it with `make install-plugin`, then run `kubectl cnmysql status <cluster>`.
 
 ## Quickstart
 
@@ -71,7 +71,7 @@ Wait for it and check the topology:
 
 ```bash
 kubectl wait --for=condition=Ready cluster/cluster-sample --timeout=15m
-kubectl cloudnative-mysql status cluster-sample
+kubectl cnmysql status cluster-sample
 ```
 
 Connect through the role-routed Services (`cluster-sample-rw`, `cluster-sample-ro`, `cluster-sample-r`). Application credentials are stored in a generated Secret:

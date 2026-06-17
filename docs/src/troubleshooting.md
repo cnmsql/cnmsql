@@ -13,8 +13,8 @@ instance-manager logs.
 ## First commands
 
 ```bash
-kubectl cloudnative-mysql status <cluster>
-kubectl cloudnative-mysql logs <cluster>
+kubectl cnmysql status <cluster>
+kubectl cnmysql logs <cluster>
 kubectl describe cluster <cluster>
 kubectl get events --sort-by=.lastTimestamp
 kubectl get backup
@@ -38,8 +38,8 @@ kubectl logs pod/<cluster>-1 -c manager
 Check:
 
 ```bash
-kubectl cloudnative-mysql status <cluster>
-kubectl cloudnative-mysql logs <cluster>
+kubectl cnmysql status <cluster>
+kubectl cnmysql logs <cluster>
 kubectl describe pod <pod>
 ```
 
@@ -74,12 +74,48 @@ Common causes:
 Replica provisioning uses XtraBackup over the existing instance-manager mTLS
 port. Network policies or service DNS issues can break the join path.
 
+## Replica is Running but not replicating
+
+A replica whose Pod is Running but whose replication has stopped at the SQL layer
+(a halted IO/SQL thread with a recorded error, e.g. a duplicate-key conflict) is
+reported under `status.replicationBrokenInstances` and marks the cluster
+`Degraded`, even though the Pod looks healthy. The `Degraded` condition reason
+names the instance and its replication error.
+
+Check:
+
+```bash
+kubectl cnmysql status <cluster>
+kubectl get cluster <cluster> -o jsonpath='{.status.replicationBrokenInstances}'
+kubectl logs pod/<replica-pod> -c manager
+```
+
+If the break is not transient, re-initialise the replica (see below) to re-clone
+it from a backup.
+
+## Diverged or broken replica recovery
+
+A replica listed in `status.divergedInstances` (errant GTIDs) or
+`status.replicationBrokenInstances` (stopped replication) is held out of service.
+MySQL has no `pg_rewind` to realign it surgically, so the remediation is to
+re-initialise it. The operator deletes its Pod and PVC and re-clones a fresh
+copy from a backup, keeping the instance's name and `server_id`:
+
+```bash
+kubectl cnmysql reinit <cluster> <replica>
+```
+
+This is destructive: data only on that instance (including errant transactions)
+is lost. It is always human-triggered, and the current primary is refused, so
+switch over first if you need to rebuild a former primary. See the
+[operations runbook](./operations.md#re-initialise-an-instance-from-scratch).
+
 ## Primary change is stuck
 
 Inspect:
 
 ```bash
-kubectl cloudnative-mysql status <cluster>
+kubectl cnmysql status <cluster>
 ```
 
 Common causes:
@@ -100,7 +136,7 @@ cloudnative-mysql blocks failover when it cannot prove a safe candidate.
 Check:
 
 ```bash
-kubectl cloudnative-mysql status <cluster>
+kubectl cnmysql status <cluster>
 ```
 
 Likely explanations:
@@ -110,10 +146,17 @@ Likely explanations:
 - no ready replica exists;
 - replication SQL state is unhealthy;
 - GTID sets are incomparable or divergent;
+- every surviving candidate is known-diverged (listed in
+  `status.divergedInstances`), so promoting one would make errant transactions
+  canonical; the blocked reason says "every replica candidate has diverged ...
+  manual recovery required";
 - the only candidate is being deleted.
 
 Failover should not be triggered solely by a temporary manager status endpoint
 failure while Kubernetes still routes the primary as Ready.
+
+When failover is blocked because the only survivors are diverged, recover by
+re-initialising a survivor (see below) and letting it re-clone from a backup.
 
 ## Backup failed
 
