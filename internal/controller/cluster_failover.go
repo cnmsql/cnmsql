@@ -80,7 +80,14 @@ func (r *ClusterReconciler) reconcileFailover(
 		return true, ctrl.Result{RequeueAfter: remaining}, r.patchOperationPhase(ctx, cluster, observed, phaseDegraded, reason, false)
 	}
 
-	candidate, reason := selectFailoverCandidate(observed)
+	// Exclude any replica known to have diverged. observed.DivergedInstances is
+	// recomputed each reconcile, but during a primary outage the primary's GTID is
+	// unavailable so divergence cannot be recomputed and that set is empty — hence
+	// we also carry the last-known set persisted in status, recorded while the
+	// primary was still reachable, so a diverged replica stays ineligible across
+	// the outage.
+	knownDiverged := append(slices.Clone(observed.DivergedInstances), cluster.Status.DivergedInstances...)
+	candidate, reason := selectFailoverCandidate(observed, knownDiverged)
 	if candidate == "" {
 		// No safe candidate to promote. If no replica is even observed yet, the
 		// cluster is still bootstrapping its replica set: the replicas that would
@@ -152,14 +159,28 @@ func hasObservedReplica(observed observedCluster) bool {
 // IORunning or instance readiness. Ties (equal GTID) break to the lowest ordinal.
 // When no replica dominates all others the sets are incomparable and failover is
 // blocked rather than risking data loss.
-func selectFailoverCandidate(observed observedCluster) (string, string) {
+//
+// knownDiverged lists replicas known to carry errant transactions the old
+// primary never had. They must never be promoted: a diverged replica's GTID set
+// is a *superset*, so it would dominate the comparison below and be chosen,
+// making those errant transactions canonical and stranding the clean replicas.
+// The dominance check alone does not catch this — a superset legitimately
+// "contains" the others. Divergence can only be computed while the primary is
+// reachable (it is the comparison baseline), so the caller passes the last-known
+// set persisted in status, which survives the very outage that triggers failover.
+func selectFailoverCandidate(observed observedCluster, knownDiverged []string) (string, string) {
 	var candidates []string
+	divergedSkipped := 0
 	for _, name := range observed.InstanceNames {
 		if name == observed.PrimaryName {
 			continue
 		}
 		// A fenced instance is deliberately held out of service; never promote it.
 		if slices.Contains(observed.FencedInstances, name) {
+			continue
+		}
+		if slices.Contains(knownDiverged, name) {
+			divergedSkipped++
 			continue
 		}
 		status, ok := observed.StatusByInstance[name]
@@ -175,6 +196,9 @@ func selectFailoverCandidate(observed observedCluster) (string, string) {
 		candidates = append(candidates, name)
 	}
 	if len(candidates) == 0 {
+		if divergedSkipped > 0 {
+			return "", "every replica candidate has diverged from the failed primary (errant transactions); manual recovery required"
+		}
 		return "", "no healthy replica candidate available"
 	}
 	// InstanceNames is ordinal-ordered, so the first dominating candidate is the

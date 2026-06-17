@@ -891,6 +891,16 @@ type ClusterStatus struct {
 	// +optional
 	FailedInstances []string `json:"failedInstances,omitempty"`
 
+	// ReplicationBrokenInstances are reachable replicas whose replication has
+	// aborted with a recorded error — a stopped IO or SQL thread, e.g. a
+	// duplicate-key conflict that halts replication. Unlike a diverged instance
+	// (detected by comparing GTID sets and listed in DivergedInstances), this is
+	// derived from the SQL-layer replication error the in-Pod reconciler reports,
+	// so a replica that is Running but cannot replicate is surfaced as a
+	// degradation rather than being mistaken for one still finishing provisioning.
+	// +optional
+	ReplicationBrokenInstances []string `json:"replicationBrokenInstances,omitempty"`
+
 	// PrimaryFailingSince records when the current primary first became
 	// unreachable. It is used to enforce spec.failoverDelay before an automatic
 	// failover, and is cleared once the primary is healthy again.

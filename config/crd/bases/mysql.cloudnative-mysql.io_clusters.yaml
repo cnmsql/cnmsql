@@ -3830,6 +3830,18 @@ spec:
               readyInstances:
                 description: ReadyInstances is the number of ready instances.
                 type: integer
+              replicationBrokenInstances:
+                description: |-
+                  ReplicationBrokenInstances are reachable replicas whose replication has
+                  aborted with a recorded error — a stopped IO or SQL thread, e.g. a
+                  duplicate-key conflict that halts replication. Unlike a diverged instance
+                  (detected by comparing GTID sets and listed in DivergedInstances), this is
+                  derived from the SQL-layer replication error the in-Pod reconciler reports,
+                  so a replica that is Running but cannot replicate is surfaced as a
+                  degradation rather than being mistaken for one still finishing provisioning.
+                items:
+                  type: string
+                type: array
               targetPrimary:
                 description: |-
                   TargetPrimary is the name of the instance that should become primary (used

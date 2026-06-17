@@ -329,6 +329,144 @@ func TestObserveCrashloopingInstanceDegradesBeforeEstablished(t *testing.T) {
 	}
 }
 
+// runningUnreadyPod builds an instance Pod that has started (Running phase) but
+// whose readiness probe is failing — the state of a replica whose replication
+// thread has aborted: mysqld is up, but it is not Ready. The operator must still
+// poll its control endpoint to learn why.
+func runningUnreadyPod(cluster *mysqlv1alpha1.Cluster, name, role string) *corev1.Pod {
+	pod := readyPod(cluster, name, role)
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionFalse,
+	}}
+	return pod
+}
+
+func TestObserveBrokenReplicationDegradesBeforeEstablished(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Status.CurrentPrimary = testPrimary
+	// Never established: still in initial provisioning. A replica whose replication
+	// has aborted with an error is positive evidence of a fault and must surface as
+	// Degraded rather than sitting silently in Provisioning.
+	cluster.Status.Phase = phaseProvisioning
+	scheme := testScheme(t)
+
+	primaryPod := readyPod(cluster, testPrimary, rolePrimary)
+	// The replica is Running but not Ready: its SQL thread stopped on a duplicate
+	// key. Its GTID set is not diverged from the primary, so only the SQL-layer
+	// signal reveals the fault.
+	replicaPod := runningUnreadyPod(cluster, testReplica2, roleReplica)
+	control := &recordingControlClient{
+		statuses: map[string]*webserver.Status{
+			testPrimary: {
+				InstanceName: testPrimary,
+				Role:         webserver.RolePrimary,
+				IsReady:      true,
+				GTIDExecuted: testGTID,
+			},
+			testReplica2: {
+				InstanceName: testReplica2,
+				Role:         webserver.RoleReplica,
+				IsReady:      false,
+				GTIDExecuted: testGTID,
+				Replication: &webserver.ReplicationStatus{
+					SourceHost: testPrimary,
+					IORunning:  true,
+					SQLRunning: false,
+					LastError:  "Error 1062: Duplicate entry '1' for key 'PRIMARY'",
+				},
+			},
+		},
+	}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, primaryPod, replicaPod).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	plan := testPlan()
+	plan.Instances = 2
+	observed, err := reconciler.observe(ctx, cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observed.ReplicationBrokenInstances) != 1 || observed.ReplicationBrokenInstances[0] != testReplica2 {
+		t.Fatalf("replicationBrokenInstances = %v, want [%s]", observed.ReplicationBrokenInstances, testReplica2)
+	}
+	if len(observed.DivergedInstances) != 0 {
+		t.Fatalf("divergedInstances = %v, want none (GTID not diverged)", observed.DivergedInstances)
+	}
+	if observed.Phase != phaseDegraded {
+		t.Fatalf("phase = %q, want %q", observed.Phase, phaseDegraded)
+	}
+	if !strings.Contains(observed.PhaseReason, testReplica2) || !strings.Contains(observed.PhaseReason, "1062") {
+		t.Fatalf("phaseReason = %q, want it to name %q and the replication error", observed.PhaseReason, testReplica2)
+	}
+}
+
+func TestObserveDivergedReplicaDetectedWhenNotReady(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Status.CurrentPrimary = testPrimary
+	cluster.Status.Phase = phaseProvisioning
+	scheme := testScheme(t)
+
+	primaryPod := readyPod(cluster, testPrimary, rolePrimary)
+	// The diverged replica is Running but not Ready (its SQL thread aborted). Before
+	// the operator polled Running-but-unready Pods it went blind on exactly this
+	// instance and could never compare its GTID; now it must detect the divergence.
+	replicaPod := runningUnreadyPod(cluster, testReplica2, roleReplica)
+	control := &recordingControlClient{
+		statuses: map[string]*webserver.Status{
+			testPrimary: {
+				InstanceName: testPrimary,
+				Role:         webserver.RolePrimary,
+				IsReady:      true,
+				GTIDExecuted: "a:1-20",
+			},
+			testReplica2: {
+				InstanceName: testReplica2,
+				Role:         webserver.RoleReplica,
+				IsReady:      false,
+				// Errant transaction b:1-3 the primary never saw.
+				GTIDExecuted: "a:1-15,b:1-3",
+			},
+		},
+	}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, primaryPod, replicaPod).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	plan := testPlan()
+	plan.Instances = 2
+	observed, err := reconciler.observe(ctx, cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observed.DivergedInstances) != 1 || observed.DivergedInstances[0] != testReplica2 {
+		t.Fatalf("divergedInstances = %v, want [%s]", observed.DivergedInstances, testReplica2)
+	}
+	if observed.Phase != phaseDegraded {
+		t.Fatalf("phase = %q, want %q", observed.Phase, phaseDegraded)
+	}
+}
+
 func TestPatchStatusEstablishedAtIsSticky(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

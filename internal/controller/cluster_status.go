@@ -67,6 +67,13 @@ type observedCluster struct {
 	// repeated restarts). They mark a degradation independent of whether the
 	// cluster ever finished provisioning.
 	FailedInstances []string
+	// ReplicationBrokenInstances are reachable replicas whose replication has
+	// aborted with a recorded error (a stopped IO or SQL thread, e.g. a
+	// duplicate-key conflict). Unlike a diverged replica — which is caught by GTID
+	// comparison and reported separately — these are surfaced from the SQL-layer
+	// error the in-Pod reconciler reports, so a replica that is Running but cannot
+	// replicate is not mistaken for one still finishing provisioning.
+	ReplicationBrokenInstances []string
 	// ContinuousArchiving holds the primary's archiving frontier/health when
 	// continuous archiving is enabled; nil otherwise.
 	ContinuousArchiving *mysqlv1alpha1.ContinuousArchivingStatus
@@ -101,11 +108,17 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		if podFailed(pod) {
 			observed.FailedInstances = append(observed.FailedInstances, inst.Name)
 		}
-		if !podReady(pod) {
+		// Poll the control API for any Pod that is Ready or merely Running. The
+		// control endpoint answers independently of the mysqld readiness probe, so a
+		// replica whose replication thread has aborted (Running but not Ready) still
+		// reports its status. That is exactly when we most need it: it lets us read
+		// the diverged GTID and the SQL-layer error instead of going blind on the one
+		// instance that is broken.
+		if !podReady(pod) && !podRunning(pod) {
 			continue
 		}
 		status, err := controlClient.Status(ctx, cluster, inst.Name)
-		if err != nil {
+		if err != nil || status == nil {
 			continue
 		}
 		observed.StatusByInstance[inst.Name] = status
@@ -141,6 +154,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 			observed.ReadyInstances--
 		}
 	}
+	observed.ReplicationBrokenInstances = detectReplicationBroken(observed)
 
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
@@ -152,12 +166,13 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	case observed.Ready:
 		observed.Phase = phaseReady
 		observed.PhaseReason = "All instances are ready"
-	case len(observed.FailedInstances) > 0:
-		// A Pod that cannot even start (crashlooping or Failed) is positive
-		// evidence of a problem, not setup still in progress. Surface it as
-		// Degraded regardless of whether the cluster ever finished provisioning, so
-		// a cluster that wedges during initial bring-up does not sit silently in
-		// "Provisioning" forever.
+	case len(observed.FailedInstances) > 0 || len(observed.ReplicationBrokenInstances) > 0:
+		// Positive evidence of a problem, not setup still in progress: a Pod that
+		// cannot even start (crashlooping or Failed), or a replica whose replication
+		// has aborted with an error (e.g. a duplicate-key conflict that stops the SQL
+		// thread). Surface it as Degraded regardless of whether the cluster ever
+		// finished provisioning, so a cluster that wedges during initial bring-up
+		// does not sit silently in "Provisioning" forever.
 		observed.Phase = phaseDegraded
 		observed.PhaseReason = degradedReason(observed, plan)
 	case clusterEstablished(cluster):
@@ -236,17 +251,33 @@ func podFailed(pod *corev1.Pod) bool {
 // merely unreachable or still not ready.
 func degradedReason(observed observedCluster, plan clusterPlan) string {
 	base := fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
-	failed := map[string]bool{}
+	// Instances explained by a more specific clause below are excluded from the
+	// generic "unreachable or not ready" list so each is named once.
+	explained := map[string]bool{}
 	for _, name := range observed.FailedInstances {
-		failed[name] = true
+		explained[name] = true
+	}
+	for _, name := range observed.ReplicationBrokenInstances {
+		explained[name] = true
 	}
 	var detail []string
 	if len(observed.FailedInstances) > 0 {
 		detail = append(detail, "failing to start: "+strings.Join(observed.FailedInstances, ", "))
 	}
+	if len(observed.ReplicationBrokenInstances) > 0 {
+		var broken []string
+		for _, name := range observed.ReplicationBrokenInstances {
+			if status, ok := observed.StatusByInstance[name]; ok && status.Replication != nil && status.Replication.LastError != "" {
+				broken = append(broken, fmt.Sprintf("%s (%s)", name, status.Replication.LastError))
+				continue
+			}
+			broken = append(broken, name)
+		}
+		detail = append(detail, "replication broken: "+strings.Join(broken, ", "))
+	}
 	var notReady []string
 	for _, name := range unreadyInstanceNames(observed) {
-		if !failed[name] {
+		if !explained[name] {
 			notReady = append(notReady, name)
 		}
 	}
@@ -300,6 +331,41 @@ func detectDivergedReplicas(observed observedCluster) []string {
 	return diverged
 }
 
+// detectReplicationBroken returns reachable non-primary instances whose
+// replication has aborted: a configured replica with a recorded replication
+// error whose IO or SQL thread has stopped. Diverged replicas (caught by GTID
+// comparison) are excluded so the two buckets stay disjoint and the diverged
+// diagnosis, which is more specific, wins. This is the SQL-layer counterpart to
+// detectDivergedReplicas: it relies on the control status the in-Pod reconciler
+// reports rather than on comparing GTID sets, so it catches a replica that is
+// stuck (e.g. a duplicate-key conflict) even when its GTID set has not diverged.
+func detectReplicationBroken(observed observedCluster) []string {
+	diverged := map[string]bool{}
+	for _, name := range observed.DivergedInstances {
+		diverged[name] = true
+	}
+	var broken []string
+	for _, name := range observed.InstanceNames {
+		if name == observed.PrimaryName || diverged[name] {
+			continue
+		}
+		if status, ok := observed.StatusByInstance[name]; ok && replicationBroken(status) {
+			broken = append(broken, name)
+		}
+	}
+	return broken
+}
+
+// replicationBroken reports whether a reachable instance's replication has
+// failed: it is a configured replica (it has a source set up) that recorded a
+// replication error while a thread is stopped. Requiring a recorded error avoids
+// flagging a replica whose threads are briefly stopped during normal
+// (re)configuration, when no fault has occurred.
+func replicationBroken(status *webserver.Status) bool {
+	repl := status.Replication
+	return repl != nil && repl.LastError != "" && (!repl.SQLRunning || !repl.IORunning)
+}
+
 // aggregateArchiving derives the cluster-level archiving status from the
 // primary instance's reported archiver state. Archiving is authoritative only
 // on the primary (the single writer), so that is the instance whose frontier
@@ -336,6 +402,14 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
+// podRunning reports whether the Pod has reached the Running phase, meaning its
+// containers have started. The control API may answer for a Running Pod even
+// when it is not Ready, which is the case we rely on to read status from an
+// instance whose mysqld readiness probe is failing.
+func podRunning(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodRunning
+}
+
 func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) error {
 	latest := &mysqlv1alpha1.Cluster{}
 	key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
@@ -363,6 +437,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	latest.Status.DivergedInstances = observed.DivergedInstances
 	latest.Status.FencedInstances = observed.FencedInstances
 	latest.Status.FailedInstances = observed.FailedInstances
+	latest.Status.ReplicationBrokenInstances = observed.ReplicationBrokenInstances
 	// EstablishedAt is sticky: record it the first time the cluster is fully ready
 	// (or backfill it for a cluster whose persisted phase already implies it was
 	// operational, for upgrades that predate this field) and never clear it. It is

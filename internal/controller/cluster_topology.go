@@ -56,6 +56,12 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 
 // ensureInstance reconciles all per-instance resources.
 func (r *ClusterReconciler) ensureInstance(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) error {
+	// A pending re-initialisation tears the instance's Pod and PVC down before
+	// they are recreated empty. While that teardown is in progress, skip the
+	// normal ensure* below so we do not immediately recreate what we are deleting.
+	if handled, err := r.reconcileReinit(ctx, cluster, inst); err != nil || handled {
+		return err
+	}
 	if err := r.ensureConfigMap(ctx, cluster, plan, inst); err != nil {
 		return err
 	}

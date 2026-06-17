@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, testGTID),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed)
+	got, reason := selectFailoverCandidate(observed, nil)
 	if got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3", got, reason)
 	}
@@ -73,7 +74,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 	// Equal GTID: lowest ordinal wins.
 	observed.GTIDByInstance[testReplica2] = testGTID
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
-	if got, _ := selectFailoverCandidate(observed); got != testReplica2 {
+	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica2 {
 		t.Fatalf("candidate = %q, want demo-2 on equal GTID", got)
 	}
 }
@@ -92,12 +93,64 @@ func TestSelectFailoverCandidateBlocksOnDivergedGTID(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "other:1-4"),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed)
+	got, reason := selectFailoverCandidate(observed, nil)
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
 	if reason == "" {
 		t.Fatal("expected a block reason")
+	}
+}
+
+func TestSelectFailoverCandidateExcludesKnownDivergedReplica(t *testing.T) {
+	t.Parallel()
+	// A diverged replica's GTID set is a superset of the clean replica's, so the
+	// dominance check would otherwise pick it and make its errant transactions
+	// canonical. It must be excluded by the known-diverged set instead.
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+		GTIDByInstance: map[string]string{
+			testReplica2: "a:1-15",
+			testReplica3: "a:1-15,b:1-3", // errant transactions b:1-3
+		},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: healthyReplicaStatus(testReplica2, "a:1-15"),
+			testReplica3: healthyReplicaStatus(testReplica3, "a:1-15,b:1-3"),
+		},
+	}
+	// Sanity: without the guard the diverged superset would be chosen.
+	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica3 {
+		t.Fatalf("precondition: candidate = %q, want the diverged superset demo-3 to dominate", got)
+	}
+	// With it flagged diverged, the clean replica wins instead.
+	got, reason := selectFailoverCandidate(observed, []string{testReplica3})
+	if got != testReplica2 {
+		t.Fatalf("candidate = %q (reason %q), want the clean replica demo-2", got, reason)
+	}
+}
+
+func TestSelectFailoverCandidateBlocksWhenOnlyCandidateDiverged(t *testing.T) {
+	t.Parallel()
+	// The sole surviving replica is known-diverged: promoting it would canonicalise
+	// errant transactions, so failover blocks for manual recovery rather than
+	// silently corrupting the cluster.
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{
+			testReplica2: "a:1-15,b:1-3",
+		},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: healthyReplicaStatus(testReplica2, "a:1-15,b:1-3"),
+		},
+	}
+	got, reason := selectFailoverCandidate(observed, []string{testReplica2})
+	if got != "" {
+		t.Fatalf("candidate = %q, want empty (blocked)", got)
+	}
+	if !strings.Contains(reason, "diverged") {
+		t.Fatalf("reason = %q, want it to explain the divergence", reason)
 	}
 }
 
@@ -117,7 +170,7 @@ func TestSelectFailoverCandidateSkipsUnhealthyReplicas(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "uuid:1-7"),
 		},
 	}
-	if got, _ := selectFailoverCandidate(observed); got != testReplica3 {
+	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica3 {
 		t.Fatalf("candidate = %q, want demo-3 (demo-2 has stalled SQL thread)", got)
 	}
 }
@@ -145,7 +198,7 @@ func TestSelectFailoverCandidateAllowsStoppedIOThread(t *testing.T) {
 		},
 	}
 
-	got, reason := selectFailoverCandidate(observed)
+	got, reason := selectFailoverCandidate(observed, nil)
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want demo-2", got, reason)
 	}
@@ -162,7 +215,7 @@ func TestSelectFailoverCandidateSkipsReplicasWithoutGTID(t *testing.T) {
 		},
 	}
 
-	got, reason := selectFailoverCandidate(observed)
+	got, reason := selectFailoverCandidate(observed, nil)
 	if got != "" {
 		t.Fatalf("candidate = %q (reason %q), want empty without GTID status", got, reason)
 	}

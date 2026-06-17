@@ -72,6 +72,17 @@ const (
 	// that dynamic my.cnf parameters be re-applied to the running mysqld via the
 	// instance manager control API, without restarting the process.
 	reloadAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reload"
+	// reinitAnnotation, when set on the Cluster to a comma-separated list of
+	// instance names, requests that each listed instance be re-initialised from
+	// scratch: the operator deletes its Pod and PVC and lets the normal reconcile
+	// recreate them empty, so the bootstrap init-container re-clones a fresh copy
+	// from a backup and rejoins replication. It is the remediation for a diverged
+	// or irrecoverably broken replica (MySQL has no pg_rewind), keeping the
+	// instance's identity (name/ordinal, hence server_id) while discarding its
+	// data. It lives on the Cluster, not the Pod, so the request survives the Pod
+	// being deleted mid-flight; the operator clears each name once its teardown
+	// completes. The current primary is never re-initialised this way.
+	reinitAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reinit"
 	// reloadAppliedAnnotation records, on each instance Pod, the reload token that
 	// was last applied to that instance. The reconciler compares it to the
 	// Cluster's reloadAnnotation to decide whether a reload is still pending,
