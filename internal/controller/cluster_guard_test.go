@@ -20,12 +20,14 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
@@ -264,6 +266,123 @@ func TestReconcileFencingTogglesRoutableLabel(t *testing.T) {
 	}
 }
 
+func TestReconcileFencingDeRoutesUnreachableReplica(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Status.CurrentPrimary = testPrimary
+	cluster.Status.Phase = phaseReady // established
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	scheme := testScheme(t)
+
+	primaryPod := readyPod(cluster, testPrimary, rolePrimary)
+	primaryPod.Labels[routableLabel] = routableTrue
+	replicaPod := readyPod(cluster, testReplica2, roleReplica)
+	replicaPod.Labels[routableLabel] = routableTrue
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(cluster, primaryPod, replicaPod).Build(),
+		Scheme: scheme,
+	}
+	// Primary reachable; replica absent from StatusByInstance (unreachable).
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2},
+		StatusByInstance: map[string]*webserver.Status{
+			testPrimary: {InstanceName: testPrimary, Role: webserver.RolePrimary, IsReady: true},
+		},
+	}
+
+	// First pass only stamps the unreachable marker; routing is untouched until
+	// the grace period elapses.
+	if err := r.reconcileFencing(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	if got := podRoutable(t, r, cluster, testReplica2); got != routableTrue {
+		t.Fatalf("replica routable = %q within grace, want %q", got, routableTrue)
+	}
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testReplica2}, pod); err != nil {
+		t.Fatal(err)
+	}
+	if pod.Annotations[unreachableSinceAnnotation] == "" {
+		t.Fatal("unreachable-since annotation was not stamped")
+	}
+	// Fast-forward past the grace period by backdating the marker.
+	before := pod.DeepCopy()
+	pod.Annotations[unreachableSinceAnnotation] = time.Now().Add(-2 * deRouteGracePeriod).Format(time.RFC3339)
+	if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second pass de-routes the still-unreachable replica; the primary stays in.
+	if err := r.reconcileFencing(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	if got := podRoutable(t, r, cluster, testReplica2); got != routableFalse {
+		t.Fatalf("replica routable = %q after grace, want %q (de-routed)", got, routableFalse)
+	}
+	if got := podRoutable(t, r, cluster, testPrimary); got != routableTrue {
+		t.Fatalf("primary routable = %q, want %q (never de-routed)", got, routableTrue)
+	}
+
+	// Recovery restores routing and clears the marker.
+	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
+	if err := r.reconcileFencing(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	if got := podRoutable(t, r, cluster, testReplica2); got != routableTrue {
+		t.Fatalf("replica routable = %q after recovery, want %q", got, routableTrue)
+	}
+	recovered := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testReplica2}, recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Annotations[unreachableSinceAnnotation] != "" {
+		t.Fatalf("unreachable-since = %q, want cleared", recovered.Annotations[unreachableSinceAnnotation])
+	}
+}
+
+func TestReconcileFencingDoesNotDeRouteDuringProvisioning(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Status.Phase = phaseProvisioning // not yet established
+	scheme := testScheme(t)
+
+	replicaPod := readyPod(cluster, testReplica2, roleReplica)
+	replicaPod.Labels[routableLabel] = routableTrue
+	// A stale marker from a prior life must be cleared, not acted on.
+	replicaPod.Annotations = map[string]string{
+		unreachableSinceAnnotation: time.Now().Add(-2 * deRouteGracePeriod).Format(time.RFC3339),
+	}
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(cluster, replicaPod).Build(),
+		Scheme: scheme,
+	}
+	observed := observedCluster{
+		PrimaryName:      testPrimary,
+		InstanceNames:    []string{testReplica2},
+		StatusByInstance: map[string]*webserver.Status{}, // replica unreachable
+	}
+	if err := r.reconcileFencing(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	if got := podRoutable(t, r, cluster, testReplica2); got != routableTrue {
+		t.Fatalf("replica routable = %q, want %q (no de-route while provisioning)", got, routableTrue)
+	}
+	got := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testReplica2}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Annotations[unreachableSinceAnnotation] != "" {
+		t.Fatalf("stale marker not cleared: %q", got.Annotations[unreachableSinceAnnotation])
+	}
+}
+
 func TestRoleSelectorGatesOnRoutable(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()
@@ -294,7 +413,7 @@ func TestSelectFailoverCandidateSkipsFenced(t *testing.T) {
 		// demo-2 has the most complete GTID but is fenced, so demo-3 is promoted.
 		FencedInstances: []string{testReplica2},
 	}
-	if got, reason := selectFailoverCandidate(observed); got != testReplica3 {
+	if got, reason := selectFailoverCandidate(observed, nil); got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3 (demo-2 is fenced)", got, reason)
 	}
 }

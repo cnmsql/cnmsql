@@ -20,6 +20,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -158,15 +160,27 @@ func isPodFenced(pod *corev1.Pod) bool {
 }
 
 // reconcileFencing keeps each instance Pod's routable label in step with its
-// fencing annotation. A fenced Pod gets routable=false, which drops it from every
-// routing Service (their selectors require routable=true); clearing the
-// annotation restores routable=true. The in-Pod reconciler separately reads
-// status.fencedInstances and holds the fenced instance read-only.
+// fencing annotation and the operator's ability to reach it. A Pod gets
+// routable=false — which drops it from every routing Service, whose selectors
+// require routable=true — when it is fenced, or when an established replica has
+// been unreachable for deRouteGracePeriod (so reads stop being served from a
+// partitioned node). routable=true is restored once the Pod is unfenced and
+// reachable again. The in-Pod reconciler separately reads status.fencedInstances
+// and holds a fenced instance read-only.
 func (r *ClusterReconciler) reconcileFencing(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) error {
 	fenced := map[string]bool{}
 	for _, name := range observed.FencedInstances {
 		fenced[name] = true
 	}
+	reachable := map[string]bool{}
+	for name := range observed.StatusByInstance {
+		reachable[name] = true
+	}
+	// Only pull members out of routing for an already-established cluster; during
+	// initial provisioning a not-yet-reachable replica is expected, not degraded.
+	deRouteEligible := clusterEstablished(cluster)
+	now := time.Now().Truncate(time.Second)
+
 	for _, name := range observed.InstanceNames {
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, pod); err != nil {
@@ -178,29 +192,78 @@ func (r *ClusterReconciler) reconcileFencing(ctx context.Context, cluster *mysql
 		if pod.DeletionTimestamp != nil {
 			continue
 		}
-		desired := routableTrue
-		if fenced[name] {
-			desired = routableFalse
-		}
-		if pod.Labels[routableLabel] == desired {
-			continue
-		}
 		before := pod.DeepCopy()
 		if pod.Labels == nil {
 			pod.Labels = map[string]string{}
 		}
+
+		// An unreachable established replica (never the primary, whose loss drives
+		// failover instead) is de-routed once it has been unreachable past the grace
+		// period. Reachable or ineligible Pods clear the marker.
+		deRouted := false
+		newlyUnreachable := false
+		if deRouteEligible && name != observed.PrimaryName && !fenced[name] && !reachable[name] {
+			switch since := pod.Annotations[unreachableSinceAnnotation]; since {
+			case "":
+				if pod.Annotations == nil {
+					pod.Annotations = map[string]string{}
+				}
+				pod.Annotations[unreachableSinceAnnotation] = now.Format(time.RFC3339)
+				newlyUnreachable = true
+			default:
+				if ts, err := time.Parse(time.RFC3339, since); err == nil && now.Sub(ts) >= deRouteGracePeriod {
+					deRouted = true
+				}
+			}
+		} else {
+			delete(pod.Annotations, unreachableSinceAnnotation)
+		}
+
+		desired := routableTrue
+		if fenced[name] || deRouted {
+			desired = routableFalse
+		}
 		pod.Labels[routableLabel] = desired
+
+		if maps.Equal(pod.Labels, before.Labels) && maps.Equal(pod.Annotations, before.Annotations) {
+			continue
+		}
 		if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
 			return err
 		}
-		if r.Recorder != nil {
-			verb := "Unfenced"
-			if fenced[name] {
-				verb = "Fenced"
-			}
-			r.Recorder.Event(cluster, corev1.EventTypeWarning, verb,
-				fmt.Sprintf("Instance %s %s", name, verb))
-		}
+		r.recordRoutingEvent(cluster, name, before.Labels[routableLabel], desired, fenced[name], deRouted, newlyUnreachable)
 	}
 	return nil
+}
+
+// recordRoutingEvent emits an Event describing a routing change for an instance:
+// the first time it is seen unreachable, when it is pulled from or restored to
+// routing. It is a no-op when nothing actionable changed.
+func (r *ClusterReconciler) recordRoutingEvent(
+	cluster *mysqlv1alpha1.Cluster,
+	name, previousRoutable, desired string,
+	fenced, deRouted, newlyUnreachable bool,
+) {
+	if r.Recorder == nil {
+		return
+	}
+	switch {
+	case desired == routableFalse && previousRoutable != routableFalse:
+		reason, msg := "Fenced", fmt.Sprintf("Instance %s fenced; removed from routing", name)
+		if deRouted {
+			reason = "DeRouted"
+			msg = fmt.Sprintf("Instance %s unreachable for %s; removed from read routing", name, deRouteGracePeriod)
+		}
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, reason, msg)
+	case desired == routableTrue && previousRoutable == routableFalse:
+		verb := "Unfenced"
+		if !fenced {
+			verb = "Restored"
+		}
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, verb,
+			fmt.Sprintf("Instance %s %s to routing", name, verb))
+	case newlyUnreachable:
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "Unreachable",
+			fmt.Sprintf("Instance %s control endpoint is unreachable", name))
+	}
 }

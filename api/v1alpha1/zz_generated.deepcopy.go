@@ -629,6 +629,20 @@ func (in *ClusterStatus) DeepCopyInto(out *ClusterStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.FailedInstances != nil {
+		in, out := &in.FailedInstances, &out.FailedInstances
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ReplicationBrokenInstances != nil {
+		in, out := &in.ReplicationBrokenInstances, &out.ReplicationBrokenInstances
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.EstablishedAt != nil {
+		in, out := &in.EstablishedAt, &out.EstablishedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.GTIDExecutedByInstance != nil {
 		in, out := &in.GTIDExecutedByInstance, &out.GTIDExecutedByInstance
 		*out = make(map[string]string, len(*in))

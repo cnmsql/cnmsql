@@ -342,11 +342,29 @@ func TestEnsurePasswordSecretDoesNotOverwriteExistingSecret(t *testing.T) {
 
 func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	t.Parallel()
-	const healthPortName = "health"
 	cluster := baseCluster()
 	plan := testPlan()
-
 	spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+
+	t.Run("init containers", func(t *testing.T) {
+		testInitContainers(t, &spec)
+	})
+	t.Run("container args", func(t *testing.T) {
+		testContainerArgs(t, &spec)
+	})
+	t.Run("probe endpoints", func(t *testing.T) {
+		testProbeEndpoints(t, &spec)
+	})
+	t.Run("probe timing", func(t *testing.T) {
+		testProbeTiming(t, &spec)
+	})
+	t.Run("secret volumes", func(t *testing.T) {
+		testSecretVolumes(t, &spec)
+	})
+}
+
+func testInitContainers(t *testing.T, spec *corev1.PodSpec) {
+	t.Helper()
 	if len(spec.InitContainers) != 2 {
 		t.Fatalf("init containers = %d", len(spec.InitContainers))
 	}
@@ -356,12 +374,13 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	if got := strings.Join(spec.InitContainers[1].Args, " "); !strings.Contains(got, "instance initdb") {
 		t.Fatalf("init container args = %q", got)
 	}
+}
+
+func testContainerArgs(t *testing.T, spec *corev1.PodSpec) {
+	t.Helper()
 	if got := strings.Join(spec.Containers[0].Args, " "); !strings.Contains(got, "instance run") {
 		t.Fatalf("main container args = %q", got)
 	}
-	// Role is dynamic in the CNPG pull-model: the run container carries the
-	// owning Cluster identity (so its in-Pod reconciler can watch it), not a
-	// static --role.
 	runArgsStr := strings.Join(spec.Containers[0].Args, " ")
 	if !strings.Contains(runArgsStr, "--cluster-name=demo") || !strings.Contains(runArgsStr, "--namespace=$(POD_NAMESPACE)") {
 		t.Fatalf("run container should carry the Cluster identity: %q", runArgsStr)
@@ -372,6 +391,11 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	if !strings.Contains(runArgsStr, "--health-addr=:8081") {
 		t.Fatalf("run container should expose the plain health listener: %q", runArgsStr)
 	}
+}
+
+func testProbeEndpoints(t *testing.T, spec *corev1.PodSpec) {
+	t.Helper()
+	const healthPortName = "health"
 	if got := spec.Containers[0].ReadinessProbe.HTTPGet; got == nil || got.Path != "/readyz" || got.Port.String() != healthPortName {
 		t.Fatalf("readiness probe = %#v, want HTTP /readyz on health", got)
 	}
@@ -381,12 +405,14 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	if got := spec.Containers[0].StartupProbe.HTTPGet; got == nil || got.Path != "/livez" || got.Port.String() != healthPortName {
 		t.Fatalf("startup probe = %#v, want HTTP /livez on health", got)
 	}
+}
+
+func testProbeTiming(t *testing.T, spec *corev1.PodSpec) {
+	t.Helper()
 	if rp := spec.Containers[0].ReadinessProbe; rp.PeriodSeconds != 2 || rp.TimeoutSeconds != 5 || rp.FailureThreshold != 3 {
 		t.Fatalf("readiness probe timing = period %d timeout %d threshold %d, want period 2 timeout 5 threshold 3",
 			rp.PeriodSeconds, rp.TimeoutSeconds, rp.FailureThreshold)
 	}
-	// The liveness probe must tolerate a busy-but-healthy mysqld: a short timeout
-	// with the default low threshold would restart the Pod under CI load.
 	if lp := spec.Containers[0].LivenessProbe; lp.PeriodSeconds != 10 || lp.TimeoutSeconds != 5 || lp.FailureThreshold != 6 {
 		t.Fatalf("liveness probe timing = period %d timeout %d threshold %d, want period 10 timeout 5 threshold 6",
 			lp.PeriodSeconds, lp.TimeoutSeconds, lp.FailureThreshold)
@@ -395,6 +421,10 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 		t.Fatalf("startup probe timing = period %d timeout %d threshold %d, want period 2 timeout 5 threshold 90",
 			sp.PeriodSeconds, sp.TimeoutSeconds, sp.FailureThreshold)
 	}
+}
+
+func testSecretVolumes(t *testing.T, spec *corev1.PodSpec) {
+	t.Helper()
 	volumes := map[string]string{}
 	for _, volume := range spec.Volumes {
 		if volume.Secret != nil {

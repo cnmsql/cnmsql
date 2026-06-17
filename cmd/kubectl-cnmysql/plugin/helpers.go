@@ -43,6 +43,7 @@ const (
 	FencingAnnotation = "cloudnative-mysql.cloudnative-mysql.io/fencing"
 	RestartAnnotation = "cloudnative-mysql.cloudnative-mysql.io/restart"
 	ReloadAnnotation  = "cloudnative-mysql.cloudnative-mysql.io/reload"
+	ReinitAnnotation  = "cloudnative-mysql.cloudnative-mysql.io/reinit"
 
 	ClusterLabel = "mysql.cloudnative-mysql.io/cluster"
 	RoleLabel    = "mysql.cloudnative-mysql.io/role"
