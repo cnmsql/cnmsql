@@ -1,7 +1,7 @@
 ---
 title: "Object Store Configuration"
 description: "S3-compatible configuration for backups, continuous archiving, PITR, and recovery."
-sidebar_position: 12
+sidebar_position: 13
 ---
 
 # Object store configuration

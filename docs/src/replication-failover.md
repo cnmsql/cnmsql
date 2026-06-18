@@ -1,7 +1,7 @@
 ---
 title: "Replication and Failover"
 description: "How cloudnative-mysql manages GTID replicas, service routing, planned switchovers, and automatic failover."
-sidebar_position: 9
+sidebar_position: 10
 ---
 
 # Replication and failover architecture

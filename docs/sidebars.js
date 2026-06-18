@@ -40,6 +40,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'operator-upgrades',
+      label: 'Operator Upgrades',
+    },
+    {
+      type: 'doc',
       id: 'replication-failover',
       label: 'Replication and Failover',
     },

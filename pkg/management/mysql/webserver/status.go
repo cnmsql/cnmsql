@@ -57,6 +57,9 @@ type Status struct {
 	// UptimeSeconds is the mysqld uptime in seconds.
 	UptimeSeconds int64 `json:"uptimeSeconds,omitempty"`
 
+	// ExecutableHash is the SHA-256 of the running instance manager binary.
+	ExecutableHash string `json:"executableHash,omitempty"`
+
 	// Archiving reports continuous binlog archiving health; nil when archiving is
 	// not enabled on this instance.
 	Archiving *ArchivingStatus `json:"archiving,omitempty"`

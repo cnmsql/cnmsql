@@ -196,6 +196,14 @@ type ClusterSpec struct {
 	// +optional
 	PrimaryUpdateMethod PrimaryUpdateMethod `json:"primaryUpdateMethod,omitempty"`
 
+	// InPlaceInstanceManagerUpdates, when true, rolls an operator upgrade out to
+	// this cluster's instances by streaming the new instance-manager binary to each
+	// Pod, which re-execs in place — no Pod restart and no switchover. When false
+	// (the default) the operator instead deletes and recreates each Pod one at a
+	// time (replicas first, primary last via switchover).
+	// +optional
+	InPlaceInstanceManagerUpdates bool `json:"inPlaceInstanceManagerUpdates,omitempty"`
+
 	// MaxStartDelay is the time in seconds allowed for an instance to start.
 	// +kubebuilder:default:=3600
 	// +optional
@@ -944,6 +952,17 @@ type ClusterStatus struct {
 	// persisted snapshot.
 	// +optional
 	GTIDExecutedUpdatedAt *metav1.Time `json:"gtidExecutedUpdatedAt,omitempty"`
+
+	// ExecutableHashByInstance maps an instance name to the SHA-256 hash of its
+	// running instance manager binary, as reported by the in-Pod control API.
+	// The operator uses it to detect stale instance managers when upgrading.
+	// +optional
+	ExecutableHashByInstance map[string]string `json:"executableHashByInstance,omitempty"`
+
+	// OperatorExecutableHash is the SHA-256 hash of the running operator binary.
+	// It is the target hash every instance manager should match after an upgrade.
+	// +optional
+	OperatorExecutableHash string `json:"operatorExecutableHash,omitempty"`
 
 	// Certificates reports the status of the managed certificates.
 	// +optional

@@ -434,6 +434,13 @@ func restartTriggeringPodSpec(cluster *mysqlv1alpha1.Cluster, stablePlan cluster
 			stable.InitContainers[i].Args = stableTemplate.InitContainers[i].Args
 		}
 	}
+	// Normalize the bootstrap-controller init container image to a constant so
+	// an operator image bump does not change the pod template hash and trigger a
+	// simultaneous Pod restart across every instance. Stale instance detection is
+	// handled by the dedicated operator upgrade reconcile path (cluster_upgrade.go).
+	if len(stable.InitContainers) > 0 {
+		stable.InitContainers[0].Image = "operator"
+	}
 	if len(stable.Containers) == len(stableTemplate.Containers) {
 		for i := range stable.Containers {
 			stable.Containers[i].Args = stableTemplate.Containers[i].Args

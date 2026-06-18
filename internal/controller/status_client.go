@@ -24,6 +24,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -134,6 +135,32 @@ func (c *HTTPControlClient) ListDatabases(ctx context.Context, cluster *mysqlv1a
 	return &result, nil
 }
 
+// managerUpgradeTimeout bounds an in-place manager upgrade request: streaming
+// the (tens-of-MB) operator binary and getting the pre-re-exec acknowledgement
+// back takes longer than a status poll, so it overrides the 5s default.
+const managerUpgradeTimeout = 60 * time.Second
+
+// UpgradeInstanceManager streams binary to the named instance's
+// /instance/manager/upgrade endpoint, tagged with expectedHash, so the manager
+// validates and re-execs it in place. A non-200 response (including the 400 the
+// manager returns for a hash mismatch) is treated as an error.
+func (c *HTTPControlClient) UpgradeInstanceManager(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, binary io.Reader, expectedHash string) error {
+	resp, err := c.doRaw(ctx, cluster, instanceName, http.MethodPost, "/instance/manager/upgrade", binary, map[string]string{
+		webserver.ManagerHashHeader: expectedHash,
+	}, managerUpgradeTimeout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("instance /instance/manager/upgrade returned %s: %s", resp.Status, bytes.TrimSpace(body))
+	}
+	return nil
+}
+
 // action POSTs a JSON body to an instance control endpoint and treats any
 // non-200 status as an error.
 func (c *HTTPControlClient) action(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, path string, body any) error {
@@ -166,6 +193,24 @@ func (c *HTTPControlClient) fetch(ctx context.Context, cluster *mysqlv1alpha1.Cl
 }
 
 func (c *HTTPControlClient) do(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, method, path string, body any) (*http.Response, error) {
+	var requestBody io.Reader
+	headers := map[string]string{}
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		requestBody = bytes.NewReader(payload)
+		headers["Content-Type"] = "application/json"
+	}
+	return c.doRaw(ctx, cluster, instanceName, method, path, requestBody, headers, 0)
+}
+
+// doRaw issues a request with an arbitrary body reader and headers over the
+// instance's mTLS control API. It backs both the JSON helpers (do) and the
+// binary-streaming upgrade path. A nil body sends an empty request; a zero
+// timeout falls back to the 5s status-poll default.
+func (c *HTTPControlClient) doRaw(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, method, path string, body io.Reader, headers map[string]string, timeout time.Duration) (*http.Response, error) {
 	conn := statusTLS{
 		ServiceName:     instanceName,
 		CASecretName:    cluster.Name + "-ca",
@@ -190,24 +235,17 @@ func (c *HTTPControlClient) do(ctx context.Context, cluster *mysqlv1alpha1.Clust
 	}
 	clientCopy := *httpClient
 	clientCopy.Transport = transport
-
-	var requestBody *bytes.Reader
-	if body == nil {
-		requestBody = bytes.NewReader(nil)
-	} else {
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		requestBody = bytes.NewReader(payload)
+	if timeout > 0 {
+		clientCopy.Timeout = timeout
 	}
+
 	url := fmt.Sprintf("https://%s.%s.svc:8080%s", conn.ServiceName, cluster.Namespace, path)
-	req, err := http.NewRequestWithContext(ctx, method, url, requestBody)
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	return clientCopy.Do(req)
 }

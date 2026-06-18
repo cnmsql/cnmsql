@@ -1,7 +1,7 @@
 ---
 title: "Scheduled Backups"
 description: "How ScheduledBackup creates Backup objects on a six-field cron schedule."
-sidebar_position: 14
+sidebar_position: 16
 ---
 
 # ScheduledBackup architecture

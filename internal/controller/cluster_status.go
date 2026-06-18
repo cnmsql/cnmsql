@@ -52,6 +52,8 @@ type observedCluster struct {
 	InstanceNames []string
 	// GTIDByInstance maps instance name to its gtid_executed set.
 	GTIDByInstance map[string]string
+	// ExecutableHashByInstance maps instance name to its reported instance-manager hash.
+	ExecutableHashByInstance map[string]string
 	// StatusByInstance maps instance name to the last successful control status.
 	StatusByInstance map[string]*webserver.Status
 	// DivergedInstances are reachable replicas whose executed GTID set is not
@@ -85,12 +87,13 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	controlClient := r.instanceControlClient()
 
 	observed := observedCluster{
-		Plan:             plan,
-		PrimaryName:      plan.primaryName(cluster),
-		InstanceNames:    plan.instanceNames(cluster),
-		GTIDByInstance:   map[string]string{},
-		StatusByInstance: map[string]*webserver.Status{},
-		Progressing:      true,
+		Plan:                     plan,
+		PrimaryName:              plan.primaryName(cluster),
+		InstanceNames:            plan.instanceNames(cluster),
+		GTIDByInstance:           map[string]string{},
+		ExecutableHashByInstance: map[string]string{},
+		StatusByInstance:         map[string]*webserver.Status{},
+		Progressing:              true,
 	}
 
 	for i := 1; i <= plan.Instances; i++ {
@@ -127,6 +130,9 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 		if status.GTIDExecuted != "" {
 			observed.GTIDByInstance[inst.Name] = status.GTIDExecuted
+		}
+		if status.ExecutableHash != "" {
+			observed.ExecutableHashByInstance[inst.Name] = status.ExecutableHash
 		}
 		if status.IsReady {
 			observed.ReadyInstances++
@@ -448,6 +454,10 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	}
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)
 	latest.Status.ContinuousArchiving = observed.ContinuousArchiving
+	latest.Status.OperatorExecutableHash = r.OperatorExecutableHash
+	if len(observed.ExecutableHashByInstance) > 0 {
+		latest.Status.ExecutableHashByInstance = observed.ExecutableHashByInstance
+	}
 	if observed.ContinuousArchiving != nil {
 		healthy := archivingHealthy(observed.ContinuousArchiving)
 		reason := "Archiving"

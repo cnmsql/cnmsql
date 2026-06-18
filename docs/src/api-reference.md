@@ -1,7 +1,7 @@
 ---
 title: "API Reference"
 description: "Field guide for the Cluster, Database, Backup, ScheduledBackup, ImageCatalog, and ClusterImageCatalog CRDs."
-sidebar_position: 13
+sidebar_position: 15
 ---
 
 # API reference

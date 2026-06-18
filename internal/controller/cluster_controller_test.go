@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,10 @@ func (readyStatusClient) Reload(context.Context, *mysqlv1alpha1.Cluster, string,
 	return &webserver.ReloadResponse{}, nil
 }
 
+func (readyStatusClient) UpgradeInstanceManager(context.Context, *mysqlv1alpha1.Cluster, string, io.Reader, string) error {
+	return nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -158,10 +163,29 @@ type recordingControlClient struct {
 
 	semiSyncWaits map[string]int
 	reloaded      map[string]webserver.ReloadRequest
+
+	upgraded     []string
+	upgradeHash  map[string]string
+	upgradeBytes map[string][]byte
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
 	return c.statuses[instanceName], nil
+}
+
+func (c *recordingControlClient) UpgradeInstanceManager(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string, binary io.Reader, expectedHash string) error {
+	c.upgraded = append(c.upgraded, instanceName)
+	if c.upgradeHash == nil {
+		c.upgradeHash = map[string]string{}
+		c.upgradeBytes = map[string][]byte{}
+	}
+	c.upgradeHash[instanceName] = expectedHash
+	body, err := io.ReadAll(binary)
+	if err != nil {
+		return err
+	}
+	c.upgradeBytes[instanceName] = body
+	return nil
 }
 
 func (c *recordingControlClient) Promote(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) error {
@@ -526,6 +550,40 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 	}
 	if got.Spec.Containers[0].Image != plan.Image {
 		t.Fatalf("container image = %q, want %q", got.Spec.Containers[0].Image, plan.Image)
+	}
+}
+
+func TestPodTemplateHashIgnoresOperatorImage(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	labels := labelsFor(cluster, inst.Name, roleOf(inst))
+
+	plan.OperatorImage = "example.com/operator:v1.0.0"
+	spec1 := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
+	annotations1, err := podAnnotations(cluster, plan, inst, labels, spec1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash1 := annotations1[podTemplateHashAnnotation]
+	if hash1 == "" {
+		t.Fatal("pod template hash is empty for first image")
+	}
+
+	plan.OperatorImage = "example.com/operator:v2.0.0"
+	spec2 := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
+	annotations2, err := podAnnotations(cluster, plan, inst, labels, spec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash2 := annotations2[podTemplateHashAnnotation]
+	if hash2 == "" {
+		t.Fatal("pod template hash is empty for second image")
+	}
+
+	if hash1 != hash2 {
+		t.Fatalf("pod template hash changed after operator image bump (hash1=%s, hash2=%s)", hash1, hash2)
 	}
 }
 

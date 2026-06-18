@@ -1,7 +1,7 @@
 ---
 title: "Point-In-Time Recovery"
 description: "Architecture, component responsibilities, recovery flow, RPO/RTO model, and risks for cloudnative-mysql PITR."
-sidebar_position: 15
+sidebar_position: 17
 ---
 
 # Point-In-Time Recovery architecture

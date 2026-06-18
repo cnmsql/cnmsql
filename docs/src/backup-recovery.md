@@ -1,7 +1,7 @@
 ---
 title: "Physical Backup and Recovery"
 description: "How cloudnative-mysql creates XtraBackup archives, uploads them to S3-compatible storage, and restores clusters."
-sidebar_position: 10
+sidebar_position: 11
 ---
 
 # Physical backup and recovery architecture

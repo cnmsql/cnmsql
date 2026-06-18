@@ -1,7 +1,7 @@
 ---
 title: "Troubleshooting"
 description: "Common cloudnative-mysql symptoms, likely causes, and first commands to run."
-sidebar_position: 16
+sidebar_position: 18
 ---
 
 # Troubleshooting

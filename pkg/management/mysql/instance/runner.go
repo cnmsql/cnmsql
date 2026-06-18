@@ -265,8 +265,23 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// in place without disturbing mysqld. A named FIFO (re-openable, CLOEXEC
 	// cleared on the read end) pipes mysqld output through the structured
 	// processLogWriter, preserving the log format even across a re-exec.
+	//
+	// When this image is itself the product of an in-place re-exec, it adopts the
+	// already-running mysqld (and re-attaches the inherited FIFO read end) instead
+	// of starting a fresh server, so the upgrade never restarts mysqld.
+	adopting, adoptPID := adoptRequest()
 	fifoPath := opts.PIDFile + ".fifo"
-	fifoLog, err := NewFifoLog(fifoPath, log)
+
+	var fifoLog *FifoLog
+	if adopting {
+		readFD, ferr := readPIDFileFIFOFD(opts.PIDFile)
+		if ferr != nil {
+			return ferr
+		}
+		fifoLog, err = FifoLogFromFD(fifoPath, readFD, log)
+	} else {
+		fifoLog, err = NewFifoLog(fifoPath, log)
+	}
 	if err != nil {
 		return err
 	}
@@ -277,9 +292,17 @@ func Run(ctx context.Context, opts RunOptions) error {
 		WithDetachedShutdownTimeout(opts.ShutdownTimeout),
 		WithFIFO(fifoLog),
 		WithPIDFile(opts.PIDFile))
-	log.Info("Starting mysqld", "binary", opts.MysqldPath, "pidFile", opts.PIDFile, "fifo", fifoPath)
-	if err := sup.Start(ctx); err != nil {
-		return err
+	if adopting {
+		log.Info("Adopting running mysqld after in-place manager upgrade",
+			"pid", adoptPID, "pidFile", opts.PIDFile, "fifo", fifoPath)
+		if err := sup.AdoptProcess(adoptPID); err != nil {
+			return err
+		}
+	} else {
+		log.Info("Starting mysqld", "binary", opts.MysqldPath, "pidFile", opts.PIDFile, "fifo", fifoPath)
+		if err := sup.Start(ctx); err != nil {
+			return err
+		}
 	}
 
 	// Catch termination signals to shut down mysqld gracefully.
@@ -303,7 +326,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 		_ = sup.Shutdown(ctx)
 		return err
 	}
-	if opts.SemiSyncEnabled {
+	// Skip destructive (re)configuration when adopting: mysqld is already running,
+	// configured, and serving its role. Semi-sync plugins are already installed and
+	// enabled, and re-applying them would clear read_only on a serving instance.
+	if opts.SemiSyncEnabled && !adopting {
 		if err := configureSemiSync(ctx, controller.repl, opts); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
@@ -328,13 +354,19 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// crash.
 	fence := NewFenceGate()
 	controller.SetFenceGate(fence)
-	if roleManaged {
+	switch {
+	case adopting:
+		// Adopting an already-serving mysqld after an in-place upgrade: replication
+		// is already configured and running. Re-attaching would be disruptive; the
+		// role reconciler resumes steady-state management below.
+		log.Info("Skipping replication bootstrap; adopting already-configured mysqld")
+	case roleManaged:
 		log.Info("Resuming configured replication if needed")
 		if err := controller.EnsureReplicaStarted(ctx); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
-	} else if opts.Role == webserver.RoleReplica {
+	case opts.Role == webserver.RoleReplica:
 		if opts.Source == nil {
 			_ = sup.Shutdown(ctx)
 			return errors.New("replica source is required when role is replica")
@@ -344,7 +376,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
-	} else {
+	default:
 		log.Info("Resuming configured replication if needed")
 		if err := controller.EnsureReplicaStarted(ctx); err != nil {
 			_ = sup.Shutdown(ctx)
