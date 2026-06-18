@@ -23,6 +23,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | D11 | Backup worker Jobs use the **same cnmysql instance image** as the Cluster | Keeps worker version-aligned with XtraBackup tooling |
 | D12 | Integration tests run a **version matrix** (8.0, 8.4, 9.x) | Every supported version exercised end-to-end |
 | D13 | Structured logs project-wide (operator, instance manager, child processes) | controller-runtime `logr`, K8s logging style; child-process output wrapped into structured log entries |
+| D14 | Per-instance ServiceAccount identity + validating status webhook | Prevents a rogue instance from patching `Cluster` status fields it does not own; see `design/020-status-instance-webhook.md` |
 
 ## Features
 

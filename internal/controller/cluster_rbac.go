@@ -19,29 +19,27 @@ package controller
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 )
 
-// ensureInstanceRBAC provisions the per-Cluster ServiceAccount, Role and
-// RoleBinding that let each instance's in-Pod reconciler watch this Cluster and
-// patch its status (to set currentPrimary on self-promotion). Scoped to this one
-// Cluster for least privilege; owned by the Cluster so it is garbage-collected.
+// ensureInstanceRBAC provisions the per-Cluster Role and the per-instance
+// ServiceAccounts that let each instance's in-Pod reconciler watch this Cluster
+// and patch only the status fields it owns. Each Pod runs under its own
+// ServiceAccount (<instance-name>-instance) so the admission webhook can
+// identify the caller and authorise it by name. All resources are owned by the
+// Cluster for garbage collection.
 func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
-	name := plan.InstanceServiceAccount
-
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		sa.Labels = labelsFor(cluster, "", "")
-		return controllerutil.SetControllerReference(cluster, sa, r.Scheme)
-	}); err != nil {
-		return err
-	}
+	name := cluster.Name + "-instance"
 
 	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
@@ -71,20 +69,60 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 		return err
 	}
 
+	desired := make(map[string]string, plan.Instances) // SA name -> instance name
+	for _, inst := range plan.instanceNames(cluster) {
+		saName := inst + "-instance"
+		desired[saName] = inst
+		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: cluster.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+			sa.Labels = labelsFor(cluster, inst, "")
+			return controllerutil.SetControllerReference(cluster, sa, r.Scheme)
+		}); err != nil {
+			return err
+		}
+	}
+
 	binding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error {
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error {
 		binding.Labels = labelsFor(cluster, "", "")
 		binding.RoleRef = rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "Role",
 			Name:     name,
 		}
-		binding.Subjects = []rbacv1.Subject{{
-			Kind:      rbacv1.ServiceAccountKind,
-			Name:      name,
-			Namespace: cluster.Namespace,
-		}}
+		subjects := make([]rbacv1.Subject, 0, len(desired))
+		for saName := range desired {
+			subjects = append(subjects, rbacv1.Subject{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      saName,
+				Namespace: cluster.Namespace,
+			})
+		}
+		sort.Slice(subjects, func(i, j int) bool { return subjects[i].Name < subjects[j].Name })
+		binding.Subjects = subjects
 		return controllerutil.SetControllerReference(cluster, binding, r.Scheme)
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+
+	// Remove ServiceAccounts for instances that are no longer desired (scale-down)
+	// so their identities cannot be reused to patch status later.
+	saList := &corev1.ServiceAccountList{}
+	if err := r.List(ctx, saList, client.InNamespace(cluster.Namespace),
+		client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
+		return err
+	}
+	for i := range saList.Items {
+		sa := &saList.Items[i]
+		if _, ok := desired[sa.Name]; ok {
+			continue
+		}
+		if strings.HasSuffix(sa.Name, "-instance") && strings.HasPrefix(sa.Name, cluster.Name+"-") {
+			if err := r.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

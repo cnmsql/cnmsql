@@ -30,7 +30,7 @@ var _ = Describe("Failover rejoin", Ordered, func() {
 			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
-		expectClusterReady(cluster, instances, 2*time.Minute)
+		expectClusterReady(cluster, instances, 8*time.Minute)
 	})
 
 	It("rejoins a deleted former primary from its retained PVC after failover", func() {

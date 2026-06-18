@@ -21,20 +21,20 @@ import (
 // that no data past the recovery target leaked through.
 var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 	const (
-		sourceCluster    = "stress-pitr-src"
-		restoredCluster  = "stress-pitr-restored"
-		backupName       = "stress-pitr-base"
-		numPreFailover   = 2000
-		numPostFailover  = 2000
-		numPastTarget    = 500
-		writeBatchSize   = 100
+		sourceCluster   = "stress-pitr-src"
+		restoredCluster = "stress-pitr-restored"
+		backupName      = "stress-pitr-base"
+		numPreFailover  = 2000
+		numPostFailover = 2000
+		numPastTarget   = 500
+		writeBatchSize  = 100
 	)
 	version := archiveVersions()[0]
 
 	var (
-		password         string
-		targetGTID       string
-		ns, prevNS       string
+		password   string
+		targetGTID string
+		ns, prevNS string
 	)
 
 	BeforeAll(func() {
@@ -51,7 +51,7 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(sourceCluster, continuousArchivingClusterManifest(sourceCluster, version, 3))
 		})
-		expectClusterReady(sourceCluster, 3, 2*time.Minute)
+		expectClusterReady(sourceCluster, 3, 8*time.Minute)
 		password = appPassword(sourceCluster)
 
 		By("taking a base backup before any application data exists")

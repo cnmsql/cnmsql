@@ -166,6 +166,31 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyMetricsServerStarted, 3*time.Minute, time.Second).Should(Succeed())
 
+			By("waiting for the webhook service endpoints to be ready")
+			verifyWebhookEndpointsReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
+					"-l", "kubernetes.io/service-name=cloudnative-mysql-webhook-service",
+					"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
+				g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
+			}
+			Eventually(verifyWebhookEndpointsReady, 3*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the validating webhook server is ready")
+			verifyValidatingWebhookReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations.admissionregistration.k8s.io",
+					"cloudnative-mysql-validating-webhook-configuration",
+					"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "ValidatingWebhookConfiguration should exist")
+				g.Expect(output).ShouldNot(BeEmpty(), "Validating webhook CA bundle not yet injected")
+			}
+			Eventually(verifyValidatingWebhookReady, 3*time.Minute, time.Second).Should(Succeed())
+
+			By("waiting additional time for webhook server to stabilize")
+			time.Sleep(5 * time.Second)
+
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
@@ -220,6 +245,30 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
 			}
 			Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
+		})
+
+		It("should provisioned cert-manager", func() {
+			By("validating that cert-manager has the certificate Secret")
+			verifyCertManager := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secrets", "webhook-server-cert", "-n", namespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+			}
+			Eventually(verifyCertManager).Should(Succeed())
+		})
+
+		It("should have CA injection for validating webhooks", func() {
+			By("checking CA injection for validating webhooks")
+			verifyCAInjection := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get",
+					"validatingwebhookconfigurations.admissionregistration.k8s.io",
+					"cloudnative-mysql-validating-webhook-configuration",
+					"-o", "go-template={{ range .webhooks }}{{ .clientConfig.caBundle }}{{ end }}")
+				vwhOutput, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(len(vwhOutput)).To(BeNumerically(">", 10))
+			}
+			Eventually(verifyCAInjection).Should(Succeed())
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
@@ -727,21 +776,43 @@ spec:
 	})
 })
 
+// mainGoSnapshot holds the exact bytes of cmd/main.go captured before a marker
+// was appended. restoreE2EMarker rewrites these bytes back, so the file is
+// restored without touching unrelated (possibly uncommitted) changes — unlike a
+// `git checkout`, which would discard any working-tree edits to cmd/main.go.
+var mainGoSnapshot []byte
+
+// appendMainGoMarker snapshots cmd/main.go and appends a unique top-level
+// declaration so the next build produces a binary with a distinct hash. The
+// marker line is guaranteed to be present in the rebuilt source, so the upgrade
+// image can never collide with the baseline image's binary hash.
+func appendMainGoMarker(marker string) {
+	orig, err := os.ReadFile("cmd/main.go")
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to read cmd/main.go for marker insert: %v\n", err)
+		return
+	}
+	mainGoSnapshot = orig
+	updated := append(append([]byte{}, orig...), []byte("\n"+marker+"\n")...)
+	if err := os.WriteFile("cmd/main.go", updated, 0o644); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to append marker to cmd/main.go: %v\n", err)
+	}
+}
+
 // insertE2EMarker adds a line to cmd/main.go so the next build produces a
 // different binary hash.
 func insertE2EMarker() {
-	f, err := os.OpenFile("cmd/main.go", os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to open cmd/main.go for marker insert: %v\n", err)
+	appendMainGoMarker(`var _ = "e2e-upgrade-v2"`)
+}
+
+// restoreE2EMarker restores cmd/main.go to the bytes captured by the last marker
+// insert, leaving any other working-tree changes intact.
+func restoreE2EMarker() {
+	if mainGoSnapshot == nil {
 		return
 	}
-	defer f.Close()
-	_, _ = f.WriteString("\nvar _ = \"e2e-upgrade-v2\"\n")
+	if err := os.WriteFile("cmd/main.go", mainGoSnapshot, 0o644); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to restore cmd/main.go: %v\n", err)
+	}
+	mainGoSnapshot = nil
 }
-
-// restoreE2EMarker reverts cmd/main.go to its git-tracked state.
-func restoreE2EMarker() {
-	cmd := exec.Command("git", "checkout", "cmd/main.go")
-	_, _ = utils.Run(cmd)
-}
-
