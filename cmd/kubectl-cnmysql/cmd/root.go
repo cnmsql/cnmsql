@@ -49,6 +49,7 @@ func NewRootCommand() *cobra.Command {
 		newFenceCommand(),
 		newPromoteCommand(),
 		newRestartCommand(),
+		newRestartInPlaceCommand(),
 		newReinitCommand(),
 		newReloadCommand(),
 		newUserCommand(),

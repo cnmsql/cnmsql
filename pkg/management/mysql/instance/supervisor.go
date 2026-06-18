@@ -271,6 +271,18 @@ func (s *ProcessSupervisor) Running() bool {
 	return s.cmd != nil
 }
 
+// Pid returns the supervised process PID, or 0 when nothing is running. It lets
+// ProcessSupervisor satisfy the Supervisor interface alongside DetachedSupervisor;
+// the in-place upgrade path only ever runs against the detached long-lived mysqld.
+func (s *ProcessSupervisor) Pid() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
 // isSignalExit reports whether the process exit was caused by SIGTERM or
 // SIGKILL, which we consider an intentional shutdown rather than a failure.
 func isSignalExit(err error) bool {

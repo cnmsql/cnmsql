@@ -33,22 +33,24 @@ import (
 
 // fakeController is a configurable InstanceController for handler tests.
 type fakeController struct {
-	healthErr       error
-	startupErr      error
-	readyErr        error
-	status          *Status
-	statusErr       error
-	promoteErr      error
-	demoteErr       error
-	configureErr    error
-	restartErr      error
-	semiSyncWaitErr error
+	healthErr         error
+	startupErr        error
+	readyErr          error
+	status            *Status
+	statusErr         error
+	promoteErr        error
+	demoteErr         error
+	configureErr      error
+	restartErr        error
+	restartInPlaceErr error
+	semiSyncWaitErr   error
 
-	promoteCalled     bool
-	demoteCalled      bool
-	configureSource   *replication.SourceOptions
-	semiSyncWaitCount *int
-	restartCalled     bool
+	promoteCalled        bool
+	demoteCalled         bool
+	configureSource      *replication.SourceOptions
+	semiSyncWaitCount    *int
+	restartCalled        bool
+	restartInPlaceCalled bool
 
 	reloadReq  *ReloadRequest
 	reloadResp *ReloadResponse
@@ -108,6 +110,10 @@ func (f *fakeController) SetSemiSyncWaitForReplicaCount(_ context.Context, count
 	return f.semiSyncWaitErr
 }
 func (f *fakeController) Restart(context.Context) error { f.restartCalled = true; return f.restartErr }
+func (f *fakeController) RestartInPlace(context.Context) error {
+	f.restartInPlaceCalled = true
+	return f.restartInPlaceErr
+}
 func (f *fakeController) Reload(_ context.Context, req ReloadRequest) (*ReloadResponse, error) {
 	f.reloadReq = &req
 	return f.reloadResp, f.reloadErr
@@ -278,6 +284,10 @@ func TestLifecycleActions(t *testing.T) {
 	}
 	if rec := do(t, h, http.MethodPost, "/restart"); rec.Code != http.StatusOK || !fc.restartCalled {
 		t.Errorf("restart = %d called=%v", rec.Code, fc.restartCalled)
+	}
+	rec = do(t, h, http.MethodPost, "/instance/manager/restart-inplace")
+	if rec.Code != http.StatusOK || !fc.restartInPlaceCalled {
+		t.Errorf("restart-inplace = %d called=%v", rec.Code, fc.restartInPlaceCalled)
 	}
 	rec = doWithBody(t, h, "/semisync/wait", `{"count":2}`)
 	if rec.Code != http.StatusOK || fc.semiSyncWaitCount == nil || *fc.semiSyncWaitCount != 2 {

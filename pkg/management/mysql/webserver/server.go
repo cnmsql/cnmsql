@@ -57,6 +57,10 @@ type InstanceController interface {
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error
 	// Restart restarts the managed mysqld process.
 	Restart(ctx context.Context) error
+	// RestartInPlace re-execs the instance manager in place, adopting the running
+	// mysqld so the manager binary is swapped without restarting the server (the
+	// zero-restart operator-upgrade path).
+	RestartInPlace(ctx context.Context) error
 	// Reload re-applies dynamic configuration parameters to the running mysqld
 	// via SET GLOBAL, without restarting the process.
 	Reload(ctx context.Context, req ReloadRequest) (*ReloadResponse, error)
@@ -98,6 +102,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /replica/source", configureReplicaHandler(controller))
 	mux.HandleFunc("POST /semisync/wait", semiSyncWaitHandler(controller))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
+	mux.HandleFunc("POST /instance/manager/restart-inplace", actionHandler(controller.RestartInPlace))
 	mux.HandleFunc("POST /reload", reloadHandler(controller))
 	mux.HandleFunc("POST /user/create", bodyActionHandler(controller.CreateUser))
 	mux.HandleFunc("POST /user/alter", bodyActionHandler(controller.AlterUser))

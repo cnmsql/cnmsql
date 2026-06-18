@@ -80,6 +80,34 @@ func NewFifoLog(fifoPath string, logger logr.Logger) (*FifoLog, error) {
 	}, nil
 }
 
+// FifoLogFromFD reconstructs a FifoLog around a read end inherited across a
+// manager re-exec. The FIFO node already exists and its read fd (CLOEXEC cleared)
+// survived execve at readFD, recorded in the pidfile by the previous image. It
+// wraps that fd and re-opens a write-end keepalive so the reader does not see EOF
+// if mysqld momentarily closes its end, mirroring NewFifoLog. Call Start to resume
+// consuming structured log lines.
+func FifoLogFromFD(fifoPath string, readFD int, logger logr.Logger) (*FifoLog, error) {
+	if readFD < 0 {
+		return nil, fmt.Errorf("fifo_log: invalid inherited read fd %d for %s", readFD, fifoPath)
+	}
+	readFile := os.NewFile(uintptr(readFD), fifoPath)
+	if readFile == nil {
+		return nil, fmt.Errorf("fifo_log: inherited read fd %d for %s is not valid", readFD, fifoPath)
+	}
+
+	writeEnd, err := os.OpenFile(fifoPath, os.O_WRONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("fifo_log: re-opening write end of %s: %w", fifoPath, err)
+	}
+
+	return &FifoLog{
+		fifoPath: fifoPath,
+		logger:   logger,
+		readFile: readFile,
+		writeEnd: writeEnd,
+	}, nil
+}
+
 // WriteEnd returns the *os.File the child process inherits as its
 // stdout/stderr target. Must not be called after Close.
 func (f *FifoLog) WriteEnd() *os.File {

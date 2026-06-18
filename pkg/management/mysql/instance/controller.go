@@ -46,6 +46,9 @@ import (
 type Supervisor interface {
 	Restart(ctx context.Context) error
 	Shutdown(ctx context.Context) error
+	// Pid returns the supervised process PID (0 when nothing is running), so the
+	// in-place upgrade path can hand it to the re-exec'd manager image to adopt.
+	Pid() int
 }
 
 // Controller is the concrete webserver.InstanceController backed by a local
@@ -69,6 +72,10 @@ type Controller struct {
 	// fence, when set, lets the instance be fenced: mysqld is stopped while the
 	// manager stays alive. nil disables fencing (no supervisor, e.g. in tests).
 	fence *FenceGate
+	// reExec performs the in-place manager re-exec. It defaults to
+	// ReExecForUpgrade and is overridable in tests so the real syscall.Exec (which
+	// would replace the test process) is not triggered.
+	reExec func(mysqldPID int) error
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -97,6 +104,7 @@ func NewController(
 		versionStr: versionStr,
 		expected:   expected,
 		supervisor: supervisor,
+		reExec:     ReExecForUpgrade,
 	}, nil
 }
 
@@ -300,6 +308,39 @@ func (c *Controller) Restart(ctx context.Context) error {
 	}
 	logf.FromContext(ctx).WithName("instance-controller").Info("Restarting mysqld", "instance", c.name)
 	return c.supervisor.Restart(ctx)
+}
+
+// reExecDelay gives the HTTP response time to flush to the caller before the
+// re-exec replaces the process image.
+const reExecDelay = 250 * time.Millisecond
+
+// RestartInPlace re-execs the instance manager in place, handing the running
+// mysqld PID to the new image so it adopts the server instead of restarting it
+// (the zero-restart operator-upgrade path). The re-exec is scheduled shortly after
+// this returns so the caller receives the HTTP acknowledgement before
+// syscall.Exec replaces the process; the caller then confirms the swap by polling
+// status. A failed re-exec leaves the current manager supervising mysqld unharmed.
+func (c *Controller) RestartInPlace(ctx context.Context) error {
+	log := logf.FromContext(ctx).WithName("instance-controller")
+	if c.supervisor == nil {
+		return errors.New("in-place restart is not available: no supervisor configured")
+	}
+	pid := c.supervisor.Pid()
+	if pid <= 0 {
+		return errors.New("in-place restart is not available: mysqld is not running")
+	}
+
+	// Mark the upgrade in flight before scheduling so any concurrent shutdown path
+	// does not tear mysqld down while the manager swaps itself.
+	SetInPlaceUpgrading()
+	log.Info("Scheduling in-place manager re-exec", "instance", c.name, "mysqldPid", pid)
+	time.AfterFunc(reExecDelay, func() {
+		if err := c.reExec(pid); err != nil {
+			// Only reached if execve fails; mysqld keeps running under this manager.
+			log.Error(err, "In-place manager re-exec failed; continuing with the current manager")
+		}
+	})
+	return nil
 }
 
 // validVariableName matches a MySQL system-variable identifier. Variable names

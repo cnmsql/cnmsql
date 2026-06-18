@@ -254,10 +254,12 @@ func TestStartupzPings(t *testing.T) {
 type fakeSupervisor struct {
 	called bool
 	err    error
+	pid    int
 }
 
 func (f *fakeSupervisor) Restart(context.Context) error  { f.called = true; return f.err }
 func (f *fakeSupervisor) Shutdown(context.Context) error { f.called = true; return f.err }
+func (f *fakeSupervisor) Pid() int                       { return f.pid }
 
 func TestRestartUsesSupervisor(t *testing.T) {
 	sup := &fakeSupervisor{}
@@ -274,6 +276,49 @@ func TestRestartWithoutSupervisor(t *testing.T) {
 	c, _ := newController(t, nil)
 	if err := c.Restart(context.Background()); err == nil {
 		t.Error("expected Restart to fail without a supervisor")
+	}
+}
+
+func TestRestartInPlaceReExecsWithMysqldPID(t *testing.T) {
+	t.Cleanup(func() { inPlaceUpgrading.Store(false) })
+	sup := &fakeSupervisor{pid: 4242}
+	c, _ := newController(t, sup)
+
+	gotPID := make(chan int, 1)
+	c.reExec = func(pid int) error { gotPID <- pid; return nil }
+
+	if err := c.RestartInPlace(context.Background()); err != nil {
+		t.Fatalf("RestartInPlace: %v", err)
+	}
+	if !IsInPlaceUpgrading() {
+		t.Error("expected the in-flight upgrade flag to be set")
+	}
+	select {
+	case pid := <-gotPID:
+		if pid != 4242 {
+			t.Errorf("re-exec pid = %d, want 4242", pid)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("re-exec was never scheduled")
+	}
+}
+
+func TestRestartInPlaceWithoutSupervisor(t *testing.T) {
+	c, _ := newController(t, nil)
+	if err := c.RestartInPlace(context.Background()); err == nil {
+		t.Error("expected RestartInPlace to fail without a supervisor")
+	}
+}
+
+func TestRestartInPlaceWithoutRunningMysqld(t *testing.T) {
+	c, _ := newController(t, &fakeSupervisor{pid: 0})
+	called := false
+	c.reExec = func(int) error { called = true; return nil }
+	if err := c.RestartInPlace(context.Background()); err == nil {
+		t.Error("expected RestartInPlace to fail when mysqld is not running")
+	}
+	if called {
+		t.Error("re-exec must not be scheduled when there is no mysqld PID")
 	}
 }
 
