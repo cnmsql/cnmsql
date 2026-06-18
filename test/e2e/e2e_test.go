@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -566,3 +567,181 @@ type tokenRequest struct {
 		Token string `json:"token"`
 	} `json:"status"`
 }
+
+var _ = Describe("Operator Upgrade", Ordered, func() {
+	const v2Image = "example.com/cloudnative-mysql:v0.0.2"
+
+	BeforeAll(func() {
+		By("building v2 manager image with a different binary hash")
+		insertE2EMarker()
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v2Image))
+		_, err := utils.Run(cmd)
+		restoreE2EMarker()
+		Expect(err).NotTo(HaveOccurred(), "Failed to build v2 manager image")
+
+		By("loading v2 manager image on Kind")
+		err = utils.LoadImageToKindClusterWithName(v2Image)
+		Expect(err).NotTo(HaveOccurred(), "Failed to load v2 manager image into Kind")
+	})
+
+	AfterAll(func() {
+		restoreE2EMarker()
+	})
+
+	It("should upgrade the operator with a serialized, primary-last rollout", func() {
+		ns := createTestNamespace("op-upgrade")
+		defer deleteTestNamespace(ns, defaultTestNamespace)
+
+		By("applying a 3-instance Cluster")
+		manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+kind: Cluster
+metadata:
+  name: upgrade
+  namespace: %s
+spec:
+  instances: 3
+  imageName: %s
+  storage:
+    size: 1Gi
+  mysql:
+%s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+%s
+`, ns, instanceImage, e2eMySQLParameters, e2eInstanceResources)
+		applyManifest("upgrade", manifest)
+		DeferCleanup(func() {
+			deleteCluster("upgrade")
+		})
+
+		By("waiting for the cluster to become ready with the initial operator")
+		expectClusterReady("upgrade", 3, 12*time.Minute)
+
+		initialPrimary := clusterPrimary("upgrade")
+		GinkgoWriter.Printf("Initial primary: %s\n", initialPrimary)
+
+		By("reading the initial operator executable hash")
+		cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
+			"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
+		initialHash, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(initialHash).NotTo(BeEmpty())
+		GinkgoWriter.Printf("Initial operator hash: %s\n", initialHash)
+
+		By("deploying the v2 operator")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v2Image))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy v2 operator")
+
+		By("waiting for the v2 operator pod to become ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"))
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the operator hash changed after upgrade")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
+				"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty())
+			g.Expect(output).NotTo(Equal(initialHash), "operator hash should change after v2 deploy")
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying replicas are upgraded one at a time during the rollout")
+		phaseSeen := false
+		minReadySeen := 3
+		checkSerialized := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
+				"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+			phase, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			if phase == "Ready" {
+				return
+			}
+			phaseSeen = true
+			cmd = exec.Command("kubectl", "get", "cluster", "upgrade",
+				"-n", testNamespace, "-o", "jsonpath={.status.phaseReason}")
+			reason, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Upgrade phase: %s — %s\n", phase, reason)
+			g.Expect(phase).To(Or(Equal("Upgrading"), Equal("Switchover"), Equal("WaitingForUser")))
+			if phase == "Upgrading" {
+				g.Expect(reason).To(Or(
+					ContainSubstring(initialPrimary+"-2"),
+					ContainSubstring(initialPrimary+"-3"),
+				), "first upgraded instance should be a replica, not the primary %s", initialPrimary)
+			}
+			cmd = exec.Command("kubectl", "get", "cluster", "upgrade",
+				"-n", testNamespace, "-o", "jsonpath={.status.readyInstances}")
+			readyStr, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			if ready, err := strconv.Atoi(strings.TrimSpace(readyStr)); err == nil && ready < minReadySeen {
+				minReadySeen = ready
+			}
+		}
+		Eventually(checkSerialized, 8*time.Minute, 5*time.Second).Should(Succeed())
+		Expect(phaseSeen).To(BeTrue(), "Expected Upgrading or Switchover phase to appear during rollout")
+		Expect(minReadySeen).To(BeNumerically(">=", 2),
+			"at most one instance should be down during serialized rollout (min ready seen: %d)", minReadySeen)
+
+		By("waiting for the upgrade to complete and the cluster to return to Ready")
+		expectClusterReady("upgrade", 3, 15*time.Minute)
+
+		By("verifying the primary changed after switchover-based upgrade")
+		finalPrimary := clusterPrimary("upgrade")
+		Expect(finalPrimary).NotTo(Equal(initialPrimary),
+			"primary should change after switchover-based upgrade with 3 instances")
+
+		By("verifying all instance hashes match the new operator hash after upgrade")
+		var newHash string
+		cmd = exec.Command("kubectl", "get", "cluster", "upgrade",
+			"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
+		newHash, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoWriter.Printf("New operator hash: %s\n", newHash)
+
+		for _, inst := range []string{"upgrade-1", "upgrade-2", "upgrade-3"} {
+			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
+				"-n", testNamespace, "-o", fmt.Sprintf(`go-template={{index .status.executableHashByInstance "%s"}}`, inst))
+			instHash, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(instHash).To(Equal(newHash),
+				"upgrade instance %s hash should match new operator hash", inst)
+		}
+
+		By("verifying the final primary is reachable and writable")
+		password := appPassword("upgrade")
+		writeSQL := "CREATE TABLE IF NOT EXISTS e2e_upgrade (id INT PRIMARY KEY); " +
+			"REPLACE INTO e2e_upgrade VALUES (99);"
+		cmd = exec.Command("kubectl", "exec", finalPrimary, "-n", testNamespace, "-c", "mysql", "--",
+			"env", "MYSQL_PWD="+password, "mysql", "-uapp", "app", "-e", writeSQL)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Final primary must accept writes")
+	})
+})
+
+// insertE2EMarker adds a line to cmd/main.go so the next build produces a
+// different binary hash.
+func insertE2EMarker() {
+	f, err := os.OpenFile("cmd/main.go", os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to open cmd/main.go for marker insert: %v\n", err)
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString("\nvar _ = \"e2e-upgrade-v2\"\n")
+}
+
+// restoreE2EMarker reverts cmd/main.go to its git-tracked state.
+func restoreE2EMarker() {
+	cmd := exec.Command("git", "checkout", "cmd/main.go")
+	_, _ = utils.Run(cmd)
+}
+

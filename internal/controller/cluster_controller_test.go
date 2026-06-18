@@ -529,6 +529,40 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 	}
 }
 
+func TestPodTemplateHashIgnoresOperatorImage(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	labels := labelsFor(cluster, inst.Name, roleOf(inst))
+
+	plan.OperatorImage = "example.com/operator:v1.0.0"
+	spec1 := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
+	annotations1, err := podAnnotations(cluster, plan, inst, labels, spec1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash1 := annotations1[podTemplateHashAnnotation]
+	if hash1 == "" {
+		t.Fatal("pod template hash is empty for first image")
+	}
+
+	plan.OperatorImage = "example.com/operator:v2.0.0"
+	spec2 := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
+	annotations2, err := podAnnotations(cluster, plan, inst, labels, spec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash2 := annotations2[podTemplateHashAnnotation]
+	if hash2 == "" {
+		t.Fatal("pod template hash is empty for second image")
+	}
+
+	if hash1 != hash2 {
+		t.Fatalf("pod template hash changed after operator image bump (hash1=%s, hash2=%s)", hash1, hash2)
+	}
+}
+
 func TestEnsurePodDoesNotRecreateForPrimaryRoleChange(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

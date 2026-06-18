@@ -105,13 +105,15 @@ const (
 	conditionProgressing         = "Progressing"
 	conditionContinuousArchiving = "ContinuousArchiving"
 
-	phasePending      = "Pending"
-	phaseProvisioning = "Provisioning"
-	phaseReady        = "Ready"
-	phaseBlocked      = "Blocked"
-	phaseSwitchover   = "Switchover"
-	phaseDegraded     = "Degraded"
-	phaseFailingOver  = "FailingOver"
+	phasePending        = "Pending"
+	phaseProvisioning   = "Provisioning"
+	phaseReady          = "Ready"
+	phaseBlocked        = "Blocked"
+	phaseSwitchover     = "Switchover"
+	phaseDegraded       = "Degraded"
+	phaseFailingOver    = "FailingOver"
+	phaseUpgrading      = "Upgrading"
+	phaseWaitingForUser = "WaitingForUser"
 
 	dataDir       = "/var/lib/mysql"
 	socketPath    = "/var/run/mysqld/mysqld.sock"
@@ -317,6 +319,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	if switched {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
+	}
+	upgrading, upgradeResult, err := r.reconcileUpgrade(ctx, cluster, plan, observed)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if upgrading {
+		return upgradeResult, nil
 	}
 	// Keep rw/ro/r routing in step with the current primary (set by whichever
 	// instance promoted itself).
