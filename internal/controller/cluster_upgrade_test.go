@@ -33,6 +33,8 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
+const oldHash, newHash = "old", "new"
+
 func TestUpgradeCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -181,8 +183,6 @@ func TestHealthyReplicaForSwitchover(t *testing.T) {
 func TestReconcileUpgradeRollsInstancesInOrder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-
-	const oldHash, newHash = "old", "new"
 	cluster := baseCluster()
 	cluster.Spec.Instances = 3
 	// Defaults are unsupervised + switchover, but be explicit.
@@ -233,7 +233,7 @@ func TestReconcileUpgradeRollsInstancesInOrder(t *testing.T) {
 	}
 
 	var actions []string
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, plan, observed)
 		if err != nil {
 			t.Fatal(err)
@@ -319,7 +319,8 @@ func upgradeFixture(
 	cluster.Spec.PrimaryUpdateMethod = mysqlv1alpha1.PrimaryUpdateMethodSwitchover
 
 	scheme := testScheme(t)
-	objs := []client.Object{cluster}
+	objs := make([]client.Object, 1, 1+len(names))
+	objs[0] = cluster
 	for i, n := range names {
 		role := roleReplica
 		if i == 0 {
@@ -384,7 +385,7 @@ func TestReconcileUpgradeSupervisedWaitsForUserOnStalePrimary(t *testing.T) {
 	ctx := context.Background()
 	cluster, reconciler, observed := upgradeFixture(t, 3, mysqlv1alpha1.PrimaryUpdateStrategySupervised)
 	for _, n := range observed.InstanceNames {
-		observed.ExecutableHashByInstance[n] = "old"
+		observed.ExecutableHashByInstance[n] = oldHash
 	}
 
 	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
@@ -409,8 +410,8 @@ func TestReconcileUpgradeSupervisedRollsReplicasWhilePrimaryCurrent(t *testing.T
 	ctx := context.Background()
 	cluster, reconciler, observed := upgradeFixture(t, 3, mysqlv1alpha1.PrimaryUpdateStrategySupervised)
 	observed.ExecutableHashByInstance[testPrimary] = upgradeNewHash
-	observed.ExecutableHashByInstance[testReplica2] = "old"
-	observed.ExecutableHashByInstance[testReplica3] = "old"
+	observed.ExecutableHashByInstance[testReplica2] = oldHash
+	observed.ExecutableHashByInstance[testReplica3] = oldHash
 
 	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
 	if err != nil {
@@ -433,7 +434,7 @@ func TestReconcileUpgradeSingleInstanceSupervisedRestartsInPlace(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster, reconciler, observed := upgradeFixture(t, 1, mysqlv1alpha1.PrimaryUpdateStrategySupervised)
-	observed.ExecutableHashByInstance[testPrimary] = "old"
+	observed.ExecutableHashByInstance[testPrimary] = oldHash
 
 	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
 	if err != nil {
@@ -467,7 +468,7 @@ func TestReconcileUpgradeInPlaceStreamsBinaryReplicasFirst(t *testing.T) {
 	reconciler.ControlClient = rec
 
 	for _, n := range observed.InstanceNames {
-		observed.ExecutableHashByInstance[n] = "old"
+		observed.ExecutableHashByInstance[n] = oldHash
 	}
 
 	for range 10 {
@@ -523,7 +524,7 @@ func TestReconcileUpgradeInPlaceIgnoresSupervisedGate(t *testing.T) {
 	rec := &recordingControlClient{statuses: map[string]*webserver.Status{}}
 	reconciler.ControlClient = rec
 	// Only the primary is stale, so the first action targets the primary.
-	observed.ExecutableHashByInstance[testPrimary] = "old"
+	observed.ExecutableHashByInstance[testPrimary] = oldHash
 	observed.ExecutableHashByInstance[testReplica2] = upgradeNewHash
 	observed.ExecutableHashByInstance[testReplica3] = upgradeNewHash
 

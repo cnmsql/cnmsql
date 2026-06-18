@@ -113,18 +113,19 @@ func TestReconcileManagedRolesDefaultsControlClient(t *testing.T) {
 
 func TestReconcileManagedRolesDropsAbsentUser(t *testing.T) {
 	t.Parallel()
+	const oldHash = "old"
 	control := &recordingControlClient{
-		users: []user.UserInfo{{Name: "old", Host: "%"}},
+		users: []user.UserInfo{{Name: oldHash, Host: "%"}},
 	}
 	r, cluster := managedRolesReconciler(t, control)
 	cluster.Spec.Managed = &mysqlv1alpha1.ManagedConfiguration{Roles: []mysqlv1alpha1.RoleConfiguration{
-		{Name: "old", Host: "%", Ensure: mysqlv1alpha1.EnsureAbsent},
+		{Name: oldHash, Host: "%", Ensure: mysqlv1alpha1.EnsureAbsent},
 	}}
 
 	if err := r.reconcileManagedRoles(context.Background(), cluster); err != nil {
 		t.Fatal(err)
 	}
-	if len(control.dropped) != 1 || control.dropped[0].Name != "old" {
+	if len(control.dropped) != 1 || control.dropped[0].Name != oldHash {
 		t.Fatalf("dropped = %+v, want [old]", control.dropped)
 	}
 }

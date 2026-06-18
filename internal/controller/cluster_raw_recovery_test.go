@@ -129,7 +129,7 @@ func TestResolveRawS3RecoveryByID(t *testing.T) {
 	server := rawS3Server(t, rawList, rawMetadata())
 	defer server.Close()
 
-	cluster := rawRecoveryCluster(server.URL, "old")
+	cluster := rawRecoveryCluster(server.URL, oldHash)
 	reconciler := rawRecoveryReconciler(t)
 
 	plan, err := reconciler.resolveRecovery(context.Background(), cluster)
