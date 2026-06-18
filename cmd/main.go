@@ -26,6 +26,7 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/bootstrap"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/instance"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -128,12 +129,19 @@ func main() {
 				return err
 			}
 
+			operatorHash, err := executablehash.Get()
+			if err != nil {
+				setupLog.Error(err, "Failed to compute operator executable hash (will not detect stale instance managers)")
+				operatorHash = ""
+			}
+
 			clusterReconciler := &controller.ClusterReconciler{
-				Client:            mgr.GetClient(),
-				Scheme:            mgr.GetScheme(),
-				APIReader:         mgr.GetAPIReader(),
-				Recorder:          mgr.GetEventRecorderFor("cluster-controller"), //nolint:staticcheck
-				OperatorImageName: operatorImage,
+				Client:                 mgr.GetClient(),
+				Scheme:                 mgr.GetScheme(),
+				APIReader:              mgr.GetAPIReader(),
+				Recorder:               mgr.GetEventRecorderFor("cluster-controller"), //nolint:staticcheck
+				OperatorImageName:      operatorImage,
+				OperatorExecutableHash: operatorHash,
 			}
 			if err := clusterReconciler.SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "cluster")

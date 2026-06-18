@@ -654,6 +654,13 @@ func (in *ClusterStatus) DeepCopyInto(out *ClusterStatus) {
 		in, out := &in.GTIDExecutedUpdatedAt, &out.GTIDExecutedUpdatedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.ExecutableHashByInstance != nil {
+		in, out := &in.ExecutableHashByInstance, &out.ExecutableHashByInstance
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.Certificates != nil {
 		in, out := &in.Certificates, &out.Certificates
 		*out = new(CertificatesStatus)

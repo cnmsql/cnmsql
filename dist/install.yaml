@@ -4138,6 +4138,14 @@ spec:
                   re-stamp and which therefore cannot carry this fact reliably.
                 format: date-time
                 type: string
+              executableHashByInstance:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ExecutableHashByInstance maps an instance name to the SHA-256 hash of its
+                  running instance manager binary, as reported by the in-Pod control API.
+                  The operator uses it to detect stale instance managers when upgrading.
+                type: object
               failedInstances:
                 description: |-
                   FailedInstances are instances whose Pod shows positive evidence of being
@@ -4239,6 +4247,11 @@ spec:
                   controller.
                 format: int64
                 type: integer
+              operatorExecutableHash:
+                description: |-
+                  OperatorExecutableHash is the SHA-256 hash of the running operator binary.
+                  It is the target hash every instance manager should match after an upgrade.
+                type: string
               phase:
                 description: Phase is a high-level human-readable cluster phase.
                 type: string

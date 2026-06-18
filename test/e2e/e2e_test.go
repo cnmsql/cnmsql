@@ -426,6 +426,63 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(BeEmpty(), "blocked cluster must not provision instances")
 		})
+
+		It("should report executable hash in status for operator upgrades", func() {
+			By("applying a single-instance Cluster")
+			manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+kind: Cluster
+metadata:
+  name: exec-hash
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+`, instanceImage)
+			applyManifest("exec-hash", manifest)
+			DeferCleanup(func() {
+				deleteCluster("exec-hash")
+			})
+
+			By("waiting for the cluster to become ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "exec-hash",
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}, 10*time.Minute, 5*time.Second).Should(Succeed())
+
+			var operatorHash, instanceHash string
+
+			By("reading the operator executable hash from Cluster status")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "exec-hash",
+					"-o", "jsonpath={.status.operatorExecutableHash}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+				operatorHash = output
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("reading the instance's executable hash from Cluster status")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "exec-hash",
+					"-o", `go-template={{index .status.executableHashByInstance "exec-hash-1"}}`)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+				instanceHash = output
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the instance hash matches the operator hash")
+			Expect(instanceHash).To(Equal(operatorHash),
+				"instance manager hash must equal operator hash (same binary)")
+		})
 	})
 })
 

@@ -945,6 +945,17 @@ type ClusterStatus struct {
 	// +optional
 	GTIDExecutedUpdatedAt *metav1.Time `json:"gtidExecutedUpdatedAt,omitempty"`
 
+	// ExecutableHashByInstance maps an instance name to the SHA-256 hash of its
+	// running instance manager binary, as reported by the in-Pod control API.
+	// The operator uses it to detect stale instance managers when upgrading.
+	// +optional
+	ExecutableHashByInstance map[string]string `json:"executableHashByInstance,omitempty"`
+
+	// OperatorExecutableHash is the SHA-256 hash of the running operator binary.
+	// It is the target hash every instance manager should match after an upgrade.
+	// +optional
+	OperatorExecutableHash string `json:"operatorExecutableHash,omitempty"`
+
 	// Certificates reports the status of the managed certificates.
 	// +optional
 	Certificates *CertificatesStatus `json:"certificates,omitempty"`

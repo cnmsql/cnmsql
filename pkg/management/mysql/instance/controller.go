@@ -31,6 +31,7 @@ import (
 	"time"
 
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
@@ -203,6 +204,10 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 		ReadOnly:      roState.ReadOnly,
 		SuperReadOnly: roState.SuperReadOnly,
 		IsReady:       c.Readyz(ctx) == nil,
+	}
+
+	if hash, err := executablehash.Get(); err == nil {
+		status.ExecutableHash = hash
 	}
 
 	// Best-effort, non-critical fields.
