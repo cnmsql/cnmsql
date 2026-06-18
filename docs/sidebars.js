@@ -50,6 +50,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'deployment-modes',
+      label: 'Deployment Modes',
+    },
+    {
+      type: 'doc',
       id: 'operator-upgrades',
       label: 'Operator Upgrades',
     },

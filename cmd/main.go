@@ -16,6 +16,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -117,14 +118,32 @@ func main() {
 				metricsServerOptions.KeyName = metricsCertKey
 			}
 
-			mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+			managerOptions := ctrl.Options{
 				Scheme:                 scheme,
 				Metrics:                metricsServerOptions,
 				WebhookServer:          webhookServer,
 				HealthProbeBindAddress: probeAddr,
 				LeaderElection:         enableLeaderElection,
 				LeaderElectionID:       "e924591d.cloudnative-mysql.io",
-			})
+			}
+
+			// WATCH_NAMESPACE selects the operator topology: empty means cluster-wide
+			// (watch every namespace), set means namespaced (watch only that namespace,
+			// so multiple operator instances can cohabit in one cluster). In namespaced
+			// packaging the value is injected from the pod's own namespace.
+			if watchNamespace := os.Getenv("WATCH_NAMESPACE"); watchNamespace != "" {
+				setupLog.Info("Operator running namespaced", "namespace", watchNamespace)
+				managerOptions.Cache = cache.Options{
+					DefaultNamespaces: map[string]cache.Config{watchNamespace: {}},
+				}
+				// Keep the leader-election lease in the watched namespace so cohabiting
+				// operators do not contend on a single cluster-wide lease.
+				managerOptions.LeaderElectionNamespace = watchNamespace
+			} else {
+				setupLog.Info("Operator running cluster-wide")
+			}
+
+			mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOptions)
 			if err != nil {
 				setupLog.Error(err, "Failed to start manager")
 				return err

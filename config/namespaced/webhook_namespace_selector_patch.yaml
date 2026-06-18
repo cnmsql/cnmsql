@@ -1,0 +1,13 @@
+# Restricts the validating webhook to a single namespace, so that cohabiting
+# namespaced operators do not intercept each other's Cluster status updates.
+# The placeholder namespace value is replaced by a kustomize `replacements` block
+# (see config/namespaced/kustomization.yaml) that copies the webhook Service's
+# namespace. Used only by the config/namespaced overlay.
+- op: add
+  path: /webhooks/0/namespaceSelector
+  value:
+    matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: In
+        values:
+          - system

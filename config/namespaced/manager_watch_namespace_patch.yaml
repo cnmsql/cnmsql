@@ -1,0 +1,10 @@
+# Injects WATCH_NAMESPACE from the pod's own namespace so the manager scopes its
+# cache and leader-election lease to that namespace (namespaced mode). The base
+# Deployment has no env, so this creates the array.
+- op: add
+  path: /spec/template/spec/containers/0/env
+  value:
+    - name: WATCH_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
