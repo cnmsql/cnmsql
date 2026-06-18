@@ -1,0 +1,159 @@
+# Namespaced variant of role.yaml, used by the config/namespaced overlay.
+# Identical rules to the cluster-wide ClusterRole, except:
+#   - kind is Role (granted in a single namespace via role_binding_namespaced.yaml).
+#   - The cluster-scoped resources `namespaces` and `clusterimagecatalogs` are
+#     omitted because a namespaced Role cannot grant access to them. In namespaced
+#     mode use the namespaced `ImageCatalog` instead of `ClusterImageCatalog`.
+# Keep in sync with role.yaml when permissions change.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - persistentvolumeclaims
+  - pods
+  - pods/status
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - issuers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - podmonitors
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mysql.cloudnative-mysql.io
+  resources:
+  - backups
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - mysql.cloudnative-mysql.io
+  resources:
+  - backups/status
+  - clusters/status
+  - databases/status
+  - scheduledbackups/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - mysql.cloudnative-mysql.io
+  resources:
+  - imagecatalogs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - mysql.cloudnative-mysql.io
+  resources:
+  - clusters
+  - databases
+  - scheduledbackups
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mysql.cloudnative-mysql.io
+  resources:
+  - clusters/finalizers
+  - databases/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

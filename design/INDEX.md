@@ -28,6 +28,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 | 018 | [Manager Binary Injection](018-bootstrap-dbs.md) | done | M18 | Bootstrap-controller init container copies `/manager` from operator image into shared EmptyDir. Removes manager binary from instance image. |
 | 019 | [Operator Upgrades](019-operator-upgrade.md) | done | — | Rolling + in-place instance-manager upgrades. Spike-proven re-exec keeps mysqld alive. PID-based `DetachedSupervisor` + adopt mode. |
 | 020 | [Status Instance Webhook](020-status-instance-webhook.md) | done | — | Per-instance ServiceAccount identity + validating webhook to enforce least-privilege updates to `status.currentPrimary`. |
+| 021 | [Deployment Modes](021-deployment-modes.md) | done | — | Cluster-wide vs namespaced operator topologies. `WATCH_NAMESPACE`-scoped cache, namespaced RBAC overlay, and per-namespace webhook (unique name + namespaceSelector) so multiple operators cohabit one cluster. |
 
 ## Quick Navigation by Topic
 
@@ -36,6 +37,8 @@ Quick-reference index of every design document. Use this to find relevant plans 
 **Replication & HA:** 006 (switchover/failover) → 007 (dynamic role) → 017 (primary lease)
 
 **Status Authorization & Security:** 020 (status authz webhook)
+
+**Deployment Topology:** 021 (cluster-wide vs namespaced)
 
 **Data Management:** 008 (backup/recovery) → 009 (binlog/PITR) → 010 (scheduled backup) → 011 (raw S3 recovery)
 

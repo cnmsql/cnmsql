@@ -232,12 +232,23 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm cloudnative-mysql-builder
 	rm Dockerfile.cross
 
+# OVERLAY selects the deployment topology: config/default (cluster-wide, default)
+# or config/namespaced (one namespace per operator). For namespaced deployments,
+# pass NAMESPACE and NAME_PREFIX so cohabiting operators get a unique namespace
+# and a unique cluster-scoped ValidatingWebhookConfiguration name, e.g.:
+#   make deploy-namespaced NAMESPACE=tenant-a NAME_PREFIX=tenant-a-
+OVERLAY ?= config/default
+
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment. Override OVERLAY=config/namespaced for namespaced mode.
 	mkdir -p dist
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | \
+	"$(KUSTOMIZE)" build $(OVERLAY) | \
 		sed "s|--operator-image=controller:latest|--operator-image=${IMG}|g" > dist/install.yaml
+
+.PHONY: build-installer-namespaced
+build-installer-namespaced: ## Generate a consolidated YAML for namespaced mode. Pass NAMESPACE and NAME_PREFIX.
+	$(MAKE) build-installer OVERLAY=config/namespaced
 
 ##@ Deployment
 
@@ -256,15 +267,25 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config. Override OVERLAY=config/namespaced for namespaced mode.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | \
+	"$(KUSTOMIZE)" build $(OVERLAY) | \
 		sed "s|--operator-image=controller:latest|--operator-image=${IMG}|g" | \
 		"$(KUBECTL)" apply -f -
 
+.PHONY: deploy-namespaced
+deploy-namespaced: manifests kustomize ## Deploy a namespaced operator. Pass NAMESPACE and NAME_PREFIX, e.g. make deploy-namespaced NAMESPACE=tenant-a NAME_PREFIX=tenant-a-
+ifdef NAMESPACE
+	cd config/namespaced && "$(KUSTOMIZE)" edit set namespace $(NAMESPACE)
+endif
+ifdef NAME_PREFIX
+	cd config/namespaced && "$(KUSTOMIZE)" edit set nameprefix $(NAME_PREFIX)
+endif
+	$(MAKE) deploy OVERLAY=config/namespaced
+
 .PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion. Override OVERLAY for namespaced mode.
+	"$(KUSTOMIZE)" build $(OVERLAY) | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

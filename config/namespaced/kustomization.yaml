@@ -1,0 +1,152 @@
+# Namespaced deployment overlay.
+#
+# Deploys the operator scoped to a single namespace: the manager watches only its
+# own namespace (WATCH_NAMESPACE is injected from the pod namespace), RBAC is a
+# namespaced Role/RoleBinding instead of a ClusterRole/ClusterRoleBinding, and the
+# validating webhook is restricted to this namespace so multiple operator
+# instances can cohabit in one cluster.
+#
+# Per tenant, override `namespace` and `namePrefix` below so the cluster-scoped
+# ValidatingWebhookConfiguration name and the namespaceSelector are unique.
+# CRDs are cluster-scoped and shared: install them once with `make install`
+# (or `kustomize build config/crd`), not per tenant.
+
+# Tenant namespace. Also drives the webhook namespaceSelector via replacements.
+namespace: cnmysql-system
+
+# Per-tenant prefix; makes the cluster-scoped ValidatingWebhookConfiguration name
+# unique across cohabiting operators.
+namePrefix: cnmysql-
+
+resources:
+- ../crd
+- ../rbac
+- ../manager
+- ../webhook
+- ../certmanager
+- metrics_service.yaml
+# Namespaced replacements for the cluster-scoped manager RBAC (deleted below).
+- role_namespaced.yaml
+- role_binding_namespaced.yaml
+
+patches:
+# Drop the cluster-wide manager RBAC pulled in from ../rbac; the namespaced
+# Role/RoleBinding above replace them.
+- target:
+    group: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: manager-role
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: manager-role
+- target:
+    group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+    name: manager-rolebinding
+  patch: |
+    $patch: delete
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: manager-rolebinding
+# Enable the metrics endpoint over HTTPS on :8443.
+- path: manager_metrics_patch.yaml
+  target:
+    kind: Deployment
+# Mount the webhook serving certificate and expose the webhook port.
+- path: manager_webhook_patch.yaml
+  target:
+    kind: Deployment
+# Inject WATCH_NAMESPACE from the pod namespace (enables namespaced mode).
+- path: manager_watch_namespace_patch.yaml
+  target:
+    kind: Deployment
+# Restrict the validating webhook to this namespace only.
+- path: webhook_namespace_selector_patch.yaml
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+
+replacements:
+# --- cert-manager CA injection (mirrors config/default) ---
+- source:
+    kind: Service
+    version: v1
+    name: webhook-service
+    fieldPath: .metadata.name
+  targets:
+  - select:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: serving-cert
+    fieldPaths:
+    - .spec.dnsNames.0
+    - .spec.dnsNames.1
+    options:
+      delimiter: '.'
+      index: 0
+      create: true
+- source:
+    kind: Service
+    version: v1
+    name: webhook-service
+    fieldPath: .metadata.namespace
+  targets:
+  - select:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: serving-cert
+    fieldPaths:
+    - .spec.dnsNames.0
+    - .spec.dnsNames.1
+    options:
+      delimiter: '.'
+      index: 1
+      create: true
+- source:
+    kind: Certificate
+    group: cert-manager.io
+    version: v1
+    name: serving-cert
+    fieldPath: .metadata.namespace
+  targets:
+  - select:
+      kind: ValidatingWebhookConfiguration
+    fieldPaths:
+    - .metadata.annotations.[cert-manager.io/inject-ca-from]
+    options:
+      delimiter: '/'
+      index: 0
+      create: true
+- source:
+    kind: Certificate
+    group: cert-manager.io
+    version: v1
+    name: serving-cert
+    fieldPath: .metadata.name
+  targets:
+  - select:
+      kind: ValidatingWebhookConfiguration
+    fieldPaths:
+    - .metadata.annotations.[cert-manager.io/inject-ca-from]
+    options:
+      delimiter: '/'
+      index: 1
+      create: true
+# --- namespace-scope the webhook to this namespace ---
+- source:
+    kind: Service
+    version: v1
+    name: webhook-service
+    fieldPath: .metadata.namespace
+  targets:
+  - select:
+      kind: ValidatingWebhookConfiguration
+    fieldPaths:
+    - .webhooks.0.namespaceSelector.matchExpressions.0.values.0
