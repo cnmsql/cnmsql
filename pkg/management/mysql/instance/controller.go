@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -37,6 +38,7 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -72,10 +74,17 @@ type Controller struct {
 	// fence, when set, lets the instance be fenced: mysqld is stopped while the
 	// manager stays alive. nil disables fencing (no supervisor, e.g. in tests).
 	fence *FenceGate
-	// reExec performs the in-place manager re-exec. It defaults to
-	// ReExecForUpgrade and is overridable in tests so the real syscall.Exec (which
-	// would replace the test process) is not triggered.
+	// reExec performs the byte-identical in-place manager re-exec (restart-inplace).
+	// It defaults to ReExecForUpgrade and is overridable in tests so the real
+	// syscall.Exec (which would replace the test process) is not triggered.
 	reExec func(mysqldPID int) error
+	// writeManager streams and validates a new instance-manager binary, replacing
+	// the on-disk binary. It defaults to WriteInstanceManager and is overridable in
+	// tests so no real binary is written.
+	writeManager func(r io.Reader, expectedHash string) error
+	// reExecOnDisk re-execs the freshly written on-disk binary (the streamed
+	// upgrade). It defaults to ReExecOnDiskForUpgrade and is overridable in tests.
+	reExecOnDisk func(mysqldPID int) error
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -96,15 +105,17 @@ func NewController(
 		expected = webserver.RoleUnknown
 	}
 	return &Controller{
-		name:       name,
-		conn:       conn,
-		repl:       replication.NewManager(conn, v),
-		users:      user.NewManager(conn),
-		version:    v,
-		versionStr: versionStr,
-		expected:   expected,
-		supervisor: supervisor,
-		reExec:     ReExecForUpgrade,
+		name:         name,
+		conn:         conn,
+		repl:         replication.NewManager(conn, v),
+		users:        user.NewManager(conn),
+		version:      v,
+		versionStr:   versionStr,
+		expected:     expected,
+		supervisor:   supervisor,
+		reExec:       ReExecForUpgrade,
+		writeManager: WriteInstanceManager,
+		reExecOnDisk: ReExecOnDiskForUpgrade,
 	}, nil
 }
 
@@ -322,25 +333,61 @@ const reExecDelay = 250 * time.Millisecond
 // status. A failed re-exec leaves the current manager supervising mysqld unharmed.
 func (c *Controller) RestartInPlace(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("instance-controller")
+	pid, err := c.adoptablePID("in-place restart")
+	if err != nil {
+		return err
+	}
+	c.scheduleReExec(log, pid, c.reExec)
+	return nil
+}
+
+// UpgradeInstanceManager streams the new instance-manager binary, validates it
+// against expectedHash, and writes it over the on-disk binary, then re-execs in
+// place adopting the running mysqld. The write/validate is synchronous so a bad
+// upload is rejected (the caller gets an error) before anything is swapped; the
+// re-exec of the freshly written binary is scheduled after this returns so the
+// HTTP acknowledgement flushes first.
+func (c *Controller) UpgradeInstanceManager(ctx context.Context, r io.Reader, expectedHash string) error {
+	log := logf.FromContext(ctx).WithName("instance-controller")
+	pid, err := c.adoptablePID("in-place upgrade")
+	if err != nil {
+		return err
+	}
+	if err := c.writeManager(r, expectedHash); err != nil {
+		log.Error(err, "Rejected in-place instance-manager upgrade", "instance", c.name)
+		return err
+	}
+	log.Info("Wrote new instance-manager binary", "instance", c.name)
+	c.scheduleReExec(log, pid, c.reExecOnDisk)
+	return nil
+}
+
+// adoptablePID returns the running mysqld PID that the re-exec'd manager must
+// adopt, or an error explaining why an in-place swap is unavailable.
+func (c *Controller) adoptablePID(action string) (int, error) {
 	if c.supervisor == nil {
-		return errors.New("in-place restart is not available: no supervisor configured")
+		return 0, fmt.Errorf("%s is not available: no supervisor configured", action)
 	}
 	pid := c.supervisor.Pid()
 	if pid <= 0 {
-		return errors.New("in-place restart is not available: mysqld is not running")
+		return 0, fmt.Errorf("%s is not available: mysqld is not running", action)
 	}
+	return pid, nil
+}
 
-	// Mark the upgrade in flight before scheduling so any concurrent shutdown path
-	// does not tear mysqld down while the manager swaps itself.
+// scheduleReExec marks the upgrade in flight (so no concurrent shutdown path
+// tears mysqld down mid-swap) and schedules reExec shortly after, giving the
+// HTTP response time to flush before syscall.Exec replaces the process. A failed
+// re-exec leaves the current manager supervising mysqld unharmed.
+func (c *Controller) scheduleReExec(log logr.Logger, pid int, reExec func(int) error) {
 	SetInPlaceUpgrading()
 	log.Info("Scheduling in-place manager re-exec", "instance", c.name, "mysqldPid", pid)
 	time.AfterFunc(reExecDelay, func() {
-		if err := c.reExec(pid); err != nil {
+		if err := reExec(pid); err != nil {
 			// Only reached if execve fails; mysqld keeps running under this manager.
 			log.Error(err, "In-place manager re-exec failed; continuing with the current manager")
 		}
 	})
-	return nil
 }
 
 // validVariableName matches a MySQL system-variable identifier. Variable names

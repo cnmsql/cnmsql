@@ -2507,6 +2507,14 @@ spec:
                   - name
                   type: object
                 type: array
+              inPlaceInstanceManagerUpdates:
+                description: |-
+                  InPlaceInstanceManagerUpdates, when true, rolls an operator upgrade out to
+                  this cluster's instances by streaming the new instance-manager binary to each
+                  Pod, which re-execs in place — no Pod restart and no switchover. When false
+                  (the default) the operator instead deletes and recreates each Pod one at a
+                  time (replicas first, primary last via switchover).
+                type: boolean
               inheritedMetadata:
                 description: Metadata that will be inherited by all objects related
                   to the Cluster.

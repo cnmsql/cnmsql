@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"io"
 	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
@@ -156,6 +157,11 @@ type InstanceControlClient interface {
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error
 
 	Reload(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req webserver.ReloadRequest) (*webserver.ReloadResponse, error)
+
+	// UpgradeInstanceManager streams a new instance-manager binary to the named
+	// instance's control API, tagged with expectedHash, so the manager validates
+	// and re-execs it in place without restarting mysqld.
+	UpgradeInstanceManager(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, binary io.Reader, expectedHash string) error
 }
 
 // ClusterReconciler reconciles a Cluster object.
@@ -175,6 +181,10 @@ type ClusterReconciler struct {
 	// compared against each instance's reported executable hash to detect stale
 	// instance managers that need upgrade.
 	OperatorExecutableHash string
+	// openOperatorBinary returns a reader over the operator's own manager binary,
+	// streamed to instances during an in-place upgrade. It defaults to opening
+	// os.Executable() and is overridable in tests.
+	openOperatorBinary func() (io.ReadCloser, error)
 	// podMonitorAvailable records whether the Prometheus Operator PodMonitor CRD
 	// is installed. PodMonitor support is fully opt-in: when the CRD is absent we
 	// neither watch nor reconcile PodMonitors, so the operator runs without the

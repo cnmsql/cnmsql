@@ -20,6 +20,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -75,6 +77,14 @@ func (r *ClusterReconciler) reconcileUpgrade(
 		}
 	}
 
+	// In-place path: stream the operator's own manager binary to the next stale
+	// instance, which re-execs without restarting mysqld. The primary is upgraded
+	// the same way as a replica — no switchover, no Pod restart — so the
+	// supervised-wait and switchover handling below is skipped entirely.
+	if cluster.Spec.InPlaceInstanceManagerUpdates {
+		return r.upgradeInstanceInPlace(ctx, cluster, plan, observed, candidates, candidates[0], targetHash)
+	}
+
 	// When the primary is stale and the strategy is supervised, stop the entire
 	// upgrade and wait for the user, even if replicas are also stale. This only
 	// applies to multi-instance clusters: a single-instance primary cannot be
@@ -84,17 +94,10 @@ func (r *ClusterReconciler) reconcileUpgrade(
 		cluster.Spec.PrimaryUpdateStrategy == mysqlv1alpha1.PrimaryUpdateStrategySupervised {
 		logf.FromContext(ctx).Info("Primary instance manager is stale, waiting for user",
 			"instance", observed.PrimaryName, "strategy", "supervised")
-		return true, reconcile.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:          phaseWaitingForUser,
-			PhaseReason:    "Primary instance manager is stale (operator upgrade); waiting for user to trigger the update",
-			Ready:          false,
-			Progressing:    true,
-			Plan:           plan,
-			PrimaryName:    observed.PrimaryName,
-			InstanceNames:  observed.InstanceNames,
-			ReadyInstances: observed.ReadyInstances,
-			GTIDByInstance: observed.GTIDByInstance,
-		})
+		return true, reconcile.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, upgradeProgressStatus(
+			phaseWaitingForUser,
+			"Primary instance manager is stale (operator upgrade); waiting for user to trigger the update",
+			plan, observed))
 	}
 
 	instance := candidates[0]
@@ -137,22 +140,65 @@ func (r *ClusterReconciler) rollInstanceForUpgrade(
 		return false, reconcile.Result{}, err
 	}
 
-	reason := fmt.Sprintf("Upgrading instance manager on %s", instance.Name)
-	if len(candidates) > 1 {
-		reason = fmt.Sprintf("Upgrading instance manager on %s (%d/%d remaining)",
-			instance.Name, len(candidates)-1, len(candidates))
+	reason := upgradeReason("Upgrading instance manager on", instance.Name, len(candidates))
+	return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster,
+		upgradeProgressStatus(phaseUpgrading, reason, plan, observed))
+}
+
+// upgradeInstanceInPlace streams the operator's own manager binary to the
+// instance's control API, which validates it against the target hash and
+// re-execs in place — no Pod restart and, for the primary, no switchover. One
+// instance is upgraded per reconcile; the caller requeues and the next reconcile
+// observes the now-current hash and moves on to the next candidate.
+func (r *ClusterReconciler) upgradeInstanceInPlace(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	plan clusterPlan,
+	observed observedCluster,
+	candidates []upgradeCandidate,
+	instance upgradeCandidate,
+	targetHash string,
+) (bool, reconcile.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("Upgrading instance manager in place",
+		"instance", instance.Name, "reportedHash", instance.ReportedHash, "targetHash", targetHash)
+
+	binary, err := r.operatorBinary()
+	if err != nil {
+		log.Error(err, "Could not open operator binary for in-place upgrade", "instance", instance.Name)
+		return false, reconcile.Result{}, err
 	}
-	return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-		Phase:          phaseUpgrading,
-		PhaseReason:    reason,
-		Ready:          false,
-		Progressing:    true,
-		Plan:           plan,
-		PrimaryName:    observed.PrimaryName,
-		InstanceNames:  observed.InstanceNames,
-		ReadyInstances: observed.ReadyInstances,
-		GTIDByInstance: observed.GTIDByInstance,
-	})
+	defer func() {
+		_ = binary.Close()
+	}()
+
+	if err := r.instanceControlClient().UpgradeInstanceManager(ctx, cluster, instance.Name, binary, targetHash); err != nil {
+		log.Error(err, "In-place instance-manager upgrade failed, will retry", "instance", instance.Name)
+		return false, reconcile.Result{}, err
+	}
+
+	reason := upgradeReason("Upgrading instance manager in place on", instance.Name, len(candidates))
+	return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster,
+		upgradeProgressStatus(phaseUpgrading, reason, plan, observed))
+}
+
+// operatorBinary opens the operator's own manager binary for streaming to an
+// instance during an in-place upgrade. The operator and instance manager are the
+// same binary (the bootstrap-controller init container copies /manager from the
+// operator image), so the operator's own executable is the upgrade target.
+func (r *ClusterReconciler) operatorBinary() (io.ReadCloser, error) {
+	if r.openOperatorBinary != nil {
+		return r.openOperatorBinary()
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locating operator binary: %w", err)
+	}
+	f, err := os.Open(exe) //nolint:gosec // our own executable
+	if err != nil {
+		return nil, fmt.Errorf("opening operator binary %s: %w", exe, err)
+	}
+	return f, nil
 }
 
 // upgradePrimaryViaSwitchover triggers a switchover from the stale primary to a
@@ -182,9 +228,20 @@ func (r *ClusterReconciler) upgradePrimaryViaSwitchover(
 		return false, reconcile.Result{}, err
 	}
 
-	return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-		Phase:          phaseUpgrading,
-		PhaseReason:    fmt.Sprintf("Upgrading: switching over to %s before upgrading the primary", target),
+	return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, upgradeProgressStatus(
+		phaseUpgrading,
+		fmt.Sprintf("Upgrading: switching over to %s before upgrading the primary", target),
+		plan, observed))
+}
+
+// upgradeProgressStatus builds the in-progress status patch shared by every
+// upgrade step (roll, in-place stream, switchover, waiting-for-user): the
+// instance facts are carried through unchanged and only the phase and reason
+// differ, so the call sites cannot drift apart.
+func upgradeProgressStatus(phase, reason string, plan clusterPlan, observed observedCluster) observedCluster {
+	return observedCluster{
+		Phase:          phase,
+		PhaseReason:    reason,
 		Ready:          false,
 		Progressing:    true,
 		Plan:           plan,
@@ -192,7 +249,17 @@ func (r *ClusterReconciler) upgradePrimaryViaSwitchover(
 		InstanceNames:  observed.InstanceNames,
 		ReadyInstances: observed.ReadyInstances,
 		GTIDByInstance: observed.GTIDByInstance,
-	})
+	}
+}
+
+// upgradeReason describes which instance is being upgraded and, when more than
+// one is still stale, how many remain. action is the leading verb phrase, e.g.
+// "Upgrading instance manager on" or "Upgrading instance manager in place on".
+func upgradeReason(action, instance string, candidates int) string {
+	if candidates > 1 {
+		return fmt.Sprintf("%s %s (%d/%d remaining)", action, instance, candidates-1, candidates)
+	}
+	return fmt.Sprintf("%s %s", action, instance)
 }
 
 // upgradeCandidate holds enough to determine upgrade order.

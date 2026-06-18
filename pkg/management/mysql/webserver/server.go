@@ -61,6 +61,12 @@ type InstanceController interface {
 	// mysqld so the manager binary is swapped without restarting the server (the
 	// zero-restart operator-upgrade path).
 	RestartInPlace(ctx context.Context) error
+	// UpgradeInstanceManager streams a new instance-manager binary from r, verifies
+	// it against expectedHash, writes it over the on-disk binary, then re-execs in
+	// place adopting the running mysqld. It is the streamed variant of
+	// RestartInPlace used by the operator to roll out a new manager version with no
+	// mysqld restart.
+	UpgradeInstanceManager(ctx context.Context, r io.Reader, expectedHash string) error
 	// Reload re-applies dynamic configuration parameters to the running mysqld
 	// via SET GLOBAL, without restarting the process.
 	Reload(ctx context.Context, req ReloadRequest) (*ReloadResponse, error)
@@ -103,6 +109,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /semisync/wait", semiSyncWaitHandler(controller))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
 	mux.HandleFunc("POST /instance/manager/restart-inplace", actionHandler(controller.RestartInPlace))
+	mux.HandleFunc("POST /instance/manager/upgrade", upgradeManagerHandler(controller))
 	mux.HandleFunc("POST /reload", reloadHandler(controller))
 	mux.HandleFunc("POST /user/create", bodyActionHandler(controller.CreateUser))
 	mux.HandleFunc("POST /user/alter", bodyActionHandler(controller.AlterUser))
@@ -126,6 +133,34 @@ func HealthHandler(controller InstanceController) http.Handler {
 	mux.HandleFunc("GET /startupz", healthHandler(controller.Startupz))
 	mux.HandleFunc("GET /readyz", healthHandler(controller.Readyz))
 	return mux
+}
+
+// ManagerHashHeader carries the SHA-256 the streamed instance-manager binary
+// must hash to, so the receiving manager can reject a corrupted or mismatched
+// upload before replacing its own binary.
+const ManagerHashHeader = "X-CNMySQL-Manager-Hash"
+
+// ErrInvalidInstanceManagerBinary is returned when a streamed instance-manager
+// binary does not hash to the expected value. It maps to a 400 so the operator
+// can tell a bad upload apart from a server-side failure.
+var ErrInvalidInstanceManagerBinary = errors.New("invalid instance manager binary")
+
+// upgradeManagerHandler streams the request body (a new instance-manager binary)
+// to the controller, which validates it against the X-CNMySQL-Manager-Hash header
+// then re-execs in place. A hash mismatch is a 400; anything else is a 500.
+func upgradeManagerHandler(controller InstanceController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		expectedHash := r.Header.Get(ManagerHashHeader)
+		if err := controller.UpgradeInstanceManager(r.Context(), r.Body, expectedHash); err != nil {
+			if errors.Is(err, ErrInvalidInstanceManagerBinary) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 // ConfigureReplicaRequest is the JSON body accepted by POST /replica/source.

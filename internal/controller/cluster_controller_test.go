@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,10 @@ func (readyStatusClient) Reload(context.Context, *mysqlv1alpha1.Cluster, string,
 	return &webserver.ReloadResponse{}, nil
 }
 
+func (readyStatusClient) UpgradeInstanceManager(context.Context, *mysqlv1alpha1.Cluster, string, io.Reader, string) error {
+	return nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -158,10 +163,29 @@ type recordingControlClient struct {
 
 	semiSyncWaits map[string]int
 	reloaded      map[string]webserver.ReloadRequest
+
+	upgraded     []string
+	upgradeHash  map[string]string
+	upgradeBytes map[string][]byte
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
 	return c.statuses[instanceName], nil
+}
+
+func (c *recordingControlClient) UpgradeInstanceManager(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string, binary io.Reader, expectedHash string) error {
+	c.upgraded = append(c.upgraded, instanceName)
+	if c.upgradeHash == nil {
+		c.upgradeHash = map[string]string{}
+		c.upgradeBytes = map[string][]byte{}
+	}
+	c.upgradeHash[instanceName] = expectedHash
+	body, err := io.ReadAll(binary)
+	if err != nil {
+		return err
+	}
+	c.upgradeBytes[instanceName] = body
+	return nil
 }
 
 func (c *recordingControlClient) Promote(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) error {

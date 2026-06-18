@@ -19,6 +19,8 @@ package controller
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -445,6 +447,98 @@ func TestReconcileUpgradeSingleInstanceSupervisedRestartsInPlace(t *testing.T) {
 	}
 	if missing := anyPodMissing(t, reconciler, cluster, observed.InstanceNames); missing != testPrimary {
 		t.Fatalf("rolled Pod = %q, want %q (in-place restart)", missing, testPrimary)
+	}
+}
+
+// TestReconcileUpgradeInPlaceStreamsBinaryReplicasFirst drives the in-place
+// path: each reconcile must stream the operator binary to exactly one stale
+// instance (replicas before the primary), never delete a Pod, and never request
+// a switchover. Between calls the test fakes the manager re-execing by marking
+// that instance's reported hash current.
+func TestReconcileUpgradeInPlaceStreamsBinaryReplicasFirst(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler, observed := upgradeFixture(t, 3, mysqlv1alpha1.PrimaryUpdateStrategyUnsupervised)
+	cluster.Spec.InPlaceInstanceManagerUpdates = true
+	reconciler.openOperatorBinary = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("operator-binary")), nil
+	}
+	rec := &recordingControlClient{statuses: map[string]*webserver.Status{}}
+	reconciler.ControlClient = rec
+
+	for _, n := range observed.InstanceNames {
+		observed.ExecutableHashByInstance[n] = "old"
+	}
+
+	for range 10 {
+		handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !handled {
+			break
+		}
+		// No Pod may ever be deleted on the in-place path.
+		if missing := anyPodMissing(t, reconciler, cluster, observed.InstanceNames); missing != "" {
+			t.Fatalf("in-place upgrade deleted Pod %q; it must stream the binary instead", missing)
+		}
+		// No switchover may ever be requested.
+		got := &mysqlv1alpha1.Cluster{}
+		if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Status.TargetPrimary != "" && got.Status.TargetPrimary != observed.PrimaryName {
+			t.Fatalf("in-place upgrade requested a switchover to %q", got.Status.TargetPrimary)
+		}
+		// Mark the most recently upgraded instance current for the next pass.
+		if n := len(rec.upgraded); n > 0 {
+			observed.ExecutableHashByInstance[rec.upgraded[n-1]] = upgradeNewHash
+		}
+	}
+
+	want := []string{testReplica2, testReplica3, testPrimary}
+	if !equalStrings(rec.upgraded, want) {
+		t.Fatalf("in-place upgrade order = %v, want %v", rec.upgraded, want)
+	}
+	for _, n := range want {
+		if rec.upgradeHash[n] != upgradeNewHash {
+			t.Errorf("instance %s upgraded with hash %q, want %q", n, rec.upgradeHash[n], upgradeNewHash)
+		}
+		if string(rec.upgradeBytes[n]) != "operator-binary" {
+			t.Errorf("instance %s got binary %q", n, rec.upgradeBytes[n])
+		}
+	}
+}
+
+// Under the in-place path, a supervised stale primary must NOT wait for the
+// user: an in-place swap needs no switchover, so it proceeds like any replica.
+func TestReconcileUpgradeInPlaceIgnoresSupervisedGate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler, observed := upgradeFixture(t, 3, mysqlv1alpha1.PrimaryUpdateStrategySupervised)
+	cluster.Spec.InPlaceInstanceManagerUpdates = true
+	reconciler.openOperatorBinary = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("operator-binary")), nil
+	}
+	rec := &recordingControlClient{statuses: map[string]*webserver.Status{}}
+	reconciler.ControlClient = rec
+	// Only the primary is stale, so the first action targets the primary.
+	observed.ExecutableHashByInstance[testPrimary] = "old"
+	observed.ExecutableHashByInstance[testReplica2] = upgradeNewHash
+	observed.ExecutableHashByInstance[testReplica3] = upgradeNewHash
+
+	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("in-place stale primary should be handled, not left waiting")
+	}
+	if phase := clusterPhase(t, reconciler, cluster); phase == phaseWaitingForUser {
+		t.Fatal("in-place upgrade must not wait for user on a supervised primary")
+	}
+	if !equalStrings(rec.upgraded, []string{testPrimary}) {
+		t.Fatalf("upgraded = %v, want [%s]", rec.upgraded, testPrimary)
 	}
 }
 

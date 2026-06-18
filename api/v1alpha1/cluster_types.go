@@ -196,6 +196,14 @@ type ClusterSpec struct {
 	// +optional
 	PrimaryUpdateMethod PrimaryUpdateMethod `json:"primaryUpdateMethod,omitempty"`
 
+	// InPlaceInstanceManagerUpdates, when true, rolls an operator upgrade out to
+	// this cluster's instances by streaming the new instance-manager binary to each
+	// Pod, which re-execs in place — no Pod restart and no switchover. When false
+	// (the default) the operator instead deletes and recreates each Pod one at a
+	// time (replicas first, primary last via switchover).
+	// +optional
+	InPlaceInstanceManagerUpdates bool `json:"inPlaceInstanceManagerUpdates,omitempty"`
+
 	// MaxStartDelay is the time in seconds allowed for an instance to start.
 	// +kubebuilder:default:=3600
 	// +optional

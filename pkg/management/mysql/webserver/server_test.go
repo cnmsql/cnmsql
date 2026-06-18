@@ -43,6 +43,7 @@ type fakeController struct {
 	configureErr      error
 	restartErr        error
 	restartInPlaceErr error
+	upgradeErr        error
 	semiSyncWaitErr   error
 
 	promoteCalled        bool
@@ -51,6 +52,9 @@ type fakeController struct {
 	semiSyncWaitCount    *int
 	restartCalled        bool
 	restartInPlaceCalled bool
+	upgradeHash          string
+	upgradeBody          []byte
+	upgradeCalled        bool
 
 	reloadReq  *ReloadRequest
 	reloadResp *ReloadResponse
@@ -113,6 +117,19 @@ func (f *fakeController) Restart(context.Context) error { f.restartCalled = true
 func (f *fakeController) RestartInPlace(context.Context) error {
 	f.restartInPlaceCalled = true
 	return f.restartInPlaceErr
+}
+func (f *fakeController) UpgradeInstanceManager(_ context.Context, r io.Reader, expectedHash string) error {
+	f.upgradeCalled = true
+	f.upgradeHash = expectedHash
+	if f.upgradeErr != nil {
+		return f.upgradeErr
+	}
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	f.upgradeBody = body
+	return nil
 }
 func (f *fakeController) Reload(_ context.Context, req ReloadRequest) (*ReloadResponse, error) {
 	f.reloadReq = &req
@@ -293,6 +310,43 @@ func TestLifecycleActions(t *testing.T) {
 	if rec.Code != http.StatusOK || fc.semiSyncWaitCount == nil || *fc.semiSyncWaitCount != 2 {
 		t.Errorf("semisync wait = %d count=%v", rec.Code, fc.semiSyncWaitCount)
 	}
+}
+
+func TestUpgradeManagerRoute(t *testing.T) {
+	t.Run("streams body and hash to the controller", func(t *testing.T) {
+		fc := &fakeController{}
+		req := httptest.NewRequest(http.MethodPost, "/instance/manager/upgrade", strings.NewReader("new-binary-bytes"))
+		req.Header.Set(ManagerHashHeader, "expected-hash")
+		rec := httptest.NewRecorder()
+		Handler(fc).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upgrade = %d, want 200", rec.Code)
+		}
+		if !fc.upgradeCalled || fc.upgradeHash != "expected-hash" || string(fc.upgradeBody) != "new-binary-bytes" {
+			t.Errorf("upgrade called=%v hash=%q body=%q", fc.upgradeCalled, fc.upgradeHash, fc.upgradeBody)
+		}
+	})
+
+	t.Run("hash mismatch maps to 400", func(t *testing.T) {
+		fc := &fakeController{upgradeErr: ErrInvalidInstanceManagerBinary}
+		req := httptest.NewRequest(http.MethodPost, "/instance/manager/upgrade", strings.NewReader("x"))
+		rec := httptest.NewRecorder()
+		Handler(fc).ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("invalid binary = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("other errors map to 500", func(t *testing.T) {
+		fc := &fakeController{upgradeErr: errors.New("disk full")}
+		req := httptest.NewRequest(http.MethodPost, "/instance/manager/upgrade", strings.NewReader("x"))
+		rec := httptest.NewRecorder()
+		Handler(fc).ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("write failure = %d, want 500", rec.Code)
+		}
+	})
 }
 
 func TestReloadHandler(t *testing.T) {
