@@ -5,7 +5,6 @@ package e2e
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"time"
 
@@ -169,11 +168,5 @@ spec:
 // binary whose hash differs from both the baseline operator and the rolling
 // "Operator Upgrade" spec's image. restoreE2EMarker reverts it.
 func insertInPlaceMarker() {
-	f, err := os.OpenFile("cmd/main.go", os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to open cmd/main.go for marker insert: %v\n", err)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	_, _ = f.WriteString("\nvar _ = \"e2e-inplace-upgrade\"\n")
+	appendMainGoMarker(`var _ = "e2e-inplace-upgrade"`)
 }

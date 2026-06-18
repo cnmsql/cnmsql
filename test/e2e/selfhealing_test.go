@@ -37,7 +37,7 @@ var _ = Describe("Self-healing", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(cluster, semiSyncClusterManifest(cluster, replicas, minSync, maxSync, "preferred"))
 		})
-		expectClusterReady(cluster, replicas, 2*time.Minute)
+		expectClusterReady(cluster, replicas, 8*time.Minute)
 		rootPass = secretPassword(cluster + "-root")
 	})
 

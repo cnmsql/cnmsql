@@ -75,13 +75,16 @@ type clusterPlan struct {
 	// AdditionalServices are user-declared extra managed services.
 	AdditionalServices []mysqlv1alpha1.ManagedService
 
-	// InstanceServiceAccount is the ServiceAccount instance Pods run as so their
-	// in-Pod reconciler can watch this Cluster and patch its status.
-	InstanceServiceAccount string
-
 	// Recovery, when set, makes the bootstrap primary restore from an object
 	// store instead of running initdb. Replicas always clone from the primary.
 	Recovery *recoveryPlan
+}
+
+// instanceServiceAccountName returns the per-instance ServiceAccount name.
+// Each Pod gets its own identity so the admission webhook can tell instances
+// apart and authorise them to touch only the status fields they own.
+func instanceServiceAccountName(inst instancePlan) string {
+	return inst.Name + "-instance"
 }
 
 // recoveryPlan locates the physical backup the bootstrap primary restores from.
@@ -233,8 +236,6 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		ROServiceName:      cluster.Name + "-ro",
 		RServiceName:       cluster.Name + "-r",
 		DisabledServices:   disabledServices(cluster),
-
-		InstanceServiceAccount: cluster.Name + "-instance",
 	}
 	if cluster.Spec.Managed != nil && cluster.Spec.Managed.Services != nil {
 		plan.ServiceTemplate = cluster.Spec.Managed.Services.Template

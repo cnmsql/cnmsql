@@ -26,6 +26,7 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/bootstrap"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/instance"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller"
+	webhookv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/internal/webhook/v1alpha1"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
 	// +kubebuilder:scaffold:imports
 )
@@ -171,6 +172,12 @@ func main() {
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "database")
 				return err
+			}
+			if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+				if err := webhookv1alpha1.SetupClusterWebhookWithManager(mgr); err != nil {
+					setupLog.Error(err, "Failed to set up webhook", "webhook", "cluster-status")
+					return err
+				}
 			}
 			// +kubebuilder:scaffold:builder
 

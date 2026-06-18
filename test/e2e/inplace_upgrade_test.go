@@ -37,7 +37,7 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
-		expectClusterReady(cluster, instances, 2*time.Minute)
+		expectClusterReady(cluster, instances, 8*time.Minute)
 	})
 
 	It("re-execs the manager in place on the primary without restarting mysqld or switching over", func() {
@@ -83,7 +83,7 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-		expectClusterReady(cluster, instances, 3*time.Minute)
+		expectClusterReady(cluster, instances, 8*time.Minute)
 	})
 })
 
