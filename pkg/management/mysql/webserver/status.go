@@ -62,6 +62,49 @@ type Status struct {
 	// Archiving reports continuous binlog archiving health; nil when archiving is
 	// not enabled on this instance.
 	Archiving *ArchivingStatus `json:"archiving,omitempty"`
+
+	// GroupReplication reports this member's Group Replication state and its view
+	// of the whole group; nil for async clusters or when the plugin is not
+	// active. The operator aggregates each member's view in observe() exactly as
+	// it does Replication, and cross-validates the group primary across the ONLINE
+	// majority.
+	GroupReplication *GroupReplicationMemberStatus `json:"groupReplication,omitempty"`
+}
+
+// GroupReplicationMemberStatus is one instance manager's Group Replication
+// report: this member's own state plus its view of every member, read from
+// performance_schema.replication_group_members and related tables.
+type GroupReplicationMemberStatus struct {
+	// MemberID is this member's server_uuid, the key the group uses to identify
+	// it in replication_group_members.
+	MemberID string `json:"memberId,omitempty"`
+	// State is this member's group state: ONLINE, RECOVERING, OFFLINE, ERROR or
+	// UNREACHABLE.
+	State string `json:"state,omitempty"`
+	// Role is this member's group role: PRIMARY or SECONDARY.
+	Role string `json:"role,omitempty"`
+	// GroupName is the active group_replication_group_name as this member sees it.
+	GroupName string `json:"groupName,omitempty"`
+	// ViewID is the current group view identifier; it changes on every membership
+	// change and is one of the operator's reconcile signals.
+	ViewID string `json:"viewId,omitempty"`
+	// PrimaryMemberID is the server_uuid the group currently considers PRIMARY.
+	PrimaryMemberID string `json:"primaryMemberId,omitempty"`
+	// Members is this member's view of the whole group.
+	Members []GroupReplicationMember `json:"members,omitempty"`
+}
+
+// GroupReplicationMember is one row of a member's view of the group.
+type GroupReplicationMember struct {
+	// MemberID is the member's server_uuid.
+	MemberID string `json:"memberId,omitempty"`
+	// Host and Port are the member's reported address.
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+	// State is the member's group state (ONLINE/RECOVERING/OFFLINE/ERROR/UNREACHABLE).
+	State string `json:"state,omitempty"`
+	// Role is the member's group role (PRIMARY/SECONDARY).
+	Role string `json:"role,omitempty"`
 }
 
 // ArchivingStatus reports the in-Pod continuous binlog archiver's frontier and

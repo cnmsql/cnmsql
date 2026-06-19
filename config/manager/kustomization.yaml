@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: example.com/cloudnative-mysql
-  newTag: v0.0.1
+  newTag: v0.0.3-inplace

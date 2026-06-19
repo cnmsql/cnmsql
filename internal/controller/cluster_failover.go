@@ -74,6 +74,23 @@ func (r *ClusterReconciler) reconcileFailover(
 		return true, ctrl.Result{}, err
 	}
 	delay := time.Duration(cluster.Spec.FailoverDelay) * time.Second
+
+	// During an in-place operator upgrade the manager re-execs itself, causing a
+	// brief (~1-2s) control-API outage while the process image is replaced. An
+	// unreachable primary whose persisted instance-manager hash is stale (not yet
+	// matching the operator's) is likely mid-upgrade rather than genuinely dead.
+	// Give it a minimum grace window before triggering failover so a transient
+	// outage during the swap does not fence a working primary.
+	if cluster.Spec.InPlaceInstanceManagerUpdates && r.OperatorExecutableHash != "" {
+		if isStale, ok := isInstanceHashStale(cluster, observed.PrimaryName, r.OperatorExecutableHash); ok && isStale {
+			logf.FromContext(ctx).Info("Primary is unreachable but its manager hash is stale; extending failover grace for in-place upgrade",
+				"instance", observed.PrimaryName)
+			if minDelay := 30 * time.Second; delay < minDelay {
+				delay = minDelay
+			}
+		}
+	}
+
 	if remaining := delay - time.Since(failingSince); remaining > 0 {
 		reason := fmt.Sprintf("Primary %s unreachable; waiting %s before failover", observed.PrimaryName, remaining.Round(time.Second))
 		return true, ctrl.Result{RequeueAfter: remaining}, r.patchOperationPhase(ctx, cluster, observed, phaseDegraded, reason, false)
@@ -255,6 +272,19 @@ func (r *ClusterReconciler) recordPrimaryFailing(ctx context.Context, cluster *m
 		return time.Time{}, err
 	}
 	return now, nil
+}
+
+// isInstanceHashStale reports whether the named instance's instance-manager
+// binary hash, as persisted in the Cluster status from the last successful
+// observation, is non-empty and does not yet match the operator's hash. It
+// returns (false, false) when the instance has never been observed, so the
+// caller treats a brand-new cluster normally.
+func isInstanceHashStale(cluster *mysqlv1alpha1.Cluster, name, operatorHash string) (bool, bool) {
+	hash, ok := cluster.Status.ExecutableHashByInstance[name]
+	if !ok {
+		return false, false
+	}
+	return hash != "" && hash != operatorHash, true
 }
 
 // patchOperationPhase records an in-flight operation phase (e.g. Degraded,

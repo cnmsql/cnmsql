@@ -55,24 +55,14 @@ type ClusterStatusValidator struct {
 func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	clusterlog.V(1).Info("Validating Cluster status update", "cluster", req.Name, "user", req.UserInfo.Username)
 
-	instanceName, isInstance := instanceIdentity(req.UserInfo.Username, req.Name, req.Namespace)
-	if !isInstance {
-		// Non-instance callers are subject to normal RBAC only.
-		return admission.Allowed("")
+	if len(req.Object.Raw) == 0 {
+		return admission.Errored(400, fmt.Errorf("admission request did not contain a Cluster object"))
 	}
-
-	if req.SubResource != "status" {
-		return admission.Denied(fmt.Sprintf("instance %q is not allowed to modify Cluster %q subresource %q", instanceName, req.Name, req.SubResource))
-	}
-
 	oldCluster := &mysqlv1alpha1.Cluster{}
 	if len(req.OldObject.Raw) > 0 {
 		if err := v.Decoder.DecodeRaw(req.OldObject, oldCluster); err != nil {
 			return admission.Errored(400, fmt.Errorf("could not decode old Cluster object: %w", err))
 		}
-	}
-	if len(req.Object.Raw) == 0 {
-		return admission.Errored(400, fmt.Errorf("admission request did not contain a Cluster object"))
 	}
 	newCluster := &mysqlv1alpha1.Cluster{}
 	if err := v.Decoder.DecodeRaw(req.Object, newCluster); err != nil {
@@ -82,8 +72,39 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 	oldStatus := oldCluster.Status
 	newStatus := newCluster.Status
 
-	// If currentPrimary or its timestamp are touched, the new primary must be the caller
-	// and must match the operator-designated target.
+	// Monotonic invariants on the two split-brain-critical Group Replication
+	// fields are enforced for EVERY caller — the operator included — as defence in
+	// depth against a bug or a compromised operator token. Re-arming bootstrap or
+	// changing the group name is the path to a second, forked group.
+	if msg := validateGroupReplicationMonotonic(oldStatus, newStatus); msg != "" {
+		return admission.Denied(msg)
+	}
+
+	instanceName, isInstance := instanceIdentity(req.UserInfo.Username, req.Name, req.Namespace)
+	if !isInstance {
+		// Non-instance callers (notably the operator) are subject to normal RBAC
+		// plus the monotonic invariants checked above.
+		return admission.Allowed("")
+	}
+
+	if req.SubResource != "status" {
+		return admission.Denied(fmt.Sprintf("instance %q is not allowed to modify Cluster %q subresource %q", instanceName, req.Name, req.SubResource))
+	}
+
+	// Under Group Replication the group elects the primary and the operator is the
+	// sole writer of status (currentPrimary and the whole groupReplication block,
+	// cross-validated across the group view). There is no self-promotion, so an
+	// instance identity may write NOTHING to status: old and new must be identical.
+	if replicationMode(newCluster) == mysqlv1alpha1.ReplicationModeGroupReplication {
+		if !reflect.DeepEqual(&oldStatus, &newStatus) {
+			return admission.Denied(fmt.Sprintf(
+				"instance %q may not modify Cluster status under group replication (the operator is the sole writer)", instanceName))
+		}
+		return admission.Allowed("")
+	}
+
+	// Asynchronous topology: an instance may set its own currentPrimary (the
+	// pull-model self-promotion path), gated on the operator-designated target.
 	if newStatus.CurrentPrimary != oldStatus.CurrentPrimary ||
 		newStatus.CurrentPrimaryTimestamp != oldStatus.CurrentPrimaryTimestamp {
 		if newStatus.CurrentPrimary != instanceName {
@@ -111,6 +132,43 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 	}
 
 	return admission.Allowed("")
+}
+
+// replicationMode returns the effective replication mode of a cluster,
+// defaulting to async when unset.
+func replicationMode(cluster *mysqlv1alpha1.Cluster) string {
+	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Mode == "" {
+		return mysqlv1alpha1.ReplicationModeAsync
+	}
+	return cluster.Spec.Replication.Mode
+}
+
+// validateGroupReplicationMonotonic enforces the two invariants that protect the
+// group against a split-brain second group, for every caller. It returns a
+// non-empty denial message when an invariant is violated.
+//   - groupReplication.bootstrapped: false→true allowed, true→false denied
+//     (total-outage recovery re-bootstraps the SAME group without clearing it).
+//   - groupReplication.groupName: ""→value allowed, value→different denied.
+func validateGroupReplicationMonotonic(oldStatus, newStatus mysqlv1alpha1.ClusterStatus) string {
+	oldGR := oldStatus.GroupReplication
+	newGR := newStatus.GroupReplication
+	if oldGR == nil {
+		// Nothing was set before; any initial value is allowed.
+		return ""
+	}
+	if oldGR.Bootstrapped && (newGR == nil || !newGR.Bootstrapped) {
+		return "status.groupReplication.bootstrapped is monotonic: it may not be cleared once set"
+	}
+	if oldGR.GroupName != "" {
+		newName := ""
+		if newGR != nil {
+			newName = newGR.GroupName
+		}
+		if newName != "" && newName != oldGR.GroupName {
+			return "status.groupReplication.groupName is immutable once set"
+		}
+	}
+	return ""
 }
 
 // instanceIdentity extracts the instance name from a ServiceAccount identity of

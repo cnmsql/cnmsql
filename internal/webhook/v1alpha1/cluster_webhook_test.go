@@ -169,6 +169,139 @@ func TestClusterStatusValidator(t *testing.T) {
 	}
 }
 
+func TestClusterStatusValidatorGroupReplication(t *testing.T) {
+	d := admission.NewDecoder(schemeForTests())
+	validator := &ClusterStatusValidator{Decoder: d}
+
+	mkGR := func(mutate func(*mysqlv1alpha1.Cluster)) *mysqlv1alpha1.Cluster {
+		c := &mysqlv1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},
+			Spec: mysqlv1alpha1.ClusterSpec{
+				Replication: &mysqlv1alpha1.ReplicationConfiguration{
+					Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
+				},
+			},
+			Status: mysqlv1alpha1.ClusterStatus{
+				GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{
+					GroupName:     "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+					Bootstrapped:  true,
+					PrimaryMember: "demo-1",
+				},
+			},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
+	mustRaw := func(c *mysqlv1alpha1.Cluster) []byte {
+		b, err := json.Marshal(c)
+		if err != nil {
+			t.Fatalf("marshal Cluster: %v", err)
+		}
+		return b
+	}
+
+	const operator = "system:serviceaccount:cnm-system:controller-manager"
+	const instance = "system:serviceaccount:default:demo-1-instance"
+
+	cases := []struct {
+		name    string
+		user    string
+		subRes  string
+		old     *mysqlv1alpha1.Cluster
+		new     *mysqlv1alpha1.Cluster
+		allowed bool
+	}{
+		{
+			name:   "operator writes the group view",
+			user:   operator,
+			subRes: "status",
+			old:    mkGR(nil),
+			new: mkGR(func(c *mysqlv1alpha1.Cluster) {
+				c.Status.GroupReplication.PrimaryMember = "demo-2"
+				c.Status.CurrentPrimary = "demo-2"
+			}),
+			allowed: true,
+		},
+		{
+			name:    "instance may not write currentPrimary under GR",
+			user:    instance,
+			subRes:  "status",
+			old:     mkGR(nil),
+			new:     mkGR(func(c *mysqlv1alpha1.Cluster) { c.Status.CurrentPrimary = "demo-1" }),
+			allowed: false,
+		},
+		{
+			name:   "instance may not forge the group view",
+			user:   instance,
+			subRes: "status",
+			old:    mkGR(nil),
+			new: mkGR(func(c *mysqlv1alpha1.Cluster) {
+				c.Status.GroupReplication.HasQuorum = true
+				c.Status.GroupReplication.PrimaryMember = "demo-1"
+			}),
+			allowed: false,
+		},
+		{
+			name:    "instance making no status change is allowed under GR",
+			user:    instance,
+			subRes:  "status",
+			old:     mkGR(nil),
+			new:     mkGR(nil),
+			allowed: true,
+		},
+		{
+			name:    "operator may not clear bootstrapped",
+			user:    operator,
+			subRes:  "status",
+			old:     mkGR(nil),
+			new:     mkGR(func(c *mysqlv1alpha1.Cluster) { c.Status.GroupReplication.Bootstrapped = false }),
+			allowed: false,
+		},
+		{
+			name:   "operator may not change the group name",
+			user:   operator,
+			subRes: "status",
+			old:    mkGR(nil),
+			new: mkGR(func(c *mysqlv1alpha1.Cluster) {
+				c.Status.GroupReplication.GroupName = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+			}),
+			allowed: false,
+		},
+		{
+			name:   "first bootstrap sets bootstrapped true",
+			user:   operator,
+			subRes: "status",
+			old: mkGR(func(c *mysqlv1alpha1.Cluster) {
+				c.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{}
+			}),
+			new:     mkGR(nil),
+			allowed: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := admission.Request{
+				AdmissionRequest: admissionv1.AdmissionRequest{
+					Name:        "demo",
+					Namespace:   "default",
+					SubResource: tc.subRes,
+					UserInfo:    authenticationv1.UserInfo{Username: tc.user},
+					Object:      runtime.RawExtension{Raw: mustRaw(tc.new)},
+					OldObject:   runtime.RawExtension{Raw: mustRaw(tc.old)},
+				},
+			}
+			resp := validator.Handle(t.Context(), req)
+			if resp.Allowed != tc.allowed {
+				t.Fatalf("expected allowed=%v, got allowed=%v (%s)", tc.allowed, resp.Allowed, resp.Result.Message)
+			}
+		})
+	}
+}
+
 func schemeForTests() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = mysqlv1alpha1.AddToScheme(s)
