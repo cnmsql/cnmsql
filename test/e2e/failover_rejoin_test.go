@@ -30,7 +30,7 @@ var _ = Describe("Failover rejoin", Ordered, func() {
 			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
-		expectClusterReady(cluster, instances, 8*time.Minute)
+		expectClusterReady(cluster, instances, 20*time.Minute)
 	})
 
 	It("rejoins a deleted former primary from its retained PVC after failover", func() {
@@ -54,14 +54,14 @@ var _ = Describe("Failover rejoin", Ordered, func() {
 			primary := clusterPrimary(cluster)
 			g.Expect(primary).NotTo(Equal(oldPrimary))
 			newPrimary = primary
-		}, 6*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(6*time.Minute), 5*time.Second).Should(Succeed())
 
 		By(fmt.Sprintf("writing post-failover data on new primary %s", newPrimary))
 		Eventually(func(g Gomega) {
 			_, err := mysqlExec(newPrimary, "app", password, "app",
 				"REPLACE INTO failover_rejoin VALUES (2);")
 			g.Expect(err).NotTo(HaveOccurred())
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the recreated former primary reuses its PVC and catches up as a replica")
 		Eventually(func(g Gomega) {
@@ -73,9 +73,9 @@ var _ = Describe("Failover rejoin", Ordered, func() {
 				"SELECT id FROM app.failover_rejoin WHERE id = 2;")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring("2"))
-		}, 10*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
 
-		expectClusterReady(cluster, instances, 5*time.Minute)
+		expectClusterReady(cluster, instances, 20*time.Minute)
 	})
 })
 

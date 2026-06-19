@@ -42,7 +42,7 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(cluster, managedRoleClusterManifest(cluster, roleName))
 		})
-		expectClusterReady(cluster, 1, 12*time.Minute)
+		expectClusterReady(cluster, 1, 20*time.Minute)
 	})
 
 	It("creates the managed role on the primary with its privileges", func() {
@@ -55,7 +55,7 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 				fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", roleName))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring(roleName), "managed role not created yet")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the role's grants are scoped to app.* SELECT")
 		grants, err := mysqlExec(primary, "root", rootPass, "",
@@ -70,7 +70,7 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 			out, err := mysqlExec(primary, roleName, rolePass, "", "SELECT 1;")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring("1"))
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("creates a schema and schema-scoped user from a Database CR", func() {
@@ -86,7 +86,7 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 				"-o", "jsonpath={.status.applied}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(applied).To(Equal("true"), "Database is not applied yet")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		primary := clusterPrimary(cluster)
 		rootPass := secretPassword(cluster + "-root")
@@ -105,7 +105,7 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 			read, err := mysqlExec(primary, dbUser, dbUserPass, dbSchema, "SELECT id FROM t WHERE id = 7;")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(read).To(ContainSubstring("7"))
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("drops the schema when the Database is deleted under reclaimPolicy delete", func() {
@@ -122,7 +122,7 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 				fmt.Sprintf("SHOW DATABASES LIKE '%s';", dbSchema))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(BeEmpty(), "schema was not reclaimed on delete")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {

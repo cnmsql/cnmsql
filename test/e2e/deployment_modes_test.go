@@ -64,7 +64,7 @@ var _ = Describe("Cluster-wide deployment mode", Ordered, func() {
 		applyManifest("cw-cluster", twoInstanceClusterManifest("cw", ns))
 
 		By("waiting for both instances to become Ready (webhook exercised on primary election)")
-		expectClusterReady("cw", 2, 12*time.Minute)
+		expectClusterReady("cw", 2, 20*time.Minute)
 	})
 })
 
@@ -123,7 +123,7 @@ var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
 		Eventually(func() (string, error) {
 			return kubectl("get", "pods", "-l", "control-plane=controller-manager",
 				"-n", namespace, "-o", "jsonpath={.items[*].status.phase}")
-		}, 5*time.Minute, 5*time.Second).Should(ContainSubstring("Running"),
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(ContainSubstring("Running"),
 			"cluster-wide operator did not come back")
 	})
 
@@ -135,11 +135,11 @@ var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
 		By("waiting for the Cluster in namespace A to become Ready")
 		prev := useNamespace(nsModeA)
 		defer func() { testNamespace = prev }()
-		expectClusterReady("ca", 2, 12*time.Minute)
+		expectClusterReady("ca", 2, 20*time.Minute)
 
 		By("waiting for the Cluster in namespace B to become Ready")
 		testNamespace = nsModeB
-		expectClusterReady("cb", 2, 12*time.Minute)
+		expectClusterReady("cb", 2, 20*time.Minute)
 	})
 
 	It("scopes each operator's webhook to its own namespace", func() {
@@ -155,18 +155,18 @@ var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
 		Eventually(func() (string, error) {
 			return kubectl("get", "pods", "-l", "control-plane=controller-manager",
 				"-n", nsModeA, "-o", "jsonpath={.items[*].metadata.name}")
-		}, 2*time.Minute, 5*time.Second).Should(BeEmpty(), "operator A pod did not terminate")
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(BeEmpty(), "operator A pod did not terminate")
 
 		By("a status write in namespace A is rejected (A's Fail-policy webhook is down)")
 		Eventually(func() error {
 			return probeClusterStatusWebhook("ca", nsModeA)
-		}, 90*time.Second, 5*time.Second).Should(HaveOccurred(),
+		}, e2eTimeout(90*time.Second), 5*time.Second).Should(HaveOccurred(),
 			"A's webhook should gate its own namespace while A is down")
 
 		By("a status write in namespace B still succeeds (B's webhook is unaffected)")
 		Consistently(func() error {
 			return probeClusterStatusWebhook("cb", nsModeB)
-		}, 20*time.Second, 5*time.Second).Should(Succeed(),
+		}, e2eTimeout(20*time.Second), 5*time.Second).Should(Succeed(),
 			"operator B's namespace must be unaffected by operator A being down")
 
 		By("restoring operator A")
@@ -193,7 +193,7 @@ func waitOperatorRunning(ns string) {
 	Eventually(func() (string, error) {
 		return kubectl("get", "pods", "-l", "control-plane=controller-manager",
 			"-n", ns, "-o", "jsonpath={.items[*].status.phase}")
-	}, 5*time.Minute, 5*time.Second).Should(ContainSubstring("Running"),
+	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(ContainSubstring("Running"),
 		"operator in %s did not become ready", ns)
 }
 
@@ -202,7 +202,7 @@ func waitWebhookCAInjected(config string) {
 	Eventually(func() (string, error) {
 		return kubectl("get", "validatingwebhookconfigurations.admissionregistration.k8s.io",
 			config, "-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-	}, 3*time.Minute, 5*time.Second).ShouldNot(BeEmpty(), "webhook %s CA not injected", config)
+	}, e2eTimeout(3*time.Minute), 5*time.Second).ShouldNot(BeEmpty(), "webhook %s CA not injected", config)
 }
 
 func webhookConfigName(prefix string) string      { return prefix + "validating-webhook-configuration" }

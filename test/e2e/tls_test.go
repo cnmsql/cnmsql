@@ -39,7 +39,7 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 			out, err := clusterField(cluster, "{.status.certificates.expirations}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).NotTo(BeEmpty(), "Cluster %s should report certificate expirations", cluster)
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 	})
 
 	It("can write and TLS is active before any renewal", func() {
@@ -71,14 +71,14 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 			logs, err := kubectl("logs", primary, "-n", testNamespace, "-c", "mysql")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(logs).To(ContainSubstring("TLS certificates reloaded"))
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
+		}, e2eTimeout(30*time.Second), 2*time.Second).Should(Succeed())
 
 		By("verifying the cluster is still Ready after SIGHUP")
 		Eventually(func(g Gomega) {
 			ready, err := clusterField(cluster, "{.status.conditions[?(@.type=='Ready')].status}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(ready).To(Equal("True"))
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying writes still succeed after SIGHUP reload")
 		_, err = mysqlExec(primary, "root", rootPass, "app",
@@ -112,14 +112,14 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 			g.Expect(afterChecksum).NotTo(BeEmpty())
 			g.Expect(afterChecksum).NotTo(Equal(beforeChecksum),
 				"cert-manager should have issued a new certificate")
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 
 		By("waiting for the instance manager to detect and reload the renewed certificate")
 		Eventually(func(g Gomega) {
 			logs, err := kubectl("logs", primary, "-n", testNamespace, "-c", "mysql")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(logs).To(ContainSubstring("Certificate files changed, reloading"))
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the cluster remains Ready after certificate renewal")
 		expectClusterReady(cluster, 1, 5*time.Minute)
@@ -129,7 +129,7 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 			afterNotAfter := rawMysqlStatus(primary, rootPass, "Ssl_server_not_after")
 			g.Expect(afterNotAfter).NotTo(Equal(beforeNotAfter),
 				"mysqld should have picked up the renewed certificate")
-		}, 2*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 10*time.Second).Should(Succeed())
 
 		By("verifying writes still succeed after certificate re-issuance and reload")
 		_, err = mysqlExec(primary, "root", rootPass, "app",
@@ -141,7 +141,7 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 			out, err := clusterField(cluster, "{.status.certificates.expirations}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).NotTo(BeEmpty())
-		}, 3*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 10*time.Second).Should(Succeed())
 	})
 })
 

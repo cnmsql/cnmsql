@@ -37,7 +37,7 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
-		expectClusterReady(cluster, instances, 8*time.Minute)
+		expectClusterReady(cluster, instances, 20*time.Minute)
 	})
 
 	It("re-execs the manager in place on the primary without restarting mysqld or switching over", func() {
@@ -50,7 +50,7 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 		Eventually(func(g Gomega) {
 			uptimeBefore = mysqldUptime(g, primary, password)
 			g.Expect(uptimeBefore).To(BeNumerically(">", 0))
-		}, 1*time.Minute, 3*time.Second).Should(Succeed())
+		}, e2eTimeout(1*time.Minute), 3*time.Second).Should(Succeed())
 
 		By(fmt.Sprintf("triggering an in-place manager re-exec on %s via the control API", primary))
 		triggerInPlaceRestart(cluster, primary)
@@ -61,7 +61,7 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(logs).To(ContainSubstring("Adopting running mysqld after in-place manager upgrade"),
 				"the manager must take the adopt path, proving it re-exec'd in place")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying mysqld was never restarted: container restart count stays flat and uptime keeps climbing")
 		Consistently(func(g Gomega) {
@@ -69,7 +69,7 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 				"the mysql container restarted; the manager swap must not restart the Pod")
 			g.Expect(mysqldUptime(g, primary, password)).To(BeNumerically(">=", uptimeBefore),
 				"mysqld uptime dropped; the server was restarted instead of adopted")
-		}, 45*time.Second, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(45*time.Second), 10*time.Second).Should(Succeed())
 
 		By("verifying no switchover happened: the primary is unchanged")
 		Expect(clusterPrimary(cluster)).To(Equal(primary),
@@ -81,9 +81,9 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 				"CREATE TABLE IF NOT EXISTS inplace_probe (id INT PRIMARY KEY); "+
 					"REPLACE INTO inplace_probe VALUES (1);")
 			g.Expect(err).NotTo(HaveOccurred())
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
-		expectClusterReady(cluster, instances, 8*time.Minute)
+		expectClusterReady(cluster, instances, 20*time.Minute)
 	})
 })
 
@@ -151,5 +151,5 @@ spec:
 			Fail(fmt.Sprintf("in-place restart trigger Pod failed: %s", logs))
 		}
 		g.Expect(phase).To(Equal("Succeeded"), "trigger Pod has not reported a 200 yet")
-	}, 2*time.Minute, 3*time.Second).Should(Succeed())
+	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
 }

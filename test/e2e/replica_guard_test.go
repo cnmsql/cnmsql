@@ -51,7 +51,7 @@ var _ = Describe("Replica creation guard", Serial, Ordered, func() {
 
 		By("verifying the replica is not created while the primary is still bootstrapping")
 		sawPrimaryBootstrapping := false
-		deadline := time.Now().Add(6 * time.Minute)
+		deadline := time.Now().Add(e2eTimeout(6 * time.Minute))
 		for time.Now().Before(deadline) {
 			// The primary is OK once its Pod is Ready and it has been elected primary.
 			if instancePodReadyE2E(primary) && clusterPrimaryName(cluster) == primary {
@@ -97,12 +97,12 @@ var _ = Describe("Replica creation guard", Serial, Ordered, func() {
 		// immediately without ever exercising the unavailable window.
 		Eventually(func() bool {
 			return instancePodReadyE2E(primary)
-		}, 2*time.Minute, 2*time.Second).Should(BeFalse(),
+		}, e2eTimeout(2*time.Minute), 2*time.Second).Should(BeFalse(),
 			"primary %s never became unavailable after its Pod was deleted", primary)
 
 		By("verifying the new replica is not created while the primary is not ready")
 		sawPrimaryDown := false
-		deadline := time.Now().Add(6 * time.Minute)
+		deadline := time.Now().Add(e2eTimeout(6 * time.Minute))
 		for time.Now().Before(deadline) {
 			if instancePodReadyE2E(primary) {
 				break

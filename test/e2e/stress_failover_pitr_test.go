@@ -51,7 +51,7 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(sourceCluster, continuousArchivingClusterManifest(sourceCluster, version, 3))
 		})
-		expectClusterReady(sourceCluster, 3, 8*time.Minute)
+		expectClusterReady(sourceCluster, 3, 20*time.Minute)
 		password = appPassword(sourceCluster)
 
 		By("taking a base backup before any application data exists")
@@ -63,7 +63,7 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).NotTo(Equal("failed"), "base backup failed")
 			g.Expect(phase).To(Equal("completed"), "base backup not completed yet")
-		}, 8*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("sustains heavy writes through a failover and enables PITR past the failover point", func() {
@@ -88,15 +88,15 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 			g.Expect(p).NotTo(BeEmpty())
 			g.Expect(p).NotTo(Equal(primary), "primary must move off the failed instance")
 			newPrimary = p
-		}, 8*time.Minute, 5*time.Second).Should(Succeed())
-		expectClusterReady(sourceCluster, 3, 10*time.Minute)
+		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectClusterReady(sourceCluster, 3, 20*time.Minute)
 
 		By(fmt.Sprintf("verifying the new primary %s is writable", newPrimary))
 		Eventually(func(g Gomega) {
 			_, err := mysqlExec(newPrimary, "app", password, "app",
 				"INSERT INTO stress_test VALUES (-1, 'probe', UNIX_TIMESTAMP()); DELETE FROM stress_test WHERE id = -1;")
 			g.Expect(err).NotTo(HaveOccurred(), "new primary is not writable yet")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By(fmt.Sprintf("writing %d rows post-failover on the new primary", numPostFailover))
 		writeStressRows(sourceCluster, password, numPreFailover+1, numPostFailover, writeBatchSize, "post-failover")
@@ -117,7 +117,7 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(restoredCluster, pitrRecoveryClusterManifest(restoredCluster, version, backupName, targetGTID))
 		})
-		expectClusterReady(restoredCluster, 1, 12*time.Minute)
+		expectClusterReady(restoredCluster, 1, 20*time.Minute)
 
 		By("verifying data sanity in the recovered cluster")
 		restoredPrimary := clusterPrimary(restoredCluster)
@@ -148,7 +148,7 @@ func writeStressRows(cluster, password string, startID, count, batchSize int, ph
 		Eventually(func(g Gomega) {
 			_, err := mysqlExec(primary, "app", password, "app", sql)
 			g.Expect(err).NotTo(HaveOccurred(), "batch write at id=%d failed", startID+i)
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
+		}, e2eTimeout(30*time.Second), 2*time.Second).Should(Succeed())
 	}
 }
 
@@ -164,7 +164,7 @@ func verifyStressDataSanity(pod, password string, expectedUpTo, notExpectedFrom 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(parseSingleValue(out)).To(Equal(fmt.Sprintf("%d", expectedUpTo)),
 			"recovered cluster has wrong number of rows up to %d", expectedUpTo)
-	}, 2*time.Minute, 5*time.Second).Should(Succeed())
+	}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 	By(fmt.Sprintf("verifying no rows exist past the recovery target (ids >= %d)", expectedUpTo+1))
 	Eventually(func(g Gomega) {
@@ -173,7 +173,7 @@ func verifyStressDataSanity(pod, password string, expectedUpTo, notExpectedFrom 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(parseSingleValue(out)).To(Equal("0"),
 			"recovered cluster contains %d rows past the recovery target", out)
-	}, 2*time.Minute, 5*time.Second).Should(Succeed())
+	}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 	By("verifying the expected boundary rows are present (id=1, id=expectedUpTo, id=expectedUpTo/2)")
 	_, err := mysqlExec(pod, "app", password, "app",

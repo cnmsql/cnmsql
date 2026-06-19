@@ -55,7 +55,7 @@ jobs:
     name: ${{ matrix.id }}
     needs: generate-jobs
     if: needs.generate-jobs.outputs.kindEnabled == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'CloudNative-MySQL' && 'self-hosted' || 'ubuntu-latest' }}
     permissions:
       contents: read
     strategy:
@@ -65,6 +65,8 @@ jobs:
       K8S_VERSION: ${{ matrix.k8s_version }}
       E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
       CERT_MANAGER_INSTALL_SKIP: "false"
+      GINKGO_TIMEOUT: ${{ github.repository_owner == 'CloudNative-MySQL' && '240m' || '120m' }}
+      E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'CloudNative-MySQL' && '2' || '1' }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

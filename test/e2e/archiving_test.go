@@ -108,7 +108,7 @@ func archivingVersionSpecs(version string) {
 				last, err := clusterField(cluster, "{.status.continuousArchiving.lastArchivedBinlog}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(last).NotTo(BeEmpty(), "no binlog has been archived yet")
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 		})
 
 		It("loses no committed transaction when the primary crashes mid-segment", func() {
@@ -157,7 +157,7 @@ func archivingVersionSpecs(version string) {
 					"-o", "jsonpath={.status.availableReplicas}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(ready).To(BeEmpty(), "MinIO still has available replicas")
-			}, 2*time.Minute, 3*time.Second).Should(Succeed())
+			}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
 
 			By("writing and rotating so rotated files pile up un-shippable")
 			for i := 20; i < 26; i++ {
@@ -177,7 +177,7 @@ func archivingVersionSpecs(version string) {
 				reason, err := clusterField(cluster, "{.status.continuousArchiving.lastFailureReason}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(reason).NotTo(BeEmpty(), "no archiving failure was recorded")
-			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("restoring MinIO and waiting for it to come back")
 			_, err = kubectl("scale", "deployment/minio", "-n", testNamespace, "--replicas=1")
@@ -198,7 +198,7 @@ func archivingVersionSpecs(version string) {
 					"{.status.conditions[?(@.type=='ContinuousArchiving')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(status).To(Equal("True"), "archiving condition did not recover")
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 		})
 	})
 
@@ -240,7 +240,7 @@ func archivingVersionSpecs(version string) {
 				g.Expect(p).NotTo(BeEmpty())
 				g.Expect(p).NotTo(Equal(oldPrimary), "primary must move off the failed instance")
 				newPrimary = p
-			}, 8*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 			expectClusterReady(cluster, 3, 20*time.Minute)
 
 			By("writing on the new primary under its own server UUID")
@@ -248,7 +248,7 @@ func archivingVersionSpecs(version string) {
 				_, err := mysqlExec(newPrimary, "app", password, "app",
 					"INSERT INTO ledger VALUES (2)")
 				g.Expect(err).NotTo(HaveOccurred(), "new primary is not writable yet")
-			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("rotating and verifying the post-failover archive covers all writes")
 			executed := flushBinaryLogs(cluster, newPrimary, password)

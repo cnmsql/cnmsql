@@ -177,6 +177,7 @@ func expectArchiveCovers(cluster, want string, timeout time.Duration) {
 	// seed+flush, so it must be non-empty; refuse the vacuous case loudly.
 	ExpectWithOffset(1, want).NotTo(BeEmpty(),
 		"refusing to assert archive coverage of an empty GTID set (gtid_executed parsed empty?)")
+	timeout = e2eTimeout(timeout)
 	Eventually(func(g Gomega) {
 		idx, err := readArchiveIndex(cluster)
 		// The archiver writes the index only after it ships a rotated file, so a

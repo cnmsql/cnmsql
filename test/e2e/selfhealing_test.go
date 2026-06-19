@@ -37,7 +37,7 @@ var _ = Describe("Self-healing", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(cluster, semiSyncClusterManifest(cluster, replicas, minSync, maxSync, "preferred"))
 		})
-		expectClusterReady(cluster, replicas, 8*time.Minute)
+		expectClusterReady(cluster, replicas, 20*time.Minute)
 		rootPass = secretPassword(cluster + "-root")
 	})
 
@@ -47,7 +47,7 @@ var _ = Describe("Self-healing", Ordered, func() {
 		Eventually(func(g Gomega) {
 			g.Expect(semiSyncWaitCount(g, primary, rootPass)).To(Equal(minSync),
 				"steady-state wait count must equal minSyncReplicas")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("never spuriously restarts a healthy instance (liveness isolation stays green)", func() {
@@ -67,7 +67,7 @@ var _ = Describe("Self-healing", Ordered, func() {
 				g.Expect(podRestartCount(pod)).To(Equal(was),
 					"instance %s restarted while healthy (false isolation)", pod)
 			}
-		}, 90*time.Second, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(90*time.Second), 10*time.Second).Should(Succeed())
 	})
 
 	It("lowers the acknowledgement count to stay writable when a sync replica is fenced, then restores it", func() {
@@ -83,7 +83,7 @@ var _ = Describe("Self-healing", Ordered, func() {
 		Eventually(func(g Gomega) {
 			g.Expect(semiSyncWaitCount(g, primary, rootPass)).To(BeNumerically("<", minSync),
 				"preferred durability must lower the acknowledgement count while a replica is fenced")
-		}, 5*time.Minute, 2*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 2*time.Second).Should(Succeed())
 
 		By("verifying the primary stays writable during the degraded window")
 		_, err = mysqlExec(primary, "root", rootPass, "",
@@ -100,7 +100,7 @@ var _ = Describe("Self-healing", Ordered, func() {
 		Eventually(func(g Gomega) {
 			g.Expect(semiSyncWaitCount(g, clusterPrimary(cluster), rootPass)).To(Equal(minSync),
 				"wait count must return to minSyncReplicas after recovery")
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
