@@ -33,7 +33,7 @@ import (
 // reconcileInstances provisions the desired instances in ordinal order. To bound
 // load on the primary, a replica is only created once the previous instance is
 // ready; it returns false when it stopped early waiting for that prerequisite.
-func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (bool, error) {
+func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed observedCluster) (bool, error) {
 	for i := 1; i <= plan.Instances; i++ {
 		inst := plan.instanceFor(cluster, i)
 		if i > 1 {
@@ -43,6 +43,22 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 			}
 			if !prevReady {
 				// The previous instance is not ready yet: ramp up later.
+				return false, nil
+			}
+			// A replica is provisioned by cloning from the primary, both at initial
+			// bootstrap and when scaling up. Never create a new replica while the
+			// primary is unhealthy: the clone would fail against a primary that is
+			// unreachable or not ready, and seeding from one about to be failed over
+			// risks diverging the new replica. Existing replicas are left alone (their
+			// data is already cloned); only the first creation of a replica Pod is
+			// gated, so this never blocks routine reconciliation of a running cluster.
+			exists, err := r.instancePodExists(ctx, cluster, inst)
+			if err != nil {
+				return false, err
+			}
+			if !exists && !primaryHealthy(observed) {
+				logf.FromContext(ctx).Info("Deferring replica creation: primary is not healthy",
+					"instance", inst.Name, "primary", observed.PrimaryName)
 				return false, nil
 			}
 		}
@@ -83,6 +99,20 @@ func (r *ClusterReconciler) instancePodReady(ctx context.Context, cluster *mysql
 		return false, err
 	}
 	return podReady(pod), nil
+}
+
+// instancePodExists reports whether the instance Pod has already been created.
+// It distinguishes a brand-new replica (to be cloned from the primary) from one
+// whose data is already in place.
+func (r *ClusterReconciler) instancePodExists(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) (bool, error) {
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // scaleDownReplicas removes instances whose ordinal exceeds the desired count.

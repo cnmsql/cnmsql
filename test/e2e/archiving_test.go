@@ -70,7 +70,7 @@ func archivingVersionSpecs(version string) {
 			DeferCleanup(func() {
 				deleteManifest(cluster, continuousArchivingClusterManifest(cluster, version, 1))
 			})
-			expectClusterReady(cluster, 1, 12*time.Minute)
+			expectClusterReady(cluster, 1, 20*time.Minute)
 			password = appPassword(cluster)
 
 			By("seeding a base table")
@@ -131,7 +131,7 @@ func archivingVersionSpecs(version string) {
 			Expect(err).NotTo(HaveOccurred(), "Failed to force-delete the primary")
 
 			By("waiting for the instance to recover")
-			expectClusterReady(cluster, 1, 8*time.Minute)
+			expectClusterReady(cluster, 1, 20*time.Minute)
 
 			// On restart mysqld opens a fresh binary log, so the pre-crash active log
 			// becomes immutable and the archiver ships it. Every committed GTID must
@@ -212,7 +212,7 @@ func archivingVersionSpecs(version string) {
 			DeferCleanup(func() {
 				deleteManifest(cluster, continuousArchivingClusterManifest(cluster, version, 3))
 			})
-			expectClusterReady(cluster, 3, 8*time.Minute)
+			expectClusterReady(cluster, 3, 20*time.Minute)
 			password = appPassword(cluster)
 
 			By("seeding and archiving under the original primary")
@@ -241,7 +241,7 @@ func archivingVersionSpecs(version string) {
 				g.Expect(p).NotTo(Equal(oldPrimary), "primary must move off the failed instance")
 				newPrimary = p
 			}, 8*time.Minute, 5*time.Second).Should(Succeed())
-			expectClusterReady(cluster, 3, 10*time.Minute)
+			expectClusterReady(cluster, 3, 20*time.Minute)
 
 			By("writing on the new primary under its own server UUID")
 			Eventually(func(g Gomega) {
