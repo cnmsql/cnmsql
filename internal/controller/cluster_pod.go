@@ -275,6 +275,12 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
 		"--source-ssl-key=" + serverTLSPath + "/tls.key",
 	}
+	if isGroupReplication(cluster) {
+		// Run the member under the Group Replication strategy: the in-Pod role
+		// reconciler ensures membership instead of async promote/follow, and the
+		// status reports the group view.
+		args = append(args, "--group-replication")
+	}
 	if monitoringTLSEnabled(cluster) {
 		// Serve metrics over the same mutual TLS as the control API: the pod
 		// already mounts server-tls and client-ca, so no extra key material is

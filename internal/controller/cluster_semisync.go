@@ -37,6 +37,11 @@ import (
 // primary is reachable. Failures are logged by the caller and retried on the
 // next resync rather than failing the reconcile.
 func (r *ClusterReconciler) reconcileSemiSync(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) error {
+	// Semi-sync is mutually exclusive with Group Replication (the spec webhook
+	// rejects the combination); never drive it under GR.
+	if isGroupReplication(cluster) {
+		return nil
+	}
 	minSync := cluster.Spec.MinSyncReplicas
 	if !semiSyncEnabled(cluster) || minSync <= 0 {
 		// Nothing to enforce: semi-sync off or no synchronous floor configured.

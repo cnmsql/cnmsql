@@ -147,7 +147,7 @@ func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instance
 	if !inst.IsPrimary {
 		role = mysqlconfig.RoleReplica
 	}
-	return (&mysqlconfig.ServerConfig{
+	cfg := &mysqlconfig.ServerConfig{
 		ServerID:     inst.ServerID,
 		Version:      plan.ServerVersion,
 		Role:         role,
@@ -169,7 +169,17 @@ func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instance
 		UserParameters: cluster.Spec.MySQL.Parameters,
 		SemiSync:       semiSync,
 		Archiving:      archivingConfig(cluster),
-	}).Render()
+	}
+	// Under Group Replication, render the group_replication_* block instead of
+	// the async/semi-sync settings. The group name must already be pinned in
+	// status; the GR topology path requeues until it is, so config is never
+	// rendered with an empty group name.
+	if gr, ok := groupReplicationConfig(cluster, plan, inst); ok {
+		cfg.TopologyMode = mysqlconfig.TopologyGroupReplication
+		cfg.GroupReplication = gr
+		cfg.SemiSync = mysqlconfig.SemiSync{}
+	}
+	return cfg.Render()
 }
 
 func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {

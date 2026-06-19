@@ -78,6 +78,11 @@ type observedCluster struct {
 	// ContinuousArchiving holds the primary's archiving frontier/health when
 	// continuous archiving is enabled; nil otherwise.
 	ContinuousArchiving *mysqlv1alpha1.ContinuousArchivingStatus
+	// GroupReplication is the operator's aggregated view of the group under GR
+	// mode (primary, members, quorum); nil for async clusters or before any
+	// member is observed ONLINE. The sticky groupName/bootstrapped fields are
+	// merged in patchStatus, not here.
+	GroupReplication *mysqlv1alpha1.GroupReplicationStatus
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -151,15 +156,29 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
-	observed.DivergedInstances = detectDivergedReplicas(observed)
-	for _, name := range observed.DivergedInstances {
-		// A diverged replica may keep its threads running while silently
-		// diverging, so do not count it as a healthy ready instance.
-		if status, ok := observed.StatusByInstance[name]; ok && status.IsReady {
-			observed.ReadyInstances--
+	// Under Group Replication the group elects the primary; aggregate every
+	// member's reported view into the operator's authoritative group status and
+	// mirror the elected PRIMARY into PrimaryName (and currentPrimary in
+	// patchStatus). Divergence/role inference is async-specific and does not apply
+	// to a group, so it is skipped; the shared readiness/phase computation below
+	// still runs.
+	if isGroupReplication(cluster) {
+		grStatus, primary := observeGroupReplication(observed)
+		observed.GroupReplication = grStatus
+		if primary != "" {
+			observed.PrimaryName = primary
 		}
+	} else {
+		observed.DivergedInstances = detectDivergedReplicas(observed)
+		for _, name := range observed.DivergedInstances {
+			// A diverged replica may keep its threads running while silently
+			// diverging, so do not count it as a healthy ready instance.
+			if status, ok := observed.StatusByInstance[name]; ok && status.IsReady {
+				observed.ReadyInstances--
+			}
+		}
+		observed.ReplicationBrokenInstances = detectReplicationBroken(observed)
 	}
-	observed.ReplicationBrokenInstances = detectReplicationBroken(observed)
 
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
@@ -450,6 +469,12 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// longer erases that the cluster was once established.
 	if latest.Status.EstablishedAt == nil && (observed.Ready || establishedPhase(before.Status.Phase)) {
 		latest.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	}
+	// Under Group Replication the operator is the sole writer of currentPrimary
+	// and the groupReplication block (instances write nothing to status). Merge the
+	// observed view onto the sticky groupName/bootstrapped fields.
+	if isGroupReplication(latest) {
+		mergeGroupReplicationStatus(latest, observed)
 	}
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)
 	latest.Status.ContinuousArchiving = observed.ContinuousArchiving

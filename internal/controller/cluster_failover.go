@@ -53,6 +53,12 @@ func (r *ClusterReconciler) reconcileFailover(
 	plan clusterPlan,
 	observed observedCluster,
 ) (bool, ctrl.Result, error) {
+	// Group Replication elects and fails over within the group; the operator must
+	// never drive an async failover (that is the "operator does not promote"
+	// guarantee). It observes the new primary instead.
+	if isGroupReplication(cluster) {
+		return false, ctrl.Result{}, nil
+	}
 	// Only an already-established primary can be failed over; never during the
 	// initial bootstrap, and never for a single-instance cluster (no candidate).
 	if cluster.Status.CurrentPrimary == "" || observed.PrimaryName == "" || plan.Instances < 2 {
