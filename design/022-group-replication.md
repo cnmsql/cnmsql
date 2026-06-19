@@ -626,11 +626,70 @@ consistent reads) — a natural extension of the existing `routable` gating in
 
 ### kubectl plugin (`design/016`)
 
-- `status` shows the group view (members, states, roles, primary, quorum health).
-- `promote <member>` uses `set_as_primary` (sets `targetPrimary`).
-- `fence`/`unfence` map to `STOP`/`START GROUP_REPLICATION` semantics.
-- New guarded `group recover` command for operator-assisted quorum recovery /
-  re-bootstrap, with an explicit confirmation flag.
+GR changes what several commands *do*, and adds the most dangerous command in the
+whole CLI (quorum recovery). The plugin is also exactly where an operator reaches
+under stress, so the command set and its **documentation** must explain not just
+*what* a command does but its *consequences*. Two parts: the GR command behaviour,
+and a documentation contract that applies to every command (async included).
+
+**GR command behaviour:**
+
+- `status` shows the group view (members, states, roles, primary, quorum health),
+  and clearly flags a degraded/quorum-lost group.
+- `promote <member>` uses `set_as_primary` (still via `targetPrimary`); the
+  consequence note changes from "brief write interruption + GTID catch-up" (async)
+  to "near-instant role handover, no write loss" (GR).
+- `fence on`/`off` map to `STOP`/`START GROUP_REPLICATION`. The command **refuses
+  (or requires `--force`) when fencing would drop the group below quorum**, and
+  warns that fencing the primary triggers a group re-election.
+- New guarded `group recover` command for operator-assisted `force_members` /
+  total-outage re-bootstrap. It is the only command that can lose data or cause
+  split-brain if misused, so it prints the computed survivor set / most-advanced
+  member, requires a typed confirmation (not just `--yes`), and refuses when
+  safety is unprovable.
+
+**Documentation contract (every command, in-CLI `--help` *and* the docs site):**
+
+Each command's help and runbook entry follows one structure so consequences are
+never buried:
+
+1. **What it does** — one line (the existing `Short`).
+2. **How it works** — the object/field/annotation it touches and who acts on it
+   (e.g. "stamps the fencing annotation; the operator removes the Pod from
+   routing"). Demystifies the declarative indirection.
+3. **Preconditions / refusals** — what must hold and what the command rejects
+   (e.g. `promote` refuses a diverged or fenced instance).
+4. **Effect** — the observable result and where to see it (`status`, which
+   Service, which condition).
+5. **Consequences & risks** — the part missing today: write interruption,
+   failover/election triggered, archiving paused, PDBs relaxed, **data loss
+   potential**, **quorum impact**, and reversibility.
+6. **Topology differences** — async vs GR, where they differ. Where practical the
+   command detects `spec.replication.mode` at runtime and prints the *relevant*
+   consequence rather than both.
+7. **Example + what to verify afterward.**
+
+**Safety affordances (behaviour the docs describe and the CLI enforces):**
+
+- Destructive/disruptive commands (`reinit`, `destroy`, `maintenance set`,
+  `fence`, `restart` of a primary, `group recover`) lead their `Long` text with
+  the consequence, print a one-line consequence summary before acting, and gate on
+  confirmation — `--yes` for disruptive, a typed cluster/instance name for
+  data-destroying ones. A `--dry-run` previews the effect without applying.
+- A **command safety matrix** in the docs: command → destructive? → write impact →
+  quorum/availability impact → reversible? — so an operator can scan risk at a
+  glance.
+
+**Where the docs live:** expand `docs/src/operations.md` runbooks with GR variants
+and a "Consequences" callout per dangerous operation, and add a per-command
+reference page generated from the cobra help so the in-CLI text and the site never
+drift. The structured `Long` text is the single source both consume.
+
+> Note: items 1–7 and the safety affordances are general improvements that also
+> benefit the async CLI; GR is the catalyst. If preferred they can be lifted into
+> their own small design doc and landed independently of the GR milestones — but
+> the GR-specific consequence text (quorum, `group recover`) must ship with the
+> phase that introduces each command.
 
 ### Webhook validation and version gating (`internal/webhook`)
 
@@ -678,8 +737,12 @@ tests. GR stays behind `mode: groupReplication` throughout.
   surfacing, opt-in guarded recovery + total-outage re-bootstrap. E2E quorum-loss
   and recovery.
 - **M-GR.7 — Lifecycle integration.** Rolling + in-place upgrades, scale up/down,
-  backup/restore into a fresh group, kubectl plugin GR commands, monitoring,
-  docs. Full E2E matrix + async regression suite.
+  backup/restore into a fresh group, kubectl plugin GR commands + the
+  documentation contract and safety affordances (structured `--help`/runbooks,
+  consequence summaries, confirmations, command safety matrix), monitoring, docs.
+  Full E2E matrix + async regression suite.
+  (GR-specific consequence text — quorum impact, `group recover` — ships with the
+  phase that first introduces each command, e.g. `fence` quorum-guard in M-GR.6.)
 
 ## Testing strategy
 
