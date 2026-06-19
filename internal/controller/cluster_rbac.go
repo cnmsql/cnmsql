@@ -59,7 +59,7 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 			{
 				APIGroups:     []string{"coordination.k8s.io"},
 				Resources:     []string{"leases"},
-				Verbs:         []string{"get", "create", "update", "patch", "delete", "watch"},
+				Verbs:         []string{"get", "create", "update", "patch", "delete", "watch", "list"},
 				ResourceNames: []string{primaryLeaseName(cluster)},
 			},
 		}
