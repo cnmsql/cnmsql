@@ -4,9 +4,7 @@ on:
   issue_comment:
     types: [ created ]
   workflow_dispatch:
-  schedule:
-  # Nightly run at 02:17 UTC against the full pull_request-style matrix.
-  - cron: "17 2 * * *"
+
 
 permissions: {}
 
