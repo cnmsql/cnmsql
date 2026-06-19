@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,22 @@ import (
 
 	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
 )
+
+// e2eTimeoutMultiplier scales all Eventually timeout values when the test suite
+// runs on slower infrastructure (e.g. self-hosted GitHub Actions runners).
+// Set E2E_TIMEOUT_MULTIPLIER=2 to double every timeout; the default is 1.
+var e2eTimeoutMultiplier = func() float64 {
+	if v := os.Getenv("E2E_TIMEOUT_MULTIPLIER"); v != "" {
+		if m, err := strconv.ParseFloat(v, 64); err == nil && m > 0 {
+			return m
+		}
+	}
+	return 1.0
+}()
+
+func e2eTimeout(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * e2eTimeoutMultiplier)
+}
 
 // testNamespace is the namespace that hosts the test Clusters and their
 // supporting objects. The controller runs in `namespace` (cloudnative-mysql-system) and
@@ -183,6 +200,7 @@ func clusterField(name, jsonpath string) (string, error) {
 // common e2e failure, and without this dump the CI logs reveal nothing about why.
 func expectClusterReady(name string, instances int, timeout time.Duration) {
 	GinkgoHelper()
+	timeout = e2eTimeout(timeout)
 	check := func() error {
 		ready, err := clusterField(name, "{.status.conditions[?(@.type=='Ready')].status}")
 		if err != nil {

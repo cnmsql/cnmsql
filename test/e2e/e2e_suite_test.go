@@ -54,7 +54,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 			return ""
 		}
 		return out
-	}, 5*time.Minute, 5*time.Second).Should(ContainSubstring("Running"),
+	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(ContainSubstring("Running"),
 		"controller-manager did not become ready")
 })
 

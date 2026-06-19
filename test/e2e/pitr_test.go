@@ -50,7 +50,7 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(sourceCluster, continuousArchivingClusterManifest(sourceCluster, version, 1))
 		})
-		expectClusterReady(sourceCluster, 1, 12*time.Minute)
+		expectClusterReady(sourceCluster, 1, 20*time.Minute)
 		password = appPassword(sourceCluster)
 	})
 
@@ -66,7 +66,7 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).NotTo(Equal("failed"), "base backup failed")
 			g.Expect(phase).To(Equal("completed"), "base backup not completed yet")
-		}, 8*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("writing the target row (id=1) after the base backup")
 		_, err := mysqlExec(primary, "app", password, "app",
@@ -92,7 +92,7 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(restoredCluster, pitrRecoveryClusterManifest(restoredCluster, version, backupName, targetGTID))
 		})
-		expectClusterReady(restoredCluster, 1, 12*time.Minute)
+		expectClusterReady(restoredCluster, 1, 20*time.Minute)
 
 		By("verifying the recovered cluster has the target row but not the later one")
 		restoredPrimary := clusterPrimary(restoredCluster)
@@ -103,7 +103,7 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 				"SELECT note FROM ledger WHERE id = 1;")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring("target"), "target row missing after recovery")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		out, err := mysqlExec(restoredPrimary, "app", password, "app",
 			"SELECT COUNT(*) FROM ledger WHERE id = 2;")

@@ -43,7 +43,7 @@ var _ = Describe("Scheduled backups", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(sourceCluster, archivingClusterManifest(sourceCluster))
 		})
-		expectClusterReady(sourceCluster, 1, 12*time.Minute)
+		expectClusterReady(sourceCluster, 1, 20*time.Minute)
 	})
 
 	It("fires an immediate backup and keeps the cron cadence", func() {
@@ -57,7 +57,7 @@ var _ = Describe("Scheduled backups", Ordered, func() {
 		Eventually(func(g Gomega) {
 			names := backupNamesWithLabel(g, parentLabelSelector)
 			g.Expect(names).NotTo(BeEmpty(), "no backup created for the scheduled backup yet")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the first backup carries the immediate label")
 		immediate, err := kubectl("get", "backups", "-n", testNamespace,
@@ -75,7 +75,7 @@ var _ = Describe("Scheduled backups", Ordered, func() {
 			phases := strings.Fields(out)
 			g.Expect(phases).NotTo(ContainElement("failed"), "a scheduled backup failed")
 			g.Expect(phases).To(ContainElement("completed"), "no scheduled backup completed yet")
-		}, 10*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(10*time.Minute), 10*time.Second).Should(Succeed())
 
 		By("verifying the schedule advances its status")
 		Eventually(func(g Gomega) {
@@ -83,13 +83,13 @@ var _ = Describe("Scheduled backups", Ordered, func() {
 				"-o", "jsonpath={.status.nextScheduleTime}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(next).NotTo(BeEmpty(), "nextScheduleTime is not set")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for a second slot to fire (more than one child backup)")
 		Eventually(func(g Gomega) {
 			names := backupNamesWithLabel(g, parentLabelSelector)
 			g.Expect(len(names)).To(BeNumerically(">=", 2), "the schedule did not produce a second backup")
-		}, 12*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(12*time.Minute), 10*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {

@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
 func TestRoleLabelsPrimaryVsReplica(t *testing.T) {
@@ -159,6 +160,77 @@ func TestScaleDownKeepsCurrentPrimaryByName(t *testing.T) {
 	}
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: "demo-3"}, &corev1.Pod{}); err != nil {
 		t.Fatalf("current primary should be kept: %v", err)
+	}
+}
+
+// TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary checks that a brand-new
+// replica is not created while the primary is not OK: it would be cloned from a
+// primary that is unreachable or not acting as primary. Once the primary is OK
+// the replica is created.
+func TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Scheme: scheme,
+	}
+	plan := testPlan()
+	plan.Instances = 2
+
+	// Bootstrap the primary the way the controller does so its Pod carries the
+	// expected template hash; ensureInstance then treats it as stable instead of
+	// rolling it. Mark it Ready so the previous-instance ramp-up gate passes.
+	primary := plan.instanceFor(cluster, 1)
+	if err := reconciler.ensureInstance(ctx, cluster, plan, primary); err != nil {
+		t.Fatal(err)
+	}
+	markPodReady(t, ctx, reconciler, primary.Name)
+
+	// Primary Pod is Ready, but the control API reports it as a replica (not OK as
+	// a primary): primaryHealthy is false, so the new replica must be deferred.
+	observed := observedCluster{
+		Plan:        plan,
+		PrimaryName: primary.Name,
+		StatusByInstance: map[string]*webserver.Status{
+			primary.Name: {Role: webserver.RoleReplica, IsReady: true},
+		},
+	}
+
+	provisioned, err := reconciler.reconcileInstances(ctx, cluster, plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provisioned {
+		t.Fatal("reconcileInstances reported provisioned while deferring replica creation")
+	}
+	replicaKey := types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 2)}
+	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("replica pod get = %v, want not created while primary unhealthy", err)
+	}
+
+	// Once the primary reports as a healthy primary, the guard lets the replica
+	// through and its Pod is created.
+	observed.StatusByInstance[primary.Name] = &webserver.Status{Role: webserver.RolePrimary, IsReady: true}
+	if _, err := reconciler.reconcileInstances(ctx, cluster, plan, observed); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); err != nil {
+		t.Fatalf("replica pod should be created once primary is healthy: %v", err)
+	}
+}
+
+// markPodReady flips the named Pod's Ready condition to True.
+func markPodReady(t *testing.T, ctx context.Context, reconciler *ClusterReconciler, name string) {
+	t.Helper()
+	pod := &corev1.Pod{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, pod); err != nil {
+		t.Fatalf("get pod %s: %v", name, err)
+	}
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	if err := reconciler.Status().Update(ctx, pod); err != nil {
+		t.Fatalf("mark pod %s ready: %v", name, err)
 	}
 }
 

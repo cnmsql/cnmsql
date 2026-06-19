@@ -6,6 +6,17 @@ The binary is `kubectl-cnmysql`; once on your `PATH` it is invoked as
 
 ## Install
 
+**From a release:**
+
+```sh
+curl -sSfL https://github.com/CloudNative-MySQL/cloudnative-mysql/raw/main/hack/install-cnmysql-plugin.sh | sh -s -- -b ~/.local/bin
+```
+
+The script downloads the latest release binary for your platform, verifies its checksum,
+and installs the plugin plus a tab-completion shim.
+
+**From the repo (development):**
+
 ```sh
 make install-plugin   # builds and installs into ~/.local/bin
 ```

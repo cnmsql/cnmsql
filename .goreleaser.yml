@@ -1,0 +1,70 @@
+version: 2
+
+project_name: kubectl-cnmysql
+
+before:
+  hooks:
+  - go mod tidy
+
+builds:
+- id: kubectl-cnmysql
+  main: ./cmd/kubectl-cnmysql
+  binary: kubectl-cnmysql
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - amd64
+  - arm64
+  ignore:
+  - goos: windows
+    goarch: arm64
+  env:
+  - CGO_ENABLED=0
+  ldflags:
+  - -s -w
+  - -X github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd.Version={{.Version}}
+  - -X github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd.Commit={{.Commit}}
+  - -X github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd.BuildDate={{.Date}}
+
+archives:
+- id: default
+  formats:
+  - tar.gz
+  format_overrides:
+  - goos: windows
+    formats:
+    - zip
+  name_template: >-
+    {{ .ProjectName }}_ {{- .Version }}_ {{- .Os }}_ {{- .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+    - "^docs:"
+    - "^test:"
+    - "^ci:"
+    - "^chore:"
+    - Merge pull request
+    - Merge branch
+
+release:
+  prerelease: auto
+  footer: |
+    ## Plugin Installation
+
+    ```sh
+    curl -sSfL https://github.com/CloudNative-MySQL/cloudnative-mysql/raw/main/hack/install-cnmysql-plugin.sh | sh -s -- -b /usr/local/bin {{ .Tag }}
+    ```
+
+    Omit the tag to install the latest release, or replace `/usr/local/bin` with any directory on your `PATH`.
+
+    The script also installs a `kubectl_complete-cnmysql` shim so `kubectl cnmysql <TAB>` autocompletes subcommands and cluster names.

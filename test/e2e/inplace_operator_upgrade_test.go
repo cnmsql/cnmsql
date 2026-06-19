@@ -75,7 +75,7 @@ spec:
 		})
 
 		By("waiting for the cluster to become ready on the initial operator")
-		expectClusterReady(clusterName, 3, 12*time.Minute)
+		expectClusterReady(clusterName, 3, 20*time.Minute)
 
 		instances := []string{clusterName + "-1", clusterName + "-2", clusterName + "-3"}
 		primary := clusterPrimary(clusterName)
@@ -94,7 +94,7 @@ spec:
 			Eventually(func(g Gomega) {
 				uptimeBefore[inst] = mysqldUptime(g, inst, password)
 				g.Expect(uptimeBefore[inst]).To(BeNumerically(">", 0))
-			}, 1*time.Minute, 3*time.Second).Should(Succeed())
+			}, e2eTimeout(1*time.Minute), 3*time.Second).Should(Succeed())
 		}
 
 		By("deploying the new operator (the cluster opts into in-place updates via its spec)")
@@ -111,7 +111,7 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).NotTo(BeEmpty())
 			g.Expect(out).NotTo(Equal(initialHash), "operator hash should change after the new deploy")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for every instance manager to converge to the new hash in place")
 		Eventually(func(g Gomega) {
@@ -125,7 +125,7 @@ spec:
 				g.Expect(instHash).To(Equal(target),
 					"instance %s manager hash should converge to the new operator hash", inst)
 			}
-		}, 10*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying each instance took the adopt path (proving an in-place re-exec, not a Pod restart)")
 		for _, inst := range instances {
@@ -134,7 +134,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(logs).To(ContainSubstring("Adopting running mysqld after in-place manager upgrade"),
 					"instance %s must adopt the running mysqld, proving the manager re-exec'd in place", inst)
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 		}
 
 		By("verifying mysqld was never restarted: container restart counts stay flat and uptime keeps climbing")
@@ -144,7 +144,7 @@ spec:
 			Eventually(func(g Gomega) {
 				g.Expect(mysqldUptime(g, inst, password)).To(BeNumerically(">=", uptimeBefore[inst]),
 					"instance %s mysqld uptime dropped; the server was restarted instead of adopted", inst)
-			}, 1*time.Minute, 3*time.Second).Should(Succeed())
+			}, e2eTimeout(1*time.Minute), 3*time.Second).Should(Succeed())
 		}
 
 		By("verifying no switchover happened: the primary is unchanged")
@@ -152,7 +152,7 @@ spec:
 			"an in-place operator upgrade must not switch the primary over")
 
 		By("waiting for the cluster to return to Ready after the in-place upgrade")
-		expectClusterReady(clusterName, 3, 5*time.Minute)
+		expectClusterReady(clusterName, 3, 20*time.Minute)
 
 		By("verifying the primary still serves writes after the manager swap")
 		Eventually(func(g Gomega) {
@@ -160,7 +160,7 @@ spec:
 				"CREATE TABLE IF NOT EXISTS inplace_op_probe (id INT PRIMARY KEY); "+
 					"REPLACE INTO inplace_op_probe VALUES (1);")
 			g.Expect(err).NotTo(HaveOccurred())
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 })
 

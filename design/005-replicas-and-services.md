@@ -70,6 +70,40 @@ Labels extend M3's set; `role` becomes dynamic (`primary` / `replica`) and is th
 7. Poll every instance manager `/status`; aggregate into cluster status.
 8. Steady-state resync (reuse M3's `readyResync`) to refresh replica lag/GTID.
 
+### Addendum — Replica-creation primary-health guard (post-M4)
+
+The ordered scale-up above gates each new replica on the *previous* instance being
+Ready. That alone is not enough: a replica is provisioned by **cloning from the
+primary** (the streamed XtraBackup join), so a new replica must never be created
+while the primary it would clone from is not OK. A clone from an unreachable or
+not-yet-promoted primary fails, and seeding from a primary that is about to be
+failed over risks diverging the fresh replica.
+
+`reconcileInstances` therefore adds a guard before creating a replica
+(ordinal > 1) whose Pod does **not yet exist**: it requires `primaryHealthy(observed)`
+(the helper from [006](006-switchover-failover.md) — primary reachable, `IsReady`,
+and reporting `RolePrimary`). If the primary is not healthy, the loop stops early
+and the reconcile requeues; the new replica's Pod (and PVC) is not created. This
+covers both bootstrap (replicas wait for the bootstrap primary to come up) and
+later scale-up (a new replica waits for a degraded primary to recover).
+
+Scope and interplay:
+
+- **Only new replicas are gated.** Existing replica Pods are still reconciled
+  normally (their data is already cloned), so a transient primary blip does not
+  block routine reconciliation of a running cluster.
+- **No failover deadlock.** Automatic failover runs *before* `reconcileInstances`.
+  When an established primary fails, a healthy replica is promoted first, so the
+  guard then sees a healthy primary. During initial bootstrap there is no replica
+  to fail over to, and the failover path deliberately yields to provisioning —
+  but cloning from a down primary would fail anyway, which is exactly what the
+  guard prevents.
+
+Tested by the unit test `TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary`
+(primary Pod Ready but control API reports non-primary ⇒ replica deferred) and the
+`Replica creation guard` e2e specs (bootstrap ordering and scale-up while the
+primary is unavailable).
+
 ## Testing
 
 - **Unit (operator):** replica plan diff (scale up/down, ordinals), service selector generation + `disabledDefaultServices`, role-label sync, status aggregation with mixed ready/unready replicas, primary-immutability guard.

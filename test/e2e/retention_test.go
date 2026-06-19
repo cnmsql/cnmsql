@@ -39,7 +39,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(retCluster, retentionClusterManifest(retCluster, "1d"))
 		})
-		expectClusterReady(retCluster, 1, 12*time.Minute)
+		expectClusterReady(retCluster, 1, 20*time.Minute)
 	})
 
 	It("takes a real (recent) base backup", func() {
@@ -53,7 +53,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).NotTo(Equal("failed"), "real backup failed")
 			g.Expect(phase).To(Equal("completed"), "real backup not completed yet")
-		}, 8*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("expires the stale base backup while keeping the recent one", func() {
@@ -88,7 +88,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 		Eventually(func(g Gomega) {
 			g.Expect(mcObjectExists(fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))).
 				To(BeFalse(), "stale backup metadata should be deleted")
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 
 		By("verifying the recent backup survives as the retention floor")
 		id, err := kubectl("get", "backup", realBackup, "-n", testNamespace,
@@ -105,7 +105,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 			ts, err := clusterField(retCluster, "{.status.lastRetentionRunTime}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(ts).NotTo(BeEmpty(), "lastRetentionRunTime should be stamped")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {

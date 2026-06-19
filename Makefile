@@ -112,10 +112,11 @@ $(E2E_EXTRA_GOALS):
 	@:
 endif
 E2E_FOCUS_ARG = $(if $(E2E_FOCUS),--focus='$(E2E_FOCUS)',)
+GINKGO_TIMEOUT ?= 120m
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ginkgo ## Run the e2e tests. Optional: make test-e2e FocusRegex or E2E_FOCUS=FocusRegex.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) $(GINKGO) -procs=$(GINKGO_PROCS) -v -tags=e2e $(E2E_FOCUS_ARG) --timeout=120m ./test/e2e/
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) $(GINKGO) -procs=$(GINKGO_PROCS) -v -tags=e2e $(E2E_FOCUS_ARG) --timeout=$(GINKGO_TIMEOUT) ./test/e2e/
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

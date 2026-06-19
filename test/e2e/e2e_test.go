@@ -91,7 +91,7 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 	})
 
-	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyTimeout(e2eTimeout(2 * time.Minute))
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	Context("Manager", func() {
@@ -154,7 +154,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"), "Controller pod not ready")
 			}
-			Eventually(verifyControllerPodReady, 3*time.Minute, time.Second).Should(Succeed())
+			Eventually(verifyControllerPodReady, e2eTimeout(3*time.Minute), time.Second).Should(Succeed())
 
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
@@ -164,7 +164,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("Serving metrics server"),
 					"Metrics server not yet started")
 			}
-			Eventually(verifyMetricsServerStarted, 3*time.Minute, time.Second).Should(Succeed())
+			Eventually(verifyMetricsServerStarted, e2eTimeout(3*time.Minute), time.Second).Should(Succeed())
 
 			By("waiting for the webhook service endpoints to be ready")
 			verifyWebhookEndpointsReady := func(g Gomega) {
@@ -175,7 +175,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
 				g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
 			}
-			Eventually(verifyWebhookEndpointsReady, 3*time.Minute, time.Second).Should(Succeed())
+			Eventually(verifyWebhookEndpointsReady, e2eTimeout(3*time.Minute), time.Second).Should(Succeed())
 
 			By("verifying the validating webhook server is ready")
 			verifyValidatingWebhookReady := func(g Gomega) {
@@ -186,7 +186,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred(), "ValidatingWebhookConfiguration should exist")
 				g.Expect(output).ShouldNot(BeEmpty(), "Validating webhook CA bundle not yet injected")
 			}
-			Eventually(verifyValidatingWebhookReady, 3*time.Minute, time.Second).Should(Succeed())
+			Eventually(verifyValidatingWebhookReady, e2eTimeout(3*time.Minute), time.Second).Should(Succeed())
 
 			By("waiting additional time for webhook server to stabilize")
 			time.Sleep(5 * time.Second)
@@ -235,7 +235,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
 			}
-			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
+			Eventually(verifyCurlUp, e2eTimeout(5*time.Minute)).Should(Succeed())
 
 			By("getting the metrics by checking curl-metrics logs")
 			verifyMetricsAvailable := func(g Gomega) {
@@ -244,7 +244,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(metricsOutput).NotTo(BeEmpty())
 				g.Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
 			}
-			Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
+			Eventually(verifyMetricsAvailable, e2eTimeout(2*time.Minute)).Should(Succeed())
 		})
 
 		It("should provisioned cert-manager", func() {
@@ -302,7 +302,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("3"))
-			}, 12*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(12*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying the primary's role label and that it accepts writes")
 			password := applicationPassword()
@@ -321,7 +321,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("42"))
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying the rw and ro Services route to the right roles")
 			cmd = exec.Command("kubectl", "get", "endpointslice",
@@ -341,7 +341,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("cluster-sample-2"))
-			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying rw routes only to the promoted primary")
 			Eventually(func(g Gomega) {
@@ -351,7 +351,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("cluster-sample-2"))
-			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying writes on the promoted primary replicate to the old primary")
 			Eventually(func(g Gomega) {
@@ -359,14 +359,14 @@ var _ = Describe("Manager", Ordered, func() {
 					"mysql", "-uapp", "-p"+password, "app", "-e", "REPLACE INTO e2e VALUES (43);")
 				_, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Promoted primary is not writable yet")
-			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", "cluster-sample-1", "--",
 					"mysql", "-uapp", "-p"+password, "-e", "SELECT id FROM app.e2e WHERE id = 43;")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("43"))
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("restarting a replica Pod and verifying it rejoins the current primary (dynamic role/source)")
 			cmd = exec.Command("kubectl", "delete", "pod", "cluster-sample-3", "--wait=false")
@@ -378,7 +378,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("3"))
-			}, 6*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(6*time.Minute), 5*time.Second).Should(Succeed())
 			// The restarted replica carries no baked --source-host; it must follow
 			// the current primary (cluster-sample-2) and receive its writes.
 			Eventually(func(g Gomega) {
@@ -387,7 +387,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("43"))
-			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(4*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("deleting the current primary Pod to trigger automatic failover")
 			cmd = exec.Command("kubectl", "delete", "pod", "cluster-sample-2", "--wait=false")
@@ -404,7 +404,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).NotTo(Equal("cluster-sample-2"), "primary must move off the failed instance")
 				g.Expect(output).NotTo(BeEmpty())
 				newPrimary = output
-			}, 6*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(6*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying rw routes only to the failed-over primary and it accepts writes")
 			Eventually(func(g Gomega) {
@@ -419,7 +419,7 @@ var _ = Describe("Manager", Ordered, func() {
 					"mysql", "-uapp", "-p"+password, "app", "-e", "REPLACE INTO e2e VALUES (44);")
 				_, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "failed-over primary is not writable yet")
-			}, 6*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(6*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying the recovered instance rejoins and catches up as a replica")
 			Eventually(func(g Gomega) {
@@ -428,7 +428,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("44"))
-			}, 6*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(6*time.Minute), 5*time.Second).Should(Succeed())
 		})
 
 		It("should block a cluster that sets a denied my.cnf parameter", func() {
@@ -468,7 +468,7 @@ spec:
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("datadir"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying no instance Pod is ever created for the blocked cluster")
 			cmd := exec.Command("kubectl", "get", "pod", "denied-param-1", "--ignore-not-found")
@@ -505,7 +505,7 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
-			}, 10*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
 
 			var operatorHash, instanceHash string
 
@@ -517,7 +517,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty())
 				operatorHash = output
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("reading the instance's executable hash from Cluster status")
 			Eventually(func(g Gomega) {
@@ -527,7 +527,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty())
 				instanceHash = output
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("verifying the instance hash matches the operator hash")
 			Expect(instanceHash).To(Equal(operatorHash),
@@ -691,7 +691,7 @@ spec:
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Running"))
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the operator hash changed after upgrade")
 		Eventually(func(g Gomega) {
@@ -701,7 +701,7 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).NotTo(BeEmpty())
 			g.Expect(output).NotTo(Equal(initialHash), "operator hash should change after v2 deploy")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying replicas are upgraded one at a time during the rollout")
 		phaseSeen := false
@@ -735,7 +735,7 @@ spec:
 				minReadySeen = ready
 			}
 		}
-		Eventually(checkSerialized, 8*time.Minute, 5*time.Second).Should(Succeed())
+		Eventually(checkSerialized, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 		Expect(phaseSeen).To(BeTrue(), "Expected Upgrading or Switchover phase to appear during rollout")
 		Expect(minReadySeen).To(BeNumerically(">=", 2),
 			"at most one instance should be down during serialized rollout (min ready seen: %d)", minReadySeen)

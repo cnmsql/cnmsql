@@ -36,7 +36,7 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(sourceCluster, archivingClusterManifest(sourceCluster))
 		})
-		expectClusterReady(sourceCluster, 1, 12*time.Minute)
+		expectClusterReady(sourceCluster, 1, 20*time.Minute)
 
 		By("seeding data on the source cluster")
 		primary := clusterPrimary(sourceCluster)
@@ -58,7 +58,7 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).NotTo(Equal("failed"), "backup failed")
 			g.Expect(phase).To(Equal("completed"), "backup is not completed yet")
-		}, 8*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the backup recorded an id and a destination path")
 		id, err := kubectl("get", "backup", backupName, "-n", testNamespace,
@@ -78,7 +78,7 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(restoredCluster, recoveryClusterManifest(restoredCluster, backupName))
 		})
-		expectClusterReady(restoredCluster, 1, 12*time.Minute)
+		expectClusterReady(restoredCluster, 1, 20*time.Minute)
 
 		By("verifying the seeded row is present after recovery")
 		primary := clusterPrimary(restoredCluster)
@@ -91,7 +91,7 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 				"SELECT body FROM notes WHERE id = 1;")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(ContainSubstring("hello-from-backup"), "recovered data is missing")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("blocks a fresh cluster from overwriting a non-empty destination", func() {
@@ -114,7 +114,7 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 			phase, err := clusterField(guardCluster, "{.status.phase}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(phase).To(Equal("Blocked"), "fresh cluster was not blocked on the non-empty destination")
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the block reason references the non-empty destination")
 		reason, err := clusterField(guardCluster, "{.status.phaseReason}")

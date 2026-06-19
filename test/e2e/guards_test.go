@@ -32,7 +32,7 @@ var _ = Describe("Guards", Ordered, func() {
 		DeferCleanup(func() {
 			deleteManifest(cluster, basicClusterManifest(cluster, replicas))
 		})
-		expectClusterReady(cluster, replicas, 5*time.Minute)
+		expectClusterReady(cluster, replicas, 20*time.Minute)
 	})
 
 	It("removes a fenced instance from the read Service and restores it when unfenced", func() {
@@ -42,7 +42,7 @@ var _ = Describe("Guards", Ordered, func() {
 		By(fmt.Sprintf("confirming %s is initially a routing endpoint of the r Service", victim))
 		Eventually(func(g Gomega) {
 			g.Expect(rServiceEndpoints(g, cluster)).To(ContainElement(victim))
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By(fmt.Sprintf("fencing replica %s", victim))
 		_, err := kubectl("annotate", "pod", victim, "-n", testNamespace,
@@ -56,7 +56,7 @@ var _ = Describe("Guards", Ordered, func() {
 			g.Expect(strings.Fields(fenced)).To(ContainElement(victim))
 			g.Expect(rServiceEndpoints(g, cluster)).NotTo(ContainElement(victim),
 				"a fenced instance must not be a routing endpoint")
-		}, 4*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(4*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("unfencing the replica")
 		_, err = kubectl("annotate", "pod", victim, "-n", testNamespace,
@@ -66,7 +66,7 @@ var _ = Describe("Guards", Ordered, func() {
 		By("verifying it returns to routing once unfenced")
 		Eventually(func(g Gomega) {
 			g.Expect(rServiceEndpoints(g, cluster)).To(ContainElement(victim))
-		}, 4*time.Minute, 5*time.Second).Should(Succeed())
+		}, e2eTimeout(4*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {

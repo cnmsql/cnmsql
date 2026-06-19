@@ -41,7 +41,15 @@ API group: `mysql.cloudnative-mysql.io/v1alpha1`. Resources: `Cluster`, `Databas
 
 ## CLI Plugin
 
-The repository includes a `kubectl` plugin, `kubectl cnmysql`, for day-to-day operations: cluster status, fencing, promotion, restart, reload, backups, and more. Install it with `make install-plugin`.
+The repository includes a `kubectl` plugin, `kubectl cnmysql`, for day-to-day operations: cluster status, fencing, promotion, restart, reload, backups, and more.
+
+**Install the latest release (no checkout needed):**
+
+```bash
+curl -sSfL https://github.com/CloudNative-MySQL/cloudnative-mysql/raw/main/hack/install-cnmysql-plugin.sh | sh -s -- -b ~/.local/bin
+```
+
+**Or build from the repo:** `make install-plugin`.
 
 ## Quickstart
 

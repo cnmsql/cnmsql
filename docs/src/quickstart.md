@@ -67,6 +67,18 @@ You should see a single `cnmysql-controller-manager` Pod in `Running` state.
 
 ## 3. Install the CLI Plugin
 
+**From a release (no source checkout needed):**
+
+```bash
+curl -sSfL https://github.com/CloudNative-MySQL/cloudnative-mysql/raw/main/hack/install-cnmysql-plugin.sh | sh -s -- -b ~/.local/bin
+```
+
+The script downloads the latest release binary for your platform, verifies its checksum,
+and installs the plugin plus a tab-completion shim. Replace `~/.local/bin` with any
+directory on your `PATH` (e.g. `/usr/local/bin`).
+
+**From the repo (development):**
+
 ```bash
 make install-plugin
 ```

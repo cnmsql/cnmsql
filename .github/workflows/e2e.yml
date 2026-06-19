@@ -1,17 +1,15 @@
 name: E2E Tests
 
 on:
-  push:
-  pull_request:
+  issue_comment:
+    types: [ created ]
   workflow_dispatch:
-  schedule:
-  # Nightly run at 02:17 UTC against the full pull_request-style matrix.
-  - cron: "17 2 * * *"
+
 
 permissions: {}
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-${{ github.event.issue.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,23 +26,69 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       kindMatrix: ${{ steps.generate.outputs.kindMatrix }}
       kindEnabled: ${{ steps.generate.outputs.kindEnabled }}
+      prSha: ${{ steps.authorize.outputs.prSha }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         persist-credentials: false
 
+    - name: Authorize /test command
+      id: authorize
+      run: |
+        if [[ "${{ github.event_name }}" != "issue_comment" ]]; then
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [[ "${{ github.event.issue.pull_request }}" == "" ]]; then
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          echo "/test must be used on a pull request — skipping"
+          exit 0
+        fi
+
+        if [[ ! "${{ github.event.comment.body }}" =~ /test ]]; then
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          echo "Comment does not contain /test — skipping"
+          exit 0
+        fi
+
+        case "${{ github.event.comment.author_association }}" in
+          OWNER|MEMBER|COLLABORATOR) ;;
+          *)
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+            echo "Only maintainers can trigger e2e tests, got ${{ github.event.comment.author_association }} — skipping"
+            exit 0
+            ;;
+        esac
+
+        PR_SHA=$(gh pr view "${{ github.event.issue.number }}" --json headRefOid -q .headRefOid)
+        echo "prSha=$PR_SHA" >> "$GITHUB_OUTPUT"
+        echo "authorized=true" >> "$GITHUB_OUTPUT"
+        echo "Authorized /test for PR #${{ github.event.issue.number }} (commit $PR_SHA)"
+
+        gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+          -f content=rocket --silent || true
+      env:
+        GH_TOKEN: ${{ github.token }}
+
     - name: Generate jobs
       id: generate
       run: |
+        if [[ "${{ steps.authorize.outputs.authorized }}" == "false" ]]; then
+          echo "kindMatrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+          echo "kindEnabled=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
         # Map the triggering event onto a matrix mode. All events currently run
         # the full cross; the case is kept so a cheaper mode can be reintroduced
         # per event without touching the workflow wiring.
         case "${{ github.event_name }}" in
-          push)               mode=push ;;
           schedule)           mode=schedule ;;
           workflow_dispatch)  mode=workflow_dispatch ;;
           *)                  mode=pull_request ;;
@@ -55,7 +99,7 @@ jobs:
     name: ${{ matrix.id }}
     needs: generate-jobs
     if: needs.generate-jobs.outputs.kindEnabled == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'CloudNative-MySQL' && 'self-hosted' || 'ubuntu-latest' }}
     permissions:
       contents: read
     strategy:
@@ -65,11 +109,14 @@ jobs:
       K8S_VERSION: ${{ matrix.k8s_version }}
       E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
       CERT_MANAGER_INSTALL_SKIP: "false"
+      GINKGO_TIMEOUT: ${{ github.repository_owner == 'CloudNative-MySQL' && '240m' || '120m' }}
+      E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'CloudNative-MySQL' && '2' || '1' }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         persist-credentials: false
+        ref: ${{ needs.generate-jobs.outputs.prSha || github.ref }}
 
     - name: Setup Go
       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -87,3 +134,8 @@ jobs:
     - name: Run e2e suite (k8s ${{ matrix.k8s_version }}, MySQL ${{ matrix.mysql_version }})
       run: |
         make test-e2e
+
+    - name: Cleanup after e2e
+      if: always()
+      run: |
+        make cleanup-test-e2e || true
