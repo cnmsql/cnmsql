@@ -219,6 +219,95 @@ quorum). The operator reads it in `observe()` exactly like it reads
 `Replication` today. `Role` continues to report `primary`/`replica` derived from
 the member's GR role so the existing routing keeps working.
 
+### Status authorization webhook under GR (extends `design/020`)
+
+`design/020` added per-instance ServiceAccount identities and a validating
+webhook (`internal/webhook/v1alpha1/cluster_webhook.go`) on `clusters/status`
+updates. Its rule today: an instance identity may change **only**
+`status.currentPrimary` (to itself, when it is the designated `targetPrimary`)
+and `status.currentPrimaryTimestamp`; every other status field is masked and must
+stay byte-identical. This exists because the async pull-model has the promoting
+instance write `currentPrimary` itself.
+
+GR changes the status-write model, so the webhook must change with it:
+
+- **There is no self-promotion under GR.** The group elects the primary; the
+  operator observes `replication_group_members` and is the **sole writer** of
+  `currentPrimary` (and of the whole `groupReplication` status block). So under
+  GR an instance identity must be allowed to write **nothing** to status — the
+  allow-list of instance-writable fields is empty, including `currentPrimary`.
+- **The webhook branches on topology.** A status-subresource admission request
+  carries the full object (spec is present and unchanged), so the handler reads
+  `newCluster.Spec.Replication.Mode`:
+  - `async` → existing rules unchanged (instance may set its own `currentPrimary`).
+  - `groupReplication` → deny *any* status change from an instance identity
+    (old/new status must be byte-identical with no field mask).
+- **New high-value fields are protected automatically — but verified explicitly.**
+  Because the deep-equal mask defaults to "instances cannot touch anything not on
+  the allow-list" (design/020 Decision 3), the new `status.groupReplication.*`
+  fields are already out of reach for instances. The plan keeps it that way and
+  adds explicit deny tests for forging `primaryMember`, `members`, `hasQuorum`,
+  `bootstrapped`, and `groupName`.
+- **Monotonic invariants for the two split-brain-critical fields, enforced for
+  *all* callers (operator included), as defense in depth against a bug or a
+  compromised operator token:**
+  - `status.groupReplication.bootstrapped`: `false → true` allowed, `true → false`
+    **denied**. Re-arming bootstrap is the path to a second group (split-brain);
+    it must never happen, and total-outage recovery re-bootstraps the *same*
+    group without clearing this flag.
+  - `status.groupReplication.groupName`: `"" → value` allowed,
+    `value → different` **denied** (immutable once pinned; a changed group name
+    fractures the group).
+- **The bootstrap designation stays operator-only.** Bootstrap is signalled by
+  (`targetPrimary == me`) ∧ (`bootstrapped == false`), both operator-written.
+  `targetPrimary` is already masked from instance writes, so a compromised
+  instance cannot nominate itself as the bootstrap member and start a competing
+  group.
+- **RBAC hardening (optional).** Because the GR in-Pod reconciler never patches
+  `clusters/status`, the per-instance Role's `update/patch` grant on
+  `clusters/status` is *unused* for GR clusters. The webhook already reduces its
+  effective capability to zero; as extra hardening the per-cluster Role
+  (`cluster_rbac.go`) may omit that grant entirely for GR clusters. Kept as an
+  option, not a requirement — the webhook is the authoritative gate.
+
+**Self-reporting vs. operator-sole-writer (two channels).** It is tempting to let
+the instance manager keep writing `currentPrimary` under GR — not as
+self-promotion (the group elects, the instance does not), but as *self-reporting*
+("I observe that the group made me PRIMARY"). The key realisation is that
+self-reporting already has a home: the **mTLS control API** (`/status`), which is
+the instance → operator channel `observe()` already polls for role/GTID/
+replication state. Reporting there needs **no** Kubernetes status-write
+capability. We deliberately do **not** let the instance write `currentPrimary` on
+the **Kubernetes** channel under GR, for two reasons:
+
+1. **The webhook cannot authorise it.** In async the write is gated on
+   `currentPrimary == oldStatus.targetPrimary` (operator-designated, trusted).
+   Under GR the *group* elects the primary, so on an auto-failover there is no
+   operator-written `targetPrimary` to check against, and the webhook cannot query
+   MySQL to verify the claim — a compromised instance writing `currentPrimary =
+   self` would be indistinguishable from a real one, reopening the
+   forge-`currentPrimary` → redirect-`rw` blast radius `design/020` closed.
+2. **Aggregation gives a free quorum cross-check.** When the operator polls every
+   member over mTLS, `replication_group_members` is consistent across the ONLINE
+   majority, so a single lying member is outvoted by the group view. A direct
+   K8s write of `currentPrimary` is taken as ground truth with no cross-check.
+
+So self-reporting rides mTLS; the operator stays the sole writer of the K8s
+`currentPrimary` and mirrors the *cross-validated* group primary. The only real
+cost — convergence latency — is addressed by **event-driven change detection**
+(§Change detection: readiness transitions + the `gr-observed` doorbell wake the operator),
+not by polling and not by widening the instance's K8s blast radius. If a
+low-latency *direct* instance write is ever wanted, the only safe webhook rule is
+"allow `currentPrimary = self` iff `oldStatus.groupReplication.primaryMember ==
+self`" — but once the operator has observed `primaryMember`, it can write
+`currentPrimary` itself, so that path collapses back to operator-sole-writer.
+
+Net effect: GR instances have a strictly **smaller** status blast radius than
+async instances (zero writable fields vs one), and the fields an adversary would
+most want to forge — who is primary, whether quorum exists, and whether the group
+may be bootstrapped again — are operator-only, with the two bootstrap-critical
+fields additionally pinned monotonic/immutable for every caller.
+
 ### Config rendering (`pkg/management/mysql/config`)
 
 Add a `TopologyMode` and a `GroupReplication` struct to `ServerConfig`. When mode
@@ -336,11 +425,16 @@ operator action against the group, and GR sets the read-only flags itself.
 candidates, does not fence the old primary to promote a replica, and does not
 write a failover `targetPrimary`. Instead, the GR strategy's steady-state step:
 
-1. Reads the group view; if the reported `PRIMARY` differs from
+1. Reads the group view from every reachable member and takes the **majority**
+   verdict on who is `PRIMARY` (a single member's self-report is never trusted on
+   its own; the ONLINE majority's `replication_group_members` is consistent and
+   outvotes a lying or stale member). If that cross-validated primary differs from
    `status.currentPrimary`, the group has already elected a new primary — mirror
    it into `currentPrimary`, repoint role labels and `-rw`, emit a
    `FailoverObserved` Event. RTO is bounded by GR's own election (sub-second to
-   seconds), not `spec.failoverDelay`.
+   seconds) plus the time to deliver the Kubernetes event that wakes the operator
+   (a readiness transition or the `gr-observed` doorbell — see §Change detection), not a
+   poll interval and not `spec.failoverDelay`.
 2. If the old primary's member is `UNREACHABLE`/expelled, the group has already
    removed it from quorum; the operator just stops routing to it.
 3. `spec.failoverDelay`, the GTID-dominance `selectFailoverCandidate`, the
@@ -350,6 +444,107 @@ write a failover `targetPrimary`. Instead, the GR strategy's steady-state step:
 
 This is the literal implementation of "automatic failover is handled by the group
 and the quorum inside of it."
+
+### Change detection: event-driven, not polling
+
+The HA decisions happen *inside* the group, where Kubernetes has no visibility: a
+re-election, a `RECOVERING → ONLINE` transition, a member expelled, or quorum lost
+change no Kubernetes object and emit no Kubernetes event. A naive operator would
+discover them only by polling every member every N seconds — wasteful and laggy.
+The operator must **react to changes**; the timed requeue is a backstop, not the
+detection mechanism.
+
+The design moves the *watching* to where the change originates — the in-Pod
+instance manager, which already supervises mysqld over the always-available admin
+interface (D9) and already runs a controller-runtime reconciler watching the
+Cluster — and has it **convert GR-internal transitions into Kubernetes events**
+the operator's existing watches already consume. Four sources, by who detects
+what:
+
+1. **Kubernetes object watches (already wired).** `For(&Cluster{})` +
+   `Owns(&Pod{}, &ConfigMap{}, …)`. Pod add/update/delete, scaling, spec edits,
+   and the operator's own status writes already trigger reconciles. A primary
+   *Pod* dying is already event-driven.
+2. **GR health ⇄ Pod readiness (the main GR bridge).** Bind the in-Pod `/readyz`
+   to the member's GR state — **`ONLINE` ⇒ ready; `RECOVERING`/`ERROR`/`OFFLINE`/
+   `UNREACHABLE` ⇒ not ready.** The in-Pod manager watches
+   `replication_group_members` locally over the admin socket (cheap, low-latency,
+   invisible to the API server) and flips the probe; the kubelet turns each
+   transition into a Pod `Ready` condition change — a Kubernetes event the
+   operator already watches via `Owns(&Pod{})`. So member up/down/recover/expel,
+   and an isolated old primary going read-only under
+   `group_replication_exit_state_action`, become event-driven **with no operator
+   polling and no new instance writes to the API**. The existing
+   `deRouteGracePeriod`/`unreachableSince` de-routing then runs off these events
+   instead of a timer.
+  3. **GR snapshot change with no health change (the doorbell).** Some transitions
+   are invisible to both object watches and readiness — most importantly a clean
+   `set_as_primary` handover, where membership is unchanged (so the **GR view id
+   does not change**) and both members stay `ONLINE`/Ready, yet the primary role
+   moved. A doorbell keyed only on the view id would miss this; one keyed only on
+   "my role" would miss a membership change that does not touch this member. So the
+   in-Pod manager publishes a doorbell whenever **any** part of its locally
+   observed GR snapshot changes — a single advisory annotation on its *own* Pod,
+   `mysql.cloudnative-mysql.io/gr-observed`, whose value is a short fingerprint of
+   `(primaryMemberUUID, viewId, myMemberState, hasQuorum)`. It bumps on
+   election/switchover, join/leave/expel, and quorum gain/loss alike.
+   `Owns(&Pod{})` turns the bump into an immediate reconcile. The annotation is a
+   **wake-up, never authority** — on reconcile the operator still reads the
+   cross-validated *majority* group view over mTLS before changing
+   `currentPrimary`/routing (see §Self-reporting). A compromised instance ringing
+   the doorbell falsely only causes a no-op reconcile; it cannot move traffic. The
+   instance SA gets `patch` on *its own* Pod only (scoped by `resourceNames` to the
+   Pod whose name equals the instance name).
+4. **Timed requeue = backstop only.** A long `RequeueAfter` (≈ the existing
+   `readyResync`, possibly *longer* for GR) survives solely to heal missed events
+   / informer gaps — not as the detection path. Precisely because (2) and (3) make
+   real transitions event-driven, the backstop gets longer, not shorter.
+
+Rejected alternative: a long-lived streaming watch (gRPC/SSE) from the operator to
+each instance's `/status`. It adds per-Pod connection lifecycle, reconnection, and
+scaling cost and buys nothing over the readiness + doorbell bridges, which reuse
+robust Kubernetes watch machinery.
+
+#### Annotation surface (and what deliberately needs none)
+
+The governing rule keeps the annotation surface tiny: **an annotation is only a
+doorbell (a wake-up) or a human/plugin-initiated request — never the carrier of
+authoritative GR state.** Authoritative state always travels over mTLS `/status`
+and is cross-validated against the majority group view. With that rule, GR adds
+exactly **two** annotations on top of the existing set:
+
+| Annotation | On | Written by | Purpose / operator reaction |
+|---|---|---|---|
+| `mysql.cloudnative-mysql.io/gr-observed` | instance Pod | in-Pod manager (own Pod, `resourceNames`-scoped) | Doorbell. Bumps on any GR snapshot change (primary, view, member state, quorum). Wakes a reconcile; value is a hint, never trusted. |
+| `mysql.cloudnative-mysql.io/force-quorum-recovery` | Cluster | human / kubectl plugin | Explicit, confirmed opt-in to the guarded `force_members` / total-outage re-bootstrap path. `For(&Cluster{})` triggers the reconcile; the operator still computes and proves the safe survivor set before acting. |
+
+Existing annotations are reused unchanged under GR and already trigger reconciles:
+`fencing` (now meaning `STOP GROUP_REPLICATION`), `restart`, `reload`, `reinit`
+(the remedy for a member that cannot rejoin after errant transactions),
+`unreachable-since`/`reload-applied` (operator bookkeeping).
+
+**Transitions that deliberately need _no_ annotation**, because they are already
+delivered by a richer channel and read in detail over mTLS once the operator is
+woken:
+
+- **Member ONLINE/RECOVERING/ERROR/OFFLINE/UNREACHABLE** → Pod readiness flip
+  (source 2); the operator reads the precise state + reason over mTLS.
+- **Quorum loss** → folded into readiness (`/readyz` = `ONLINE ∧ quorate`), so a
+  minority-blocked member flips `NotReady`; the operator reads `hasQuorum=false`
+  over mTLS and sets `Blocked`. (The `gr-observed` doorbell also bumps, as a
+  belt-and-suspenders wake-up for a primary that stays Ready while a secondary is
+  expelled.)
+- **A member cannot rejoin (errant transactions / `ERROR`)** → `NotReady` +
+  mTLS-reported error; surfaced like `ReplicationBrokenInstances`, remediated via
+  the existing `reinit` annotation.
+- **Group bootstrap completed** → the bootstrap member going `ONLINE PRIMARY` is a
+  readiness event; the operator then sets the sticky `status.groupReplication.
+  bootstrapped`. The bootstrap *signal* (operator → instance) rides Cluster status
+  (`targetPrimary == me ∧ bootstrapped == false`), which the in-Pod reconciler
+  already watches via `For(&Cluster{})` — no annotation either direction.
+- **GTID advancing** → continuous, not a discrete event; the operator keeps its
+  existing throttled persistence of `gtidExecutedByInstance` plus the backstop
+  requeue.
 
 ### Fencing (different under GR)
 
@@ -457,18 +652,27 @@ tests. GR stays behind `mode: groupReplication` throughout.
 - **M-GR.1 — Foundations (no runtime behaviour).** API surface
   (`spec.replication`, status fields), version gating, GR config rendering +
   golden tests, webserver `/status` GR fields, `groupreplication` package
-  skeleton, webhook validation. Nothing starts a group yet.
+  skeleton, spec webhook validation, and the **status-authz webhook extension**
+  (mode-branch denying instance status writes on GR clusters + monotonic
+  `bootstrapped`/`groupName` invariants — these must exist *before* any group is
+  bootstrapped, since they guard the very fields M-GR.2 starts writing). Nothing
+  starts a group yet.
 - **M-GR.2 — Single-member group.** Bootstrap a 1-member group (exactly-once
   guard), in-Pod GR role strategy, operator observe→`currentPrimary`. Integration
   test: plugin loads, group bootstraps, status reports ONLINE PRIMARY.
 - **M-GR.3 — Multi-member join & steady state.** 3-member group via distributed
   recovery (Clone), quorum-aware provisioning gate, routing by group role,
-  non-ONLINE de-routing. E2E: 3-member cluster reaches Ready and serves rw/ro.
+  non-ONLINE de-routing, and the **GR-health ⇄ `/readyz` bridge** (§Change
+  detection source 2) so member up/down/recover is event-driven. E2E: 3-member
+  cluster reaches Ready and serves rw/ro.
 - **M-GR.4 — Planned switchover.** `set_as_primary` path, `maxSwitchoverDelay`
-  bound, observe new primary. E2E switchover.
+  bound, observe new primary, plus the **`gr-observed` doorbell** (§Change
+  detection source 3) so a clean handover moves `-rw` on an event, not a poll.
+  E2E switchover.
 - **M-GR.5 — Observed automatic failover.** Kill the primary; group elects;
-  operator mirrors within RTO; async failover loop / lease / semi-sync disabled
-  for GR. E2E failover proving the **operator does not promote**.
+  operator mirrors within RTO via readiness/doorbell events (not a poll interval);
+  async failover loop / lease / semi-sync disabled for GR. E2E failover proving
+  the **operator does not promote**.
 - **M-GR.6 — Fencing & quorum guards.** GR fence (`STOP GROUP_REPLICATION`),
   quorum-preserving PDB/scale-down/fence guards, quorum-loss detection + `Blocked`
   surfacing, opt-in guarded recovery + total-outage re-bootstrap. E2E quorum-loss
@@ -484,8 +688,15 @@ The user-stated requirement is heavy unit + integration + E2E coverage. Concrete
 - **Unit (`make test`, envtest/no server):**
   - Config golden files for the GR block across the version matrix (8.0/8.4/9.x),
     including the `binlog_checksum` and clone-threshold version branches.
-  - Webhook: mode immutability, version floor, GR⊥semi-sync, multi-primary
+  - Spec webhook: mode immutability, version floor, GR⊥semi-sync, multi-primary
     rejection, even-instance warnings, group-name UUID validation.
+  - Status webhook (extends `internal/webhook/v1alpha1/cluster_webhook_test.go`):
+    for a GR cluster, an instance identity is denied writing `currentPrimary`
+    (to self or anyone), `groupReplication.primaryMember`/`hasQuorum`/`members`,
+    `bootstrapped`, and `groupName`; the operator account is still allowed to
+    write them; `bootstrapped` `true→false` and `groupName` `value→different` are
+    denied for *all* callers; async-cluster instance self-promotion is still
+    allowed (regression).
   - Status aggregation: `replication_group_members` → `currentPrimary`, quorum
     math, non-ONLINE de-routing.
   - Quorum guards: PDB `maxUnavailable`, scale-down refusal, fence refusal below
@@ -514,6 +725,14 @@ The user-stated requirement is heavy unit + integration + E2E coverage. Concrete
   upgrades, backup→restore into a fresh group, quorum-loss surfaced + guarded
   recovery. A dedicated **async regression** E2E proves the default path is
   unchanged.
+- **Change detection (integration + E2E).** Assert reactions are event-driven, not
+  timer-driven: with the backstop requeue set very long, (a) a `RECOVERING →
+  ONLINE` member flips Pod `Ready` and is added to `-ro`/`-r` promptly; (b) an
+  expelled/isolated member flips `Ready=false` and is de-routed promptly; (c) a
+  clean `set_as_primary` handover (both members stay ONLINE/Ready) still moves
+  `-rw` within seconds via the `gr-observed` doorbell; (d) a falsely-rung
+  doorbell from a non-primary member produces a no-op reconcile and never moves
+  traffic (cross-validation guard).
 
 ## Safety / split-brain analysis
 
@@ -522,7 +741,19 @@ The four hazards and their guards:
 1. **Double group bootstrap → two groups, split brain.** Guard: sticky
    `status.groupReplication.bootstrapped`, bootstrap signalled single-shot by the
    operator only when `false`, `group_replication_bootstrap_group` never written
-   to the config file, `start_on_boot=OFF` so a restart never re-bootstraps.
+   to the config file, `start_on_boot=OFF` so a restart never re-bootstraps. The
+   status webhook additionally pins `bootstrapped` monotonic (`true→false`
+   denied) and keeps `targetPrimary`/`bootstrapped` writable only by the operator,
+   so a compromised instance cannot re-arm bootstrap or nominate itself.
+5. **Status forgery by a compromised instance Pod → bad routing / hidden quorum
+   loss / split brain.** A breached instance SA could try to forge
+   `currentPrimary` (redirect `-rw`), `groupReplication.primaryMember`/`members`/
+   `hasQuorum` (mask a real quorum loss or fake a different primary), or
+   `bootstrapped`/`groupName` (arm a second group). Guard: under GR the status
+   webhook (`design/020`, extended above) denies instance identities *every*
+   status write — the operator is the sole writer of `currentPrimary` and the
+   whole `groupReplication` block — and enforces the monotonic/immutable
+   invariants on `bootstrapped`/`groupName` for all callers.
 2. **Operator fights the group's election.** Guard: `reconcileFailover` disabled
    for GR; the operator only mirrors the group's reported PRIMARY, never writes a
    failover `targetPrimary`.
@@ -541,6 +772,13 @@ The four hazards and their guards:
   unaffected.
 - **Operator observes, group decides.** No operator-side candidate selection,
   fencing-to-promote, `failoverDelay`, or primary Lease under GR.
+- **Self-report over mTLS, operator is the sole K8s status writer under GR.**
+  Instances report their group role on the existing mTLS `/status` channel; the
+  operator cross-validates against the ONLINE majority's group view and is the
+  only writer of `currentPrimary` and `groupReplication.*`. Instances get zero
+  Kubernetes status-write capability on GR clusters (the only thing they patch is
+  an advisory doorbell annotation on their *own* Pod). Convergence is event-driven
+  (§Change detection), not poll-driven, so the timed requeue is a backstop only.
 - **Distributed recovery is Clone-first** (8.0.17+), with optional XtraBackup
   pre-seed as a large-dataset optimisation.
 - **Minimum server version 8.0.22** for GR (stable auto-rejoin + consistency).
