@@ -414,6 +414,27 @@ func TestRenderGroupReplicationBlock(t *testing.T) {
 	assertContains(t, out, "group_replication_ip_allowlist = 10.0.0.0/8")
 }
 
+func TestRenderGroupReplicationLoadsClonePlugin(t *testing.T) {
+	// Clone-plugin distributed recovery is available from 8.0.17, so the joiner can
+	// recover a full snapshot when binlog catch-up is impossible. The operator only
+	// loads the plugin and leaves group_replication_clone_threshold at its default
+	// (binlog-first, clone-on-gap).
+	c := grConfig()
+	c.Version = "8.0.22"
+	out := mustRender(t, c)
+	assertContains(t, out, "plugin_load_add = mysql_clone.so")
+	assertNotContains(t, out, "group_replication_clone_threshold")
+}
+
+func TestRenderGroupReplicationOmitsClonePluginBelowFloor(t *testing.T) {
+	// Below 8.0.17 the clone plugin is unavailable; distributed recovery falls back
+	// to binlog catch-up only. (The GR floor is 8.0.22, so this only guards the
+	// rendering branch.)
+	c := grConfig()
+	c.Version = "8.0.16"
+	assertNotContains(t, mustRender(t, c), "mysql_clone.so")
+}
+
 func TestRenderGroupReplicationNeverBootstrapsOrStartsOnBoot(t *testing.T) {
 	// The two split-brain-critical defaults: the operator controls start, and
 	// bootstrap is never a config-file default (it would re-bootstrap each boot).

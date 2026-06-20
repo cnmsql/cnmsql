@@ -526,6 +526,17 @@ func (c *ServerConfig) groupReplicationSettings(ver version.Version) []pair {
 		pair{"group_replication_ssl_mode", "REQUIRED"},
 		pair{"group_replication_recovery_use_ssl", "ON"},
 	)
+
+	// Clone-plugin distributed recovery: when the server supports it (8.0.17+),
+	// load the clone plugin so a joining member can recover a full snapshot from a
+	// donor whenever binlog catch-up is impossible (the donor purged GTIDs the
+	// joiner needs) or past group_replication_clone_threshold. The default
+	// threshold keeps GR binlog-first with clone as the automatic fallback, which
+	// is the safe GR-native behaviour, so the operator only loads the plugin and
+	// does not override the threshold. The clone shared library is mysql_clone.so.
+	if ver.HasGroupReplicationClone() {
+		pairs = append(pairs, pair{"plugin_load_add", "mysql_clone.so"})
+	}
 	if gr.RecoverySSL.isset() {
 		pairs = append(pairs,
 			pair{"group_replication_recovery_ssl_ca", gr.RecoverySSL.CA},
