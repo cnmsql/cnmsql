@@ -33,7 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
@@ -156,28 +156,19 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
-	// Under Group Replication the group elects the primary; aggregate every
-	// member's reported view into the operator's authoritative group status and
-	// mirror the elected PRIMARY into PrimaryName (and currentPrimary in
-	// patchStatus). Divergence/role inference is async-specific and does not apply
-	// to a group, so it is skipped; the shared readiness/phase computation below
-	// still runs.
-	if cluster.IsGroupReplication() {
-		grStatus, primary := observeGroupReplication(observed)
-		observed.GroupReplication = grStatus
-		if primary != "" {
-			observed.PrimaryName = primary
+	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed))
+	if topologyObservation.PrimaryAuthoritative {
+		observed.PrimaryName = topologyObservation.PrimaryName
+	}
+	observed.GroupReplication = topologyObservation.GroupReplication
+	observed.DivergedInstances = topologyObservation.DivergedInstances
+	observed.ReplicationBrokenInstances = topologyObservation.ReplicationBrokenInstances
+	for _, name := range observed.DivergedInstances {
+		// A diverged replica may keep its threads running while silently
+		// diverging, so do not count it as a healthy ready instance.
+		if status, ok := observed.StatusByInstance[name]; ok && status.IsReady {
+			observed.ReadyInstances--
 		}
-	} else {
-		observed.DivergedInstances = detectDivergedReplicas(observed)
-		for _, name := range observed.DivergedInstances {
-			// A diverged replica may keep its threads running while silently
-			// diverging, so do not count it as a healthy ready instance.
-			if status, ok := observed.StatusByInstance[name]; ok && status.IsReady {
-				observed.ReadyInstances--
-			}
-		}
-		observed.ReplicationBrokenInstances = detectReplicationBroken(observed)
 	}
 
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
@@ -314,69 +305,6 @@ func unreadyInstanceNames(observed observedCluster) []string {
 	return out
 }
 
-// detectDivergedReplicas returns reachable non-primary instances whose executed
-// GTID set is not contained in the primary's. This catches a former primary
-// that committed transactions the new primary never saw (errant transactions):
-// rejoining it as-is would silently diverge the data, so the operator surfaces
-// it instead of reconfiguring or re-cloning it.
-func detectDivergedReplicas(observed observedCluster) []string {
-	primaryGTID := observed.GTIDByInstance[observed.PrimaryName]
-	if primaryGTID == "" {
-		return nil
-	}
-	var diverged []string
-	for _, name := range observed.InstanceNames {
-		if name == observed.PrimaryName {
-			continue
-		}
-		gtid := observed.GTIDByInstance[name]
-		if gtid == "" {
-			continue
-		}
-		contained, err := replication.GTIDContains(primaryGTID, gtid)
-		if err != nil || contained {
-			continue
-		}
-		diverged = append(diverged, name)
-	}
-	return diverged
-}
-
-// detectReplicationBroken returns reachable non-primary instances whose
-// replication has aborted: a configured replica with a recorded replication
-// error whose IO or SQL thread has stopped. Diverged replicas (caught by GTID
-// comparison) are excluded so the two buckets stay disjoint and the diverged
-// diagnosis, which is more specific, wins. This is the SQL-layer counterpart to
-// detectDivergedReplicas: it relies on the control status the in-Pod reconciler
-// reports rather than on comparing GTID sets, so it catches a replica that is
-// stuck (e.g. a duplicate-key conflict) even when its GTID set has not diverged.
-func detectReplicationBroken(observed observedCluster) []string {
-	diverged := map[string]bool{}
-	for _, name := range observed.DivergedInstances {
-		diverged[name] = true
-	}
-	var broken []string
-	for _, name := range observed.InstanceNames {
-		if name == observed.PrimaryName || diverged[name] {
-			continue
-		}
-		if status, ok := observed.StatusByInstance[name]; ok && replicationBroken(status) {
-			broken = append(broken, name)
-		}
-	}
-	return broken
-}
-
-// replicationBroken reports whether a reachable instance's replication has
-// failed: it is a configured replica (it has a source set up) that recorded a
-// replication error while a thread is stopped. Requiring a recorded error avoids
-// flagging a replica whose threads are briefly stopped during normal
-// (re)configuration, when no fault has occurred.
-func replicationBroken(status *webserver.Status) bool {
-	repl := status.Replication
-	return repl != nil && repl.LastError != "" && (!repl.SQLRunning || !repl.IORunning)
-}
-
 // aggregateArchiving derives the cluster-level archiving status from the
 // primary instance's reported archiver state. Archiving is authoritative only
 // on the primary (the single writer), so that is the instance whose frontier
@@ -457,12 +385,9 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	if latest.Status.EstablishedAt == nil && (observed.Ready || establishedPhase(before.Status.Phase)) {
 		latest.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
 	}
-	// Under Group Replication the operator is the sole writer of currentPrimary
-	// and the groupReplication block (instances write nothing to status). Merge the
-	// observed view onto the sticky groupName/bootstrapped fields.
-	if latest.IsGroupReplication() {
-		mergeGroupReplicationStatus(latest, observed)
-	}
+	r.topologyReconciler(latest).MergeStatus(latest, topology.Observation{
+		GroupReplication: observed.GroupReplication,
+	})
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)
 	latest.Status.ContinuousArchiving = observed.ContinuousArchiving
 	latest.Status.OperatorExecutableHash = r.OperatorExecutableHash
@@ -523,7 +448,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
-	if from, to, ok := observedGroupFailover(before, latest); ok {
+	if from, to, ok := r.topologyReconciler(latest).ObservedFailover(before, latest); ok {
 		logf.FromContext(ctx).Info("Observed Group Replication failover", "from", from, "to", to)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(latest, corev1.EventTypeNormal, eventFailoverObserved,
@@ -531,21 +456,6 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		}
 	}
 	return nil
-}
-
-// observedGroupFailover identifies a primary change elected by Group
-// Replication rather than requested by the operator. The initial bootstrap is
-// not a failover, and a targetPrimary already pointing at the new primary marks
-// a planned switchover or upgrade handoff.
-func observedGroupFailover(before, after *mysqlv1alpha1.Cluster) (string, string, bool) {
-	if !after.IsGroupReplication() {
-		return "", "", false
-	}
-	from, to := before.Status.CurrentPrimary, after.Status.CurrentPrimary
-	if from == "" || to == "" || from == to || before.Status.TargetPrimary == to {
-		return "", "", false
-	}
-	return from, to, true
 }
 
 // gtidPersistInterval bounds how often the operator persists the gtid_executed

@@ -235,7 +235,7 @@ func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 			testReplica3: "a:1-15,b:1-3",
 		},
 	}
-	diverged := detectDivergedReplicas(observed)
+	diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed)).DivergedInstances
 	if len(diverged) != 1 || diverged[0] != testReplica3 {
 		t.Fatalf("diverged = %v, want [%s]", diverged, testReplica3)
 	}
@@ -248,7 +248,7 @@ func TestDetectDivergedReplicasIgnoresUnknownGTID(t *testing.T) {
 		InstanceNames:  []string{testPrimary, testReplica2},
 		GTIDByInstance: map[string]string{testReplica2: "a:1-5"},
 	}
-	if diverged := detectDivergedReplicas(observed); diverged != nil {
+	if diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed)).DivergedInstances; diverged != nil {
 		t.Fatalf("diverged = %v, want nil when primary GTID is unknown", diverged)
 	}
 }

@@ -24,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	controllergr "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/groupreplication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -36,6 +38,11 @@ func grCluster(group *mysqlv1alpha1.GroupReplicationStatus) *mysqlv1alpha1.Clust
 	}
 	cluster.Status.GroupReplication = group
 	return cluster
+}
+
+func observeGroupReplicationForTest(observed observedCluster) (*mysqlv1alpha1.GroupReplicationStatus, string) {
+	result := controllergr.NewReconciler(nil, nil).Observe(topologyObservationInput(observed))
+	return result.GroupReplication, result.PrimaryName
 }
 
 // onlineMemberStatus is a control-API status for a member ONLINE in the group.
@@ -84,7 +91,7 @@ func TestObserveGroupReplicationAggregatesPrimary(t *testing.T) {
 			testPrimary: onlineMemberStatus(testPrimary, "uuid-1", groupreplication.MemberRolePrimary),
 		},
 	}
-	status, primary := observeGroupReplication(observed)
+	status, primary := observeGroupReplicationForTest(observed)
 	if primary != testPrimary {
 		t.Fatalf("primary = %q, want %q", primary, testPrimary)
 	}
@@ -111,7 +118,7 @@ func TestObserveGroupReplicationNilUntilOnline(t *testing.T) {
 		InstanceNames:    []string{testPrimary},
 		StatusByInstance: map[string]*webserver.Status{testPrimary: recovering},
 	}
-	status, primary := observeGroupReplication(observed)
+	status, primary := observeGroupReplicationForTest(observed)
 	if status != nil || primary != "" {
 		t.Fatalf("expected (nil, \"\") before any member is ONLINE, got (%+v, %q)", status, primary)
 	}
@@ -132,7 +139,7 @@ func TestObserveGroupReplicationRequiresMajorityPrimaryVerdict(t *testing.T) {
 		},
 	}
 
-	status, primary := observeGroupReplication(observed)
+	status, primary := observeGroupReplicationForTest(observed)
 	if primary != testReplica2 {
 		t.Fatalf("primary = %q, want majority-observed %q", primary, testReplica2)
 	}
@@ -164,7 +171,7 @@ func TestObserveGroupReplicationRejectsSplitPrimaryVerdict(t *testing.T) {
 		},
 	}
 
-	status, primary := observeGroupReplication(observed)
+	status, primary := observeGroupReplicationForTest(observed)
 	if primary != "" {
 		t.Fatalf("primary = %q, want empty without a majority verdict", primary)
 	}
@@ -182,7 +189,9 @@ func TestMergeGroupReplicationSetsCurrentPrimaryAndBootstrapped(t *testing.T) {
 			HasQuorum:     true,
 		},
 	}
-	mergeGroupReplicationStatus(cluster, observed)
+	controllergr.NewReconciler(nil, nil).MergeStatus(cluster, topology.Observation{
+		GroupReplication: observed.GroupReplication,
+	})
 	if cluster.Status.CurrentPrimary != testPrimary {
 		t.Fatalf("currentPrimary = %q, want %q", cluster.Status.CurrentPrimary, testPrimary)
 	}
@@ -202,7 +211,7 @@ func TestMergeGroupReplicationKeepsBootstrappedSticky(t *testing.T) {
 		GroupName:    "group-uuid",
 		Bootstrapped: true,
 	})
-	mergeGroupReplicationStatus(cluster, observedCluster{GroupReplication: nil})
+	controllergr.NewReconciler(nil, nil).MergeStatus(cluster, topology.Observation{})
 	if !cluster.Status.GroupReplication.Bootstrapped {
 		t.Fatal("bootstrapped is monotonic and must never be cleared")
 	}

@@ -25,6 +25,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
 // InstanceIdentity describes one instance's topology-specific Kubernetes
@@ -103,6 +104,25 @@ type FailoverResult struct {
 	Phase        *OperationPhase
 }
 
+// ObservationInput contains the instance-manager reports used to derive
+// topology-specific cluster health.
+type ObservationInput struct {
+	PrimaryName      string
+	InstanceNames    []string
+	StatusByInstance map[string]*webserver.Status
+	GTIDByInstance   map[string]string
+}
+
+// Observation is the topology-specific portion of the operator's observed
+// Cluster state.
+type Observation struct {
+	PrimaryName                string
+	PrimaryAuthoritative       bool
+	DivergedInstances          []string
+	ReplicationBrokenInstances []string
+	GroupReplication           *mysqlv1alpha1.GroupReplicationStatus
+}
+
 // SemiSyncControl adjusts the acknowledgement count on an async primary.
 type SemiSyncControl interface {
 	SetSemiSyncWaitForReplicaCount(
@@ -144,4 +164,7 @@ type Reconciler interface {
 		cluster *mysqlv1alpha1.Cluster,
 		observed FailoverState,
 	) (FailoverResult, error)
+	Observe(input ObservationInput) Observation
+	MergeStatus(cluster *mysqlv1alpha1.Cluster, observed Observation)
+	ObservedFailover(before, after *mysqlv1alpha1.Cluster) (string, string, bool)
 }
