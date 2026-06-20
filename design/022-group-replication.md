@@ -759,9 +759,15 @@ tests. GR stays behind `mode: groupReplication` throughout.
   `_gr_bootstrapped`, `_gr_view_size` (the quorum denominator), and
   `_gr_members{state}` counts per member state; reads the cached client at scrape
   time, so no extra reconcile or in-Pod query, and async clusters emit nothing),
-  kubectl plugin GR commands + the
-  documentation contract and safety affordances (structured `--help`/runbooks,
-  consequence summaries, confirmations, command safety matrix), docs.
+  kubectl plugin GR commands (**done** — `kubectl cnmysql group status` renders
+  the operator's cross-validated group view (group name, bootstrapped, quorum,
+  primary, per-member state/role/reachability) and refuses against async
+  clusters; `kubectl cnmysql group recover` requests a guarded quorum recovery by
+  stamping the `force-quorum-recovery` annotation, gated on the same
+  bootstrapped-and-quorum-lost precondition the operator enforces, behind a
+  consequence summary + confirmation. The documentation contract and safety
+  affordances ship in the plugin README: structured `--help`/runbook text,
+  consequence summaries, confirmations, and a command safety matrix).
   Full E2E matrix + async regression suite.
   (GR-specific consequence text — quorum impact, `group recover` — ships with the
   phase that first introduces each command, e.g. `fence` quorum-guard in M-GR.6.)

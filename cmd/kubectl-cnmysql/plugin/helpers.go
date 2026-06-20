@@ -44,6 +44,12 @@ const (
 	ReloadAnnotation  = "cloudnative-mysql.cloudnative-mysql.io/reload"
 	ReinitAnnotation  = "cloudnative-mysql.cloudnative-mysql.io/reinit"
 
+	// ForceQuorumRecoveryAnnotation, set to "yes" on a Group Replication Cluster,
+	// asks the operator to attempt a guarded quorum recovery. The operator still
+	// gate-checks that quorum is provably lost and a safe survivor exists, and
+	// refuses otherwise — the annotation is a request, not a command.
+	ForceQuorumRecoveryAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-recovery"
+
 	ClusterLabel = "mysql.cloudnative-mysql.io/cluster"
 	RoleLabel    = "mysql.cloudnative-mysql.io/role"
 )
