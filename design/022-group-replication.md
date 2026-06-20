@@ -746,7 +746,14 @@ tests. GR stays behind `mode: groupReplication` throughout.
   `gtid_executed` and the survivor's set must dominate all of them, else the
   cluster stays `Blocked`; the survivor is stamped `force-group-rebootstrap` and
   bootstraps the group, others rejoin via distributed recovery),
-  backup/restore into a fresh group, kubectl plugin GR commands + the
+  backup/restore into a fresh group (**done** — routes through the
+  topology-agnostic bootstrap path: the recovery primary restores the physical
+  backup and the in-Pod role strategy bootstraps a fresh single-member group,
+  secondaries initialise empty and join via distributed recovery; never rejoins
+  an old group, guaranteed by a fresh pinned group name plus
+  `group_replication_start_on_boot=OFF`. Backups offload to an ONLINE secondary
+  via the existing prefer-standby source selection),
+  kubectl plugin GR commands + the
   documentation contract and safety affordances (structured `--help`/runbooks,
   consequence summaries, confirmations, command safety matrix), monitoring, docs.
   Full E2E matrix + async regression suite.

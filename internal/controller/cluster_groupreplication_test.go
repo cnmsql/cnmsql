@@ -249,6 +249,33 @@ func TestMergeGroupReplicationClampsObservedMaxOnScaleDown(t *testing.T) {
 	}
 }
 
+// Restore into a fresh GR group: the bootstrap primary restores the physical
+// backup into its data dir (then bootstraps a fresh single-member group via the
+// in-Pod role strategy), while secondaries initialise an empty GR server and
+// provision via distributed recovery from that primary — never an async clone.
+func TestBootstrapArgsGroupReplicationRecovery(t *testing.T) {
+	t.Parallel()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{GroupName: "g"})
+	cluster.Spec.Instances = 3
+	plan := testPlan()
+	plan.Instances = 3
+	plan.Recovery = &recoveryPlan{Bucket: "bkt", ArchiveKey: "clusters/demo/bk/", MetadataKey: "clusters/demo/bk/meta"}
+	r := &ClusterReconciler{}
+
+	primaryArgs := strings.Join(r.bootstrapArgs(cluster, plan, plan.instanceFor(cluster, 1)), " ")
+	if !strings.Contains(primaryArgs, "instance restore") || !strings.Contains(primaryArgs, "--bucket=bkt") {
+		t.Fatalf("GR recovery primary must restore from the object store, got: %s", primaryArgs)
+	}
+
+	secondaryArgs := strings.Join(r.bootstrapArgs(cluster, plan, plan.instanceFor(cluster, 2)), " ")
+	if !strings.Contains(secondaryArgs, "instance initdb") || !strings.Contains(secondaryArgs, "--group-replication") {
+		t.Fatalf("GR secondary must initialise an empty server for distributed recovery, got: %s", secondaryArgs)
+	}
+	if strings.Contains(secondaryArgs, "instance join") || strings.Contains(secondaryArgs, "instance restore") {
+		t.Fatalf("GR secondary must not async-clone or restore; it joins via distributed recovery, got: %s", secondaryArgs)
+	}
+}
+
 func TestEnsureGroupNameGeneratesAndIsSticky(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
