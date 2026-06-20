@@ -57,6 +57,25 @@ func onlineMemberStatus(instance, uuid, role string) *webserver.Status {
 	return st
 }
 
+func groupViewStatus(instance, memberID, primaryID string, members []webserver.GroupReplicationMember) *webserver.Status {
+	role := groupreplication.MemberRoleSecondary
+	if memberID == primaryID {
+		role = groupreplication.MemberRolePrimary
+	}
+	return &webserver.Status{
+		InstanceName: instance,
+		IsReady:      true,
+		Role:         webserver.RoleReplica,
+		GroupReplication: &webserver.GroupReplicationMemberStatus{
+			MemberID: memberID,
+			State:    groupreplication.MemberStateOnline,
+			Role:     role,
+			ViewID:   "view-2",
+			Members:  members,
+		},
+	}
+}
+
 func TestObserveGroupReplicationAggregatesPrimary(t *testing.T) {
 	t.Parallel()
 	observed := observedCluster{
@@ -95,6 +114,62 @@ func TestObserveGroupReplicationNilUntilOnline(t *testing.T) {
 	status, primary := observeGroupReplication(observed)
 	if status != nil || primary != "" {
 		t.Fatalf("expected (nil, \"\") before any member is ONLINE, got (%+v, %q)", status, primary)
+	}
+}
+
+func TestObserveGroupReplicationRequiresMajorityPrimaryVerdict(t *testing.T) {
+	t.Parallel()
+	members := []webserver.GroupReplicationMember{
+		{MemberID: "uuid-1", State: groupreplication.MemberStateUnreachable, Role: groupreplication.MemberRoleSecondary},
+		{MemberID: "uuid-2", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRolePrimary},
+		{MemberID: "uuid-3", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRoleSecondary},
+	}
+	observed := observedCluster{
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: groupViewStatus(testReplica2, "uuid-2", "uuid-2", members),
+			testReplica3: groupViewStatus(testReplica3, "uuid-3", "uuid-2", members),
+		},
+	}
+
+	status, primary := observeGroupReplication(observed)
+	if primary != testReplica2 {
+		t.Fatalf("primary = %q, want majority-observed %q", primary, testReplica2)
+	}
+	if status == nil || status.PrimaryMember != testReplica2 || !status.HasQuorum {
+		t.Fatalf("status = %+v, want quorate group with primary %q", status, testReplica2)
+	}
+}
+
+func TestObserveGroupReplicationRejectsSplitPrimaryVerdict(t *testing.T) {
+	t.Parallel()
+	viewFor := func(primaryID string) []webserver.GroupReplicationMember {
+		members := []webserver.GroupReplicationMember{
+			{MemberID: "uuid-1", State: groupreplication.MemberStateUnreachable, Role: groupreplication.MemberRoleSecondary},
+			{MemberID: "uuid-2", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRoleSecondary},
+			{MemberID: "uuid-3", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRoleSecondary},
+		}
+		for i := range members {
+			if members[i].MemberID == primaryID {
+				members[i].Role = groupreplication.MemberRolePrimary
+			}
+		}
+		return members
+	}
+	observed := observedCluster{
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: groupViewStatus(testReplica2, "uuid-2", "uuid-2", viewFor("uuid-2")),
+			testReplica3: groupViewStatus(testReplica3, "uuid-3", "uuid-3", viewFor("uuid-3")),
+		},
+	}
+
+	status, primary := observeGroupReplication(observed)
+	if primary != "" {
+		t.Fatalf("primary = %q, want empty without a majority verdict", primary)
+	}
+	if status == nil || status.PrimaryMember != "" {
+		t.Fatalf("status = %+v, want group view without an authoritative primary", status)
 	}
 }
 

@@ -110,26 +110,62 @@ func observeGroupReplication(observed observedCluster) (*mysqlv1alpha1.GroupRepl
 		}
 	}
 
-	// Pick an ONLINE member's view to report from (any ONLINE member sees the same
-	// group view) and find the elected PRIMARY.
+	// Cross-check the elected primary across the ONLINE members' full group views.
+	// A member's local Role field is deliberately not authority: a stale or lying
+	// member must not be able to redirect the rw Service by claiming PRIMARY.
 	var view *webserver.GroupReplicationMemberStatus
-	primaryInstance := ""
+	primaryVotes := map[string]int{}
+	maxViewMembers := 0
 	for _, name := range observed.InstanceNames {
 		st := observed.StatusByInstance[name]
 		if st == nil || st.GroupReplication == nil {
 			continue
 		}
 		gr := st.GroupReplication
-		if gr.State == groupreplication.MemberStateOnline && view == nil {
+		if gr.State != groupreplication.MemberStateOnline {
+			continue
+		}
+		onlineCount := 0
+		primaryID := ""
+		for _, member := range gr.Members {
+			if member.State == groupreplication.MemberStateOnline {
+				onlineCount++
+			}
+			if member.State == groupreplication.MemberStateOnline &&
+				member.Role == groupreplication.MemberRolePrimary {
+				// More than one ONLINE PRIMARY makes this view internally invalid.
+				if primaryID != "" {
+					primaryID = ""
+					break
+				}
+				primaryID = member.MemberID
+			}
+		}
+		// Only a quorate view can carry an election result. A minority member may
+		// retain stale role information after losing contact with the group.
+		if onlineCount*2 <= len(gr.Members) {
+			continue
+		}
+		if view == nil {
 			view = gr
 		}
-		if gr.Role == groupreplication.MemberRolePrimary && gr.State == groupreplication.MemberStateOnline {
-			primaryInstance = name
+		maxViewMembers = max(maxViewMembers, len(gr.Members))
+		if primaryID != "" {
+			primaryVotes[primaryID]++
 		}
 	}
 	if view == nil {
 		return nil, ""
 	}
+
+	primaryID := ""
+	for candidate, votes := range primaryVotes {
+		if votes*2 > maxViewMembers {
+			primaryID = candidate
+			break
+		}
+	}
+	primaryInstance := uuidToInstance[primaryID]
 
 	members := make([]mysqlv1alpha1.GroupMember, 0, len(view.Members))
 	onlineCount := 0
