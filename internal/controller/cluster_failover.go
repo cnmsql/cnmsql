@@ -30,19 +30,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	controllerasync "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
 )
-
-// primaryHealthy reports whether the expected primary is reachable, ready and
-// still acting as the primary.
-func primaryHealthy(observed observedCluster) bool {
-	status, ok := observed.StatusByInstance[observed.PrimaryName]
-	if !ok {
-		return false
-	}
-	return status.IsReady && status.Role == webserver.RolePrimary
-}
 
 // reconcileFailover promotes a safe replica when the current primary is
 // unreachable for longer than spec.failoverDelay. It returns handled=true when
@@ -53,6 +42,7 @@ func (r *ClusterReconciler) reconcileFailover(
 	plan clusterPlan,
 	observed observedCluster,
 ) (bool, ctrl.Result, error) {
+	failoverState := topologyFailoverState(observed)
 	// Group Replication elects and fails over within the group; the operator must
 	// never drive an async failover (that is the "operator does not promote"
 	// guarantee). It observes the new primary instead.
@@ -64,7 +54,7 @@ func (r *ClusterReconciler) reconcileFailover(
 	if cluster.Status.CurrentPrimary == "" || observed.PrimaryName == "" || plan.Instances < 2 {
 		return false, ctrl.Result{}, nil
 	}
-	if primaryHealthy(observed) {
+	if controllerasync.PrimaryHealthy(failoverState) {
 		if cluster.Status.PrimaryFailingSince != "" {
 			return false, ctrl.Result{}, r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 				s.PrimaryFailingSince = ""
@@ -109,7 +99,7 @@ func (r *ClusterReconciler) reconcileFailover(
 	// primary was still reachable, so a diverged replica stays ineligible across
 	// the outage.
 	knownDiverged := append(slices.Clone(observed.DivergedInstances), cluster.Status.DivergedInstances...)
-	candidate, reason := selectFailoverCandidate(observed, knownDiverged)
+	candidate, reason := controllerasync.SelectFailoverCandidate(failoverState, knownDiverged)
 	if candidate == "" {
 		// No safe candidate to promote. If no replica is even observed yet, the
 		// cluster is still bootstrapping its replica set: the replicas that would
@@ -120,7 +110,7 @@ func (r *ClusterReconciler) reconcileFailover(
 		// established cluster), keep blocking rather than risk promoting an unsafe
 		// or diverged replica. Failover ordering is otherwise preserved: when a
 		// candidate exists this branch is never reached.
-		if !hasObservedReplica(observed) {
+		if !controllerasync.HasObservedReplica(failoverState) {
 			return false, ctrl.Result{}, nil
 		}
 		blockReason := fmt.Sprintf("Cannot fail over from %s: %s", observed.PrimaryName, reason)
@@ -158,93 +148,6 @@ func (r *ClusterReconciler) reconcileFailover(
 			fmt.Sprintf("Failing over from %s to %s", observed.PrimaryName, candidate))
 	}
 	return true, ctrl.Result{RequeueAfter: provisioningRequeue}, nil
-}
-
-// hasObservedReplica reports whether any non-primary instance is currently
-// observed with a control status. It distinguishes an established cluster (whose
-// replicas exist and were reachable) from one still bootstrapping its replica
-// set, so failover does not block initial provisioning when there is nothing yet
-// to fail over to.
-func hasObservedReplica(observed observedCluster) bool {
-	for name := range observed.StatusByInstance {
-		if name != observed.PrimaryName {
-			return true
-		}
-	}
-	return false
-}
-
-// selectFailoverCandidate picks the safest reachable replica to promote: it
-// must still have SQL apply running, and its executed GTID set must contain
-// every other candidate's. During a real primary outage the replica IO thread
-// is expected to stop because the source vanished, so failover must not require
-// IORunning or instance readiness. Ties (equal GTID) break to the lowest ordinal.
-// When no replica dominates all others the sets are incomparable and failover is
-// blocked rather than risking data loss.
-//
-// knownDiverged lists replicas known to carry errant transactions the old
-// primary never had. They must never be promoted: a diverged replica's GTID set
-// is a *superset*, so it would dominate the comparison below and be chosen,
-// making those errant transactions canonical and stranding the clean replicas.
-// The dominance check alone does not catch this — a superset legitimately
-// "contains" the others. Divergence can only be computed while the primary is
-// reachable (it is the comparison baseline), so the caller passes the last-known
-// set persisted in status, which survives the very outage that triggers failover.
-func selectFailoverCandidate(observed observedCluster, knownDiverged []string) (string, string) {
-	var candidates []string
-	divergedSkipped := 0
-	for _, name := range observed.InstanceNames {
-		if name == observed.PrimaryName {
-			continue
-		}
-		// A fenced instance is deliberately held out of service; never promote it.
-		if slices.Contains(observed.FencedInstances, name) {
-			continue
-		}
-		if slices.Contains(knownDiverged, name) {
-			divergedSkipped++
-			continue
-		}
-		status, ok := observed.StatusByInstance[name]
-		if !ok || status.Role != webserver.RoleReplica {
-			continue
-		}
-		if status.Replication == nil || !status.Replication.SQLRunning {
-			continue
-		}
-		if observed.GTIDByInstance[name] == "" {
-			continue
-		}
-		candidates = append(candidates, name)
-	}
-	if len(candidates) == 0 {
-		if divergedSkipped > 0 {
-			return "", "every replica candidate has diverged from the failed primary (errant transactions); manual recovery required"
-		}
-		return "", "no healthy replica candidate available"
-	}
-	// InstanceNames is ordinal-ordered, so the first dominating candidate is the
-	// lowest ordinal among equally complete replicas.
-	for _, c := range candidates {
-		dominatesAll := true
-		for _, other := range candidates {
-			if c == other {
-				continue
-			}
-			contains, err := replication.GTIDContains(observed.GTIDByInstance[c], observed.GTIDByInstance[other])
-			if err != nil {
-				return "", fmt.Sprintf("comparing gtid sets: %v", err)
-			}
-			if !contains {
-				dominatesAll = false
-				break
-			}
-		}
-		if dominatesAll {
-			return c, ""
-		}
-	}
-	return "", "candidate replicas have diverged GTID sets that cannot be proven safe"
 }
 
 // fenceInstancePod deletes the instance Pod (retaining its PVC) so a recovered

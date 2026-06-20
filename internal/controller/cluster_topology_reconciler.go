@@ -21,6 +21,7 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
 	controllergr "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
 func (r *ClusterReconciler) topologyReconciler(cluster *mysqlv1alpha1.Cluster) topology.Reconciler {
@@ -28,6 +29,31 @@ func (r *ClusterReconciler) topologyReconciler(cluster *mysqlv1alpha1.Cluster) t
 		return controllergr.NewReconciler(r.Client, r.Scheme)
 	}
 	return async.NewReconciler(r.Client, r.Scheme, r.instanceControlClient())
+}
+
+func topologyFailoverState(observed observedCluster) topology.FailoverState {
+	instances := make(map[string]topology.FailoverInstance, len(observed.StatusByInstance))
+	for name, status := range observed.StatusByInstance {
+		if status == nil {
+			continue
+		}
+		instance := topology.FailoverInstance{
+			Ready:   status.IsReady,
+			Primary: status.Role == webserver.RolePrimary,
+			Replica: status.Role == webserver.RoleReplica,
+			GTID:    observed.GTIDByInstance[name],
+		}
+		if status.Replication != nil {
+			instance.SQLRunning = status.Replication.SQLRunning
+		}
+		instances[name] = instance
+	}
+	return topology.FailoverState{
+		PrimaryName:   observed.PrimaryName,
+		InstanceNames: observed.InstanceNames,
+		Instances:     instances,
+		Fenced:        observed.FencedInstances,
+	}
 }
 
 func topologyAvailabilityState(observed observedCluster) topology.AvailabilityState {

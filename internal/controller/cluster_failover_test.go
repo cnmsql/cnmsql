@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	controllerasync "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
@@ -65,7 +66,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, testGTID),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3", got, reason)
 	}
@@ -73,7 +74,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 	// Equal GTID: lowest ordinal wins.
 	observed.GTIDByInstance[testReplica2] = testGTID
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
-	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica2 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica2 {
 		t.Fatalf("candidate = %q, want demo-2 on equal GTID", got)
 	}
 }
@@ -92,7 +93,7 @@ func TestSelectFailoverCandidateBlocksOnDivergedGTID(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "other:1-4"),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -119,11 +120,11 @@ func TestSelectFailoverCandidateExcludesKnownDivergedReplica(t *testing.T) {
 		},
 	}
 	// Sanity: without the guard the diverged superset would be chosen.
-	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica3 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("precondition: candidate = %q, want the diverged superset demo-3 to dominate", got)
 	}
 	// With it flagged diverged, the clean replica wins instead.
-	got, reason := selectFailoverCandidate(observed, []string{testReplica3})
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica3})
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want the clean replica demo-2", got, reason)
 	}
@@ -144,7 +145,7 @@ func TestSelectFailoverCandidateBlocksWhenOnlyCandidateDiverged(t *testing.T) {
 			testReplica2: healthyReplicaStatus(testReplica2, "a:1-15,b:1-3"),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed, []string{testReplica2})
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica2})
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -169,7 +170,7 @@ func TestSelectFailoverCandidateSkipsUnhealthyReplicas(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "uuid:1-7"),
 		},
 	}
-	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica3 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("candidate = %q, want demo-3 (demo-2 has stalled SQL thread)", got)
 	}
 }
@@ -197,7 +198,7 @@ func TestSelectFailoverCandidateAllowsStoppedIOThread(t *testing.T) {
 		},
 	}
 
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want demo-2", got, reason)
 	}
@@ -214,7 +215,7 @@ func TestSelectFailoverCandidateSkipsReplicasWithoutGTID(t *testing.T) {
 		},
 	}
 
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != "" {
 		t.Fatalf("candidate = %q (reason %q), want empty without GTID status", got, reason)
 	}

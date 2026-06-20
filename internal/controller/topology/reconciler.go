@@ -57,6 +57,24 @@ type AvailabilityState struct {
 	FencedInstances   []string
 }
 
+// FailoverInstance contains the async failover policy inputs for one instance.
+type FailoverInstance struct {
+	Ready      bool
+	Primary    bool
+	Replica    bool
+	SQLRunning bool
+	GTID       string
+}
+
+// FailoverState is the topology-neutral observed state used to choose whether
+// and where an async failover can proceed.
+type FailoverState struct {
+	PrimaryName   string
+	InstanceNames []string
+	Instances     map[string]FailoverInstance
+	Fenced        []string
+}
+
 // SemiSyncControl adjusts the acknowledgement count on an async primary.
 type SemiSyncControl interface {
 	SetSemiSyncWaitForReplicaCount(

@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	controllerasync "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
@@ -228,7 +229,7 @@ func donorAvailable(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bo
 	if cluster.IsGroupReplication() {
 		return groupHasOnlineDonor(observed)
 	}
-	return primaryHealthy(observed)
+	return controllerasync.PrimaryHealthy(topologyFailoverState(observed))
 }
 
 // groupHasOnlineDonor reports whether the observed group has quorum and at least
