@@ -29,7 +29,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
+	controllergr "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/groupreplication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
+
+func (r *ClusterReconciler) topologyReconciler(cluster *mysqlv1alpha1.Cluster) topology.Reconciler {
+	if cluster.IsGroupReplication() {
+		return controllergr.NewReconciler(r.Client, r.Scheme)
+	}
+	return async.NewReconciler()
+}
 
 // ensureInstanceRBAC provisions the per-Cluster Role and the per-instance
 // ServiceAccounts that let each instance's in-Pod reconciler watch this Cluster
@@ -39,6 +49,7 @@ import (
 // Cluster for garbage collection.
 func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	name := cluster.Name + "-instance"
+	topologyReconciler := r.topologyReconciler(cluster)
 
 	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
@@ -51,21 +62,7 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 				ResourceNames: []string{cluster.Name},
 			},
 		}
-		// GR instances report through mTLS and never write Cluster status or use
-		// the async primary Lease. Keep those capabilities out of their token.
-		if !cluster.IsGroupReplication() {
-			role.Rules = append(role.Rules, rbacv1.PolicyRule{
-				APIGroups:     []string{mysqlv1alpha1.GroupVersion.Group},
-				Resources:     []string{"clusters/status"},
-				Verbs:         []string{"get", "update", "patch"},
-				ResourceNames: []string{cluster.Name},
-			}, rbacv1.PolicyRule{
-				APIGroups:     []string{"coordination.k8s.io"},
-				Resources:     []string{"leases"},
-				Verbs:         []string{"get", "create", "update", "patch", "delete", "watch", "list"},
-				ResourceNames: []string{primaryLeaseName(cluster)},
-			})
-		}
+		role.Rules = append(role.Rules, topologyReconciler.InstancePolicyRules(cluster)...)
 		return controllerutil.SetControllerReference(cluster, role, r.Scheme)
 	}); err != nil {
 		return err
@@ -82,10 +79,12 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 		}); err != nil {
 			return err
 		}
-		if cluster.IsGroupReplication() {
-			if err := r.ensureGroupReplicationDoorbellRBAC(ctx, cluster, inst, saName); err != nil {
-				return err
-			}
+		if err := topologyReconciler.ReconcileInstanceRBAC(ctx, cluster, topology.InstanceIdentity{
+			InstanceName:       inst,
+			ServiceAccountName: saName,
+			Labels:             labelsFor(cluster, inst, ""),
+		}); err != nil {
+			return err
 		}
 	}
 
@@ -132,42 +131,4 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 	}
 
 	return nil
-}
-
-// ensureGroupReplicationDoorbellRBAC gives one instance identity permission to
-// ring the GR observation doorbell on its own Pod and no other. A separate Role
-// per instance is necessary because resourceNames cannot vary by RoleBinding
-// subject.
-func (r *ClusterReconciler) ensureGroupReplicationDoorbellRBAC(
-	ctx context.Context,
-	cluster *mysqlv1alpha1.Cluster,
-	instanceName, serviceAccountName string,
-) error {
-	name := instanceName + "-gr-doorbell"
-	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		role.Labels = labelsFor(cluster, instanceName, "")
-		role.Rules = []rbacv1.PolicyRule{{
-			APIGroups:     []string{""},
-			Resources:     []string{"pods"},
-			Verbs:         []string{"get", "patch"},
-			ResourceNames: []string{instanceName},
-		}}
-		return controllerutil.SetControllerReference(cluster, role, r.Scheme)
-	}); err != nil {
-		return err
-	}
-
-	binding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error {
-		binding.Labels = labelsFor(cluster, instanceName, "")
-		binding.RoleRef = rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name}
-		binding.Subjects = []rbacv1.Subject{{
-			Kind:      rbacv1.ServiceAccountKind,
-			Name:      serviceAccountName,
-			Namespace: cluster.Namespace,
-		}}
-		return controllerutil.SetControllerReference(cluster, binding, r.Scheme)
-	})
-	return err
 }
