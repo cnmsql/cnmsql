@@ -184,6 +184,35 @@ func mergeGroupReplicationStatus(cluster *mysqlv1alpha1.Cluster, observed observ
 	cluster.Status.GroupReplication = merged
 }
 
+// donorAvailable reports whether a new member may be provisioned now: a healthy
+// source exists to seed it. Async needs a healthy primary to clone; Group
+// Replication needs a quorate group with at least one ONLINE donor for
+// distributed recovery.
+func donorAvailable(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool {
+	if cluster.IsGroupReplication() {
+		return groupHasOnlineDonor(observed)
+	}
+	return primaryHealthy(observed)
+}
+
+// groupHasOnlineDonor reports whether the observed group has quorum and at least
+// one ONLINE member to recover a joining member from. Until the operator has
+// observed an ONLINE member (GroupReplication is nil before then) no donor is
+// available, so the first joining member waits for the bootstrap member to come
+// ONLINE.
+func groupHasOnlineDonor(observed observedCluster) bool {
+	gr := observed.GroupReplication
+	if gr == nil || !gr.HasQuorum {
+		return false
+	}
+	for _, m := range gr.Members {
+		if m.State == groupreplication.MemberStateOnline {
+			return true
+		}
+	}
+	return false
+}
+
 // reconcileGroupName is the GR pre-step the main loop runs before provisioning,
 // pinning the group name. The bool reports whether the caller should stop and
 // return the error (mirroring the other guarded pre-steps). For M-GR.2 it only

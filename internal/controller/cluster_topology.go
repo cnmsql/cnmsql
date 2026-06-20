@@ -45,20 +45,23 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 				// The previous instance is not ready yet: ramp up later.
 				return false, nil
 			}
-			// A replica is provisioned by cloning from the primary, both at initial
-			// bootstrap and when scaling up. Never create a new replica while the
-			// primary is unhealthy: the clone would fail against a primary that is
-			// unreachable or not ready, and seeding from one about to be failed over
-			// risks diverging the new replica. Existing replicas are left alone (their
-			// data is already cloned); only the first creation of a replica Pod is
-			// gated, so this never blocks routine reconciliation of a running cluster.
+			// A new member is provisioned from a healthy source: async clones the
+			// primary over a streamed backup, GR joins a quorate group and recovers
+			// from an ONLINE donor (distributed recovery). Never create one while no
+			// such source exists — an async clone would fail against an unhealthy
+			// primary (and seeding from one about to be failed over risks divergence),
+			// and a GR join would stall with no quorum or no donor to recover from.
+			// Existing members are left alone (already provisioned); only the first
+			// creation of a member Pod is gated, so this never blocks routine
+			// reconciliation of a running cluster.
 			exists, err := r.instancePodExists(ctx, cluster, inst)
 			if err != nil {
 				return false, err
 			}
-			if !exists && !primaryHealthy(observed) {
-				logf.FromContext(ctx).Info("Deferring replica creation: primary is not healthy",
-					"instance", inst.Name, "primary", observed.PrimaryName)
+			if !exists && !donorAvailable(cluster, observed) {
+				logf.FromContext(ctx).Info("Deferring member creation: no healthy provisioning source",
+					"instance", inst.Name, "primary", observed.PrimaryName,
+					"groupReplication", cluster.IsGroupReplication())
 				return false, nil
 			}
 		}
