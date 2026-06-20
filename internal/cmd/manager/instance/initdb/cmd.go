@@ -74,6 +74,15 @@ func NewCommand() *cobra.Command {
 				dynamicPrivileges = ver.AtLeast(8, 0, 0)
 			}
 
+			// The application account is only created together with its database.
+			// A Group Replication joining member initialises an empty server (no
+			// --database) and clones the schema and app account from a group donor,
+			// so it must not read an app password it would never use.
+			appPassword := ""
+			if database != "" {
+				appPassword = os.Getenv("MYSQL_APP_PASSWORD")
+			}
+
 			return instance.Initialize(cmd.Context(), instance.InitOptions{
 				MysqldPath: mysqldPath,
 				Version:    serverVersion,
@@ -84,7 +93,7 @@ func NewCommand() *cobra.Command {
 					RootPassword:              rootPassword,
 					Database:                  database,
 					AppUser:                   owner,
-					AppPassword:               os.Getenv("MYSQL_APP_PASSWORD"),
+					AppPassword:               appPassword,
 					CharacterSet:              charset,
 					Collation:                 collation,
 					ReplicationUser:           replUser,
