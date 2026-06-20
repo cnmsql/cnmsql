@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -114,14 +115,14 @@ func TestWriteInstanceManagerRejectsHashMismatch(t *testing.T) {
 }
 
 func TestReExecOnDiskForUpgradeRejectsInvalidPID(t *testing.T) {
-	if err := ReExecOnDiskForUpgrade(0); err == nil {
+	if err := ReExecOnDiskForUpgrade(0, time.Time{}); err == nil {
 		t.Error("expected ReExecOnDiskForUpgrade(0) to fail without exec'ing")
 	}
 }
 
 func TestReexecEnvSetsAdoptPID(t *testing.T) {
 	t.Setenv("CNMYSQL_UNRELATED", "keep-me")
-	env := reexecEnv(4242)
+	env := reexecEnv(4242, time.Time{})
 
 	want := AdoptMysqldPIDEnv + "=4242"
 	var found, kept bool
@@ -143,7 +144,7 @@ func TestReexecEnvSetsAdoptPID(t *testing.T) {
 
 func TestReexecEnvReplacesExistingAdoptPID(t *testing.T) {
 	t.Setenv(AdoptMysqldPIDEnv, "1")
-	env := reexecEnv(99)
+	env := reexecEnv(99, time.Time{})
 
 	var count int
 	for _, kv := range env {
@@ -159,8 +160,57 @@ func TestReexecEnvReplacesExistingAdoptPID(t *testing.T) {
 	}
 }
 
+// A non-zero last contact must be carried forward (Unix nanoseconds) so the
+// adopting image resumes the isolation clock; isolationLastContactFromEnv must
+// round-trip it.
+func TestReexecEnvCarriesIsolationContact(t *testing.T) {
+	last := time.Now().Add(-7 * time.Second).Truncate(time.Nanosecond)
+	env := reexecEnv(7, last)
+
+	want := IsolationLastContactEnv + "=" + strconv.FormatInt(last.UnixNano(), 10)
+	var count int
+	for _, kv := range env {
+		if strings.HasPrefix(kv, IsolationLastContactEnv+"=") {
+			count++
+			if kv != want {
+				t.Errorf("isolation contact = %q, want %q", kv, want)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one %s entry, got %d", IsolationLastContactEnv, count)
+	}
+
+	t.Setenv(IsolationLastContactEnv, strconv.FormatInt(last.UnixNano(), 10))
+	got, ok := isolationLastContactFromEnv()
+	if !ok || !got.Equal(last) {
+		t.Errorf("isolationLastContactFromEnv() = %v, %v; want %v, true", got, ok, last)
+	}
+}
+
+// A zero last contact (no detector in the previous image) must not be handed
+// forward, and any stale entry inherited from the environment is cleared so the
+// adopting image falls back to its fresh "just contacted" seed.
+func TestReexecEnvOmitsZeroIsolationContact(t *testing.T) {
+	t.Setenv(IsolationLastContactEnv, "999")
+	env := reexecEnv(7, time.Time{})
+
+	for _, kv := range env {
+		if strings.HasPrefix(kv, IsolationLastContactEnv+"=") {
+			t.Errorf("reexecEnv carried a stale isolation contact: %q", kv)
+		}
+	}
+}
+
+func TestIsolationLastContactFromEnvRejectsMalformed(t *testing.T) {
+	t.Setenv(IsolationLastContactEnv, "not-a-number")
+	if _, ok := isolationLastContactFromEnv(); ok {
+		t.Error("expected malformed isolation contact to be rejected")
+	}
+}
+
 func TestReExecForUpgradeRejectsInvalidPID(t *testing.T) {
-	if err := ReExecForUpgrade(0); err == nil {
+	if err := ReExecForUpgrade(0, time.Time{}); err == nil {
 		t.Error("expected ReExecForUpgrade(0) to fail without exec'ing")
 	}
 }

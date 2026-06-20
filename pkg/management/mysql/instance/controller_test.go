@@ -286,7 +286,7 @@ func TestRestartInPlaceReExecsWithMysqldPID(t *testing.T) {
 	c, _ := newController(t, sup)
 
 	gotPID := make(chan int, 1)
-	c.reExec = func(pid int) error { gotPID <- pid; return nil }
+	c.reExec = func(pid int, _ time.Time) error { gotPID <- pid; return nil }
 
 	if err := c.RestartInPlace(context.Background()); err != nil {
 		t.Fatalf("RestartInPlace: %v", err)
@@ -314,7 +314,7 @@ func TestRestartInPlaceWithoutSupervisor(t *testing.T) {
 func TestRestartInPlaceWithoutRunningMysqld(t *testing.T) {
 	c, _ := newController(t, &fakeSupervisor{pid: 0})
 	called := false
-	c.reExec = func(int) error { called = true; return nil }
+	c.reExec = func(int, time.Time) error { called = true; return nil }
 	if err := c.RestartInPlace(context.Background()); err == nil {
 		t.Error("expected RestartInPlace to fail when mysqld is not running")
 	}
@@ -337,7 +337,7 @@ func TestUpgradeInstanceManagerWritesThenReExecs(t *testing.T) {
 		return nil
 	}
 	gotPID := make(chan int, 1)
-	c.reExecOnDisk = func(pid int) error { gotPID <- pid; return nil }
+	c.reExecOnDisk = func(pid int, _ time.Time) error { gotPID <- pid; return nil }
 
 	err := c.UpgradeInstanceManager(context.Background(), strings.NewReader("new-binary"), "abc123")
 	if err != nil {
@@ -365,7 +365,7 @@ func TestUpgradeInstanceManagerRejectsBadBinaryWithoutReExec(t *testing.T) {
 
 	c.writeManager = func(io.Reader, string) error { return errors.New("hash mismatch") }
 	called := false
-	c.reExecOnDisk = func(int) error { called = true; return nil }
+	c.reExecOnDisk = func(int, time.Time) error { called = true; return nil }
 
 	if err := c.UpgradeInstanceManager(context.Background(), strings.NewReader("bad"), "x"); err == nil {
 		t.Error("expected UpgradeInstanceManager to fail on a bad binary")

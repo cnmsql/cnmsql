@@ -368,6 +368,18 @@ func Run(ctx context.Context, opts RunOptions) error {
 	var isolationDetector *IsolationDetector
 	if roleManaged {
 		isolationDetector = NewIsolationDetector(DefaultIsolationTimeout)
+		// On an in-place re-exec, resume the isolation clock from the previous
+		// image's last API-server contact instead of restarting it at "now". This
+		// keeps an upgrade from briefly marking a healthy primary isolated (which
+		// would liveness-kill it under load), while a genuinely partitioned primary
+		// still trips at the real timeout measured from its last true contact.
+		if adopting {
+			if lastContact, ok := isolationLastContactFromEnv(); ok {
+				isolationDetector.RestoreContact(lastContact)
+				log.Info("Resumed API-server isolation clock from pre-upgrade contact",
+					"lastContact", lastContact)
+			}
+		}
 		controller.SetIsolationDetector(isolationDetector)
 	}
 

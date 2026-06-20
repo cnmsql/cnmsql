@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -35,6 +36,16 @@ import (
 // adopts the already-running mysqld (DetachedSupervisor.AdoptProcess) instead of
 // starting a fresh one, so an in-place manager upgrade leaves mysqld untouched.
 const AdoptMysqldPIDEnv = "CNMYSQL_ADOPT_MYSQLD_PID"
+
+// IsolationLastContactEnv names the environment variable a re-exec'ing manager
+// sets to hand the time of its last successful Kubernetes API-server contact
+// (Unix nanoseconds) to its replacement image. The new image seeds its isolation
+// detector from it instead of resetting the clock to "now", so an in-place
+// upgrade does not make a healthy primary briefly look isolated — and a
+// genuinely partitioned primary still trips the liveness probe at the real
+// timeout measured from its last true contact. Empty/absent when the previous
+// image had no detector (non-cluster-managed instance).
+const IsolationLastContactEnv = "CNMYSQL_ISOLATION_LAST_CONTACT"
 
 // selfExe is the path re-exec'd for a byte-identical in-place restart
 // (restart-inplace). /proc/self/exe always resolves to the running manager
@@ -68,11 +79,13 @@ func IsInPlaceUpgrading() bool { return inPlaceUpgrading.Load() }
 
 // ReExecForUpgrade replaces the running manager image with a fresh exec of itself,
 // passing mysqldPID via AdoptMysqldPIDEnv so the new image adopts the running
-// mysqld rather than starting a new one. On success it does not return (the
-// process image is replaced); it only returns when the execve itself fails, in
-// which case the caller keeps supervising the existing mysqld unharmed.
-func ReExecForUpgrade(mysqldPID int) error {
-	return reExecPath(selfExe, mysqldPID)
+// mysqld rather than starting a new one, and lastAPIContact via
+// IsolationLastContactEnv so the new image resumes the isolation clock instead of
+// resetting it. On success it does not return (the process image is replaced); it
+// only returns when the execve itself fails, in which case the caller keeps
+// supervising the existing mysqld unharmed.
+func ReExecForUpgrade(mysqldPID int, lastAPIContact time.Time) error {
+	return reExecPath(selfExe, mysqldPID, lastAPIContact)
 }
 
 // ReExecOnDiskForUpgrade re-execs the on-disk instance-manager binary
@@ -80,20 +93,22 @@ func ReExecForUpgrade(mysqldPID int) error {
 // upgrade: WriteInstanceManager has already replaced managerPath with the new
 // binary, so the running image (whose /proc/self/exe still points at the old,
 // now-unlinked binary) must exec the path to pick the new one up.
-func ReExecOnDiskForUpgrade(mysqldPID int) error {
-	return reExecPath(managerPath, mysqldPID)
+func ReExecOnDiskForUpgrade(mysqldPID int, lastAPIContact time.Time) error {
+	return reExecPath(managerPath, mysqldPID, lastAPIContact)
 }
 
 // reExecPath replaces the running manager image with a fresh exec of the binary
 // at path, passing mysqldPID via AdoptMysqldPIDEnv so the new image adopts the
-// running mysqld rather than starting a new one. On success it does not return
-// (the process image is replaced); it only returns when the execve itself fails,
-// in which case the caller keeps supervising the existing mysqld unharmed.
-func reExecPath(path string, mysqldPID int) error {
+// running mysqld rather than starting a new one, and lastAPIContact via
+// IsolationLastContactEnv so the new image resumes the isolation clock. On
+// success it does not return (the process image is replaced); it only returns
+// when the execve itself fails, in which case the caller keeps supervising the
+// existing mysqld unharmed.
+func reExecPath(path string, mysqldPID int, lastAPIContact time.Time) error {
 	if mysqldPID <= 0 {
 		return fmt.Errorf("re-exec for in-place upgrade: invalid mysqld pid %d", mysqldPID)
 	}
-	if err := syscall.Exec(path, os.Args, reexecEnv(mysqldPID)); err != nil {
+	if err := syscall.Exec(path, os.Args, reexecEnv(mysqldPID, lastAPIContact)); err != nil {
 		return fmt.Errorf("re-exec %s for in-place upgrade: %w", path, err)
 	}
 	return nil
@@ -182,17 +197,59 @@ func readPIDFileFIFOFD(pidFilePath string) (int, error) {
 }
 
 // reexecEnv returns the current environment with AdoptMysqldPIDEnv set (replacing
-// any existing entry) to the mysqld PID the re-exec'd image must adopt. Split out
-// from ReExecForUpgrade so the env wiring is unit-testable without an execve.
-func reexecEnv(mysqldPID int) []string {
-	prefix := AdoptMysqldPIDEnv + "="
-	value := prefix + strconv.Itoa(mysqldPID)
-	env := os.Environ()
+// any existing entry) to the mysqld PID the re-exec'd image must adopt, and
+// IsolationLastContactEnv set to lastAPIContact (Unix nanoseconds) so the new
+// image resumes the isolation clock. A zero lastAPIContact is omitted (and any
+// stale entry cleared), so a re-exec from an image without an isolation detector
+// hands nothing forward. Split out from ReExecForUpgrade so the env wiring is
+// unit-testable without an execve.
+func reexecEnv(mysqldPID int, lastAPIContact time.Time) []string {
+	env := upsertEnv(os.Environ(), AdoptMysqldPIDEnv, strconv.Itoa(mysqldPID))
+	if lastAPIContact.IsZero() {
+		return removeEnv(env, IsolationLastContactEnv)
+	}
+	return upsertEnv(env, IsolationLastContactEnv, strconv.FormatInt(lastAPIContact.UnixNano(), 10))
+}
+
+// upsertEnv sets key=value in env, replacing an existing entry for key or
+// appending a new one. The returned slice may share backing storage with env.
+func upsertEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	entry := prefix + value
 	for i, kv := range env {
-		if len(kv) >= len(prefix) && kv[:len(prefix)] == prefix {
-			env[i] = value
+		if strings.HasPrefix(kv, prefix) {
+			env[i] = entry
 			return env
 		}
 	}
-	return append(env, value)
+	return append(env, entry)
+}
+
+// removeEnv drops any entry for key from env, returning the filtered slice.
+func removeEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// isolationLastContactFromEnv reads the last successful API-server contact time a
+// re-exec'ing manager recorded in IsolationLastContactEnv, so the adopting image
+// can resume the isolation clock. It reports ok=false when the variable is
+// absent or malformed, leaving the caller to use the fresh "just contacted" seed.
+func isolationLastContactFromEnv() (t time.Time, ok bool) {
+	v := strings.TrimSpace(os.Getenv(IsolationLastContactEnv))
+	if v == "" {
+		return time.Time{}, false
+	}
+	nanos, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, nanos), true
 }

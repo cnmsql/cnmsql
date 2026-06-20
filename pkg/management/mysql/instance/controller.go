@@ -82,14 +82,14 @@ type Controller struct {
 	// reExec performs the byte-identical in-place manager re-exec (restart-inplace).
 	// It defaults to ReExecForUpgrade and is overridable in tests so the real
 	// syscall.Exec (which would replace the test process) is not triggered.
-	reExec func(mysqldPID int) error
+	reExec func(mysqldPID int, lastAPIContact time.Time) error
 	// writeManager streams and validates a new instance-manager binary, replacing
 	// the on-disk binary. It defaults to WriteInstanceManager and is overridable in
 	// tests so no real binary is written.
 	writeManager func(r io.Reader, expectedHash string) error
 	// reExecOnDisk re-execs the freshly written on-disk binary (the streamed
 	// upgrade). It defaults to ReExecOnDiskForUpgrade and is overridable in tests.
-	reExecOnDisk func(mysqldPID int) error
+	reExecOnDisk func(mysqldPID int, lastAPIContact time.Time) error
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -566,17 +566,28 @@ func (c *Controller) adoptablePID(action string) (int, error) {
 
 // scheduleReExec marks the upgrade in flight (so no concurrent shutdown path
 // tears mysqld down mid-swap) and schedules reExec shortly after, giving the
-// HTTP response time to flush before syscall.Exec replaces the process. A failed
-// re-exec leaves the current manager supervising mysqld unharmed.
-func (c *Controller) scheduleReExec(log logr.Logger, pid int, reExec func(int) error) {
+// HTTP response time to flush before syscall.Exec replaces the process. It hands
+// the current last API-server contact to the replacement image so the in-place
+// swap resumes the isolation clock rather than resetting it (a primary that was
+// in steady contact must not look isolated just because it was upgraded). A
+// failed re-exec leaves the current manager supervising mysqld unharmed.
+func (c *Controller) scheduleReExec(log logr.Logger, pid int, reExec func(int, time.Time) error) {
 	SetInPlaceUpgrading()
+	lastContact := c.isolationLastContact()
 	log.Info("Scheduling in-place manager re-exec", "instance", c.name, "mysqldPid", pid)
 	time.AfterFunc(reExecDelay, func() {
-		if err := reExec(pid); err != nil {
+		if err := reExec(pid, lastContact); err != nil {
 			// Only reached if execve fails; mysqld keeps running under this manager.
 			log.Error(err, "In-place manager re-exec failed; continuing with the current manager")
 		}
 	})
+}
+
+// isolationLastContact returns the time of the most recent successful API-server
+// contact, or the zero time when no isolation detector is wired (e.g. a
+// non-cluster-managed instance), in which case nothing is handed across the swap.
+func (c *Controller) isolationLastContact() time.Time {
+	return c.isolation.LastContact()
 }
 
 // validVariableName matches a MySQL system-variable identifier. Variable names

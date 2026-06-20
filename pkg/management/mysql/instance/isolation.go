@@ -70,6 +70,34 @@ func (d *IsolationDetector) RecordContact() {
 	d.lastContact = d.now()
 }
 
+// LastContact returns the time of the most recent successful API-server contact.
+// It is carried across an in-place manager re-exec so the replacement image
+// resumes the isolation clock instead of resetting it; a nil detector returns
+// the zero time.
+func (d *IsolationDetector) LastContact() time.Time {
+	if d == nil {
+		return time.Time{}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastContact
+}
+
+// RestoreContact seeds the last-contact time from a value carried across a
+// manager re-exec, so an in-place upgrade does not reset the isolation clock to
+// "now": a primary that was in steady API-server contact stays non-isolated
+// across the swap, while a genuinely partitioned one still trips at the real
+// timeout measured from its last true contact. A zero time or nil detector is a
+// no-op, leaving the fresh "just contacted" seed in place.
+func (d *IsolationDetector) RestoreContact(t time.Time) {
+	if d == nil || t.IsZero() {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lastContact = t
+}
+
 // Check returns a non-nil error when the API server has been unreachable for
 // longer than the configured timeout. A nil detector is always healthy.
 func (d *IsolationDetector) Check() error {
