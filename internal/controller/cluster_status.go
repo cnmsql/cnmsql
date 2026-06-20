@@ -520,7 +520,32 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
-	return r.Status().Patch(ctx, latest, client.MergeFrom(before))
+	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+		return err
+	}
+	if from, to, ok := observedGroupFailover(before, latest); ok {
+		logf.FromContext(ctx).Info("Observed Group Replication failover", "from", from, "to", to)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(latest, corev1.EventTypeNormal, eventFailoverObserved,
+				"Observed Group Replication failover from %s to %s", from, to)
+		}
+	}
+	return nil
+}
+
+// observedGroupFailover identifies a primary change elected by Group
+// Replication rather than requested by the operator. The initial bootstrap is
+// not a failover, and a targetPrimary already pointing at the new primary marks
+// a planned switchover or upgrade handoff.
+func observedGroupFailover(before, after *mysqlv1alpha1.Cluster) (string, string, bool) {
+	if !after.IsGroupReplication() {
+		return "", "", false
+	}
+	from, to := before.Status.CurrentPrimary, after.Status.CurrentPrimary
+	if from == "" || to == "" || from == to || before.Status.TargetPrimary == to {
+		return "", "", false
+	}
+	return from, to, true
 }
 
 // gtidPersistInterval bounds how often the operator persists the gtid_executed

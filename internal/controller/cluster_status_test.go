@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
@@ -523,5 +524,94 @@ func TestPatchStatusEstablishedAtIsSticky(t *testing.T) {
 	}
 	if !got2.IsEstablished() {
 		t.Fatal("cluster no longer reports established after a Provisioning re-stamp")
+	}
+}
+
+func TestPatchStatusEmitsObservedGroupFailover(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{
+		GroupName:     "group-uuid",
+		Bootstrapped:  true,
+		PrimaryMember: testPrimary,
+	})
+	cluster.Status.CurrentPrimary = testPrimary
+	cluster.Status.TargetPrimary = testPrimary
+	cluster.Status.Phase = phaseReady
+	cluster.Spec.Instances = 3
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(2)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster).
+		Build()
+	reconciler := &ClusterReconciler{Client: c, Scheme: scheme, Recorder: recorder}
+	plan := testPlan()
+	plan.Instances = 3
+
+	err := reconciler.patchStatus(ctx, cluster, observedCluster{
+		Plan:          plan,
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+		Phase:         phaseReady,
+		Ready:         true,
+		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{
+			PrimaryMember: testReplica2,
+			HasQuorum:     true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, eventFailoverObserved) ||
+			!strings.Contains(event, testPrimary+" to "+testReplica2) {
+			t.Fatalf("event = %q, want observed failover from %s to %s", event, testPrimary, testReplica2)
+		}
+	default:
+		t.Fatal("expected a FailoverObserved event")
+	}
+}
+
+func TestObservedGroupFailoverExcludesPlannedAndBootstrapChanges(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		before *mysqlv1alpha1.Cluster
+		after  *mysqlv1alpha1.Cluster
+	}{
+		{
+			name: "planned switchover",
+			before: func() *mysqlv1alpha1.Cluster {
+				cluster := grCluster(nil)
+				cluster.Status.CurrentPrimary = testPrimary
+				cluster.Status.TargetPrimary = testReplica2
+				return cluster
+			}(),
+			after: func() *mysqlv1alpha1.Cluster {
+				cluster := grCluster(nil)
+				cluster.Status.CurrentPrimary = testReplica2
+				return cluster
+			}(),
+		},
+		{
+			name:   "initial bootstrap",
+			before: grCluster(nil),
+			after: func() *mysqlv1alpha1.Cluster {
+				cluster := grCluster(nil)
+				cluster.Status.CurrentPrimary = testPrimary
+				return cluster
+			}(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if from, to, ok := observedGroupFailover(tt.before, tt.after); ok {
+				t.Fatalf("observedGroupFailover = (%q, %q, true), want no automatic failover", from, to)
+			}
+		})
 	}
 }

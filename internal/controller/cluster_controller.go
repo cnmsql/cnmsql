@@ -115,6 +115,8 @@ const (
 	phaseUpgrading      = "Upgrading"
 	phaseWaitingForUser = "WaitingForUser"
 
+	eventFailoverObserved = "FailoverObserved"
+
 	dataDir       = "/var/lib/mysql"
 	socketPath    = "/var/run/mysqld/mysqld.sock"
 	configPath    = "/etc/mysql/my.cnf"
