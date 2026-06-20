@@ -25,7 +25,7 @@ import (
 
 // FenceQuorumGuard always allows fencing for async topologies; quorum is a GR
 // concept and does not apply to the primary-replica model.
-func (r *Reconciler) FenceQuorumGuard(_ *mysqlv1alpha1.Cluster, _ string) *topology.QuorumResult {
+func (r *Reconciler) FenceQuorumGuard(_ *mysqlv1alpha1.Cluster, _ []string) *topology.QuorumResult {
 	return nil
 }
 

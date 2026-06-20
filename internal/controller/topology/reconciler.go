@@ -211,9 +211,12 @@ type Reconciler interface {
 	MergeStatus(cluster *mysqlv1alpha1.Cluster, observed Observation)
 	ObservedFailover(before, after *mysqlv1alpha1.Cluster) (string, string, bool)
 
-	// FenceQuorumGuard returns a blocking reason if fencing instanceName would
-	// drop the group below quorum (GR mode), or nil (always allowed, async).
-	FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, instanceName string) *QuorumResult
+	// FenceQuorumGuard returns a blocking reason if fencing any of the named
+	// instances would drop the group below quorum (GR mode), or nil (always
+	// allowed, async). The fenceSet is the full set of instances whose fencing
+	// annotation is already set, so the guard can subtract all pending leaves
+	// from the online count, not just the one being checked.
+	FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, fenceSet []string) *QuorumResult
 
 	// PDBMaxUnavailable returns the maxUnavailable count for topology-specific
 	// PDBs. For GR this is N - quorum; for async it carries the current split.

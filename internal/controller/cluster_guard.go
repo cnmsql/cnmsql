@@ -215,37 +215,55 @@ func isPodFenced(pod *corev1.Pod) bool {
 }
 
 // checkFenceQuorumGuard ensures that under Group Replication, fencing a member
-// (which executes STOP GROUP_REPLICATION) never breaks quorum. If a fenced
-// instance would drop the group below quorum, it is removed from the observed
-// fenced set, the cluster is blocked with a quorum-guard reason, and a Warning
-// Event is emitted. Returns the blocking reason (empty when all clear).
+// (which executes STOP GROUP_REPLICATION) never breaks quorum. It splits the
+// observed fenced set into already-persisted (safe, group survived) and new
+// additions, then checks whether fencing the new set would drop below quorum.
+// If so the new instances are removed from the observed fenced set, the cluster
+// is blocked with a quorum-guard reason, and a Warning Event is emitted.
+// Returns the blocking reason (empty when all clear).
 func (r *ClusterReconciler) checkFenceQuorumGuard(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed *observedCluster) string {
 	if !cluster.IsGroupReplication() || len(observed.FencedInstances) == 0 {
 		return ""
 	}
-	// Merge the fresh GroupReplication observation into a working copy so
-	// FenceQuorumGuard sees the latest member states, not the stale status
-	// from the top of Reconcile(). patchStatus would merge this later, but
-	// the quorum guard must see fresh data now.
+	// Separate already-persisted fenced instances (from the last reconcile)
+	// from newly observed ones. The persisted set represents fences that
+	// already took effect; the group survived them, so they are safe.
+	persisted := setFrom(cluster.Status.FencedInstances)
+	var newFences []string
+	for _, name := range observed.FencedInstances {
+		if !persisted[name] {
+			newFences = append(newFences, name)
+		}
+	}
+	if len(newFences) == 0 {
+		return ""
+	}
+
+	// Merge the fresh GR observation so quorum math sees latest member states.
 	latest := cluster.DeepCopy()
 	r.topologyReconciler(cluster).MergeStatus(latest, topology.Observation{
 		GroupReplication: observed.GroupReplication,
 	})
+
+	// Check whether fencing the new instances (on top of the ones already
+	// fenced) would break quorum.
 	topo := r.topologyReconciler(cluster)
-	for _, name := range observed.FencedInstances {
-		if guard := topo.FenceQuorumGuard(latest, name); guard != nil && guard.Blocked {
+	if guard := topo.FenceQuorumGuard(latest, newFences); guard != nil && guard.Blocked {
+		// Remove the new fences from the observed set so the in-Pod
+		// reconciler never executes STOP GROUP_REPLICATION for them.
+		for _, name := range newFences {
 			observed.FencedInstances = removeString(observed.FencedInstances, name)
-			logf.FromContext(ctx).Info("Blocking cluster: fencing would break quorum",
-				"instance", name, "reason", guard.Reason)
-			if r.Recorder != nil {
-				r.Recorder.Event(cluster, corev1.EventTypeWarning, "FenceQuorumGuardBlocked", guard.Reason)
-			}
-			observed.Phase = phaseBlocked
-			observed.PhaseReason = guard.Reason
-			observed.Ready = false
-			observed.Progressing = false
-			return guard.Reason
 		}
+		logf.FromContext(ctx).Info("Blocking cluster: fencing would break quorum",
+			"newFences", newFences, "reason", guard.Reason)
+		if r.Recorder != nil {
+			r.Recorder.Event(cluster, corev1.EventTypeWarning, "FenceQuorumGuardBlocked", guard.Reason)
+		}
+		observed.Phase = phaseBlocked
+		observed.PhaseReason = guard.Reason
+		observed.Ready = false
+		observed.Progressing = false
+		return guard.Reason
 	}
 	return ""
 }

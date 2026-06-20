@@ -32,28 +32,43 @@ func quorum(members int) int {
 	return members/2 + 1
 }
 
-// FenceQuorumGuard returns a blocking reason if fencing instanceName leaves
-// fewer than quorum active members (ONLINE or RECOVERING). The primary being
-// fenced triggers a group election, so it is allowed as long as quorum holds.
-func (r *Reconciler) FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, instanceName string) *topology.QuorumResult {
+// FenceQuorumGuard returns a blocking reason if fencing all members in fenceSet
+// would leave fewer than quorum active members (ONLINE or RECOVERING). It
+// subtracts the full fenceSet from the online count so that pending fences
+// (annotations set but leaves not yet reflected in the group view) are
+// accounted for. The primary being fenced triggers a group election, so it is
+// allowed as long as quorum holds.
+func (r *Reconciler) FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, fenceSet []string) *topology.QuorumResult {
 	gr := cluster.Status.GroupReplication
 	if gr == nil {
 		return nil
 	}
 	online := 0
 	configured := 0
+	fencing := 0
 	for _, member := range gr.Members {
 		configured++
 		if member.State == mysqlgr.MemberStateOnline || member.State == mysqlgr.MemberStateRecovering {
 			online++
 		}
 	}
-	after := online - 1
+	for _, name := range fenceSet {
+		for _, member := range gr.Members {
+			if member.Instance == name {
+				fencing++
+				break
+			}
+		}
+	}
+	// Members not yet in the group view (e.g. still provisioning) count as
+	// absent and don't affect quorum. Subtract only the fenced members that
+	// are currently ONLINE from that count.
+	after := online - fencing
 	q := quorum(configured)
 	if after < q {
 		return &topology.QuorumResult{
 			Blocked:     true,
-			Reason:      fmt.Sprintf("fencing %s would drop the group to %d active members, below quorum (%d)", instanceName, after, q),
+			Reason:      fmt.Sprintf("fencing %d member(s) would drop the group to %d active members, below quorum (%d)", fencing, after, q),
 			CurrentSize: online,
 			Quorum:      q,
 		}
