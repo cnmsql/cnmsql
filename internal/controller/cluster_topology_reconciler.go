@@ -47,9 +47,11 @@ func topologyFailoverState(observed observedCluster) topology.FailoverState {
 			Ready:   status.IsReady,
 			Primary: status.Role == webserver.RolePrimary,
 			Replica: status.Role == webserver.RoleReplica,
+			Role:    string(status.Role),
 			GTID:    observed.GTIDByInstance[name],
 		}
 		if status.Replication != nil {
+			instance.IORunning = status.Replication.IORunning
 			instance.SQLRunning = status.Replication.SQLRunning
 		}
 		instances[name] = instance

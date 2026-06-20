@@ -1028,7 +1028,7 @@ func TestReconcileSwitchoverWaitsForInstancePromotion(t *testing.T) {
 		},
 	}
 
-	handled, err := reconciler.reconcileSwitchover(ctx, cluster, plan, observed)
+	handled, err := reconciler.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1078,7 +1078,7 @@ func TestReconcileSwitchoverDoesNotBlockBootstrapTarget(t *testing.T) {
 		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
 	}
 
-	handled, err := reconciler.reconcileSwitchover(ctx, cluster, plan, observed)
+	handled, err := reconciler.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1125,7 +1125,7 @@ func TestReconcileSwitchoverBlocksUnhealthyTarget(t *testing.T) {
 		},
 	}
 
-	handled, err := reconciler.reconcileSwitchover(ctx, cluster, plan, observed)
+	handled, err := reconciler.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		t.Fatal(err)
 	}

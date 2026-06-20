@@ -119,7 +119,11 @@ func phaseResult(requeueAfter time.Duration, phase, reason string) topology.Fail
 	return topology.FailoverResult{
 		Handled:      true,
 		RequeueAfter: requeueAfter,
-		Phase:        &topology.OperationPhase{Phase: phase, Reason: reason},
+		Phase: &topology.OperationPhase{
+			Phase:       phase,
+			Reason:      reason,
+			Progressing: true,
+		},
 	}
 }
 

@@ -331,7 +331,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	switched, err := r.reconcileSwitchover(ctx, cluster, plan, observed)
+	switched, err := r.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

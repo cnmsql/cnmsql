@@ -294,7 +294,7 @@ func TestReconcilePrimaryChangeAbortsWhenTargetLagsPastMaxSwitchoverDelay(t *tes
 		},
 	}
 
-	switched, err := reconciler.reconcileSwitchover(ctx, cluster, plan, observed)
+	switched, err := reconciler.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		t.Fatal(err)
 	}

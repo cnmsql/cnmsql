@@ -43,7 +43,7 @@ func (r *ClusterReconciler) reconcileFailover(
 		return result.Handled, ctrl.Result{}, err
 	}
 	if result.Phase != nil {
-		err = r.patchOperationPhase(ctx, cluster, observed, result.Phase.Phase, result.Phase.Reason, result.Phase.Ready)
+		err = r.patchOperationPhase(ctx, cluster, observed, *result.Phase)
 	}
 	return result.Handled, ctrl.Result{RequeueAfter: result.RequeueAfter}, err
 }
@@ -54,14 +54,13 @@ func (r *ClusterReconciler) patchOperationPhase(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	observed observedCluster,
-	phase, reason string,
-	ready bool,
+	phase topology.OperationPhase,
 ) error {
 	op := observed
-	op.Phase = phase
-	op.PhaseReason = reason
-	op.Ready = ready
-	op.Progressing = !ready
+	op.Phase = phase.Phase
+	op.PhaseReason = phase.Reason
+	op.Ready = phase.Ready
+	op.Progressing = phase.Progressing
 	return r.patchStatus(ctx, cluster, op)
 }
 

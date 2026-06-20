@@ -62,6 +62,8 @@ type FailoverInstance struct {
 	Ready      bool
 	Primary    bool
 	Replica    bool
+	Role       string
+	IORunning  bool
 	SQLRunning bool
 	GTID       string
 }
@@ -79,9 +81,10 @@ type FailoverState struct {
 // OperationPhase requests a common observed-status phase patch from the root
 // Cluster reconciler.
 type OperationPhase struct {
-	Phase  string
-	Reason string
-	Ready  bool
+	Phase       string
+	Reason      string
+	Ready       bool
+	Progressing bool
 }
 
 // FailoverRequest contains common orchestration inputs for a topology-specific
@@ -135,5 +138,10 @@ type Reconciler interface {
 		ctx context.Context,
 		cluster *mysqlv1alpha1.Cluster,
 		request FailoverRequest,
+	) (FailoverResult, error)
+	ReconcileSwitchover(
+		ctx context.Context,
+		cluster *mysqlv1alpha1.Cluster,
+		observed FailoverState,
 	) (FailoverResult, error)
 }
