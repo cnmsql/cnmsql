@@ -36,11 +36,17 @@ import (
 
 // reconcilePDB keeps the cluster's PodDisruptionBudgets in step with the spec.
 //
-// When spec.enablePDB is true (the default) the operator maintains two PDBs:
+// Under async replication the operator maintains two PDBs:
 //
 //   - {cluster}-primary: maxUnavailable=1, matches the pod holding role=primary.
 //   - {cluster}-replicas: maxUnavailable=floor(N/2) for N replicas, matches pods
 //     with role=replica. Single-instance clusters (no replicas) skip it.
+//
+// Under Group Replication a single quorum-aware PDB replaces the split:
+//
+//   - {cluster}-group: maxUnavailable = N - quorum (e.g. N=3 → 1, N=5 → 2),
+//     matching every cluster Pod by cluster label only, so voluntary disruptions
+//     can never break quorum.
 //
 // During a node maintenance window (spec.nodeMaintenanceWindow.inProgress with
 // reusePVC) the relevant PDBs are torn down so the kubelet can drain the node;
@@ -55,6 +61,21 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	// cluster, where the lone pod must be allowed to move with its (reused) PVC.
 	maintenance := inNodeMaintenance(cluster)
 	singleInstance := plan.Instances <= 1
+
+	// Group Replication uses a single quorum-aware PDB; remove the async split.
+	if cluster.IsGroupReplication() {
+		if !pdbEnabled || singleInstance {
+			_ = r.reconcileOnePDB(ctx, cluster, groupPDBName(cluster), false, nil)
+			_ = r.deleteAsyncSplitPDBs(ctx, cluster)
+			return nil
+		}
+		_ = r.deleteAsyncSplitPDBs(ctx, cluster)
+		primaryMax, _ := r.topologyReconciler(cluster).PDBMaxUnavailable(cluster)
+		wantGroup := pdbEnabled && !maintenance
+		return r.reconcileOnePDB(ctx, cluster, groupPDBName(cluster), wantGroup, func() *policyv1.PodDisruptionBudget {
+			return buildClusterWidePDB(cluster, groupPDBName(cluster), primaryMax)
+		})
+	}
 
 	wantPrimary := pdbEnabled && (!maintenance || !singleInstance)
 	wantReplica := pdbEnabled && !singleInstance && !maintenance
@@ -71,6 +92,14 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	return r.reconcileOnePDB(ctx, cluster, replicaPDBName(cluster), wantReplica, func() *policyv1.PodDisruptionBudget {
 		return buildPDB(cluster, replicaPDBName(cluster), roleReplica, intstr.FromInt32(int32(replicas/2)))
 	})
+}
+
+// deleteAsyncSplitPDBs removes the async-style primary and replica PDBs, ensuring
+// a switch from async to GR (or vice versa) cleans up the old topology's PDBs.
+func (r *ClusterReconciler) deleteAsyncSplitPDBs(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
+	_ = r.reconcileOnePDB(ctx, cluster, primaryPDBName(cluster), false, nil)
+	_ = r.reconcileOnePDB(ctx, cluster, replicaPDBName(cluster), false, nil)
+	return nil
 }
 
 // reconcileOnePDB creates/updates the named PDB when want is true, or deletes it
@@ -130,6 +159,31 @@ func buildPDB(cluster *mysqlv1alpha1.Cluster, name, role string, maxUnavailable 
 			},
 		},
 	}
+}
+
+// buildClusterWidePDB returns a PDB that selects every cluster Pod without a
+// role filter, used for the single quorum-aware GR PDB.
+func buildClusterWidePDB(cluster *mysqlv1alpha1.Cluster, name string, maxUnavailable intstr.IntOrString) *policyv1.PodDisruptionBudget {
+	labels := labelsFor(cluster, "", "")
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: &maxUnavailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					clusterLabel: cluster.Name,
+				},
+			},
+		},
+	}
+}
+
+func groupPDBName(cluster *mysqlv1alpha1.Cluster) string {
+	return cluster.Name + "-group"
 }
 
 // inNodeMaintenance reports whether a node maintenance window is active for the
