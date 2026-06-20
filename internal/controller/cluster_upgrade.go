@@ -103,8 +103,14 @@ func (r *ClusterReconciler) reconcileUpgrade(
 
 	// Primary upgrade via switchover: promote a healthy replica first. With a
 	// single instance, or no healthy replica to switch to, fall through to the
-	// in-place restart below.
-	if instance.Name == observed.PrimaryName && plan.Instances > 1 &&
+	// in-place restart below. This is the async model where the operator chooses
+	// the primary; under Group Replication the operator never promotes (the group
+	// elects), and the GR ReconcileSwitchover is a no-op — so setting TargetPrimary
+	// here would move nothing and the rollout would re-enter this branch forever.
+	// A GR primary is rolled directly instead: deleting its Pod makes the group
+	// elect a new primary, and the recreated Pod rejoins as a secondary.
+	if !cluster.IsGroupReplication() &&
+		instance.Name == observed.PrimaryName && plan.Instances > 1 &&
 		cluster.Spec.PrimaryUpdateMethod != mysqlv1alpha1.PrimaryUpdateMethodRestart {
 		if handled, result, err := r.upgradePrimaryViaSwitchover(ctx, cluster, plan, observed); handled || err != nil {
 			return handled, result, err
