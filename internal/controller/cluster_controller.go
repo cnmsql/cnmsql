@@ -315,6 +315,12 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Under GR, refuse to fence a member when doing so would break quorum.
+	// Remove the instance from the fenced set and surface Blocked instead
+	// so the in-Pod reconciler never executes STOP GROUP_REPLICATION.
+	if blockedReason := r.checkFenceQuorumGuard(ctx, cluster, &observed); blockedReason != "" {
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observed)
+	}
 	// An unreachable primary takes precedence over a manual switchover: drive
 	// automatic failover (bounded by spec.failoverDelay) before anything else.
 	failoverHandled, failoverResult, err := r.reconcileFailover(ctx, cluster, plan, observed)

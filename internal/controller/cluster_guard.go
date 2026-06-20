@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 )
@@ -210,6 +211,44 @@ func replicaPDBName(cluster *mysqlv1alpha1.Cluster) string {
 // to "true".
 func isPodFenced(pod *corev1.Pod) bool {
 	return pod.Annotations[fencingAnnotation] == routableTrue
+}
+
+// checkFenceQuorumGuard ensures that under Group Replication, fencing a member
+// (which executes STOP GROUP_REPLICATION) never breaks quorum. If a fenced
+// instance would drop the group below quorum, it is removed from the observed
+// fenced set, the cluster is blocked with a quorum-guard reason, and a Warning
+// Event is emitted. Returns the blocking reason (empty when all clear).
+func (r *ClusterReconciler) checkFenceQuorumGuard(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed *observedCluster) string {
+	if !cluster.IsGroupReplication() || len(observed.FencedInstances) == 0 {
+		return ""
+	}
+	topo := r.topologyReconciler(cluster)
+	for _, name := range observed.FencedInstances {
+		if guard := topo.FenceQuorumGuard(cluster, name); guard != nil && guard.Blocked {
+			observed.FencedInstances = removeString(observed.FencedInstances, name)
+			logf.FromContext(ctx).Info("Blocking cluster: fencing would break quorum",
+				"instance", name, "reason", guard.Reason)
+			if r.Recorder != nil {
+				r.Recorder.Event(cluster, corev1.EventTypeWarning, "FenceQuorumGuardBlocked", guard.Reason)
+			}
+			observed.Phase = phaseBlocked
+			observed.PhaseReason = guard.Reason
+			observed.Ready = false
+			observed.Progressing = false
+			return guard.Reason
+		}
+	}
+	return ""
+}
+
+// removeString returns a copy of ss without the first occurrence of s.
+func removeString(ss []string, s string) []string {
+	for i, v := range ss {
+		if v == s {
+			return append(ss[:i], ss[i+1:]...)
+		}
+	}
+	return ss
 }
 
 // reconcileFencing keeps each instance Pod's routable label in step with its
