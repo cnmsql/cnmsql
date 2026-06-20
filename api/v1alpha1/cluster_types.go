@@ -1093,6 +1093,18 @@ type GroupReplicationStatus struct {
 	// +optional
 	HasQuorum bool `json:"hasQuorum,omitempty"`
 
+	// ObservedViewMax is the largest group view size the operator has ever
+	// observed for this group. Sticky: never decreases. Used as the quorum
+	// denominator so that a group that loses members is recognised as
+	// quorum-lost, while a bootstrapping group uses its current view size.
+	// +optional
+	ObservedViewMax int `json:"observedViewMax,omitempty"`
+
+	// ObservedOnlineMax is the largest number of ONLINE members the operator
+	// has ever observed for this group. Sticky, tracked alongside ViewMax.
+	// +optional
+	ObservedOnlineMax int `json:"observedOnlineMax,omitempty"`
+
 	// ViewID is the current group view identifier. It changes on every membership
 	// change and is one of the signals the operator reconciles on.
 	// +optional
