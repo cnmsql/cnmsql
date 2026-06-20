@@ -61,7 +61,7 @@ func (r *Reconciler) reconcileGroupRole(
 	// survivor. Execute group_replication_force_members and clear the annotation.
 	pod := &corev1.Pod{}
 	key := types.NamespacedName{Namespace: r.ClusterKey.Namespace, Name: me}
-	if err := r.Client.Get(ctx, key, pod); err == nil {
+	if err := r.Get(ctx, key, pod); err == nil {
 		if addrs, ok := pod.Annotations[forceQuorumMembersAnnotation]; ok && addrs != "" {
 			log.Info("Executing guarded quorum recovery via force_members",
 				"instance", me, "addresses", addrs)
@@ -72,7 +72,7 @@ func (r *Reconciler) reconcileGroupRole(
 			log.Info("force_members succeeded; group re-formed", "instance", me)
 			before := pod.DeepCopy()
 			delete(pod.Annotations, forceQuorumMembersAnnotation)
-			if err := r.Client.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+			if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
 				log.Error(err, "Could not clear force-quorum-members annotation", "instance", me)
 			}
 			return ctrl.Result{RequeueAfter: steadyRequeue}, nil

@@ -66,10 +66,7 @@ func (r *Reconciler) FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, instanceNa
 func (r *Reconciler) PDBMaxUnavailable(cluster *mysqlv1alpha1.Cluster) (intstr.IntOrString, intstr.IntOrString) {
 	n := int32(cluster.Spec.Instances)
 	q := int32(quorum(int(n)))
-	mu := n - q
-	if mu < 0 {
-		mu = 0
-	}
+	mu := max(n-q, 0)
 	return intstr.FromInt32(mu), intstr.FromInt32(0)
 }
 
