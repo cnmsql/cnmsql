@@ -28,6 +28,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
 
 // reconcileInstances provisions the desired instances in ordinal order. To bound
@@ -58,10 +59,13 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 			if err != nil {
 				return false, err
 			}
-			if !exists && !donorAvailable(cluster, observed) {
+			topologyReconciler := r.topologyReconciler(cluster)
+			if !exists && !topologyReconciler.DonorAvailable(topology.Observation{
+				GroupReplication: observed.GroupReplication,
+			}, topologyFailoverState(observed)) {
 				logf.FromContext(ctx).Info("Deferring member creation: no healthy provisioning source",
 					"instance", inst.Name, "primary", observed.PrimaryName,
-					"groupReplication", cluster.IsGroupReplication())
+					"topology", topologyReconciler.Name())
 				return false, nil
 			}
 		}

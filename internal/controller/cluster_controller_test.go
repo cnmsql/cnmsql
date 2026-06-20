@@ -561,7 +561,7 @@ func TestPodTemplateHashIgnoresOperatorImage(t *testing.T) {
 
 	plan.OperatorImage = "example.com/operator:v1.0.0"
 	spec1 := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
-	annotations1, err := podAnnotations(cluster, plan, inst, labels, spec1)
+	annotations1, err := (&ClusterReconciler{}).podAnnotations(cluster, plan, inst, labels, spec1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestPodTemplateHashIgnoresOperatorImage(t *testing.T) {
 
 	plan.OperatorImage = "example.com/operator:v2.0.0"
 	spec2 := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
-	annotations2, err := podAnnotations(cluster, plan, inst, labels, spec2)
+	annotations2, err := (&ClusterReconciler{}).podAnnotations(cluster, plan, inst, labels, spec2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestEnsurePodDoesNotRecreateForPrimaryRoleChange(t *testing.T) {
 	inst := plan.instanceFor(cluster, 1)
 	labels := labelsFor(cluster, inst.Name, roleOf(inst))
 	spec := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
-	annotations, err := podAnnotations(cluster, plan, inst, labels, spec)
+	annotations, err := (&ClusterReconciler{}).podAnnotations(cluster, plan, inst, labels, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +641,7 @@ func TestEnsurePodPreservesFencingAnnotation(t *testing.T) {
 	inst := plan.instanceFor(cluster, 1)
 	labels := labelsFor(cluster, inst.Name, roleOf(inst))
 	spec := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
-	annotations, err := podAnnotations(cluster, plan, inst, labels, spec)
+	annotations, err := (&ClusterReconciler{}).podAnnotations(cluster, plan, inst, labels, spec)
 	if err != nil {
 		t.Fatal(err)
 	}

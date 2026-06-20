@@ -230,7 +230,7 @@ func TestEnsureGroupNameGeneratesAndIsSticky(t *testing.T) {
 			Build(),
 		Scheme: scheme,
 	}
-	if err := r.ensureGroupName(ctx, cluster); err != nil {
+	if err := r.topologyReconciler(cluster).EnsureConfigured(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
 	name := cluster.PinnedGroupName()
@@ -238,7 +238,7 @@ func TestEnsureGroupNameGeneratesAndIsSticky(t *testing.T) {
 		t.Fatal("a group name should have been generated and pinned")
 	}
 	// Idempotent: a second call must not change the pinned name.
-	if err := r.ensureGroupName(ctx, cluster); err != nil {
+	if err := r.topologyReconciler(cluster).EnsureConfigured(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
 	if cluster.PinnedGroupName() != name {
@@ -262,7 +262,7 @@ func TestEnsureGroupNameRespectsUserPinned(t *testing.T) {
 			Build(),
 		Scheme: scheme,
 	}
-	if err := r.ensureGroupName(ctx, cluster); err != nil {
+	if err := r.topologyReconciler(cluster).EnsureConfigured(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
 	if got := cluster.PinnedGroupName(); got != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" {
@@ -283,7 +283,7 @@ func TestEnsureGroupNameNoOpForAsync(t *testing.T) {
 			Build(),
 		Scheme: scheme,
 	}
-	if err := r.ensureGroupName(ctx, cluster); err != nil {
+	if err := r.topologyReconciler(cluster).EnsureConfigured(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
 	if cluster.Status.GroupReplication != nil {
@@ -298,7 +298,7 @@ func TestRenderMyCnfGroupReplicationBlock(t *testing.T) {
 	plan.Instances = 1
 	inst := plan.instanceFor(cluster, 1)
 
-	rendered, err := renderMyCnf(cluster, plan, inst)
+	rendered, err := (&ClusterReconciler{}).renderMyCnf(cluster, plan, inst)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,6 +25,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
@@ -123,6 +124,13 @@ type Observation struct {
 	GroupReplication           *mysqlv1alpha1.GroupReplicationStatus
 }
 
+// ServerConfigInput identifies one instance and all stable member names needed
+// for topology-specific MySQL configuration.
+type ServerConfigInput struct {
+	InstanceName string
+	MemberNames  []string
+}
+
 // SemiSyncControl adjusts the acknowledgement count on an async primary.
 type SemiSyncControl interface {
 	SetSemiSyncWaitForReplicaCount(
@@ -137,6 +145,14 @@ type SemiSyncControl interface {
 // interface starts with RBAC and will grow as failover, switchover, status, and
 // topology configuration move out of the common Cluster reconciler.
 type Reconciler interface {
+	Name() string
+	EnsureConfigured(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error
+	ConfigureServer(
+		cluster *mysqlv1alpha1.Cluster,
+		input ServerConfigInput,
+		config *mysqlconfig.ServerConfig,
+	)
+	DonorAvailable(observed Observation, failover FailoverState) bool
 	InstancePolicyRules(cluster *mysqlv1alpha1.Cluster) []rbacv1.PolicyRule
 	ReconcileInstanceRBAC(
 		ctx context.Context,
