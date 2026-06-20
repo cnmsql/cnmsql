@@ -356,6 +356,20 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 		return ctrl.Result{}, err, true
 	}
 
+	// Reset the sticky ObservedViewMax so the re-formed group reports
+	// quorum against its actual (smaller) view size. Otherwise DonorAvailable
+	// blocks member provisioning because the pre-crash max (e.g. 3) makes
+	// a 1-member post-recovery group falsely read as quorum-lost.
+	statusBefore := latestCluster.DeepCopy()
+	if latestCluster.Status.GroupReplication != nil {
+		latestCluster.Status.GroupReplication.ObservedViewMax = 0
+		latestCluster.Status.GroupReplication.ObservedOnlineMax = 0
+		latestCluster.Status.GroupReplication.Bootstrapped = true
+	}
+	if err := r.Status().Patch(ctx, latestCluster, client.MergeFrom(statusBefore)); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not reset ObservedViewMax after quorum recovery")
+	}
+
 	r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
 	return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
 }
