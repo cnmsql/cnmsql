@@ -107,23 +107,19 @@ func NewDetachedSupervisor(binary string, args []string, opts ...DetachedOption)
 // has exited its leftover state is cleared first so the supervisor can restart.
 func (s *DetachedSupervisor) Start(_ context.Context) error {
 	s.mu.Lock()
-	done := s.done
-	if done != nil {
+	defer s.mu.Unlock()
+	// Single critical section: checking "already running" and taking over the slot
+	// must be atomic, or two concurrent Starts could both pass the guard. A done
+	// channel that is already closed means the previous process exited and its
+	// leftover state can be cleared in place before restarting.
+	if s.done != nil {
 		select {
-		case <-done:
-			// Previous process exited; clear state (pidfile, fifo) outside the lock.
-			s.mu.Unlock()
-			s.clear()
+		case <-s.done:
+			s.resetLocked()
 		default:
-			s.mu.Unlock()
 			return errors.New("supervisor: process already running")
 		}
-	} else {
-		s.mu.Unlock()
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	cmd := exec.Command(s.binary, s.args...)
 	// Inherited *os.File targets: exec.Cmd passes the descriptor directly, so
@@ -145,7 +141,7 @@ func (s *DetachedSupervisor) Start(_ context.Context) error {
 		return fmt.Errorf("supervisor: writing pidfile: %w", err)
 	}
 
-	done = make(chan struct{})
+	done := make(chan struct{})
 	s.pid = pid
 	s.done = done
 	s.exitErr = nil
@@ -166,22 +162,18 @@ func (s *DetachedSupervisor) Start(_ context.Context) error {
 // identically for an adopted process.
 func (s *DetachedSupervisor) AdoptProcess(pid int) error {
 	s.mu.Lock()
-	done := s.done
-	if done != nil {
+	defer s.mu.Unlock()
+	// Single critical section, as in Start: the guard and the slot takeover must be
+	// atomic.
+	if s.done != nil {
 		select {
-		case <-done:
-			s.mu.Unlock()
-			s.clear()
+		case <-s.done:
+			s.resetLocked()
 		default:
-			s.mu.Unlock()
 			return errors.New("supervisor: process already running")
 		}
-	} else {
-		s.mu.Unlock()
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if pid <= 0 {
 		return fmt.Errorf("supervisor: invalid pid to adopt: %d", pid)
 	}
@@ -194,7 +186,7 @@ func (s *DetachedSupervisor) AdoptProcess(pid int) error {
 		return fmt.Errorf("supervisor: writing pidfile: %w", err)
 	}
 
-	done = make(chan struct{})
+	done := make(chan struct{})
 	s.pid = pid
 	s.done = done
 	s.exitErr = nil
@@ -377,12 +369,21 @@ func (s *DetachedSupervisor) Running() bool {
 // Start may run a fresh one.
 func (s *DetachedSupervisor) clear() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetLocked()
+}
+
+// resetLocked clears the state left by an exited process so the supervisor can
+// restart. The caller must hold s.mu. The pidfile and fifo I/O run while the lock
+// is held; both are fast local operations and the lock is only ever contended by
+// the single run-loop goroutine, so keeping the guard-and-reset in one critical
+// section (rather than dropping the lock around the I/O) is what makes the
+// "already running" check atomic.
+func (s *DetachedSupervisor) resetLocked() {
 	s.pid = 0
 	s.done = nil
-	path := s.pidFilePath
-	s.mu.Unlock()
-	if path != "" {
-		_ = os.Remove(path)
+	if s.pidFilePath != "" {
+		_ = os.Remove(s.pidFilePath)
 	}
 	if s.fifoLog != nil {
 		s.fifoLog.Close()
