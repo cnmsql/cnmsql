@@ -91,9 +91,14 @@ func Start(ctx context.Context, opts StartOptions) error {
 	if err != nil {
 		return fmt.Errorf("creating role manager: %w", err)
 	}
+	doorbellClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return fmt.Errorf("creating GR doorbell client: %w", err)
+	}
 
 	reconciler := &Reconciler{
 		Client:         mgr.GetClient(),
+		DoorbellClient: doorbellClient,
 		ClusterKey:     types.NamespacedName{Namespace: opts.Namespace, Name: opts.ClusterName},
 		InstanceName:   opts.InstanceName,
 		ServiceDomain:  opts.Namespace + ".svc",

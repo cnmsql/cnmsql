@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -61,10 +62,11 @@ func newGRReconciler(
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
-		WithObjects(cluster).
+		WithObjects(cluster, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: instanceName, Namespace: "default"}}).
 		Build()
 	return &Reconciler{
 		Client:         c,
+		DoorbellClient: c,
 		ClusterKey:     types.NamespacedName{Namespace: "default", Name: "demo"},
 		InstanceName:   instanceName,
 		ServiceDomain:  "default.svc",
@@ -141,7 +143,7 @@ func TestGroupRoleOnlineMemberIsSteadyAndWritesNothing(t *testing.T) {
 	// it must not write currentPrimary (the operator is the sole writer under GR).
 	local := &fakeLocal{status: grStatus(groupreplication.MemberStateOnline, groupreplication.MemberRolePrimary)}
 	r := newGRReconciler(t, "demo-1", mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-1"}, local)
-	reconcile(t, r)
+	res := reconcile(t, r)
 	if local.grStarted || local.grBootstrapped {
 		t.Fatal("an ONLINE member must be left alone")
 	}
@@ -154,6 +156,53 @@ func TestGroupRoleOnlineMemberIsSteadyAndWritesNothing(t *testing.T) {
 	}
 	if cluster.Status.CurrentPrimary != "" {
 		t.Fatalf("GR in-Pod strategy must not write currentPrimary, got %q", cluster.Status.CurrentPrimary)
+	}
+	if res.RequeueAfter != groupObservationRequeue {
+		t.Fatalf("RequeueAfter = %s, want local GR observation cadence %s", res.RequeueAfter, groupObservationRequeue)
+	}
+	pod := &corev1.Pod{}
+	if err := r.DoorbellClient.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: "demo-1"}, pod); err != nil {
+		t.Fatal(err)
+	}
+	if pod.Annotations[groupObservationAnnotation] == "" {
+		t.Fatal("ONLINE member did not publish the GR observation doorbell")
+	}
+}
+
+func TestGroupObservationDoorbellChangesWithPrimary(t *testing.T) {
+	t.Parallel()
+	status := grStatus(groupreplication.MemberStateOnline, groupreplication.MemberRoleSecondary)
+	status.GroupReplication.ViewID = "view-1"
+	status.GroupReplication.PrimaryMemberID = "uuid-1"
+	status.GroupReplication.Members = []webserver.GroupReplicationMember{
+		{MemberID: "uuid-1", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRolePrimary},
+		{MemberID: "uuid-2", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRoleSecondary},
+		{MemberID: "uuid-3", State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRoleSecondary},
+	}
+	local := &fakeLocal{status: status}
+	r := newGRReconciler(t, "demo-2", mysqlv1alpha1.ClusterStatus{
+		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true},
+	}, local)
+	reconcile(t, r)
+	pod := &corev1.Pod{}
+	key := types.NamespacedName{Namespace: "default", Name: "demo-2"}
+	if err := r.DoorbellClient.Get(context.Background(), key, pod); err != nil {
+		t.Fatal(err)
+	}
+	first := pod.Annotations[groupObservationAnnotation]
+
+	// A clean election can leave every member ONLINE and the view ID unchanged;
+	// changing only primaryMemberID must still ring a new doorbell.
+	status.GroupReplication.PrimaryMemberID = "uuid-2"
+	status.GroupReplication.Members[0].Role = groupreplication.MemberRoleSecondary
+	status.GroupReplication.Members[1].Role = groupreplication.MemberRolePrimary
+	reconcile(t, r)
+	if err := r.DoorbellClient.Get(context.Background(), key, pod); err != nil {
+		t.Fatal(err)
+	}
+	if got := pod.Annotations[groupObservationAnnotation]; got == "" || got == first {
+		t.Fatalf("doorbell fingerprint = %q after election, want a change from %q", got, first)
 	}
 }
 

@@ -18,14 +18,22 @@ package rolereconciler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
+
+const groupObservationAnnotation = "mysql.cloudnative-mysql.io/gr-observed"
 
 // reconcileGroupRole is the Group Replication topology role strategy. It embodies
 // "the group decides, the operator reflects": this in-Pod side only ensures the
@@ -53,12 +61,18 @@ func (r *Reconciler) reconcileGroupRole(
 	// (no GR row, or an OFFLINE row left behind after a failed/aborted start) needs
 	// to (re)join.
 	gr := status.GroupReplication
+	if err := r.ringGroupObservationDoorbell(ctx, gr); err != nil {
+		// The annotation only wakes the operator; it never carries authority. Do
+		// not hold up group bootstrap/recovery on a transient API-server failure.
+		log.Error(err, "Could not publish Group Replication observation", "instance", me)
+	}
 	if gr != nil {
 		switch gr.State {
 		case groupreplication.MemberStateOnline:
 			// Steady state: a running, online member. Nothing to do; the operator
-			// observes and reflects. Re-check periodically without a Cluster event.
-			return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+			// observes and reflects. Watch the local snapshot at a short cadence so
+			// an election rings the doorbell without waiting for operator polling.
+			return ctrl.Result{RequeueAfter: groupObservationRequeue}, nil
 		case groupreplication.MemberStateRecovering:
 			// Distributed recovery in progress (binlog catch-up or a clone). Wait.
 			log.Info("Group member is recovering; waiting", "instance", me, "state", gr.State)
@@ -103,6 +117,57 @@ func (r *Reconciler) reconcileGroupRole(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: waitRequeue}, nil
+}
+
+// ringGroupObservationDoorbell publishes a short fingerprint of the locally
+// observed GR snapshot on this instance's own Pod. The operator watches owned
+// Pods and treats the annotation only as a wake-up before cross-validating the
+// group over mTLS.
+func (r *Reconciler) ringGroupObservationDoorbell(
+	ctx context.Context,
+	gr *webserver.GroupReplicationMemberStatus,
+) error {
+	doorbellClient := r.DoorbellClient
+	if doorbellClient == nil {
+		doorbellClient = r.Client
+	}
+	pod := &corev1.Pod{}
+	key := types.NamespacedName{Namespace: r.ClusterKey.Namespace, Name: r.InstanceName}
+	if err := doorbellClient.Get(ctx, key, pod); err != nil {
+		return err
+	}
+	fingerprint := groupObservationFingerprint(gr)
+	if pod.Annotations[groupObservationAnnotation] == fingerprint {
+		return nil
+	}
+	before := pod.DeepCopy()
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[groupObservationAnnotation] = fingerprint
+	return doorbellClient.Patch(ctx, pod, client.MergeFrom(before))
+}
+
+// groupObservationFingerprint covers every GR transition that needs to wake the
+// operator: primary, membership view, local state and quorum. It intentionally
+// excludes continuously changing data such as GTID execution.
+func groupObservationFingerprint(gr *webserver.GroupReplicationMemberStatus) string {
+	primary, viewID, state := "", "", ""
+	hasQuorum := false
+	if gr != nil {
+		primary = gr.PrimaryMemberID
+		viewID = gr.ViewID
+		state = gr.State
+		online := 0
+		for _, member := range gr.Members {
+			if member.State == groupreplication.MemberStateOnline {
+				online++
+			}
+		}
+		hasQuorum = online*2 > len(gr.Members)
+	}
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%t", primary, viewID, state, hasQuorum))
+	return hex.EncodeToString(sum[:8])
 }
 
 // shouldBootstrap reports whether this member is the one-and-only member that may

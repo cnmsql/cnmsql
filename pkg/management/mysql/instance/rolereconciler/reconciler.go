@@ -79,11 +79,17 @@ const (
 	waitRequeue = 2 * time.Second
 	// steadyRequeue re-checks role periodically even without a Cluster event.
 	steadyRequeue = 30 * time.Second
+	// groupObservationRequeue watches the cheap local GR snapshot closely enough
+	// to turn elections and membership changes into Kubernetes Pod events.
+	groupObservationRequeue = time.Second
 )
 
 // Reconciler keeps the local instance's role in sync with the Cluster status.
 type Reconciler struct {
 	client.Client
+	// DoorbellClient bypasses the informer cache when patching this instance's
+	// Pod. The role-manager cache is deliberately scoped to Cluster and Lease.
+	DoorbellClient client.Client
 	// ClusterKey identifies the owning Cluster.
 	ClusterKey types.NamespacedName
 	// InstanceName is this instance's Pod/instance name.
