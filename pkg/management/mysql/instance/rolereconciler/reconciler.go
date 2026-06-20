@@ -231,7 +231,9 @@ func (r *Reconciler) reconcileAsyncRole(
 	// to be superseded: stop accepting writes and wait.
 	if current == "" || current == me {
 		if amPrimary {
-			_ = r.releaseLease(ctx)
+			if err := r.releaseLease(ctx); err != nil {
+				log.Error(err, "Could not release primary lease during demotion", "instance", me)
+			}
 			if err := r.Local.Demote(ctx); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -244,7 +246,9 @@ func (r *Reconciler) reconcileAsyncRole(
 	if amPrimary {
 		// Former primary: demote then follow live. If live demotion fails, fall
 		// back to a restart so the Pod comes back clean as a replica.
-		_ = r.releaseLease(ctx)
+		if err := r.releaseLease(ctx); err != nil {
+			log.Error(err, "Could not release primary lease during demotion", "instance", me)
+		}
 		if err := r.Local.Demote(ctx); err != nil {
 			log.Error(err, "Live demotion failed; requesting shutdown to rejoin clean", "instance", me)
 			return ctrl.Result{}, r.Local.Shutdown(ctx)
