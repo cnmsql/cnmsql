@@ -48,6 +48,26 @@ var _ = Describe("buildRoutingService", func() {
 		Expect(r.Spec.PublishNotReadyAddresses).To(BeTrue())
 	})
 
+	It("excludes not-ready members from ro/r under Group Replication", func() {
+		// Under GR, readiness tracks the member's ONLINE state, so ro/r must not
+		// publish a non-ONLINE (not-ready) member that cannot serve consistent reads.
+		grCluster := &mysqlv1alpha1.Cluster{}
+		grCluster.Name = scheduledTestCluster
+		grCluster.Namespace = "ns"
+		grCluster.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
+			Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
+		}
+
+		ro := buildRoutingService(grCluster, scheduledTestCluster+"-ro", mysqlv1alpha1.ServiceSelectorTypeRO, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		Expect(ro.Spec.PublishNotReadyAddresses).To(BeFalse())
+
+		r := buildRoutingService(grCluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		Expect(r.Spec.PublishNotReadyAddresses).To(BeFalse())
+
+		rw := buildRoutingService(grCluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		Expect(rw.Spec.PublishNotReadyAddresses).To(BeFalse())
+	})
+
 	It("patches template type, labels and annotations onto defaults", func() {
 		lb := corev1.ServiceTypeLoadBalancer
 		template := &mysqlv1alpha1.ServiceTemplateSpec{

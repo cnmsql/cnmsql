@@ -145,9 +145,13 @@ func buildRoutingService(
 	ports := []corev1.ServicePort{
 		{Name: "mysql", Port: 3306, TargetPort: intstr.FromString("mysql")},
 	}
-	// The rw Service must never publish a not-ready primary; ro/r tolerate
-	// in-progress members so clients can discover them as they catch up.
-	publishNotReady := role != mysqlv1alpha1.ServiceSelectorTypeRW
+	// The rw Service must never publish a not-ready primary; under async, ro/r
+	// tolerate in-progress replicas so clients can discover them as they catch up.
+	// Under Group Replication readiness tracks the member's group state (ONLINE),
+	// and a non-ONLINE member (RECOVERING/ERROR/UNREACHABLE) does not serve
+	// consistent reads, so ro/r must exclude not-ready members too — routing by
+	// group role falls out of the readiness bridge.
+	publishNotReady := role != mysqlv1alpha1.ServiceSelectorTypeRW && !cluster.IsGroupReplication()
 
 	var labels, annotations map[string]string
 	if strategy == mysqlv1alpha1.ServiceUpdateStrategyReplace {
