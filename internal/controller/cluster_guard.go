@@ -34,6 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
 
 // reconcilePDB keeps the cluster's PodDisruptionBudgets in step with the spec.
@@ -222,9 +223,17 @@ func (r *ClusterReconciler) checkFenceQuorumGuard(ctx context.Context, cluster *
 	if !cluster.IsGroupReplication() || len(observed.FencedInstances) == 0 {
 		return ""
 	}
+	// Merge the fresh GroupReplication observation into a working copy so
+	// FenceQuorumGuard sees the latest member states, not the stale status
+	// from the top of Reconcile(). patchStatus would merge this later, but
+	// the quorum guard must see fresh data now.
+	latest := cluster.DeepCopy()
+	r.topologyReconciler(cluster).MergeStatus(latest, topology.Observation{
+		GroupReplication: observed.GroupReplication,
+	})
 	topo := r.topologyReconciler(cluster)
 	for _, name := range observed.FencedInstances {
-		if guard := topo.FenceQuorumGuard(cluster, name); guard != nil && guard.Blocked {
+		if guard := topo.FenceQuorumGuard(latest, name); guard != nil && guard.Blocked {
 			observed.FencedInstances = removeString(observed.FencedInstances, name)
 			logf.FromContext(ctx).Info("Blocking cluster: fencing would break quorum",
 				"instance", name, "reason", guard.Reason)
