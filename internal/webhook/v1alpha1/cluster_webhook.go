@@ -95,7 +95,7 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 	// sole writer of status (currentPrimary and the whole groupReplication block,
 	// cross-validated across the group view). There is no self-promotion, so an
 	// instance identity may write NOTHING to status: old and new must be identical.
-	if replicationMode(newCluster) == mysqlv1alpha1.ReplicationModeGroupReplication {
+	if newCluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
 		if !reflect.DeepEqual(&oldStatus, &newStatus) {
 			return admission.Denied(fmt.Sprintf(
 				"instance %q may not modify Cluster status under group replication (the operator is the sole writer)", instanceName))
@@ -132,15 +132,6 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 	}
 
 	return admission.Allowed("")
-}
-
-// replicationMode returns the effective replication mode of a cluster,
-// defaulting to async when unset.
-func replicationMode(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Mode == "" {
-		return mysqlv1alpha1.ReplicationModeAsync
-	}
-	return cluster.Spec.Replication.Mode
 }
 
 // validateGroupReplicationMonotonic enforces the two invariants that protect the

@@ -210,9 +210,9 @@ func (cluster *Cluster) ValidateUpdate(old *Cluster) field.ErrorList {
 
 	// replication.mode is immutable: switching topology on a live cluster is a
 	// data-path change that cannot be done safely in place.
-	if old.replicationMode() != cluster.replicationMode() {
+	if old.ReplicationMode() != cluster.ReplicationMode() {
 		allErrs = append(allErrs, field.Invalid(
-			path.Child("mode"), cluster.replicationMode(),
+			path.Child("mode"), cluster.ReplicationMode(),
 			"replication.mode is immutable"))
 	}
 
@@ -229,8 +229,8 @@ func (cluster *Cluster) ValidateUpdate(old *Cluster) field.ErrorList {
 	return allErrs
 }
 
-// replicationMode returns the effective replication mode, defaulting to async.
-func (cluster *Cluster) replicationMode() string {
+// ReplicationMode returns the effective replication mode, defaulting to async.
+func (cluster *Cluster) ReplicationMode() string {
 	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Mode == "" {
 		return ReplicationModeAsync
 	}
