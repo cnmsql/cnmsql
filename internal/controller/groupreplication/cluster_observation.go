@@ -106,7 +106,12 @@ func observeGroup(input topology.ObservationInput) (*mysqlv1alpha1.GroupReplicat
 		PrimaryMember: primaryInstance,
 		Members:       members,
 		ViewID:        view.ViewID,
-		HasQuorum:     onlineCount*2 > input.ConfiguredMembers,
+		// Use the larger of the configured count and the view size so that a
+		// bootstrapping group (fewer members than configured) uses its actual
+		// view for quorum and lets members join, while a fully-provisioned
+		// group uses spec.instances — surviving a majority loss of the
+		// configured set is correctly detected as quorum loss.
+		HasQuorum: onlineCount*2 > max(len(view.Members), input.ConfiguredMembers),
 	}, primaryInstance
 }
 
