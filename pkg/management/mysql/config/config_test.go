@@ -308,3 +308,80 @@ func TestValidateUserParametersListsAllConflicts(t *testing.T) {
 		t.Errorf("error should not list the valid parameter, got: %v", err)
 	}
 }
+
+func grConfig() *ServerConfig {
+	c := baseConfig()
+	c.TopologyMode = TopologyGroupReplication
+	c.GroupReplication = GroupReplication{
+		GroupName:       "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		LocalAddress:    "cluster-1.cluster.svc:33061",
+		GroupSeeds:      "cluster-1.cluster.svc:33061,cluster-2.cluster.svc:33061",
+		IPAllowlist:     "10.0.0.0/8",
+		Consistency:     "BEFORE_ON_PRIMARY_FAILOVER",
+		ExitStateAction: "READ_ONLY",
+		AutoRejoinTries: 3,
+		RecoverySSL:     TLSPaths{CA: "/tls/ca.crt", Cert: "/tls/tls.crt", Key: "/tls/tls.key"},
+	}
+	return c
+}
+
+func TestRenderAsyncOmitsGroupReplication(t *testing.T) {
+	// The default (async) topology renders none of the group_replication_* block.
+	out := mustRender(t, baseConfig())
+	assertNotContains(t, out, "group_replication_")
+	assertNotContains(t, out, "plugin_load_add")
+}
+
+func TestRenderGroupReplicationBlock(t *testing.T) {
+	out := mustRender(t, grConfig())
+
+	assertContains(t, out, "plugin_load_add = group_replication.so")
+	assertContains(t, out, "group_replication_group_name = aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	assertContains(t, out, "group_replication_local_address = cluster-1.cluster.svc:33061")
+	assertContains(t, out, "group_replication_group_seeds = cluster-1.cluster.svc:33061,cluster-2.cluster.svc:33061")
+	assertContains(t, out, "group_replication_single_primary_mode = ON")
+	assertContains(t, out, "group_replication_enforce_update_everywhere_checks = OFF")
+	assertContains(t, out, "group_replication_consistency = BEFORE_ON_PRIMARY_FAILOVER")
+	assertContains(t, out, "group_replication_exit_state_action = READ_ONLY")
+	assertContains(t, out, "group_replication_autorejoin_tries = 3")
+	assertContains(t, out, "group_replication_ssl_mode = REQUIRED")
+	assertContains(t, out, "group_replication_recovery_use_ssl = ON")
+	assertContains(t, out, "group_replication_recovery_ssl_ca = /tls/ca.crt")
+	assertContains(t, out, "group_replication_ip_allowlist = 10.0.0.0/8")
+}
+
+func TestRenderGroupReplicationNeverBootstrapsOrStartsOnBoot(t *testing.T) {
+	// The two split-brain-critical defaults: the operator controls start, and
+	// bootstrap is never a config-file default (it would re-bootstrap each boot).
+	out := mustRender(t, grConfig())
+	assertContains(t, out, "group_replication_start_on_boot = OFF")
+	assertContains(t, out, "group_replication_bootstrap_group = OFF")
+	assertNotContains(t, out, "group_replication_bootstrap_group = ON")
+}
+
+func TestRenderGroupReplicationBinlogChecksumVersionBranch(t *testing.T) {
+	// Before 8.0.21 GR requires binlog_checksum=NONE; 8.0.21+ tolerate the default.
+	c := grConfig()
+	c.Version = "8.0.22"
+	assertNotContains(t, mustRender(t, c), "binlog_checksum")
+
+	c.Version = "8.0.20"
+	assertContains(t, mustRender(t, c), "binlog_checksum = NONE")
+}
+
+func TestGroupReplicationKeysAreManaged(t *testing.T) {
+	for _, key := range []string{
+		"group_replication_group_name",
+		"group-replication-single-primary-mode",
+		"plugin_load_add",
+	} {
+		c := baseConfig()
+		c.UserParameters = map[string]string{key: "x"}
+		if _, err := c.Render(); err == nil {
+			t.Errorf("expected Render() to reject managed group-replication key %q", key)
+		}
+		if !IsDeniedKey(key) {
+			t.Errorf("expected %q to be reported as a denied key", key)
+		}
+	}
+}

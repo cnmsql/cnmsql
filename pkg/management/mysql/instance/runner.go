@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -571,6 +572,12 @@ func buildHealthServer(opts RunOptions, controller webserver.InstanceController)
 // startCertWatcher watches the certificate files managed by cm and calls
 // cm.Reload() whenever any of them are modified. Debouncing handles short-lived
 // write bursts (e.g. atomic rename, multiple Secrets updating).
+//
+// Kubernetes mounts Secrets as symlinks into atomic per-update directories, so a
+// plain inotify watch on the resolved file misses Secret updates (the symlink
+// target changes but the old inode never fires). Watching the parent directory
+// catches the atomic swap the kubelet performs. A periodic poll guards against
+// edge cases where the directory watch also misses events.
 func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -580,25 +587,29 @@ func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 
 	log := logf.FromContext(ctx).WithName("cert-watcher")
 
-	seen := map[string]struct{}{}
+	dirs := map[string]struct{}{}
 	for _, f := range cm.WatchedFiles() {
-		if _, ok := seen[f]; ok {
-			continue
-		}
-		seen[f] = struct{}{}
-		if err := watcher.Add(f); err != nil {
-			log.Error(err, "Failed to watch certificate file, reload only via SIGHUP",
-				"file", f)
+		dirs[filepath.Dir(f)] = struct{}{}
+	}
+	for d := range dirs {
+		if err := watcher.Add(d); err != nil {
+			log.Error(err, "Failed to watch certificate directory, reload only via SIGHUP",
+				"dir", d)
 			_ = watcher.Close()
 			return
 		}
 	}
 
+	files := cm.WatchedFiles()
+
 	go func() {
 		defer func() { _ = watcher.Close() }()
 		debounce := 500 * time.Millisecond
+		pollInterval := 60 * time.Second
 		var timer *time.Timer
 		var reloadC <-chan time.Time
+		pollTicker := time.NewTicker(pollInterval)
+		defer pollTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -611,11 +622,15 @@ func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 					return
 				}
 				if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0 {
+					if !affectsWatchedFiles(event.Name, files) {
+						continue
+					}
 					if timer != nil {
 						timer.Stop()
 					}
 					timer = time.NewTimer(debounce)
 					reloadC = timer.C
+					log.V(1).Info("Certificate directory event", "name", event.Name, "op", event.Op)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -630,9 +645,33 @@ func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 				} else {
 					log.Info("TLS certificates reloaded")
 				}
+			case <-pollTicker.C:
+				log.V(1).Info("Polling for certificate changes")
+				if err := cm.Reload(ctx); err != nil {
+					log.V(1).Info("Polling reload skipped", "error", err.Error())
+				}
 			}
 		}
 	}()
+}
+
+// affectsWatchedFiles reports whether name is or is inside any of the watched
+// file paths (or their parent directories), so directory-level fsnotify events
+// are filtered to only the certificate directories.
+func affectsWatchedFiles(name string, files []string) bool {
+	for _, f := range files {
+		if name == f {
+			return true
+		}
+		dir := filepath.Dir(f)
+		if name == dir {
+			return true
+		}
+		if strings.HasPrefix(name, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildServer constructs the control API server, with or without mTLS.
