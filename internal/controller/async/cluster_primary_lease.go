@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package async
 
 import (
 	"context"
@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
 
 const primaryLeaseDuration = 15 * time.Second
@@ -35,51 +36,49 @@ func primaryLeaseName(cluster *mysqlv1alpha1.Cluster) string {
 	return cluster.Name + "-primary"
 }
 
-func (r *ClusterReconciler) ensurePrimaryLease(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
-	// The primary lease is the async split-brain guard (the in-Pod async strategy
-	// anchors writes on it). Group Replication provides quorum-based split-brain
-	// safety itself, and its in-Pod strategy never touches the lease, so it is
-	// unused under GR.
-	if cluster.IsGroupReplication() || !cluster.IsPrimaryLeaseEnabled() {
+// EnsurePrimaryLease reconciles the split-brain guard used by async instances.
+func (r *Reconciler) EnsurePrimaryLease(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
+	if !cluster.IsPrimaryLeaseEnabled() {
 		return nil
 	}
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
 		Name:      primaryLeaseName(cluster),
 		Namespace: cluster.Namespace,
 	}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, lease, func() error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.client, lease, func() error {
 		seconds := int32(primaryLeaseDuration / time.Second)
 		lease.Spec.LeaseDurationSeconds = &seconds
-		return controllerutil.SetControllerReference(cluster, lease, r.Scheme)
+		return controllerutil.SetControllerReference(cluster, lease, r.scheme)
 	})
 	return err
 }
 
-func (r *ClusterReconciler) isPrimaryLeaseHeld(
+// PrimaryLeaseStatus reports whether holder still owns an unexpired Lease.
+func (r *Reconciler) PrimaryLeaseStatus(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	holder string,
-) (bool, error) {
+) (topology.PrimaryLeaseStatus, error) {
 	if !cluster.IsPrimaryLeaseEnabled() {
-		return false, nil
+		return topology.PrimaryLeaseStatus{}, nil
 	}
 	lease := &coordinationv1.Lease{}
 	key := types.NamespacedName{Namespace: cluster.Namespace, Name: primaryLeaseName(cluster)}
-	if err := r.Get(ctx, key, lease); err != nil {
+	if err := r.client.Get(ctx, key, lease); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return topology.PrimaryLeaseStatus{}, nil
 		}
-		return false, err
+		return topology.PrimaryLeaseStatus{}, err
 	}
-	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != holder {
-		return false, nil
-	}
-	if lease.Spec.RenewTime == nil {
-		return false, nil
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != holder || lease.Spec.RenewTime == nil {
+		return topology.PrimaryLeaseStatus{}, nil
 	}
 	duration := primaryLeaseDuration
 	if lease.Spec.LeaseDurationSeconds != nil {
 		duration = time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 	}
-	return time.Since(lease.Spec.RenewTime.Time) <= duration, nil
+	if time.Since(lease.Spec.RenewTime.Time) > duration {
+		return topology.PrimaryLeaseStatus{}, nil
+	}
+	return topology.PrimaryLeaseStatus{Held: true, RetryAfter: duration}, nil
 }

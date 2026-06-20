@@ -26,14 +26,6 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
 
-// Reconciler owns async and semi-sync topology-specific reconciliation.
-type Reconciler struct{}
-
-// NewReconciler creates an async topology reconciler.
-func NewReconciler() *Reconciler {
-	return &Reconciler{}
-}
-
 // InstancePolicyRules grants the in-Pod async reconciler permission to report
 // status and participate in the split-brain guard Lease.
 func (r *Reconciler) InstancePolicyRules(cluster *mysqlv1alpha1.Cluster) []rbacv1.PolicyRule {

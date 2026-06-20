@@ -22,24 +22,11 @@ import (
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
-
-// Reconciler owns Group Replication topology-specific reconciliation.
-type Reconciler struct {
-	client client.Client
-	scheme *runtime.Scheme
-}
-
-// NewReconciler creates a Group Replication topology reconciler.
-func NewReconciler(kubeClient client.Client, scheme *runtime.Scheme) *Reconciler {
-	return &Reconciler{client: kubeClient, scheme: scheme}
-}
 
 // InstancePolicyRules intentionally grants no Cluster status or Lease access.
 // GR instances report observations through mTLS and use group quorum for safety.

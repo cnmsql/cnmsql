@@ -29,17 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
-	controllergr "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
-
-func (r *ClusterReconciler) topologyReconciler(cluster *mysqlv1alpha1.Cluster) topology.Reconciler {
-	if cluster.IsGroupReplication() {
-		return controllergr.NewReconciler(r.Client, r.Scheme)
-	}
-	return async.NewReconciler()
-}
 
 // ensureInstanceRBAC provisions the per-Cluster Role and the per-instance
 // ServiceAccounts that let each instance's in-Pod reconciler watch this Cluster

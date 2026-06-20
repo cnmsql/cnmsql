@@ -20,6 +20,7 @@ package topology
 
 import (
 	"context"
+	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 
@@ -35,6 +36,13 @@ type InstanceIdentity struct {
 	Labels             map[string]string
 }
 
+// PrimaryLeaseStatus is the topology's view of the async split-brain guard.
+// RetryAfter is meaningful when Held is true.
+type PrimaryLeaseStatus struct {
+	Held       bool
+	RetryAfter time.Duration
+}
+
 // Reconciler owns behavior that differs between replication topologies. The
 // interface starts with RBAC and will grow as failover, switchover, status, and
 // topology configuration move out of the common Cluster reconciler.
@@ -45,4 +53,10 @@ type Reconciler interface {
 		cluster *mysqlv1alpha1.Cluster,
 		identity InstanceIdentity,
 	) error
+	EnsurePrimaryLease(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error
+	PrimaryLeaseStatus(
+		ctx context.Context,
+		cluster *mysqlv1alpha1.Cluster,
+		holder string,
+	) (PrimaryLeaseStatus, error)
 }

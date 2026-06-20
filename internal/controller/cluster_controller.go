@@ -383,7 +383,7 @@ func (r *ClusterReconciler) ensureInfrastructure(ctx context.Context, cluster *m
 	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err, true
 	}
-	if err := r.ensurePrimaryLease(ctx, cluster); err != nil {
+	if err := r.topologyReconciler(cluster).EnsurePrimaryLease(ctx, cluster); err != nil {
 		return ctrl.Result{}, err, true
 	}
 	if ok, result, err := r.blockOnInvalidCertificate(ctx, cluster, plan); ok {
