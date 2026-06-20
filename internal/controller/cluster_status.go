@@ -174,6 +174,20 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
 	switch {
+	// Under Group Replication, quorum loss is a catastrophic state: the group
+	// cannot accept writes or replicate. The operator surfaces it as Blocked
+	// and does nothing destructive — it keeps observing and waiting. Recovery
+	// requires an explicit, guarded intervention (force_members / re-bootstrap).
+	// Two cases: (a) members are ONLINE but the majority is lost (HasQuorum=false),
+	// or (b) all members are unreachable and no status reports a group view, but
+	// the sticky bootstrapped flag shows the group was once established.
+	case cluster.IsGroupReplication() && cluster.Status.GroupReplication != nil &&
+		cluster.Status.GroupReplication.Bootstrapped &&
+		(observed.GroupReplication == nil || !observed.GroupReplication.HasQuorum):
+		observed.Phase = phaseBlocked
+		observed.PhaseReason = "group has lost quorum; manual recovery required"
+		observed.Ready = false
+		observed.Progressing = false
 	case len(observed.DivergedInstances) > 0:
 		observed.Phase = phaseDegraded
 		observed.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
@@ -445,6 +459,13 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
+	if observed.Phase == phaseBlocked && latest.IsGroupReplication() &&
+		latest.Status.GroupReplication != nil && !latest.Status.GroupReplication.HasQuorum {
+		if r.Recorder != nil {
+			r.Recorder.Event(latest, corev1.EventTypeWarning, "QuorumLost",
+				"Group has lost quorum; manual recovery required")
+		}
+	}
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
