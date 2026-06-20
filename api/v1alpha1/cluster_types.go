@@ -1090,8 +1090,7 @@ type GroupReplicationStatus struct {
 
 	// HasQuorum reports whether a majority of configured members is ONLINE and
 	// reachable, i.e. the group can make progress.
-	// +optional
-	HasQuorum bool `json:"hasQuorum,omitempty"`
+	HasQuorum bool `json:"hasQuorum"`
 
 	// ObservedViewMax is the largest group view size the operator has ever
 	// observed for this group. Sticky: never decreases. Used as the quorum

@@ -3884,6 +3884,8 @@ spec:
                       ViewID is the current group view identifier. It changes on every membership
                       change and is one of the signals the operator reconciles on.
                     type: string
+                required:
+                - hasQuorum
                 type: object
               gtidExecutedByInstance:
                 additionalProperties:
