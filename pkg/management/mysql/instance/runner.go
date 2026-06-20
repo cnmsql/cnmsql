@@ -43,6 +43,21 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver/metricserver"
 )
 
+const (
+	// maxConsecutiveCleanRestarts bounds how many times in a row mysqld may exit
+	// cleanly (the MySQL 8.0 CLONE INSTANCE self-shutdown contract) and be
+	// restarted in place before the run loop gives up and lets the kubelet restart
+	// the Pod. It guards against a config that aborts startup with status 0 turning
+	// into a hot restart loop.
+	maxConsecutiveCleanRestarts = 5
+	// cleanRestartBackoff paces the in-place clean-exit restarts.
+	cleanRestartBackoff = 2 * time.Second
+	// cleanRestartResetAfter is the uptime beyond which a clean exit counts as an
+	// isolated event (a one-off clone) rather than part of a loop, resetting the
+	// budget.
+	cleanRestartResetAfter = time.Minute
+)
+
 // RunOptions configures the PID1 run loop.
 type RunOptions struct {
 	// MysqldPath is the mysqld binary (default "mysqld").
@@ -479,11 +494,33 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// instead of propagating the exit and restarting the Pod.
 	mysqldExit := make(chan error, 1)
 	go func() {
+		// A clean exit is expected at most once per clone, but treating *every* exit-0
+		// as "clone, restart in place" would turn a server that exits cleanly on a
+		// tight loop (e.g. a config that aborts startup with status 0) into a hot
+		// restart loop. Bound consecutive rapid clean restarts and fall back to
+		// propagating the exit (the kubelet then restarts the Pod). A clean exit after
+		// a healthy uptime is an isolated event, so it resets the budget.
+		cleanRestarts := 0
 		for {
+			startedAt := time.Now()
 			err := sup.Wait()
 			if !fence.IsFenced() {
 				if err == nil {
-					log.Info("mysqld exited cleanly after clone; restarting")
+					if time.Since(startedAt) > cleanRestartResetAfter {
+						cleanRestarts = 0
+					}
+					cleanRestarts++
+					if cleanRestarts > maxConsecutiveCleanRestarts {
+						mysqldExit <- fmt.Errorf(
+							"mysqld exited cleanly %d times in rapid succession; not restarting in place", cleanRestarts)
+						return
+					}
+					log.Info("mysqld exited cleanly (clone restart); restarting in place", "attempt", cleanRestarts)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(cleanRestartBackoff):
+					}
 					if serr := sup.Start(ctx); serr != nil {
 						mysqldExit <- fmt.Errorf("restarting mysqld after clone: %w", serr)
 						return
@@ -493,6 +530,8 @@ func Run(ctx context.Context, opts RunOptions) error {
 				mysqldExit <- err
 				return
 			}
+			// A fence cycle is a deliberate stop, not a crash loop; reset the budget.
+			cleanRestarts = 0
 			log.Info("mysqld stopped while fenced; manager staying alive")
 			if werr := fence.WaitUntilUnfenced(ctx); werr != nil {
 				// Context cancelled during shutdown; stop supervising.
