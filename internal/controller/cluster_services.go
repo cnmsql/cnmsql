@@ -99,7 +99,7 @@ func (r *ClusterReconciler) ensureRoutingService(
 ) error {
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-		desired := buildRoutingService(cluster, name, role, template, strategy)
+		desired := r.buildRoutingService(cluster, name, role, template, strategy)
 		service.Labels = desired.Labels
 		service.Annotations = desired.Annotations
 		// Preserve the cluster-assigned ClusterIP across updates.
@@ -134,7 +134,7 @@ func roleSelector(cluster *mysqlv1alpha1.Cluster, role mysqlv1alpha1.ServiceSele
 // buildRoutingService builds the desired Service for a routing role, applying
 // the optional template with the given update strategy. The selector, ports and
 // the mandatory operator labels are always operator-controlled.
-func buildRoutingService(
+func (r *ClusterReconciler) buildRoutingService(
 	cluster *mysqlv1alpha1.Cluster,
 	name string,
 	role mysqlv1alpha1.ServiceSelectorType,
@@ -151,7 +151,7 @@ func buildRoutingService(
 	// and a non-ONLINE member (RECOVERING/ERROR/UNREACHABLE) does not serve
 	// consistent reads, so ro/r must exclude not-ready members too — routing by
 	// group role falls out of the readiness bridge.
-	publishNotReady := role != mysqlv1alpha1.ServiceSelectorTypeRW && !cluster.IsGroupReplication()
+	publishNotReady := r.topologyReconciler(cluster).PublishNotReadyAddresses(role)
 
 	var labels, annotations map[string]string
 	if strategy == mysqlv1alpha1.ServiceUpdateStrategyReplace {

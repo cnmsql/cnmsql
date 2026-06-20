@@ -64,7 +64,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				Image:           plan.Image,
 				ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 				Command:         []string{"/controller/manager"},
-				Args:            bootstrapArgs(cluster, plan, inst),
+				Args:            r.bootstrapArgs(cluster, plan, inst),
 				Env:             bootstrapEnv(plan, inst),
 				VolumeMounts:    volumeMounts(),
 				Resources:       cluster.Spec.Resources,
@@ -76,7 +76,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 			Command:         []string{"/controller/manager"},
-			Args:            runArgs(cluster, plan, inst),
+			Args:            r.runArgs(cluster, plan, inst),
 			Env:             runEnv(cluster, plan),
 			EnvFrom:         cluster.Spec.EnvFrom,
 			Ports: []corev1.ContainerPort{
@@ -145,21 +145,21 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 // (recovery); an async replica clones the primary over the streamed backup,
 // while a Group Replication member initialises an empty server and provisions
 // itself from a group donor via distributed recovery at run time.
-func bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
+func (r *ClusterReconciler) bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
 	if inst.IsPrimary {
 		if plan.Recovery != nil {
 			return restoreArgs(plan)
 		}
-		return initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB)
+		return r.initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB)
 	}
-	if cluster.IsGroupReplication() {
+	if r.topologyReconciler(cluster).PodPolicy(cluster).InitializeReplica {
 		// A GR member is not seeded by an XtraBackup clone of the primary (which
 		// would configure an async replication channel and copy the donor's
 		// server_uuid, both of which break START GROUP_REPLICATION). It initialises
 		// an empty server with the cluster's internal accounts but no application
 		// schema, then the in-Pod role strategy clears the initdb GTIDs and clones
 		// from a group donor via distributed recovery.
-		return initdbArgs(cluster, nil)
+		return r.initdbArgs(cluster, nil)
 	}
 	return joinArgs(cluster, plan)
 }
@@ -201,7 +201,7 @@ func restoreArgs(plan clusterPlan) []string {
 	return args
 }
 
-func initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapInitDB) []string {
+func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 	args := []string{
 		"instance", "initdb",
 		"--mysqld=" + mysqldBinary,
@@ -215,12 +215,7 @@ func initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapI
 		"--control-user=" + controlUser,
 		"--metrics-user=" + metricsUser,
 	}
-	if cluster.IsGroupReplication() {
-		// Grant the replication user the Clone-plugin distributed-recovery
-		// privileges; joining members clone these credentials from the bootstrap
-		// member, so granting them here covers the whole group.
-		args = append(args, "--group-replication")
-	}
+	args = append(args, r.topologyReconciler(cluster).PodPolicy(cluster).InitDBArgs...)
 	// initdb is nil for a GR joining member: it initialises an empty server (no
 	// application schema) and recovers the data from a group donor.
 	if initdb != nil {
@@ -264,7 +259,7 @@ func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 	}
 }
 
-func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []string {
+func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []string {
 	// Role is dynamic: the in-Pod reconciler watches the Cluster and drives the
 	// local mysqld to match status.targetPrimary / currentPrimary. The run
 	// command therefore carries no --role/--source-host; it gets the owning
@@ -296,12 +291,7 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
 		"--source-ssl-key=" + serverTLSPath + "/tls.key",
 	}
-	if cluster.IsGroupReplication() {
-		// Run the member under the Group Replication strategy: the in-Pod role
-		// reconciler ensures membership instead of async promote/follow, and the
-		// status reports the group view.
-		args = append(args, "--group-replication")
-	}
+	args = append(args, r.topologyReconciler(cluster).PodPolicy(cluster).RunArgs...)
 	if monitoringTLSEnabled(cluster) {
 		// Serve metrics over the same mutual TLS as the control API: the pod
 		// already mounts server-tls and client-ca, so no extra key material is
@@ -313,15 +303,6 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 			"--continuous-archiving",
 			fmt.Sprintf("--archive-rpo-seconds=%d", cluster.ArchiveRPOSeconds()),
 		)
-	}
-	if cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled {
-		args = append(args,
-			"--semi-sync",
-			fmt.Sprintf("--semi-sync-wait-for-replica-count=%d", initialSemiSyncWaitForReplicaCount(cluster)),
-		)
-		if cluster.Spec.MySQL.SemiSync.TimeoutMillis != nil {
-			args = append(args, fmt.Sprintf("--semi-sync-timeout-millis=%d", *cluster.Spec.MySQL.SemiSync.TimeoutMillis))
-		}
 	}
 	args = append(args,
 		fmt.Sprintf("--stop-delay=%d", cluster.GetMaxStopDelay()),

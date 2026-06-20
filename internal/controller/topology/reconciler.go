@@ -131,6 +131,13 @@ type ServerConfigInput struct {
 	MemberNames  []string
 }
 
+// PodPolicy contains topology-specific instance-manager command behavior.
+type PodPolicy struct {
+	InitializeReplica bool
+	InitDBArgs        []string
+	RunArgs           []string
+}
+
 // SemiSyncControl adjusts the acknowledgement count on an async primary.
 type SemiSyncControl interface {
 	SetSemiSyncWaitForReplicaCount(
@@ -153,6 +160,8 @@ type Reconciler interface {
 		config *mysqlconfig.ServerConfig,
 	)
 	DonorAvailable(observed Observation, failover FailoverState) bool
+	PodPolicy(cluster *mysqlv1alpha1.Cluster) PodPolicy
+	PublishNotReadyAddresses(role mysqlv1alpha1.ServiceSelectorType) bool
 	InstancePolicyRules(cluster *mysqlv1alpha1.Cluster) []rbacv1.PolicyRule
 	ReconcileInstanceRBAC(
 		ctx context.Context,

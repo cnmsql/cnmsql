@@ -136,14 +136,6 @@ func (r *ClusterReconciler) ensureConfigMap(ctx context.Context, cluster *mysqlv
 }
 
 func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) (string, error) {
-	semiSync := mysqlconfig.SemiSync{}
-	if cluster.Spec.MySQL.SemiSync != nil {
-		semiSync.Enabled = cluster.Spec.MySQL.SemiSync.Enabled
-		semiSync.WaitForReplicaCount = initialSemiSyncWaitForReplicaCount(cluster)
-		if cluster.Spec.MySQL.SemiSync.TimeoutMillis != nil {
-			semiSync.TimeoutMillis = int(*cluster.Spec.MySQL.SemiSync.TimeoutMillis)
-		}
-	}
 	role := mysqlconfig.RolePrimary
 	if !inst.IsPrimary {
 		role = mysqlconfig.RoleReplica
@@ -168,7 +160,6 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 			Key:  serverTLSPath + "/tls.key",
 		},
 		UserParameters: cluster.Spec.MySQL.Parameters,
-		SemiSync:       semiSync,
 		Archiving:      archivingConfig(cluster),
 	}
 	r.topologyReconciler(cluster).ConfigureServer(cluster, topology.ServerConfigInput{
@@ -176,17 +167,6 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 		MemberNames:  plan.instanceNames(cluster),
 	}, cfg)
 	return cfg.Render()
-}
-
-func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
-	count := cluster.Spec.MinSyncReplicas
-	if count <= 0 {
-		return 0
-	}
-	if cluster.SemiSyncDurabilityPreferred() {
-		return 1
-	}
-	return count
 }
 
 // archivingConfig resolves the my.cnf durability/RPO settings for continuous

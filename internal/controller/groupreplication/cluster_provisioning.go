@@ -105,6 +105,20 @@ func (r *Reconciler) DonorAvailable(observed topology.Observation, _ topology.Fa
 	return false
 }
 
+// PodPolicy initialises joining members empty and enables the GR instance strategy.
+func (r *Reconciler) PodPolicy(*mysqlv1alpha1.Cluster) topology.PodPolicy {
+	return topology.PodPolicy{
+		InitializeReplica: true,
+		InitDBArgs:        []string{"--group-replication"},
+		RunArgs:           []string{"--group-replication"},
+	}
+}
+
+// PublishNotReadyAddresses excludes non-ONLINE GR members from every route.
+func (r *Reconciler) PublishNotReadyAddresses(mysqlv1alpha1.ServiceSelectorType) bool {
+	return false
+}
+
 func memberAddress(name, namespace string) string {
 	return fmt.Sprintf("%s.%s.svc:%d", name, namespace, mysqlconfig.DefaultGroupReplicationPort)
 }

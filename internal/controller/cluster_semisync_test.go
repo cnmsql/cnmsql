@@ -99,7 +99,7 @@ func TestRunArgsEnableSemiSyncRuntimeConfiguration(t *testing.T) {
 	timeout := int32(5000)
 	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityPreferred)
 	cluster.Spec.MySQL.SemiSync.TimeoutMillis = &timeout
-	args := runArgs(cluster, testPlan(), instancePlan{})
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	for _, want := range []string{
 		"--semi-sync",
 		"--semi-sync-wait-for-replica-count=1",

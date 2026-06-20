@@ -325,7 +325,7 @@ func TestRunArgsGroupReplicationFlag(t *testing.T) {
 	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{GroupName: "g"})
 	plan := testPlan()
 	inst := plan.instanceFor(cluster, 1)
-	args := runArgs(cluster, plan, inst)
+	args := (&ClusterReconciler{}).runArgs(cluster, plan, inst)
 	found := false
 	for _, a := range args {
 		if a == "--group-replication" {
@@ -336,7 +336,7 @@ func TestRunArgsGroupReplicationFlag(t *testing.T) {
 		t.Fatalf("runArgs for a GR cluster must include --group-replication, got %v", args)
 	}
 	// Async cluster must not carry the flag.
-	asyncArgs := runArgs(baseCluster(), plan, inst)
+	asyncArgs := (&ClusterReconciler{}).runArgs(baseCluster(), plan, inst)
 	for _, a := range asyncArgs {
 		if a == "--group-replication" {
 			t.Fatal("async cluster must not carry --group-replication")

@@ -43,7 +43,7 @@ func TestArchivingDisabledByDefault(t *testing.T) {
 	if cluster.IsArchivingEnabled() {
 		t.Fatal("archiving should be off by default")
 	}
-	args := runArgs(cluster, testPlan(), instancePlan{})
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	for _, a := range args {
 		if strings.Contains(a, "continuous-archiving") {
 			t.Fatalf("unexpected archiving flag: %v", args)
@@ -57,7 +57,7 @@ func TestArchivingRunArgsAndEnv(t *testing.T) {
 		t.Fatal("archiving should be enabled")
 	}
 
-	args := runArgs(cluster, testPlan(), instancePlan{})
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	if !containsArg(args, "--continuous-archiving") {
 		t.Fatalf("missing --continuous-archiving: %v", args)
 	}

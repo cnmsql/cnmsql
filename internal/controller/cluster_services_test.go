@@ -30,7 +30,7 @@ var _ = Describe("buildRoutingService", func() {
 	cluster.Namespace = "ns"
 
 	It("builds a default rw service with the primary selector", func() {
-		svc := buildRoutingService(cluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		svc := (&ClusterReconciler{}).buildRoutingService(cluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
 		Expect(svc.Spec.Selector).To(HaveKeyWithValue(roleLabel, rolePrimary))
 		Expect(svc.Spec.PublishNotReadyAddresses).To(BeFalse())
@@ -39,11 +39,11 @@ var _ = Describe("buildRoutingService", func() {
 	})
 
 	It("publishes not-ready addresses for ro/r services", func() {
-		ro := buildRoutingService(cluster, scheduledTestCluster+"-ro", mysqlv1alpha1.ServiceSelectorTypeRO, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		ro := (&ClusterReconciler{}).buildRoutingService(cluster, scheduledTestCluster+"-ro", mysqlv1alpha1.ServiceSelectorTypeRO, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(ro.Spec.Selector).To(HaveKeyWithValue(roleLabel, roleReplica))
 		Expect(ro.Spec.PublishNotReadyAddresses).To(BeTrue())
 
-		r := buildRoutingService(cluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		r := (&ClusterReconciler{}).buildRoutingService(cluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(r.Spec.Selector).NotTo(HaveKey(roleLabel))
 		Expect(r.Spec.PublishNotReadyAddresses).To(BeTrue())
 	})
@@ -58,13 +58,13 @@ var _ = Describe("buildRoutingService", func() {
 			Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
 		}
 
-		ro := buildRoutingService(grCluster, scheduledTestCluster+"-ro", mysqlv1alpha1.ServiceSelectorTypeRO, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		ro := (&ClusterReconciler{}).buildRoutingService(grCluster, scheduledTestCluster+"-ro", mysqlv1alpha1.ServiceSelectorTypeRO, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(ro.Spec.PublishNotReadyAddresses).To(BeFalse())
 
-		r := buildRoutingService(grCluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		r := (&ClusterReconciler{}).buildRoutingService(grCluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(r.Spec.PublishNotReadyAddresses).To(BeFalse())
 
-		rw := buildRoutingService(grCluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		rw := (&ClusterReconciler{}).buildRoutingService(grCluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(rw.Spec.PublishNotReadyAddresses).To(BeFalse())
 	})
 
@@ -77,7 +77,7 @@ var _ = Describe("buildRoutingService", func() {
 			},
 			Spec: &mysqlv1alpha1.ServiceTemplateServiceSpec{Type: &lb},
 		}
-		svc := buildRoutingService(cluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, template, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		svc := (&ClusterReconciler{}).buildRoutingService(cluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, template, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
 		Expect(svc.Labels).To(HaveKeyWithValue("pool", "rw"))
 		// Operator labels survive a patch.
@@ -89,7 +89,7 @@ var _ = Describe("buildRoutingService", func() {
 		template := &mysqlv1alpha1.ServiceTemplateSpec{
 			ObjectMeta: &mysqlv1alpha1.ObjectMetaTemplate{Labels: map[string]string{"pool": "reporting"}},
 		}
-		svc := buildRoutingService(cluster, scheduledTestCluster+"-x", mysqlv1alpha1.ServiceSelectorTypeRO, template, mysqlv1alpha1.ServiceUpdateStrategyReplace)
+		svc := (&ClusterReconciler{}).buildRoutingService(cluster, scheduledTestCluster+"-x", mysqlv1alpha1.ServiceSelectorTypeRO, template, mysqlv1alpha1.ServiceUpdateStrategyReplace)
 		Expect(svc.Labels).To(HaveKeyWithValue("pool", "reporting"))
 		Expect(svc.Labels).To(HaveKeyWithValue(clusterLabel, "demo"))
 		Expect(svc.Labels).To(HaveKeyWithValue(roleLabel, "ro"))
