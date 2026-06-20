@@ -306,33 +306,41 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 	if !cluster.IsGroupReplication() {
 		return ctrl.Result{}, nil, false
 	}
-	if cluster.Annotations[forceQuorumRecoveryAnnotation] != "yes" {
+	// Re-fetch the cluster to see the latest annotations. The passed-in
+	// cluster may be stale if this reconcile was triggered by a Pod change
+	// rather than the annotation itself.
+	latestCluster := &mysqlv1alpha1.Cluster{}
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+	if err := r.Get(ctx, key, latestCluster); err != nil {
+		return ctrl.Result{}, err, true
+	}
+	if latestCluster.Annotations[forceQuorumRecoveryAnnotation] != "yes" {
 		return ctrl.Result{}, nil, false
 	}
-	gr := cluster.Status.GroupReplication
+	gr := latestCluster.Status.GroupReplication
 	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
 		logf.FromContext(ctx).Info("Cannot perform quorum recovery: group is not in a recoverable state",
 			"hasQuorum", gr != nil && gr.HasQuorum, "bootstrapped", gr != nil && gr.Bootstrapped)
-		r.clearAnnotation(ctx, cluster, forceQuorumRecoveryAnnotation)
+		r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
 		return ctrl.Result{}, nil, false
 	}
 
-	recovery := r.topologyReconciler(cluster).ComputeForceQuorumRecovery(cluster)
+	recovery := r.topologyReconciler(latestCluster).ComputeForceQuorumRecovery(latestCluster)
 	if recovery == nil {
 		logf.FromContext(ctx).Info("Cannot compute safe quorum recovery survivor; cluster stays Blocked")
-		r.Recorder.Event(cluster, corev1.EventTypeWarning, "QuorumRecoveryUnsafe",
+		r.Recorder.Event(latestCluster, corev1.EventTypeWarning, "QuorumRecoveryUnsafe",
 			"No safe survivor set could be proven for quorum recovery")
 		return ctrl.Result{RequeueAfter: readyResync}, nil, false
 	}
 
 	logf.FromContext(ctx).Info("Executing guarded quorum recovery",
 		"survivor", recovery.Survivor, "action", recovery.Action, "forceMembers", recovery.ForceMembers)
-	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "QuorumRecovery",
+	r.Recorder.Eventf(latestCluster, corev1.EventTypeNormal, "QuorumRecovery",
 		"Designating %s as the quorum recovery member", recovery.Survivor)
 
 	survivorPod := &corev1.Pod{}
-	key := types.NamespacedName{Namespace: cluster.Namespace, Name: recovery.Survivor}
-	if err := r.Get(ctx, key, survivorPod); err != nil {
+	survivorKey := types.NamespacedName{Namespace: latestCluster.Namespace, Name: recovery.Survivor}
+	if err := r.Get(ctx, survivorKey, survivorPod); err != nil {
 		if apierrors.IsNotFound(err) {
 			logf.FromContext(ctx).Info("Survivor Pod not found; cannot proceed with quorum recovery", "survivor", recovery.Survivor)
 			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, false
@@ -348,7 +356,7 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 		return ctrl.Result{}, err, true
 	}
 
-	r.clearAnnotation(ctx, cluster, forceQuorumRecoveryAnnotation)
+	r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
 	return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
 }
 
