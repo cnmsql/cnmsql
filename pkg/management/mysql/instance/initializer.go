@@ -120,6 +120,14 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	}
 
 	if err := opts.runBootstrap(ctx); err != nil {
+		// --initialize already laid down the mysql/ system schema, so IsInitialized
+		// would now report the directory as initialized and the next attempt would
+		// skip straight past bootstrap, leaving a half-initialized server (system
+		// tables present, but no operator accounts and a passwordless root). Wipe the
+		// partial state so a retry re-runs both --initialize and the bootstrap SQL.
+		if cleanErr := purgeDataDir(opts.DataDir); cleanErr != nil {
+			log.Error(cleanErr, "Failed to clean partial data directory after a failed bootstrap")
+		}
 		return err
 	}
 	log.Info("Completed data directory initialization")
@@ -217,6 +225,15 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 		"--datadir="+o.DataDir,
 		"--socket="+o.Socket,
 		"--skip-networking",
+		// The bootstrap SQL creates accounts and sets the root password, so the
+		// temporary server must be writable. A replica's rendered config carries
+		// read_only/super_read_only=ON (and a Group Replication member always
+		// renders as a replica until the group elects it primary), which would make
+		// every bootstrap statement fail with ER_OPTION_PREVENTS_STATEMENT. Override
+		// both off on the command line so the temporary server is writable
+		// regardless of the member's eventual role.
+		"--read-only=OFF",
+		"--super-read-only=OFF",
 	)
 
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))

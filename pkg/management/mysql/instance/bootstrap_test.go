@@ -224,12 +224,12 @@ func TestBootstrapControlUserValidation(t *testing.T) {
 func TestBootstrapMetricsUser(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword: "rootpw",
-		MetricsUser:  "cloudnative-mysql_metrics_exporter",
+		MetricsUser:  "cloudnative-mysql_metrics",
 	})
 	for _, want := range []string{
-		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_metrics_exporter'@'localhost'",
-		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cloudnative-mysql_metrics_exporter'@'localhost'",
-		"GRANT SELECT ON performance_schema.* TO 'cloudnative-mysql_metrics_exporter'@'localhost'",
+		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_metrics'@'localhost'",
+		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cloudnative-mysql_metrics'@'localhost'",
+		"GRANT SELECT ON performance_schema.* TO 'cloudnative-mysql_metrics'@'localhost'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

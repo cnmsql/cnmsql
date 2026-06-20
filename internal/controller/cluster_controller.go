@@ -125,7 +125,7 @@ const (
 	replicationUser = "cloudnative-mysql_repl"
 	backupUser      = "cloudnative-mysql_backup"
 	controlUser     = "cloudnative-mysql_control"
-	metricsUser     = "cloudnative-mysql_metrics_exporter"
+	metricsUser     = "cloudnative-mysql_metrics"
 	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// provisioningRequeue paces reconciles while the instance is still coming up.
