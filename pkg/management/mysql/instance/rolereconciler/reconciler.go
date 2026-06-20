@@ -141,7 +141,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// primary and the operator reflects it; the in-Pod side only ensures
 	// membership and never self-promotes or writes Cluster status. The async path
 	// below is unchanged.
-	if replicationMode(cluster) == mysqlv1alpha1.ReplicationModeGroupReplication {
+	if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
 		return r.reconcileGroupRole(ctx, cluster, status)
 	}
 	return r.reconcileAsyncRole(ctx, cluster, status)

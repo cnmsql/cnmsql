@@ -152,7 +152,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
-	if archivingEnabled(cluster) {
+	if cluster.IsArchivingEnabled() {
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
@@ -162,7 +162,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	// patchStatus). Divergence/role inference is async-specific and does not apply
 	// to a group, so it is skipped; the shared readiness/phase computation below
 	// still runs.
-	if isGroupReplication(cluster) {
+	if cluster.IsGroupReplication() {
 		grStatus, primary := observeGroupReplication(observed)
 		observed.GroupReplication = grStatus
 		if primary != "" {
@@ -199,7 +199,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		// does not sit silently in "Provisioning" forever.
 		observed.Phase = phaseDegraded
 		observed.PhaseReason = degradedReason(observed, plan)
-	case clusterEstablished(cluster):
+	case cluster.IsEstablished():
 		// The cluster has already completed initial provisioning (it reached a
 		// Ready/operational phase before) but is no longer fully ready. A drop
 		// below full readiness, whether some instances are missing or every one
@@ -217,19 +217,6 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.PhaseReason = fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
 	}
 	return observed, nil
-}
-
-// clusterEstablished reports whether the cluster has finished its initial
-// provisioning at least once. It reads the sticky Status.EstablishedAt marker,
-// which is recorded the first time the cluster becomes Ready and never cleared.
-// Once established, a later drop below full readiness is reported as Degraded
-// rather than Provisioning. Keying off EstablishedAt rather than the live phase
-// matters: intermediate reconcile steps re-stamp the phase to Provisioning
-// (waiting on certs, backup or recovery checks), which previously erased the
-// fact that the cluster was once operational and let a broken cluster fall back
-// to looking like first-time setup.
-func clusterEstablished(cluster *mysqlv1alpha1.Cluster) bool {
-	return cluster.Status.EstablishedAt != nil
 }
 
 // establishedPhase reports whether a persisted phase implies the cluster had
@@ -465,7 +452,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// EstablishedAt is sticky: record it the first time the cluster is fully ready
 	// (or backfill it for a cluster whose persisted phase already implies it was
 	// operational, for upgrades that predate this field) and never clear it. It is
-	// what clusterEstablished reads, so a transient drop to a provisioning phase no
+	// what Cluster.IsEstablished reads, so a transient drop to a provisioning phase no
 	// longer erases that the cluster was once established.
 	if latest.Status.EstablishedAt == nil && (observed.Ready || establishedPhase(before.Status.Phase)) {
 		latest.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
@@ -473,7 +460,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// Under Group Replication the operator is the sole writer of currentPrimary
 	// and the groupReplication block (instances write nothing to status). Merge the
 	// observed view onto the sticky groupName/bootstrapped fields.
-	if isGroupReplication(latest) {
+	if latest.IsGroupReplication() {
 		mergeGroupReplicationStatus(latest, observed)
 	}
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)

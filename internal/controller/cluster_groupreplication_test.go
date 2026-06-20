@@ -149,7 +149,7 @@ func TestEnsureGroupNameGeneratesAndIsSticky(t *testing.T) {
 	if err := r.ensureGroupName(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
-	name := pinnedGroupName(cluster)
+	name := cluster.PinnedGroupName()
 	if name == "" {
 		t.Fatal("a group name should have been generated and pinned")
 	}
@@ -157,8 +157,8 @@ func TestEnsureGroupNameGeneratesAndIsSticky(t *testing.T) {
 	if err := r.ensureGroupName(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
-	if pinnedGroupName(cluster) != name {
-		t.Fatalf("group name changed on re-pin: %q -> %q", name, pinnedGroupName(cluster))
+	if cluster.PinnedGroupName() != name {
+		t.Fatalf("group name changed on re-pin: %q -> %q", name, cluster.PinnedGroupName())
 	}
 }
 
@@ -181,7 +181,7 @@ func TestEnsureGroupNameRespectsUserPinned(t *testing.T) {
 	if err := r.ensureGroupName(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
-	if got := pinnedGroupName(cluster); got != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" {
+	if got := cluster.PinnedGroupName(); got != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" {
 		t.Fatalf("pinned group name = %q, want the user-pinned value", got)
 	}
 }

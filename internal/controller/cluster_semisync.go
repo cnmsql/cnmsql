@@ -39,11 +39,11 @@ import (
 func (r *ClusterReconciler) reconcileSemiSync(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) error {
 	// Semi-sync is mutually exclusive with Group Replication (the spec webhook
 	// rejects the combination); never drive it under GR.
-	if isGroupReplication(cluster) {
+	if cluster.IsGroupReplication() {
 		return nil
 	}
 	minSync := cluster.Spec.MinSyncReplicas
-	if !semiSyncEnabled(cluster) || minSync <= 0 {
+	if !cluster.IsSemiSyncEnabled() || minSync <= 0 {
 		// Nothing to enforce: semi-sync off or no synchronous floor configured.
 		return nil
 	}
@@ -59,7 +59,7 @@ func (r *ClusterReconciler) reconcileSemiSync(ctx context.Context, cluster *mysq
 	}
 
 	desired := minSync
-	if semiSyncDurabilityPreferred(cluster) {
+	if cluster.SemiSyncDurabilityPreferred() {
 		healthy := healthyReplicaCount(observed)
 		if healthy < minSync {
 			// Never drop below one acknowledgement: semi-sync still prefers a
@@ -94,19 +94,4 @@ func healthyReplicaCount(observed observedCluster) int {
 		}
 	}
 	return healthy
-}
-
-// semiSyncEnabled reports whether semi-synchronous replication is configured.
-func semiSyncEnabled(cluster *mysqlv1alpha1.Cluster) bool {
-	return cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled
-}
-
-// semiSyncDurabilityPreferred reports whether data durability is "preferred"
-// (the default when unset), under which the operator self-heals the
-// acknowledgement count instead of letting writes block.
-func semiSyncDurabilityPreferred(cluster *mysqlv1alpha1.Cluster) bool {
-	if cluster.Spec.MySQL.SemiSync == nil {
-		return true
-	}
-	return cluster.Spec.MySQL.SemiSync.DataDurability != mysqlv1alpha1.DataDurabilityRequired
 }

@@ -46,7 +46,7 @@ func (r *ClusterReconciler) reconcileSwitchover(
 	// Planned switchover under Group Replication uses the group's set_as_primary
 	// UDF, not the async stop/promote/demote dance. That path lands in a later
 	// phase (M-GR.4); for now the GR topology performs no switchover here.
-	if isGroupReplication(cluster) {
+	if cluster.IsGroupReplication() {
 		return false, nil
 	}
 	target := cluster.Status.TargetPrimary

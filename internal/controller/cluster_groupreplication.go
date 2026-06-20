@@ -21,39 +21,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/uuid"
-
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
-
-// replicationMode returns the cluster's effective replication topology,
-// defaulting to async when spec.replication is unset. It is the single seam the
-// operator branches on to keep the proven async path untouched: every GR-only
-// behaviour is reached only when this returns ReplicationModeGroupReplication.
-func replicationMode(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Mode == "" {
-		return mysqlv1alpha1.ReplicationModeAsync
-	}
-	return cluster.Spec.Replication.Mode
-}
-
-// isGroupReplication reports whether the cluster runs MySQL Group Replication.
-func isGroupReplication(cluster *mysqlv1alpha1.Cluster) bool {
-	return replicationMode(cluster) == mysqlv1alpha1.ReplicationModeGroupReplication
-}
-
-// pinnedGroupName returns the group_replication_group_name pinned in status, or
-// the empty string when it has not been pinned yet. Config must not be rendered
-// before the name is pinned (see ensureGroupName).
-func pinnedGroupName(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.Status.GroupReplication == nil {
-		return ""
-	}
-	return cluster.Status.GroupReplication.GroupName
-}
 
 // memberAddress is a member's XCom address, the stable per-Pod DNS name plus the
 // Group Replication communication port. It matches the host async replicas use
@@ -71,7 +43,7 @@ func groupReplicationConfig(
 	plan clusterPlan,
 	inst instancePlan,
 ) (mysqlconfig.GroupReplication, bool) {
-	if !isGroupReplication(cluster) {
+	if !cluster.IsGroupReplication() {
 		return mysqlconfig.GroupReplication{}, false
 	}
 
@@ -81,7 +53,7 @@ func groupReplicationConfig(
 	}
 
 	gr := mysqlconfig.GroupReplication{
-		GroupName:    pinnedGroupName(cluster),
+		GroupName:    cluster.PinnedGroupName(),
 		LocalAddress: memberAddress(inst.Name, cluster.Namespace),
 		GroupSeeds:   strings.Join(seeds, ","),
 		// Reuse the cluster's server TLS material for the distributed-recovery
@@ -93,42 +65,11 @@ func groupReplicationConfig(
 		},
 	}
 
-	tunables := groupReplicationTunables(cluster)
+	tunables := cluster.ResolvedGroupReplicationTunables()
 	gr.Consistency = tunables.Consistency
 	gr.ExitStateAction = tunables.ExitStateAction
 	gr.AutoRejoinTries = tunables.AutoRejoinTries
 	return gr, true
-}
-
-// groupReplicationTunables resolves the spec tunables, applying the same
-// defaults the CRD applies so rendering is correct even when the optional
-// spec.replication.groupReplication block (or a field) is omitted.
-type resolvedGRTunables struct {
-	Consistency     string
-	ExitStateAction string
-	AutoRejoinTries int
-}
-
-func groupReplicationTunables(cluster *mysqlv1alpha1.Cluster) resolvedGRTunables {
-	t := resolvedGRTunables{
-		Consistency:     "BEFORE_ON_PRIMARY_FAILOVER",
-		ExitStateAction: "READ_ONLY",
-		AutoRejoinTries: 3,
-	}
-	if cluster.Spec.Replication == nil || cluster.Spec.Replication.GroupReplication == nil {
-		return t
-	}
-	cfg := cluster.Spec.Replication.GroupReplication
-	if cfg.Consistency != "" {
-		t.Consistency = cfg.Consistency
-	}
-	if cfg.ExitStateAction != "" {
-		t.ExitStateAction = cfg.ExitStateAction
-	}
-	if cfg.AutoRejoinTries != nil {
-		t.AutoRejoinTries = int(*cfg.AutoRejoinTries)
-	}
-	return t
 }
 
 // ensureGroupName pins status.groupReplication.groupName on a GR cluster before
@@ -139,10 +80,10 @@ func groupReplicationTunables(cluster *mysqlv1alpha1.Cluster) resolvedGRTunables
 // the name is already pinned. updateStatus mirrors the patch back onto the
 // in-memory cluster, so the rest of the reconcile sees the pinned name.
 func (r *ClusterReconciler) ensureGroupName(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
-	if !isGroupReplication(cluster) || pinnedGroupName(cluster) != "" {
+	if !cluster.IsGroupReplication() || cluster.PinnedGroupName() != "" {
 		return nil
 	}
-	name := desiredGroupName(cluster)
+	name := cluster.DesiredGroupName()
 	return r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 		if s.GroupReplication == nil {
 			s.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{}
@@ -151,17 +92,6 @@ func (r *ClusterReconciler) ensureGroupName(ctx context.Context, cluster *mysqlv
 			s.GroupReplication.GroupName = name
 		}
 	})
-}
-
-// desiredGroupName is the group name to pin: the user's pinned value when set,
-// otherwise a freshly generated UUID.
-func desiredGroupName(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.Spec.Replication != nil && cluster.Spec.Replication.GroupReplication != nil {
-		if name := cluster.Spec.Replication.GroupReplication.GroupName; name != "" {
-			return name
-		}
-	}
-	return uuid.NewString()
 }
 
 // observeGroupReplication aggregates every member's reported view of the group

@@ -58,13 +58,13 @@ func TestClusterEstablished(t *testing.T) {
 	// re-stamped back to Provisioning by an intermediate reconcile step.
 	notEstablished := &mysqlv1alpha1.Cluster{}
 	notEstablished.Status.Phase = phaseReady // phase alone must not count
-	if clusterEstablished(notEstablished) {
+	if notEstablished.IsEstablished() {
 		t.Error("clusterEstablished with no EstablishedAt = true, want false")
 	}
 	established := &mysqlv1alpha1.Cluster{}
 	established.Status.Phase = phaseProvisioning // phase says provisioning...
 	established.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
-	if !clusterEstablished(established) {
+	if !established.IsEstablished() {
 		t.Error("clusterEstablished with EstablishedAt set = false, want true")
 	}
 }
@@ -521,7 +521,7 @@ func TestPatchStatusEstablishedAtIsSticky(t *testing.T) {
 	if !got2.Status.EstablishedAt.Equal(first) {
 		t.Fatalf("EstablishedAt changed: was %v, now %v", first, got2.Status.EstablishedAt)
 	}
-	if !clusterEstablished(got2) {
+	if !got2.IsEstablished() {
 		t.Fatal("cluster no longer reports established after a Provisioning re-stamp")
 	}
 }

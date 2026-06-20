@@ -96,12 +96,3 @@ func (r *Reconciler) shouldBootstrap(cluster *mysqlv1alpha1.Cluster) bool {
 	grStatus := cluster.Status.GroupReplication
 	return grStatus == nil || !grStatus.Bootstrapped
 }
-
-// replicationMode returns the cluster's effective replication topology,
-// defaulting to async when spec.replication is unset.
-func replicationMode(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Mode == "" {
-		return mysqlv1alpha1.ReplicationModeAsync
-	}
-	return cluster.Spec.Replication.Mode
-}

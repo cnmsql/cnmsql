@@ -187,7 +187,7 @@ func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
 	if count <= 0 {
 		return 0
 	}
-	if semiSyncDurabilityPreferred(cluster) {
+	if cluster.SemiSyncDurabilityPreferred() {
 		return 1
 	}
 	return count
@@ -197,7 +197,7 @@ func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
 // binlog archiving, applying defaults when the API server has not (e.g. in unit
 // tests building the spec directly).
 func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
-	ca := continuousArchiving(cluster)
+	ca := cluster.ContinuousArchiving()
 	if ca == nil || !ca.Enabled {
 		return mysqlconfig.Archiving{}
 	}
@@ -216,33 +216,6 @@ func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
 		MaxBinlogSizeMB:     maxSize,
 		BinlogExpireSeconds: expire,
 	}
-}
-
-// continuousArchiving returns the cluster's continuous-archiving configuration,
-// or nil when it is not configured.
-func continuousArchiving(cluster *mysqlv1alpha1.Cluster) *mysqlv1alpha1.ContinuousArchivingConfiguration {
-	if cluster.Spec.Backup == nil {
-		return nil
-	}
-	return cluster.Spec.Backup.ContinuousArchiving
-}
-
-// archivingEnabled reports whether continuous binlog archiving is turned on and
-// has a destination object store to ship to.
-func archivingEnabled(cluster *mysqlv1alpha1.Cluster) bool {
-	ca := continuousArchiving(cluster)
-	return ca != nil && ca.Enabled &&
-		cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil
-}
-
-// archiveRPOSeconds returns the configured RPO bound in seconds, defaulting to
-// 300 (5 minutes).
-func archiveRPOSeconds(cluster *mysqlv1alpha1.Cluster) int {
-	ca := continuousArchiving(cluster)
-	if ca == nil || ca.TargetRPOSeconds <= 0 {
-		return 300
-	}
-	return int(ca.TargetRPOSeconds)
 }
 
 func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
