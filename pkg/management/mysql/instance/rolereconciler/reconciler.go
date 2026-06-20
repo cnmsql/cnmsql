@@ -74,6 +74,9 @@ type LocalInstance interface {
 	// StopGroupReplication stops the member's Group Replication, making it
 	// leave the group while keeping mysqld alive (the GR fencing primitive).
 	StopGroupReplication(ctx context.Context) error
+	// ForceGroupMembers executes group_replication_force_members with the
+	// given XCom addresses, re-forming the group after a quorum loss.
+	ForceGroupMembers(ctx context.Context, addresses []string) error
 }
 
 const (

@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -249,6 +250,86 @@ func removeString(ss []string, s string) []string {
 		}
 	}
 	return ss
+}
+
+// handleQuorumRecovery is the opt-in, guarded quorum recovery path for Group
+// Replication clusters. It triggers only when the Cluster carries the
+// force-quorum-recovery annotation and quorum is provably lost. The operator
+// computes a safe survivor via ComputeForceQuorumRecovery, stamps the survivor
+// Pod with the force_members addresses so its in-Pod reconciler executes
+// group_replication_force_members, and clears the Cluster annotation. When
+// safety is unprovable the annotation is kept and the cluster stays Blocked.
+func (r *ClusterReconciler) handleQuorumRecovery(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	observed observedCluster,
+) (ctrl.Result, error, bool) {
+	if !cluster.IsGroupReplication() {
+		return ctrl.Result{}, nil, false
+	}
+	if cluster.Annotations[forceQuorumRecoveryAnnotation] != "yes" {
+		return ctrl.Result{}, nil, false
+	}
+	gr := cluster.Status.GroupReplication
+	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
+		logf.FromContext(ctx).Info("Cannot perform quorum recovery: group is not in a recoverable state",
+			"hasQuorum", gr != nil && gr.HasQuorum, "bootstrapped", gr != nil && gr.Bootstrapped)
+		r.clearAnnotation(ctx, cluster, forceQuorumRecoveryAnnotation)
+		return ctrl.Result{}, nil, false
+	}
+
+	recovery := r.topologyReconciler(cluster).ComputeForceQuorumRecovery(cluster)
+	if recovery == nil {
+		logf.FromContext(ctx).Info("Cannot compute safe quorum recovery survivor; cluster stays Blocked")
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "QuorumRecoveryUnsafe",
+			"No safe survivor set could be proven for quorum recovery")
+		return ctrl.Result{RequeueAfter: readyResync}, nil, false
+	}
+
+	logf.FromContext(ctx).Info("Executing guarded quorum recovery",
+		"survivor", recovery.Survivor, "action", recovery.Action, "forceMembers", recovery.ForceMembers)
+	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "QuorumRecovery",
+		"Designating %s as the quorum recovery member", recovery.Survivor)
+
+	survivorPod := &corev1.Pod{}
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: recovery.Survivor}
+	if err := r.Get(ctx, key, survivorPod); err != nil {
+		if apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).Info("Survivor Pod not found; cannot proceed with quorum recovery", "survivor", recovery.Survivor)
+			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, false
+		}
+		return ctrl.Result{}, err, true
+	}
+	podBefore := survivorPod.DeepCopy()
+	if survivorPod.Annotations == nil {
+		survivorPod.Annotations = map[string]string{}
+	}
+	survivorPod.Annotations[forceQuorumMembersAnnotation] = recovery.ForceMembers
+	if err := r.Patch(ctx, survivorPod, client.MergeFrom(podBefore)); err != nil {
+		return ctrl.Result{}, err, true
+	}
+
+	r.clearAnnotation(ctx, cluster, forceQuorumRecoveryAnnotation)
+	return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
+}
+
+// clearAnnotation removes annotation key from the Cluster and persists the change.
+func (r *ClusterReconciler) clearAnnotation(ctx context.Context, cluster *mysqlv1alpha1.Cluster, key string) {
+	latest := &mysqlv1alpha1.Cluster{}
+	nsKey := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+	if err := r.Get(ctx, nsKey, latest); err != nil {
+		return
+	}
+	if latest.Annotations == nil {
+		return
+	}
+	before := latest.DeepCopy()
+	delete(latest.Annotations, key)
+	if err := r.Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not clear Cluster annotation", "key", key)
+		return
+	}
+	latest.DeepCopyInto(cluster)
 }
 
 // reconcileFencing keeps each instance Pod's routable label in step with its

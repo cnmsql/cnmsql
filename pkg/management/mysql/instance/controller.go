@@ -455,6 +455,12 @@ func (c *Controller) BootstrapGroup(ctx context.Context) error {
 	return c.gr.Bootstrap(ctx)
 }
 
+// ForceGroupMembers executes group_replication_force_members with the given
+// XCom addresses on this member, re-forming the group after a quorum loss.
+func (c *Controller) ForceGroupMembers(ctx context.Context, addresses []string) error {
+	return c.gr.ForceMembers(ctx, addresses)
+}
+
 // Promote transitions a replica to primary.
 func (c *Controller) Promote(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("instance-controller").WithValues("instance", c.name)
