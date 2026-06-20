@@ -115,6 +115,7 @@ type ObservationInput struct {
 	StatusByInstance  map[string]*webserver.Status
 	GTIDByInstance    map[string]string
 	ConfiguredMembers int
+	ObservedViewMax   int
 }
 
 // Observation is the topology-specific portion of the operator's observed

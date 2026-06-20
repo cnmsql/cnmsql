@@ -81,12 +81,16 @@ func topologyAvailabilityState(observed observedCluster) topology.AvailabilitySt
 	}
 }
 
-func topologyObservationInput(observed observedCluster) topology.ObservationInput {
-	return topology.ObservationInput{
+func topologyObservationInput(observed observedCluster, gr *mysqlv1alpha1.GroupReplicationStatus) topology.ObservationInput {
+	in := topology.ObservationInput{
 		PrimaryName:       observed.PrimaryName,
 		InstanceNames:     observed.InstanceNames,
 		StatusByInstance:  observed.StatusByInstance,
 		GTIDByInstance:    observed.GTIDByInstance,
 		ConfiguredMembers: observed.Plan.Instances,
 	}
+	if gr != nil {
+		in.ObservedViewMax = gr.ObservedViewMax
+	}
+	return in
 }

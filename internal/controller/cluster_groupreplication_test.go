@@ -41,7 +41,7 @@ func grCluster(group *mysqlv1alpha1.GroupReplicationStatus) *mysqlv1alpha1.Clust
 }
 
 func observeGroupReplicationForTest(observed observedCluster) (*mysqlv1alpha1.GroupReplicationStatus, string) {
-	result := controllergr.NewReconciler(nil, nil).Observe(topologyObservationInput(observed))
+	result := controllergr.NewReconciler(nil, nil).Observe(topologyObservationInput(observed, nil))
 	return result.GroupReplication, result.PrimaryName
 }
 

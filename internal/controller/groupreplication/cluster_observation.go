@@ -106,10 +106,22 @@ func observeGroup(input topology.ObservationInput) (*mysqlv1alpha1.GroupReplicat
 		PrimaryMember:     primaryInstance,
 		Members:           members,
 		ViewID:            view.ViewID,
-		HasQuorum:         onlineCount*2 > input.ConfiguredMembers,
+		HasQuorum:         onlineCount*2 > quorumDenominator(input.ConfiguredMembers, input.ObservedViewMax, maxViewMembers),
 		ObservedViewMax:   maxViewMembers,
 		ObservedOnlineMax: onlineCount,
 	}, primaryInstance
+}
+
+// quorumDenominator returns the group size used for quorum arithmetic.
+// During bootstrap/scale-up (maxView < configured), use the actual view size
+// so the group reports quorum and new members can join via distributed
+// recovery. Once the group reaches its configured size, use the configured
+// count so that a shrunken group is detected as quorum-lost.
+func quorumDenominator(configured, observedMax, currentMax int) int {
+	if observedMax > 0 && observedMax >= configured {
+		return observedMax
+	}
+	return currentMax
 }
 
 // MergeStatus preserves sticky GR fields and mirrors the elected primary.
