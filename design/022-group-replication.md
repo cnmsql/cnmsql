@@ -739,8 +739,13 @@ tests. GR stays behind `mode: groupReplication` throughout.
   (Total-outage re-bootstrap — re-forming the group when no member survives
   ONLINE — lands in M-GR.7 alongside the other lifecycle recovery paths.)
 - **M-GR.7 — Lifecycle integration.** Rolling + in-place upgrades, scale up/down,
-  total-outage re-bootstrap (re-form the same group from the most-advanced
-  member once the group has no ONLINE survivor),
+  total-outage re-bootstrap (**done** — re-form the same group from the
+  most-advanced member once the group has no ONLINE survivor: opt-in via the same
+  `force-quorum-recovery` annotation, but with a stricter safety bar than
+  `force_members` — every configured instance must be reachable with a known
+  `gtid_executed` and the survivor's set must dominate all of them, else the
+  cluster stays `Blocked`; the survivor is stamped `force-group-rebootstrap` and
+  bootstraps the group, others rejoin via distributed recovery),
   backup/restore into a fresh group, kubectl plugin GR commands + the
   documentation contract and safety affordances (structured `--help`/runbooks,
   consequence summaries, confirmations, command safety matrix), monitoring, docs.

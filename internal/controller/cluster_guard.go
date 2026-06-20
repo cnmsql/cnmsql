@@ -340,7 +340,7 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 	logf.FromContext(ctx).Info("Executing guarded quorum recovery",
 		"survivor", recovery.Survivor, "action", recovery.Action, "forceMembers", recovery.ForceMembers)
 	r.Recorder.Eventf(latestCluster, corev1.EventTypeNormal, "QuorumRecovery",
-		"Designating %s as the quorum recovery member", recovery.Survivor)
+		"Designating %s as the quorum recovery member (%s)", recovery.Survivor, recovery.Action)
 
 	survivorPod := &corev1.Pod{}
 	survivorKey := types.NamespacedName{Namespace: latestCluster.Namespace, Name: recovery.Survivor}
@@ -355,7 +355,15 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 	if survivorPod.Annotations == nil {
 		survivorPod.Annotations = map[string]string{}
 	}
-	survivorPod.Annotations[forceQuorumMembersAnnotation] = recovery.ForceMembers
+	// Stamp the survivor with the action-specific doorbell. force_members resets a
+	// surviving (but sub-quorum) view; rebootstrap re-creates the group from
+	// scratch after a total outage where no view survived.
+	switch recovery.Action {
+	case topology.QuorumRecoveryRebootstrap:
+		survivorPod.Annotations[forceGroupRebootstrapAnnotation] = "yes"
+	default:
+		survivorPod.Annotations[forceQuorumMembersAnnotation] = recovery.ForceMembers
+	}
 	if err := r.Patch(ctx, survivorPod, client.MergeFrom(podBefore)); err != nil {
 		return ctrl.Result{}, err, true
 	}

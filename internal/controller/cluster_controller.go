@@ -107,6 +107,11 @@ const (
 	// comma-separated list of XCom addresses, instructs the in-Pod reconciler to
 	// execute group_replication_force_members with that address set.
 	forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
+	// forceGroupRebootstrapAnnotation, when set to "yes" on an instance Pod,
+	// instructs the in-Pod reconciler to re-bootstrap the group from that member
+	// after a total outage (no member survived ONLINE). It is the operator's
+	// guarded signal that this member holds every committed transaction.
+	forceGroupRebootstrapAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-group-rebootstrap"
 
 	configMapAnnotation       = "cloudnative-mysql.cloudnative-mysql.io/config-map"
 	configHashAnnotation      = "cloudnative-mysql.cloudnative-mysql.io/config-hash"

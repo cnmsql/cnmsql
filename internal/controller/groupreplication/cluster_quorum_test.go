@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	mysqlgr "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 )
 
@@ -150,5 +151,105 @@ func TestComputeForceQuorumRecoverySkippedWhenQuorate(t *testing.T) {
 	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{HasQuorum: true}
 	if got := r.ComputeForceQuorumRecovery(cluster, nil); got != nil {
 		t.Fatalf("expected nil recovery for a quorate group, got %+v", got)
+	}
+}
+
+func TestSelectRebootstrapSurvivor(t *testing.T) {
+	tests := []struct {
+		name       string
+		gtids      map[string]string
+		configured int
+		want       string
+		wantOK     bool
+	}{
+		{
+			name:       "most-advanced reachable member wins",
+			gtids:      map[string]string{"demo-0": gtidShort, "demo-1": gtidLong, "demo-2": gtidShort},
+			configured: 3,
+			want:       "demo-1",
+			wantOK:     true,
+		},
+		{
+			name:       "an unreachable member makes re-bootstrap unsafe",
+			gtids:      map[string]string{"demo-0": gtidShort, "demo-1": gtidLong},
+			configured: 3,
+			wantOK:     false,
+		},
+		{
+			name:       "divergent histories are unrecoverable",
+			gtids:      map[string]string{"demo-0": gtidLong, "demo-1": gtidDivergent},
+			configured: 2,
+			wantOK:     false,
+		},
+		{
+			name:       "identical GTID sets pick deterministically (lexically first)",
+			gtids:      map[string]string{"demo-2": gtidLong, "demo-0": gtidLong, "demo-1": gtidLong},
+			configured: 3,
+			want:       "demo-0",
+			wantOK:     true,
+		},
+		{
+			name:       "no instances is unrecoverable",
+			gtids:      map[string]string{},
+			configured: 3,
+			wantOK:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := selectRebootstrapSurvivor(tt.gtids, tt.configured)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("survivor = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// In a total outage no member is ONLINE, so the group view (and gr.Members) is
+// empty; recovery must fall through to re-bootstrap selection by GTID.
+func TestComputeForceQuorumRecoveryRebootstrapsOnTotalOutage(t *testing.T) {
+	r := &Reconciler{}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Name = "demo"
+	cluster.Namespace = "prod"
+	cluster.Spec.Instances = 3
+	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
+		Bootstrapped: true,
+		HasQuorum:    false,
+		Members:      nil, // no ONLINE view survived
+	}
+
+	gtids := map[string]string{"demo-0": gtidShort, "demo-1": gtidLong, "demo-2": gtidShort}
+	recovery := r.ComputeForceQuorumRecovery(cluster, gtids)
+	if recovery == nil {
+		t.Fatal("expected a re-bootstrap recovery plan, got nil")
+	}
+	if recovery.Action != topology.QuorumRecoveryRebootstrap {
+		t.Fatalf("action = %q, want %q", recovery.Action, topology.QuorumRecoveryRebootstrap)
+	}
+	if recovery.Survivor != "demo-1" {
+		t.Fatalf("survivor = %q, want demo-1", recovery.Survivor)
+	}
+	if recovery.ForceMembers != "" {
+		t.Fatalf("ForceMembers = %q, want empty for re-bootstrap", recovery.ForceMembers)
+	}
+}
+
+// A total outage where one member is unreachable cannot be proven safe; the
+// cluster stays Blocked rather than re-bootstrapping from a possibly-behind member.
+func TestComputeForceQuorumRecoveryRebootstrapBlockedWhenMemberMissing(t *testing.T) {
+	r := &Reconciler{}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Spec.Instances = 3
+	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
+		Bootstrapped: true,
+		HasQuorum:    false,
+	}
+	gtids := map[string]string{"demo-0": gtidShort, "demo-1": gtidLong}
+	if got := r.ComputeForceQuorumRecovery(cluster, gtids); got != nil {
+		t.Fatalf("expected nil recovery when a member is unreachable, got %+v", got)
 	}
 }

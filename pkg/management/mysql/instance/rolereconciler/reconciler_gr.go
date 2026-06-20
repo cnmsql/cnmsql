@@ -36,6 +36,7 @@ import (
 
 const groupObservationAnnotation = "mysql.cloudnative-mysql.io/gr-observed"
 const forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
+const forceGroupRebootstrapAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-group-rebootstrap"
 
 // reconcileGroupRole is the Group Replication topology role strategy. It embodies
 // "the group decides, the operator reflects": this in-Pod side only ensures the
@@ -85,6 +86,23 @@ func (r *Reconciler) reconcileGroupRole(
 		delete(pod.Annotations, forceQuorumMembersAnnotation)
 		if err := doorbellClient.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
 			log.Error(err, "Could not clear force-quorum-members annotation", "instance", me)
+		}
+		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+	} else if pod.Annotations[forceGroupRebootstrapAnnotation] == "yes" {
+		// Total-outage re-bootstrap: the operator has proven this member holds
+		// every committed transaction and there is no surviving group view to
+		// reset. Re-create the group from scratch by bootstrapping here; the other
+		// members rejoin via normal distributed recovery once this group exists.
+		log.Info("Executing guarded total-outage re-bootstrap", "instance", me)
+		if err := r.Local.BootstrapGroup(ctx); err != nil {
+			log.Error(err, "re-bootstrap failed; will retry", "instance", me)
+			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		}
+		log.Info("re-bootstrap succeeded; group re-formed", "instance", me)
+		before := pod.DeepCopy()
+		delete(pod.Annotations, forceGroupRebootstrapAnnotation)
+		if err := doorbellClient.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+			log.Error(err, "Could not clear force-group-rebootstrap annotation", "instance", me)
 		}
 		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
 	}
@@ -141,11 +159,11 @@ func (r *Reconciler) reconcileGroupRole(
 		return ctrl.Result{}, err
 	}
 
-	// Join the existing group. For a single-member group whose only member has
-	// fully restarted (total outage), the group view is gone and this start cannot
-	// re-form the group; that re-bootstrap is a guarded, opt-in recovery handled in
-	// a later phase. Until then the member stays OFFLINE and the operator surfaces
-	// the degradation.
+	// Join the existing group. For a total outage where the group view is gone,
+	// this start cannot re-form the group; the member stays OFFLINE and the
+	// operator surfaces the degradation. Re-forming is the guarded, opt-in
+	// re-bootstrap handled above (forceGroupRebootstrapAnnotation), driven by the
+	// operator once it has proven a safe survivor.
 	log.Info("Starting group replication to join the group", "instance", me)
 	if err := r.Local.StartGroupReplication(ctx); err != nil {
 		return ctrl.Result{}, err

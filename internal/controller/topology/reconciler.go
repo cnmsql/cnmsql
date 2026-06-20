@@ -160,9 +160,21 @@ type QuorumResult struct {
 	Quorum      int
 }
 
-// ForceQuorumRecovery describes a guided quorum-recovery action — currently a
-// force_members re-form from the most-advanced survivor — computed by the
-// operator. (Total-outage re-bootstrap is a later phase; see M-GR.7.)
+// Quorum-recovery action kinds carried by ForceQuorumRecovery.Action.
+const (
+	// QuorumRecoveryForceMembers re-forms a group that still has at least one
+	// ONLINE survivor below quorum, via group_replication_force_members.
+	QuorumRecoveryForceMembers = "force_members"
+	// QuorumRecoveryRebootstrap re-creates the group from scratch when no member
+	// survived ONLINE (total outage), by bootstrapping the most-advanced member.
+	QuorumRecoveryRebootstrap = "rebootstrap"
+)
+
+// ForceQuorumRecovery describes a guided quorum-recovery action computed by the
+// operator. Two kinds exist (see Action): a force_members re-form from the
+// most-advanced ONLINE survivor, and — when the group has no ONLINE survivor at
+// all — a total-outage re-bootstrap from the most-advanced reachable member.
+// ForceMembers is only set for the force_members action.
 type ForceQuorumRecovery struct {
 	Action       string
 	Survivor     string

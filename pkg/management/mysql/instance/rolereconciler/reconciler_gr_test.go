@@ -206,6 +206,43 @@ func TestGroupObservationDoorbellChangesWithPrimary(t *testing.T) {
 	}
 }
 
+func TestGroupRoleRebootstrapAnnotationBootstrapsAndClears(t *testing.T) {
+	t.Parallel()
+	// The operator has stamped this member as the total-outage re-bootstrap
+	// survivor. The in-Pod side must bootstrap the group (re-create it) and clear
+	// the annotation so it is exactly-once.
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	r := newGRReconciler(t, "demo-1", mysqlv1alpha1.ClusterStatus{
+		TargetPrimary:    "demo-1",
+		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true},
+	}, local)
+
+	key := types.NamespacedName{Namespace: "default", Name: "demo-1"}
+	pod := &corev1.Pod{}
+	if err := r.DoorbellClient.Get(context.Background(), key, pod); err != nil {
+		t.Fatal(err)
+	}
+	pod.Annotations = map[string]string{forceGroupRebootstrapAnnotation: "yes"}
+	if err := r.DoorbellClient.Update(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r)
+
+	if !local.grBootstrapped {
+		t.Fatal("re-bootstrap survivor must bootstrap the group")
+	}
+	if local.grStarted {
+		t.Fatal("re-bootstrap must not also START GROUP_REPLICATION")
+	}
+	if err := r.DoorbellClient.Get(context.Background(), key, pod); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pod.Annotations[forceGroupRebootstrapAnnotation]; ok {
+		t.Fatal("re-bootstrap annotation must be cleared after success (exactly-once)")
+	}
+}
+
 func TestGroupRoleRecoveringMemberWaits(t *testing.T) {
 	t.Parallel()
 	// A member that has started GR but is not yet ONLINE waits; it must not call

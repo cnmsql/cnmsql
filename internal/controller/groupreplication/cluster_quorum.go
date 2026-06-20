@@ -18,6 +18,7 @@ package groupreplication
 
 import (
 	"fmt"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -129,18 +130,96 @@ func (r *Reconciler) ComputeForceQuorumRecovery(
 			online = append(online, m)
 		}
 	}
+
+	// No ONLINE survivor anywhere: this is a total outage (every member is down
+	// or OFFLINE, so the group view is gone). force_members cannot help — there
+	// is no live view to reset. Re-form the group by bootstrapping the
+	// most-advanced reachable member instead. See computeRebootstrap for the
+	// stricter safety bar this requires.
+	if len(online) == 0 {
+		return r.computeRebootstrap(cluster, gtidByInstance)
+	}
+
 	survivor, ok := selectQuorumSurvivor(online, gtidByInstance)
 	if !ok {
 		return nil
 	}
 	return &topology.ForceQuorumRecovery{
-		Action:   "force_members",
+		Action:   topology.QuorumRecoveryForceMembers,
 		Survivor: survivor.Instance,
 		// force_members must match the survivor's group_replication_local_address
 		// exactly, which is the member's XCom FQDN (see memberAddress), not the
 		// bare Pod name.
 		ForceMembers: memberAddress(survivor.Instance, cluster.Namespace),
 	}
+}
+
+// computeRebootstrap selects the member to re-bootstrap a group after a total
+// outage — when no member survived ONLINE so there is no group view to reset.
+// Because nothing is live, the survivor cannot be cross-checked against a quorate
+// view; the only safe guarantee is that the chosen member already holds every
+// transaction any other member could replay. So this demands a strictly higher
+// bar than force_members: every configured instance must be reachable with a
+// known gtid_executed, and the survivor's set must dominate all of them. If any
+// instance is unreachable (it might hold transactions the survivor lacks) or no
+// member dominates, it returns nil and the cluster stays Blocked.
+func (r *Reconciler) computeRebootstrap(
+	cluster *mysqlv1alpha1.Cluster,
+	gtidByInstance map[string]string,
+) *topology.ForceQuorumRecovery {
+	survivor, ok := selectRebootstrapSurvivor(gtidByInstance, cluster.Spec.Instances)
+	if !ok {
+		return nil
+	}
+	return &topology.ForceQuorumRecovery{
+		Action:   topology.QuorumRecoveryRebootstrap,
+		Survivor: survivor,
+	}
+}
+
+// selectRebootstrapSurvivor picks the member to re-bootstrap a group from after a
+// total outage. It requires gtid_executed for every configured instance (a
+// missing or unreachable member could hold transactions the survivor lacks, and
+// re-bootstrapping from a behind member would silently drop them) and returns the
+// lexically-first member whose set dominates all others. Iteration is sorted so
+// the choice is deterministic across reconciles and ties (identical GTID sets).
+// Returns ok=false when any instance is missing or no member dominates.
+func selectRebootstrapSurvivor(gtidByInstance map[string]string, configured int) (string, bool) {
+	if configured <= 0 || len(gtidByInstance) < configured {
+		return "", false
+	}
+	names := make([]string, 0, len(gtidByInstance))
+	for name := range gtidByInstance {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, candidate := range names {
+		candidateGTID := gtidByInstance[candidate]
+		if candidateGTID == "" {
+			continue
+		}
+		if gtidDominatesAll(candidateGTID, names, candidate, gtidByInstance) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// gtidDominatesAll reports whether candidateGTID contains every other named
+// member's gtid_executed. An unparseable set or a peer the candidate does not
+// contain disproves dominance.
+func gtidDominatesAll(candidateGTID string, names []string, candidate string, gtidByInstance map[string]string) bool {
+	for _, other := range names {
+		if other == candidate {
+			continue
+		}
+		otherGTID := gtidByInstance[other]
+		contained, err := replication.GTIDContains(candidateGTID, otherGTID)
+		if err != nil || !contained {
+			return false
+		}
+	}
+	return true
 }
 
 // selectQuorumSurvivor chooses the safe survivor among the ONLINE members of a
