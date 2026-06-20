@@ -124,7 +124,10 @@ func (r *ClusterReconciler) instancePodExists(ctx context.Context, cluster *mysq
 
 // scaleDownReplicas removes instances whose ordinal exceeds the desired count.
 // Per the M4 retention policy the PVC is left in place for the user to keep or
-// delete; the current primary is never removed.
+// delete; the current primary is never removed. Under Group Replication, a
+// member is first fenced (STOP GROUP_REPLICATION) so it gracefully leaves the
+// group before the Pod is deleted, and removal is refused when it would drop
+// the group below quorum.
 func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	pods := &corev1.PodList{}
 	if err := r.List(ctx, pods, client.InNamespace(cluster.Namespace), client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
@@ -136,12 +139,44 @@ func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysq
 		if !ok || ordinal <= plan.Instances || pod.Name == plan.primaryName(cluster) {
 			continue
 		}
+		topo := r.topologyReconciler(cluster)
+		if guard := topo.ScaleDownQuorumGuard(cluster, pod.Name); guard != nil && guard.Blocked {
+			logf.FromContext(ctx).Info("Cannot scale down: quorum guard blocked",
+				"instance", pod.Name, "reason", guard.Reason)
+			continue
+		}
+		// Under GR, fence the member first so it leaves the group cleanly
+		// (STOP GROUP_REPLICATION) before the Pod is deleted. The fencing
+		// annotation drives the in-Pod reconciler; on the next reconcile
+		// the Pod is removed from the group view and safe to delete.
+		if cluster.IsGroupReplication() && !isPodFenced(pod) {
+			if err := r.stampFencingAnnotation(ctx, cluster, pod); err != nil {
+				return err
+			}
+			continue
+		}
 		logf.FromContext(ctx).Info("Scaling down instance", "instance", pod.Name, "desiredInstances", plan.Instances)
 		if err := r.removeInstanceResources(ctx, cluster, plan.instanceFor(cluster, ordinal)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// stampFencingAnnotation sets the fencing annotation on a Pod, triggering the
+// in-Pod reconciler to fence the instance (stop mysqld for async, STOP
+// GROUP_REPLICATION for GR). The routing reconciler picks it up and sets
+// routable=false on the next pass.
+func (r *ClusterReconciler) stampFencingAnnotation(ctx context.Context, cluster *mysqlv1alpha1.Cluster, pod *corev1.Pod) error {
+	if pod.Annotations[fencingAnnotation] == routableTrue {
+		return nil
+	}
+	before := pod.DeepCopy()
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[fencingAnnotation] = routableTrue
+	return r.Patch(ctx, pod, client.MergeFrom(before))
 }
 
 // removeInstanceResources deletes the owned Pod, ConfigMap and Service for a
