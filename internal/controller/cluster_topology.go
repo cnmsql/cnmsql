@@ -58,10 +58,10 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 			if err != nil {
 				return false, err
 			}
-			if !exists && !donorAvailable(cluster, observed) {
+			if !exists && !topologyFor(cluster).DonorAvailable(observed) {
 				logf.FromContext(ctx).Info("Deferring member creation: no healthy provisioning source",
 					"instance", inst.Name, "primary", observed.PrimaryName,
-					"groupReplication", cluster.IsGroupReplication())
+					"topology", topologyFor(cluster).Name())
 				return false, nil
 			}
 		}

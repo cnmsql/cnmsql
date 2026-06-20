@@ -20,6 +20,12 @@ limitations under the License.
 // should be primary by writing status.targetPrimary; each instance promotes
 // itself or follows the current primary on its own. This removes the immutable
 // --role flag and keeps role correct across Pod restarts.
+//
+// The package is internally split into topology strategies selected by
+// spec.replication.mode:
+//   - asyncRoleStrategy: the original promote/follow semi-sync behaviour.
+//   - groupRoleStrategy: ensure the local member is in the group; never
+//     self-promote.
 package rolereconciler
 
 import (
@@ -71,6 +77,10 @@ type LocalInstance interface {
 	// BootstrapGroup runs the exactly-once group-creation sequence on the
 	// designated bootstrap member.
 	BootstrapGroup(ctx context.Context) error
+
+	// SetAsPrimary invokes group_replication_set_as_primary on this member, used
+	// for the planned GR switchover command path in the instance manager.
+	SetAsPrimary(ctx context.Context, memberUUID string) error
 }
 
 const (
@@ -108,7 +118,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	if err := r.Get(ctx, r.ClusterKey, cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	r.primaryLeaseEnabled = cluster.Spec.EnablePrimaryLease == nil || *cluster.Spec.EnablePrimaryLease
 
 	me := r.InstanceName
 
@@ -145,6 +154,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// primary and the operator reflects it; the in-Pod side only ensures
 	// membership and never self-promotes or writes Cluster status. The async path
 	// below is unchanged.
+	r.primaryLeaseEnabled = cluster.IsPrimaryLeaseEnabled()
 	if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
 		return r.reconcileGroupRole(ctx, cluster, status)
 	}
@@ -163,6 +173,8 @@ func (r *Reconciler) reconcileAsyncRole(
 	log := logf.FromContext(ctx)
 	me := r.InstanceName
 
+	primaryLease := cluster.IsPrimaryLeaseEnabled()
+
 	target := cluster.Status.TargetPrimary
 	current := cluster.Status.CurrentPrimary
 	amPrimary := status.Role == webserver.RolePrimary
@@ -171,9 +183,11 @@ func (r *Reconciler) reconcileAsyncRole(
 	if target == me {
 		// Already a writable primary: just keep currentPrimary in step.
 		if amPrimary && !status.ReadOnly && !status.SuperReadOnly {
-			if err := r.acquireOrRenewLease(ctx); err != nil {
-				log.Error(err, "Could not secure primary lease; will retry", "instance", me)
-				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			if primaryLease {
+				if err := r.acquireOrRenewLease(ctx); err != nil {
+					log.Error(err, "Could not secure primary lease; will retry", "instance", me)
+					return ctrl.Result{RequeueAfter: waitRequeue}, nil
+				}
 			}
 			if current != me {
 				return ctrl.Result{RequeueAfter: steadyRequeue}, r.setCurrentPrimary(ctx, me)
@@ -187,9 +201,11 @@ func (r *Reconciler) reconcileAsyncRole(
 			log.Info("Waiting to catch up before promotion", "instance", me)
 			return ctrl.Result{RequeueAfter: waitRequeue}, nil
 		}
-		if err := r.acquireOrRenewLease(ctx); err != nil {
-			log.Error(err, "Could not secure primary lease; will retry", "instance", me)
-			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		if primaryLease {
+			if err := r.acquireOrRenewLease(ctx); err != nil {
+				log.Error(err, "Could not secure primary lease; will retry", "instance", me)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
 		}
 		// Promote: stop/reset any replication and clear read-only. Idempotent on a
 		// primary that merely booted read-only.
@@ -215,9 +231,7 @@ func (r *Reconciler) reconcileAsyncRole(
 	// to be superseded: stop accepting writes and wait.
 	if current == "" || current == me {
 		if amPrimary {
-			if err := r.releaseLease(ctx); err != nil {
-				log.Error(err, "Could not release primary lease during demotion", "instance", me)
-			}
+			_ = r.releaseLease(ctx)
 			if err := r.Local.Demote(ctx); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -230,9 +244,7 @@ func (r *Reconciler) reconcileAsyncRole(
 	if amPrimary {
 		// Former primary: demote then follow live. If live demotion fails, fall
 		// back to a restart so the Pod comes back clean as a replica.
-		if err := r.releaseLease(ctx); err != nil {
-			log.Error(err, "Could not release primary lease during demotion", "instance", me)
-		}
+		_ = r.releaseLease(ctx)
 		if err := r.Local.Demote(ctx); err != nil {
 			log.Error(err, "Live demotion failed; requesting shutdown to rejoin clean", "instance", me)
 			return ctrl.Result{}, r.Local.Shutdown(ctx)

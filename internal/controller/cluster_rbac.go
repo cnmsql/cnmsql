@@ -40,6 +40,8 @@ import (
 func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	name := cluster.Name + "-instance"
 
+	podNames := plan.instanceNames(cluster)
+
 	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
 		role.Labels = labelsFor(cluster, "", "")
@@ -61,6 +63,12 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 				Resources:     []string{"leases"},
 				Verbs:         []string{"get", "create", "update", "patch", "delete", "watch", "list"},
 				ResourceNames: []string{primaryLeaseName(cluster)},
+			},
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"pods"},
+				Verbs:         []string{"get", "patch"},
+				ResourceNames: podNames,
 			},
 		}
 		return controllerutil.SetControllerReference(cluster, role, r.Scheme)

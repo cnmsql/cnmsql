@@ -156,29 +156,9 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
-	// Under Group Replication the group elects the primary; aggregate every
-	// member's reported view into the operator's authoritative group status and
-	// mirror the elected PRIMARY into PrimaryName (and currentPrimary in
-	// patchStatus). Divergence/role inference is async-specific and does not apply
-	// to a group, so it is skipped; the shared readiness/phase computation below
-	// still runs.
-	if cluster.IsGroupReplication() {
-		grStatus, primary := observeGroupReplication(observed)
-		observed.GroupReplication = grStatus
-		if primary != "" {
-			observed.PrimaryName = primary
-		}
-	} else {
-		observed.DivergedInstances = detectDivergedReplicas(observed)
-		for _, name := range observed.DivergedInstances {
-			// A diverged replica may keep its threads running while silently
-			// diverging, so do not count it as a healthy ready instance.
-			if status, ok := observed.StatusByInstance[name]; ok && status.IsReady {
-				observed.ReadyInstances--
-			}
-		}
-		observed.ReplicationBrokenInstances = detectReplicationBroken(observed)
-	}
+	// Let the selected topology strategy compute topology-specific observations:
+	// async divergence/role inference, or Group Replication group view aggregation.
+	topologyFor(cluster).ObserveTopology(ctx, cluster, &observed)
 
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready

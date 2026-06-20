@@ -54,6 +54,9 @@ type InstanceController interface {
 	// SetSemiSyncWaitForReplicaCount adjusts the semi-sync source's required
 	// acknowledgement count at runtime (semi-sync self-healing).
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error
+	// SetAsPrimary invokes group_replication_set_as_primary for the given member
+	// UUID (Group Replication planned switchover).
+	SetAsPrimary(ctx context.Context, memberUUID string) error
 	// Restart restarts the managed mysqld process.
 	Restart(ctx context.Context) error
 	// RestartInPlace re-execs the instance manager in place, adopting the running
@@ -106,6 +109,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /demote", actionHandler(controller.Demote))
 	mux.HandleFunc("POST /replica/source", configureReplicaHandler(controller))
 	mux.HandleFunc("POST /semisync/wait", semiSyncWaitHandler(controller))
+	mux.HandleFunc("POST /group-replication/set-as-primary", setAsPrimaryHandler(controller))
 	mux.HandleFunc("POST /restart", actionHandler(controller.Restart))
 	mux.HandleFunc("POST /instance/manager/restart-inplace", actionHandler(controller.RestartInPlace))
 	mux.HandleFunc("POST /instance/manager/upgrade", upgradeManagerHandler(controller))
@@ -173,6 +177,11 @@ type SemiSyncWaitRequest struct {
 	Count int `json:"count"`
 }
 
+// SetAsPrimaryRequest is the JSON body accepted by POST /group-replication/set-as-primary.
+type SetAsPrimaryRequest struct {
+	MemberUUID string `json:"memberUUID"`
+}
+
 // ReloadRequest is the JSON body accepted by POST /reload. Parameters are the
 // user-supplied my.cnf [mysqld] settings the operator wants applied at runtime.
 type ReloadRequest struct {
@@ -214,6 +223,21 @@ func semiSyncWaitHandler(controller InstanceController) http.HandlerFunc {
 			return
 		}
 		if err := controller.SetSemiSyncWaitForReplicaCount(r.Context(), req.Count); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func setAsPrimaryHandler(controller InstanceController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req SetAsPrimaryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := controller.SetAsPrimary(r.Context(), req.MemberUUID); err != nil {
 			writeError(w, err)
 			return
 		}

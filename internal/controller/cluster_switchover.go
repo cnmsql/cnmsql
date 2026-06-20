@@ -27,96 +27,18 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
-// reconcileSwitchover drives a planned switchover requested by setting
-// status.targetPrimary to a replica. In the CNPG pull-model the operator only
-// validates the request and bounds it by spec.maxSwitchoverDelay; the actual
-// promotion/demotion is performed by the instances' in-Pod reconcilers (the
-// target promotes itself and sets currentPrimary, the old primary and other
-// replicas re-point themselves). It returns handled=true while the switchover is
-// in flight so the caller requeues and does not run steady-state status logic.
+// reconcileSwitchover delegates to the selected topology strategy. Async relies
+// on the in-Pod reconcilers; Group Replication invokes set_as_primary on the
+// group.
 func (r *ClusterReconciler) reconcileSwitchover(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	plan clusterPlan,
 	observed observedCluster,
 ) (bool, error) {
-	// Planned switchover under Group Replication uses the group's set_as_primary
-	// UDF, not the async stop/promote/demote dance. That path lands in a later
-	// phase (M-GR.4); for now the GR topology performs no switchover here.
-	if cluster.IsGroupReplication() {
-		return false, nil
-	}
-	target := cluster.Status.TargetPrimary
-	current := cluster.Status.CurrentPrimary
-	if target == "" || target == current {
-		return false, nil
-	}
-	if current == "" {
-		// Initial bootstrap has a target primary before any instance has promoted
-		// itself and recorded currentPrimary. Let normal observation surface the
-		// Pending/Provisioning phase while the target's in-Pod reconciler starts.
-		return false, nil
-	}
-
-	if err := validateSwitchoverTarget(observed, target); err != nil {
-		return true, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:          phaseBlocked,
-			PhaseReason:    err.Error(),
-			Ready:          false,
-			Progressing:    false,
-			Plan:           plan,
-			PrimaryName:    observed.PrimaryName,
-			InstanceNames:  observed.InstanceNames,
-			ReadyInstances: observed.ReadyInstances,
-			GTIDByInstance: observed.GTIDByInstance,
-		})
-	}
-
-	// Bound the switchover by spec.maxSwitchoverDelay (RTO): if the target's
-	// in-Pod reconciler has not promoted it (currentPrimary still != target)
-	// within the budget, abort and restore the original primary.
-	startedAt, err := r.ensureSwitchoverStarted(ctx, cluster)
-	if err != nil {
-		return false, err
-	}
-	maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second
-	if maxDelay > 0 && time.Since(startedAt) > maxDelay {
-		return r.abortSwitchover(ctx, cluster, current, target)
-	}
-
-	// Switchover in flight: the instances do the work. Surface the phase and wait
-	// for currentPrimary to flip to the target.
-	return true, r.patchStatus(ctx, cluster, observedCluster{
-		Phase:          phaseSwitchover,
-		PhaseReason:    fmt.Sprintf("Switching over to %s", target),
-		Ready:          false,
-		Progressing:    true,
-		Plan:           plan,
-		PrimaryName:    observed.PrimaryName,
-		InstanceNames:  observed.InstanceNames,
-		ReadyInstances: observed.ReadyInstances,
-		GTIDByInstance: observed.GTIDByInstance,
-	})
-}
-
-func validateSwitchoverTarget(observed observedCluster, target string) error {
-	status, ok := observed.StatusByInstance[target]
-	if !ok {
-		return fmt.Errorf("target primary %s is not reporting status", target)
-	}
-	if !status.IsReady {
-		return fmt.Errorf("target primary %s is not ready", target)
-	}
-	if status.Role != webserver.RoleReplica {
-		return fmt.Errorf("target primary %s has role %s, want replica", target, status.Role)
-	}
-	if status.Replication == nil || !status.Replication.IORunning || !status.Replication.SQLRunning {
-		return fmt.Errorf("target primary %s replication is not healthy", target)
-	}
-	return nil
+	return topologyFor(cluster).ReconcileSwitchover(ctx, r, cluster, plan, observed)
 }
 
 // ensureSwitchoverStarted stamps status.targetPrimaryTimestamp on the first
@@ -161,7 +83,7 @@ func (r *ClusterReconciler) abortSwitchover(ctx context.Context, cluster *mysqlv
 // reconcileRoleLabels keeps Pod role labels in step with the current primary so
 // the rw Service points only at it and ro/r point at the replicas. The current
 // primary is the authoritative value written by whichever instance promoted
-// itself; it falls back to the observed reporting primary before it is set.
+// itself; under GR it is mirrored from the group's elected PRIMARY.
 func (r *ClusterReconciler) reconcileRoleLabels(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) error {
 	primary := cluster.Status.CurrentPrimary
 	if primary == "" {

@@ -184,17 +184,6 @@ func mergeGroupReplicationStatus(cluster *mysqlv1alpha1.Cluster, observed observ
 	cluster.Status.GroupReplication = merged
 }
 
-// donorAvailable reports whether a new member may be provisioned now: a healthy
-// source exists to seed it. Async needs a healthy primary to clone; Group
-// Replication needs a quorate group with at least one ONLINE donor for
-// distributed recovery.
-func donorAvailable(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool {
-	if cluster.IsGroupReplication() {
-		return groupHasOnlineDonor(observed)
-	}
-	return primaryHealthy(observed)
-}
-
 // groupHasOnlineDonor reports whether the observed group has quorum and at least
 // one ONLINE member to recover a joining member from. Until the operator has
 // observed an ONLINE member (GroupReplication is nil before then) no donor is

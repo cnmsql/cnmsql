@@ -465,6 +465,12 @@ func (c *Controller) SetSemiSyncWaitForReplicaCount(ctx context.Context, count i
 	return c.repl.SetSemiSyncWaitForReplicaCount(ctx, count)
 }
 
+// SetAsPrimary performs a planned Group Replication switchover to the member with
+// the given server_uuid via group_replication_set_as_primary.
+func (c *Controller) SetAsPrimary(ctx context.Context, memberUUID string) error {
+	return c.gr.SetAsPrimary(ctx, memberUUID)
+}
+
 // Demote makes a primary read-only.
 func (c *Controller) Demote(ctx context.Context) error {
 	logf.FromContext(ctx).WithName("instance-controller").Info("Demoting instance", "instance", c.name)

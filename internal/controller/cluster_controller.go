@@ -155,6 +155,10 @@ type InstanceControlClient interface {
 
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error
 
+	// SetAsPrimary invokes group_replication_set_as_primary(memberUUID) on the
+	// named instance. It is only meaningful under Group Replication.
+	SetAsPrimary(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, memberUUID string) error
+
 	Reload(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req webserver.ReloadRequest) (*webserver.ReloadResponse, error)
 
 	// UpgradeInstanceManager streams a new instance-manager binary to the named
@@ -344,7 +348,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return upgradeResult, nil
 	}
 	// Keep rw/ro/r routing in step with the current primary (set by whichever
-	// instance promoted itself).
+	// instance promoted itself, or mirrored from the group under GR).
 	if err := r.reconcileRoleLabels(ctx, cluster, observed); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -381,8 +385,10 @@ func (r *ClusterReconciler) ensureInfrastructure(ctx context.Context, cluster *m
 	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err, true
 	}
-	if err := r.ensurePrimaryLease(ctx, cluster); err != nil {
-		return ctrl.Result{}, err, true
+	if topologyFor(cluster).NeedsPrimaryLease() {
+		if err := r.ensurePrimaryLease(ctx, cluster); err != nil {
+			return ctrl.Result{}, err, true
+		}
 	}
 	if ok, result, err := r.blockOnInvalidCertificate(ctx, cluster, plan); ok {
 		return result, err, true
@@ -483,12 +489,13 @@ func (r *ClusterReconciler) blockOnInvalidCertificate(ctx context.Context, clust
 	return false, ctrl.Result{}, nil
 }
 
-// reconcileAvailability runs best-effort availability adjustments that must
-// happen while the cluster is degraded, not only after it returns to Ready.
+// reconcileAvailability runs topology-specific best-effort availability
+// adjustments that must happen while the cluster is degraded, not only after
+// it returns to Ready.
 func (r *ClusterReconciler) reconcileAvailability(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) {
 	log := logf.FromContext(ctx)
-	if err := r.reconcileSemiSync(ctx, cluster, observed); err != nil {
-		log.Info("Semi-sync self-healing pass failed, will retry", "error", err.Error())
+	if err := topologyFor(cluster).ReconcileAvailability(ctx, r, cluster, observed); err != nil {
+		log.Info("Availability adjustment pass failed, will retry", "error", err.Error(), "topology", topologyFor(cluster).Name())
 	}
 }
 
