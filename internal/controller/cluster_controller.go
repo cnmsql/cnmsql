@@ -335,7 +335,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Guarded quorum recovery is opt-in via annotation. The operator computes
 	// the safe survivor set, re-arms bootstrap, and lets the designated member
 	// re-form the group. Only runs when quorum is provably lost.
-	if result, err, handled := r.handleQuorumRecovery(ctx, cluster); handled {
+	if result, err, handled := r.handleQuorumRecovery(ctx, cluster, observed); handled {
 		return result, err
 	}
 	// An unreachable primary takes precedence over a manual switchover: drive

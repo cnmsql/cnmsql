@@ -43,6 +43,6 @@ func (r *Reconciler) ScaleDownQuorumGuard(_ *mysqlv1alpha1.Cluster, _ string) *t
 
 // ComputeForceQuorumRecovery returns nil for async — quorum recovery is a GR
 // concept.
-func (r *Reconciler) ComputeForceQuorumRecovery(_ *mysqlv1alpha1.Cluster) *topology.ForceQuorumRecovery {
+func (r *Reconciler) ComputeForceQuorumRecovery(_ *mysqlv1alpha1.Cluster, _ map[string]string) *topology.ForceQuorumRecovery {
 	return nil
 }

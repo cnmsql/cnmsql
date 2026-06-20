@@ -734,9 +734,13 @@ tests. GR stays behind `mode: groupReplication` throughout.
   the **operator does not promote**.
 - **M-GR.6 — Fencing & quorum guards.** GR fence (`STOP GROUP_REPLICATION`),
   quorum-preserving PDB/scale-down/fence guards, quorum-loss detection + `Blocked`
-  surfacing, opt-in guarded recovery + total-outage re-bootstrap. E2E quorum-loss
-  and recovery.
+  surfacing, opt-in guarded recovery via `force_members` from the most-advanced
+  surviving member (GTID-dominance selection). E2E quorum-loss and recovery.
+  (Total-outage re-bootstrap — re-forming the group when no member survives
+  ONLINE — lands in M-GR.7 alongside the other lifecycle recovery paths.)
 - **M-GR.7 — Lifecycle integration.** Rolling + in-place upgrades, scale up/down,
+  total-outage re-bootstrap (re-form the same group from the most-advanced
+  member once the group has no ONLINE survivor),
   backup/restore into a fresh group, kubectl plugin GR commands + the
   documentation contract and safety affordances (structured `--help`/runbooks,
   consequence summaries, confirmations, command safety matrix), monitoring, docs.

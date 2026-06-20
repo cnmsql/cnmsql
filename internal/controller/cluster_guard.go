@@ -282,11 +282,14 @@ func (r *ClusterReconciler) checkFenceQuorumGuard(ctx context.Context, cluster *
 	return ""
 }
 
-// removeString returns a copy of ss without the first occurrence of s.
+// removeString returns a copy of ss without the first occurrence of s, leaving
+// the input slice (and its backing array) untouched.
 func removeString(ss []string, s string) []string {
 	for i, v := range ss {
 		if v == s {
-			return append(ss[:i], ss[i+1:]...)
+			out := make([]string, 0, len(ss)-1)
+			out = append(out, ss[:i]...)
+			return append(out, ss[i+1:]...)
 		}
 	}
 	return ss
@@ -302,6 +305,7 @@ func removeString(ss []string, s string) []string {
 func (r *ClusterReconciler) handleQuorumRecovery(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
+	observed observedCluster,
 ) (ctrl.Result, error, bool) {
 	if !cluster.IsGroupReplication() {
 		return ctrl.Result{}, nil, false
@@ -325,7 +329,7 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 		return ctrl.Result{}, nil, false
 	}
 
-	recovery := r.topologyReconciler(latestCluster).ComputeForceQuorumRecovery(latestCluster)
+	recovery := r.topologyReconciler(latestCluster).ComputeForceQuorumRecovery(latestCluster, observed.GTIDByInstance)
 	if recovery == nil {
 		logf.FromContext(ctx).Info("Cannot compute safe quorum recovery survivor; cluster stays Blocked")
 		r.Recorder.Event(latestCluster, corev1.EventTypeWarning, "QuorumRecoveryUnsafe",
@@ -364,7 +368,6 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 	if latestCluster.Status.GroupReplication != nil {
 		latestCluster.Status.GroupReplication.ObservedViewMax = 0
 		latestCluster.Status.GroupReplication.ObservedOnlineMax = 0
-		latestCluster.Status.GroupReplication.Bootstrapped = true
 	}
 	if err := r.Status().Patch(ctx, latestCluster, client.MergeFrom(statusBefore)); err != nil {
 		logf.FromContext(ctx).Error(err, "Could not reset ObservedViewMax after quorum recovery")

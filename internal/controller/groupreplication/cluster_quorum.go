@@ -24,6 +24,7 @@ import (
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	mysqlgr "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 )
 
 // quorum returns `floor(N/2) + 1` for N members, the minimum number of
@@ -104,11 +105,17 @@ func (r *Reconciler) ScaleDownQuorumGuard(cluster *mysqlv1alpha1.Cluster, instan
 	return nil
 }
 
-// ComputeForceQuorumRecovery selects the safe survivor set for a group that has
-// lost quorum. It picks the majority partition's most-advanced member by
-// GTID-position (the primary when one survives, otherwise the ONLINE member
-// with the highest GTID). When no safe survivor set can be proven it returns nil.
-func (r *Reconciler) ComputeForceQuorumRecovery(cluster *mysqlv1alpha1.Cluster) *topology.ForceQuorumRecovery {
+// ComputeForceQuorumRecovery selects the safe survivor for a group that has lost
+// quorum. It picks the majority partition's most-advanced member by GTID position
+// (a surviving PRIMARY is authoritative; otherwise the ONLINE member whose
+// gtid_executed is a superset of every other survivor's). When no survivor can be
+// proven most-advanced — incomparable or missing GTID sets — it returns nil so
+// the cluster stays Blocked rather than re-forming the group from a member that
+// might be behind.
+func (r *Reconciler) ComputeForceQuorumRecovery(
+	cluster *mysqlv1alpha1.Cluster,
+	gtidByInstance map[string]string,
+) *topology.ForceQuorumRecovery {
 	gr := cluster.Status.GroupReplication
 	if gr == nil {
 		return nil
@@ -122,18 +129,75 @@ func (r *Reconciler) ComputeForceQuorumRecovery(cluster *mysqlv1alpha1.Cluster) 
 			online = append(online, m)
 		}
 	}
-	if len(online) == 0 {
+	survivor, ok := selectQuorumSurvivor(online, gtidByInstance)
+	if !ok {
 		return nil
 	}
-	survivor := online[0]
-	for _, m := range online[1:] {
-		if m.Role == mysqlgr.MemberRolePrimary || (survivor.Role != mysqlgr.MemberRolePrimary && m.Instance > survivor.Instance) {
-			survivor = m
+	return &topology.ForceQuorumRecovery{
+		Action:   "force_members",
+		Survivor: survivor.Instance,
+		// force_members must match the survivor's group_replication_local_address
+		// exactly, which is the member's XCom FQDN (see memberAddress), not the
+		// bare Pod name.
+		ForceMembers: memberAddress(survivor.Instance, cluster.Namespace),
+	}
+}
+
+// selectQuorumSurvivor chooses the safe survivor among the ONLINE members of a
+// group that has lost quorum. A surviving PRIMARY is authoritative: in
+// single-primary GR it holds every committed transaction. A lone survivor is the
+// only option and is taken as-is. Otherwise the survivor must be provably
+// most-advanced — its gtid_executed a superset of every other survivor's; if no
+// member dominates all others (incomparable or missing GTID sets) recovery is
+// unsafe and ok is false.
+func selectQuorumSurvivor(
+	online []mysqlv1alpha1.GroupMember,
+	gtidByInstance map[string]string,
+) (mysqlv1alpha1.GroupMember, bool) {
+	if len(online) == 0 {
+		return mysqlv1alpha1.GroupMember{}, false
+	}
+	if len(online) == 1 {
+		return online[0], true
+	}
+	for _, m := range online {
+		if m.Role == mysqlgr.MemberRolePrimary {
+			return m, true
 		}
 	}
-	return &topology.ForceQuorumRecovery{
-		Action:       "force_members",
-		Survivor:     survivor.Instance,
-		ForceMembers: fmt.Sprintf("%s:%d", survivor.Instance, 33061),
+	for _, candidate := range online {
+		candidateGTID := gtidByInstance[candidate.Instance]
+		if candidateGTID == "" {
+			continue
+		}
+		if dominatesAll(candidate, candidateGTID, online, gtidByInstance) {
+			return candidate, true
+		}
 	}
+	return mysqlv1alpha1.GroupMember{}, false
+}
+
+// dominatesAll reports whether candidateGTID contains every other online
+// member's gtid_executed. An empty peer GTID is trivially contained; an
+// unparseable set or a peer the candidate does not contain disproves dominance.
+func dominatesAll(
+	candidate mysqlv1alpha1.GroupMember,
+	candidateGTID string,
+	online []mysqlv1alpha1.GroupMember,
+	gtidByInstance map[string]string,
+) bool {
+	for _, other := range online {
+		if other.Instance == candidate.Instance {
+			continue
+		}
+		otherGTID := gtidByInstance[other.Instance]
+		if otherGTID == "" {
+			continue
+		}
+		contained, err := replication.GTIDContains(candidateGTID, otherGTID)
+		if err != nil || !contained {
+			return false
+		}
+	}
+	return true
 }

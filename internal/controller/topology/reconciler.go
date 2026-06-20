@@ -160,8 +160,9 @@ type QuorumResult struct {
 	Quorum      int
 }
 
-// ForceQuorumRecovery describes a guided quorum-recovery action (force_members
-// or total-outage re-bootstrap), computed by the operator.
+// ForceQuorumRecovery describes a guided quorum-recovery action — currently a
+// force_members re-form from the most-advanced survivor — computed by the
+// operator. (Total-outage re-bootstrap is a later phase; see M-GR.7.)
 type ForceQuorumRecovery struct {
 	Action       string
 	Survivor     string
@@ -228,7 +229,8 @@ type Reconciler interface {
 	// (typically the highest-ordinal member) would drop below quorum.
 	ScaleDownQuorumGuard(cluster *mysqlv1alpha1.Cluster, instanceName string) *QuorumResult
 
-	// ComputeForceQuorumRecovery computes the safe survivor set for an opt-in
-	// quorum-recovery action. It returns nil when recovery is unprovably safe.
-	ComputeForceQuorumRecovery(cluster *mysqlv1alpha1.Cluster) *ForceQuorumRecovery
+	// ComputeForceQuorumRecovery computes the safe survivor for an opt-in
+	// quorum-recovery action, using each instance's gtid_executed to pick the
+	// most-advanced member. It returns nil when recovery is unprovably safe.
+	ComputeForceQuorumRecovery(cluster *mysqlv1alpha1.Cluster, gtidByInstance map[string]string) *ForceQuorumRecovery
 }
