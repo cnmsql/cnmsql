@@ -32,6 +32,7 @@ import (
 
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
@@ -58,12 +59,17 @@ type Controller struct {
 	name       string
 	conn       pool.Connection
 	repl       *replication.Manager
+	gr         *groupreplication.Manager
 	users      *user.Manager
 	version    version.Version
 	versionStr string
 	expected   webserver.Role
 	supervisor Supervisor
-	backup     *BackupConfig
+	// groupReplication enables the Group Replication code paths (status GR block,
+	// start/bootstrap). It stays false for async clusters so the async status path
+	// is untouched and never queries the GR tables.
+	groupReplication bool
+	backup           *BackupConfig
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus
@@ -107,6 +113,7 @@ func NewController(
 		name:         name,
 		conn:         conn,
 		repl:         replication.NewManager(conn, v),
+		gr:           groupreplication.NewManager(conn, v),
 		users:        user.NewManager(conn),
 		version:      v,
 		versionStr:   versionStr,
@@ -259,7 +266,100 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 		}
 	}
 
+	// Under Group Replication, report this member's view of the group. It is the
+	// signal the operator aggregates in observe() to set currentPrimary and the
+	// status.groupReplication block. Left nil for async clusters and best-effort
+	// (a transient read failure must not blank the rest of the status).
+	if c.groupReplication {
+		if gr := c.groupReplicationStatus(ctx); gr != nil {
+			status.GroupReplication = gr
+		}
+	}
+
 	return status, nil
+}
+
+// EnableGroupReplication turns on the Group Replication status and control paths.
+// The run loop calls it for GR-mode clusters; async clusters leave it off.
+func (c *Controller) EnableGroupReplication() {
+	c.groupReplication = true
+}
+
+// groupReplicationStatus reads this member's view of the group from
+// performance_schema.replication_group_members and shapes it into the webserver
+// status. It returns nil when the member is not yet configured in a group (no
+// rows), so a GR member that has not joined reports a nil block exactly like an
+// async instance.
+func (c *Controller) groupReplicationStatus(ctx context.Context) *webserver.GroupReplicationMemberStatus {
+	view, err := c.gr.ReadGroupView(ctx)
+	if err != nil || !view.Configured {
+		return nil
+	}
+
+	gr := &webserver.GroupReplicationMemberStatus{
+		Members: make([]webserver.GroupReplicationMember, 0, len(view.Members)),
+	}
+	if serverUUID, err := c.serverUUID(ctx); err == nil {
+		gr.MemberID = serverUUID
+	}
+	for _, m := range view.Members {
+		gr.Members = append(gr.Members, webserver.GroupReplicationMember{
+			MemberID: m.MemberID,
+			Host:     m.Host,
+			Port:     m.Port,
+			State:    m.State,
+			Role:     m.Role,
+		})
+		if m.MemberID == gr.MemberID {
+			gr.State = m.State
+			gr.Role = m.Role
+		}
+		if m.Role == groupreplication.MemberRolePrimary {
+			gr.PrimaryMemberID = m.MemberID
+		}
+	}
+	if name, err := c.groupName(ctx); err == nil {
+		gr.GroupName = name
+	}
+	return gr
+}
+
+// serverUUID reads this member's @@server_uuid, the key the group uses to
+// identify it in replication_group_members.
+func (c *Controller) serverUUID(ctx context.Context) (string, error) {
+	var uuid string
+	if err := c.conn.QueryRowContext(ctx, "SELECT @@global.server_uuid").Scan(&uuid); err != nil {
+		return "", err
+	}
+	return uuid, nil
+}
+
+// groupName reads the active group_replication_group_name as this member sees it.
+func (c *Controller) groupName(ctx context.Context) (string, error) {
+	var name string
+	if err := c.conn.QueryRowContext(ctx, "SELECT @@global.group_replication_group_name").Scan(&name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// GroupView reads the local member's view of the group. It backs the in-Pod GR
+// role strategy's steady-state check.
+func (c *Controller) GroupView(ctx context.Context) (groupreplication.GroupView, error) {
+	return c.gr.ReadGroupView(ctx)
+}
+
+// StartGroupReplication joins an existing group via distributed recovery. It
+// never bootstraps; the bootstrap member uses BootstrapGroup instead.
+func (c *Controller) StartGroupReplication(ctx context.Context) error {
+	return c.gr.Start(ctx)
+}
+
+// BootstrapGroup runs the exactly-once group-creation sequence. The caller must
+// gate it on being the designated bootstrap member with the group not yet
+// bootstrapped (status.groupReplication.bootstrapped == false).
+func (c *Controller) BootstrapGroup(ctx context.Context) error {
+	return c.gr.Bootstrap(ctx)
 }
 
 // Promote transitions a replica to primary.

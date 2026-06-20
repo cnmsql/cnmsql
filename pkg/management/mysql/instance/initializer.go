@@ -27,6 +27,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 )
@@ -107,6 +108,14 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	log.Info("Created data directory")
 
 	if err := opts.runInitialize(ctx); err != nil {
+		// A failed --initialize leaves a half-written data directory (auto.cnf,
+		// the mysql/ system-schema dir, tablespaces). IsInitialized only checks
+		// for the mysql/ dir, so leaving the partial state behind would make the
+		// next attempt skip initialization and start mysqld against a corrupt
+		// directory. Wipe it so a retry starts from a clean slate.
+		if cleanErr := purgeDataDir(opts.DataDir); cleanErr != nil {
+			log.Error(cleanErr, "Failed to clean partial data directory after a failed initialize")
+		}
 		return err
 	}
 
@@ -114,6 +123,21 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 		return err
 	}
 	log.Info("Completed data directory initialization")
+	return nil
+}
+
+// purgeDataDir empties a data directory in place (keeping the directory itself,
+// which may be a mount point) so a failed initialization can be retried cleanly.
+func purgeDataDir(dataDir string) error {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return fmt.Errorf("reading data dir: %w", err)
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dataDir, entry.Name())); err != nil {
+			return fmt.Errorf("removing %s: %w", entry.Name(), err)
+		}
+	}
 	return nil
 }
 
@@ -127,13 +151,47 @@ func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysqld initialize", "binary", o.MysqldPath)
 	args := []string{}
 	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
+		// --initialize ignores plugin_load_add, so group_replication.so is never
+		// loaded and the group_replication_* settings become unknown variables
+		// that abort initialization. Feed mysqld a copy of the config with the GR
+		// block stripped out (it is meaningless during --initialize anyway).
+		initConfig, err := o.writeInitConfig()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.Remove(initConfig) }()
+		args = append(args, "--defaults-file="+initConfig)
 	}
 	args = append(args,
 		"--initialize-insecure",
 		"--datadir="+o.DataDir,
 	)
 	return runStdio(ctx, o.MysqldPath, args, "mysqld --initialize-insecure")
+}
+
+// writeInitConfig writes a temporary copy of the runtime config with the Group
+// Replication block stripped, suitable for `mysqld --initialize`, and returns
+// its path. The caller is responsible for removing it.
+func (o *InitOptions) writeInitConfig() (string, error) {
+	content, err := os.ReadFile(o.ConfigFile)
+	if err != nil {
+		return "", fmt.Errorf("reading config file: %w", err)
+	}
+	stripped := config.StripGroupReplication(string(content))
+	f, err := os.CreateTemp("", "mysqld-init-*.cnf")
+	if err != nil {
+		return "", fmt.Errorf("creating init config: %w", err)
+	}
+	if _, err := f.WriteString(stripped); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("writing init config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("closing init config: %w", err)
+	}
+	return f.Name(), nil
 }
 
 func runStdio(ctx context.Context, binary string, args []string, what string) error {

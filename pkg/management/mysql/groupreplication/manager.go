@@ -136,6 +136,15 @@ func (m *Manager) ReadGroupView(ctx context.Context) (GroupView, error) {
 		if err := rows.Scan(&member.MemberID, &host, &port, &member.State, &member.Role); err != nil {
 			return GroupView{}, fmt.Errorf("scanning replication_group_members row: %w", err)
 		}
+		// When the plugin is loaded but GR has not been started (start_on_boot=OFF
+		// before the operator bootstraps or joins), the table holds a single
+		// placeholder row for the local server with an empty member_id and an
+		// OFFLINE state. It is not a real group member: counting it would make the
+		// view falsely Configured (stalling bootstrap) and skew quorum math, so
+		// skip it. A started member always reports its own server_uuid here.
+		if member.MemberID == "" {
+			continue
+		}
 		member.Host = host.String
 		member.Port = int(port.Int64)
 		view.Members = append(view.Members, member)

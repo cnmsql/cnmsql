@@ -40,7 +40,7 @@ func archivingCluster() *mysqlv1alpha1.Cluster {
 
 func TestArchivingDisabledByDefault(t *testing.T) {
 	cluster := baseCluster()
-	if archivingEnabled(cluster) {
+	if cluster.IsArchivingEnabled() {
 		t.Fatal("archiving should be off by default")
 	}
 	args := runArgs(cluster, testPlan(), instancePlan{})
@@ -53,7 +53,7 @@ func TestArchivingDisabledByDefault(t *testing.T) {
 
 func TestArchivingRunArgsAndEnv(t *testing.T) {
 	cluster := archivingCluster()
-	if !archivingEnabled(cluster) {
+	if !cluster.IsArchivingEnabled() {
 		t.Fatal("archiving should be enabled")
 	}
 

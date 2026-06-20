@@ -177,7 +177,7 @@ func (r *ClusterReconciler) reconcileFencing(ctx context.Context, cluster *mysql
 	}
 	// Only pull members out of routing for an already-established cluster; during
 	// initial provisioning a not-yet-reachable replica is expected, not degraded.
-	deRouteEligible := clusterEstablished(cluster)
+	deRouteEligible := cluster.IsEstablished()
 	now := time.Now().Truncate(time.Second)
 
 	for _, name := range observed.InstanceNames {

@@ -69,6 +69,11 @@ type RunOptions struct {
 	ClusterName    string
 	Namespace      string
 	SourceTemplate replication.SourceOptions
+	// GroupReplication enables the MySQL Group Replication code paths in this Pod:
+	// the controller reports the GR status block and the in-Pod role reconciler
+	// uses the group role strategy instead of async promote/follow. Off for async
+	// clusters.
+	GroupReplication bool
 	// Control describes the privileged control connection used for monitoring.
 	Control pool.ControlParams
 	// WebserverAddr is the listen address for the control API.
@@ -325,6 +330,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		return err
+	}
+	if opts.GroupReplication {
+		controller.EnableGroupReplication()
 	}
 	// Skip destructive (re)configuration when adopting: mysqld is already running,
 	// configured, and serving its role. Semi-sync plugins are already installed and

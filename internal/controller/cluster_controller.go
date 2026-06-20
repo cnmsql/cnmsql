@@ -263,6 +263,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	// Under Group Replication, pin the group name into status before any instance
+	// config is rendered; every member must render the same immutable name. This is
+	// a no-op for async clusters and once the name is already pinned.
+	if err, handled := r.reconcileGroupName(ctx, cluster); handled {
+		return ctrl.Result{}, err
+	}
+
 	if result, err, handled := r.ensureInfrastructure(ctx, cluster, plan); handled {
 		return result, err
 	}

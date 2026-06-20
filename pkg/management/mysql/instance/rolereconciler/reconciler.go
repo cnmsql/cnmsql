@@ -34,6 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -57,6 +58,15 @@ type LocalInstance interface {
 	// Unfence restarts mysqld after a fence is cleared. It is a no-op when the
 	// instance is not fenced.
 	Unfence(ctx context.Context) error
+
+	// GroupView reports the local member's view of the Group Replication group.
+	// Used only by the group role strategy.
+	GroupView(ctx context.Context) (groupreplication.GroupView, error)
+	// StartGroupReplication joins an existing group (no bootstrap).
+	StartGroupReplication(ctx context.Context) error
+	// BootstrapGroup runs the exactly-once group-creation sequence on the
+	// designated bootstrap member.
+	BootstrapGroup(ctx context.Context) error
 }
 
 const (
@@ -126,6 +136,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		// mysqld not reachable yet; try again shortly.
 		return ctrl.Result{RequeueAfter: waitRequeue}, nil //nolint:nilerr // transient, retried
 	}
+
+	// Topology strategy split: under Group Replication the group elects the
+	// primary and the operator reflects it; the in-Pod side only ensures
+	// membership and never self-promotes or writes Cluster status. The async path
+	// below is unchanged.
+	if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
+		return r.reconcileGroupRole(ctx, cluster, status)
+	}
+	return r.reconcileAsyncRole(ctx, cluster, status)
+}
+
+// reconcileAsyncRole is the asynchronous topology role strategy: the CNPG
+// pull-model where an instance promotes itself when it is the target and follows
+// the current primary otherwise. Its behaviour is unchanged from before the
+// topology split.
+func (r *Reconciler) reconcileAsyncRole(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	status *webserver.Status,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	me := r.InstanceName
 
 	target := cluster.Status.TargetPrimary
 	current := cluster.Status.CurrentPrimary

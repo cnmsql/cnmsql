@@ -275,16 +275,22 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
 		"--source-ssl-key=" + serverTLSPath + "/tls.key",
 	}
+	if cluster.IsGroupReplication() {
+		// Run the member under the Group Replication strategy: the in-Pod role
+		// reconciler ensures membership instead of async promote/follow, and the
+		// status reports the group view.
+		args = append(args, "--group-replication")
+	}
 	if monitoringTLSEnabled(cluster) {
 		// Serve metrics over the same mutual TLS as the control API: the pod
 		// already mounts server-tls and client-ca, so no extra key material is
 		// needed. Prometheus authenticates with the operator's client cert.
 		args = append(args, "--metrics-tls")
 	}
-	if archivingEnabled(cluster) {
+	if cluster.IsArchivingEnabled() {
 		args = append(args,
 			"--continuous-archiving",
-			fmt.Sprintf("--archive-rpo-seconds=%d", archiveRPOSeconds(cluster)),
+			fmt.Sprintf("--archive-rpo-seconds=%d", cluster.ArchiveRPOSeconds()),
 		)
 	}
 	if cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled {
@@ -340,7 +346,7 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 		secretEnv("MYSQL_CONTROL_PASSWORD", plan.ControlSecretName),
 		secretEnv("MYSQL_BACKUP_PASSWORD", plan.BackupSecretName),
 	}
-	if cluster != nil && archivingEnabled(cluster) {
+	if cluster != nil && cluster.IsArchivingEnabled() {
 		store := *cluster.Spec.Backup.ObjectStore
 		env = append(env, backupObjectStoreEnv(store)...)
 		env = append(env,

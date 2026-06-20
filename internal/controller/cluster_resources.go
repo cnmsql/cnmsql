@@ -147,7 +147,7 @@ func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instance
 	if !inst.IsPrimary {
 		role = mysqlconfig.RoleReplica
 	}
-	return (&mysqlconfig.ServerConfig{
+	cfg := &mysqlconfig.ServerConfig{
 		ServerID:     inst.ServerID,
 		Version:      plan.ServerVersion,
 		Role:         role,
@@ -169,7 +169,17 @@ func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instance
 		UserParameters: cluster.Spec.MySQL.Parameters,
 		SemiSync:       semiSync,
 		Archiving:      archivingConfig(cluster),
-	}).Render()
+	}
+	// Under Group Replication, render the group_replication_* block instead of
+	// the async/semi-sync settings. The group name must already be pinned in
+	// status; the GR topology path requeues until it is, so config is never
+	// rendered with an empty group name.
+	if gr, ok := groupReplicationConfig(cluster, plan, inst); ok {
+		cfg.TopologyMode = mysqlconfig.TopologyGroupReplication
+		cfg.GroupReplication = gr
+		cfg.SemiSync = mysqlconfig.SemiSync{}
+	}
+	return cfg.Render()
 }
 
 func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
@@ -177,7 +187,7 @@ func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
 	if count <= 0 {
 		return 0
 	}
-	if semiSyncDurabilityPreferred(cluster) {
+	if cluster.SemiSyncDurabilityPreferred() {
 		return 1
 	}
 	return count
@@ -187,7 +197,7 @@ func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
 // binlog archiving, applying defaults when the API server has not (e.g. in unit
 // tests building the spec directly).
 func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
-	ca := continuousArchiving(cluster)
+	ca := cluster.ContinuousArchiving()
 	if ca == nil || !ca.Enabled {
 		return mysqlconfig.Archiving{}
 	}
@@ -206,33 +216,6 @@ func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
 		MaxBinlogSizeMB:     maxSize,
 		BinlogExpireSeconds: expire,
 	}
-}
-
-// continuousArchiving returns the cluster's continuous-archiving configuration,
-// or nil when it is not configured.
-func continuousArchiving(cluster *mysqlv1alpha1.Cluster) *mysqlv1alpha1.ContinuousArchivingConfiguration {
-	if cluster.Spec.Backup == nil {
-		return nil
-	}
-	return cluster.Spec.Backup.ContinuousArchiving
-}
-
-// archivingEnabled reports whether continuous binlog archiving is turned on and
-// has a destination object store to ship to.
-func archivingEnabled(cluster *mysqlv1alpha1.Cluster) bool {
-	ca := continuousArchiving(cluster)
-	return ca != nil && ca.Enabled &&
-		cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil
-}
-
-// archiveRPOSeconds returns the configured RPO bound in seconds, defaulting to
-// 300 (5 minutes).
-func archiveRPOSeconds(cluster *mysqlv1alpha1.Cluster) int {
-	ca := continuousArchiving(cluster)
-	if ca == nil || ca.TargetRPOSeconds <= 0 {
-		return 300
-	}
-	return int(ca.TargetRPOSeconds)
 }
 
 func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {

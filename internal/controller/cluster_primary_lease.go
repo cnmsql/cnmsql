@@ -35,12 +35,12 @@ func primaryLeaseName(cluster *mysqlv1alpha1.Cluster) string {
 	return cluster.Name + "-primary"
 }
 
-func primaryLeaseEnabled(cluster *mysqlv1alpha1.Cluster) bool {
-	return cluster.Spec.EnablePrimaryLease == nil || *cluster.Spec.EnablePrimaryLease
-}
-
 func (r *ClusterReconciler) ensurePrimaryLease(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
-	if !primaryLeaseEnabled(cluster) {
+	// The primary lease is the async split-brain guard (the in-Pod async strategy
+	// anchors writes on it). Group Replication provides quorum-based split-brain
+	// safety itself, and its in-Pod strategy never touches the lease, so it is
+	// unused under GR.
+	if cluster.IsGroupReplication() || !cluster.IsPrimaryLeaseEnabled() {
 		return nil
 	}
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
@@ -60,7 +60,7 @@ func (r *ClusterReconciler) isPrimaryLeaseHeld(
 	cluster *mysqlv1alpha1.Cluster,
 	holder string,
 ) (bool, error) {
-	if !primaryLeaseEnabled(cluster) {
+	if !cluster.IsPrimaryLeaseEnabled() {
 		return false, nil
 	}
 	lease := &coordinationv1.Lease{}

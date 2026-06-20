@@ -259,6 +259,35 @@ func isGroupReplicationManagedKey(normalized string) bool {
 	return strings.HasPrefix(normalized, groupReplicationKeyPrefix) || normalized == "plugin_load_add"
 }
 
+// StripGroupReplication removes every operator-owned Group Replication line
+// (the group_replication_* namespace and plugin_load_add) from a rendered
+// my.cnf, leaving comments, the section header and all other settings intact.
+//
+// It exists for `mysqld --initialize`: that mode deliberately ignores
+// plugin_load_add (see MySQL warning MY-013501), so group_replication.so is
+// never loaded and every group_replication_* setting becomes an "unknown
+// variable" that aborts initialization after the data directory has been
+// partially written. The GR block is meaningless during --initialize anyway, so
+// the initializer feeds mysqld a stripped copy of the runtime config.
+func StripGroupReplication(content string) string {
+	lines := strings.Split(content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "[") {
+			key := trimmed
+			if before, _, ok := strings.Cut(trimmed, "="); ok {
+				key = before
+			}
+			if isGroupReplicationManagedKey(normalizeKey(key)) {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // IsManagedKey reports whether the given my.cnf key is owned by the operator.
 func IsManagedKey(key string) bool {
 	k := normalizeKey(key)

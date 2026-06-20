@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 )
@@ -243,6 +245,64 @@ func (cluster *Cluster) groupName() string {
 		return ""
 	}
 	return cluster.Spec.Replication.GroupReplication.GroupName
+}
+
+// IsGroupReplication reports whether the cluster runs MySQL Group Replication.
+func (cluster *Cluster) IsGroupReplication() bool {
+	return cluster.ReplicationMode() == ReplicationModeGroupReplication
+}
+
+// PinnedGroupName returns the group_replication_group_name pinned in status, or
+// the empty string when it has not been pinned yet.
+func (cluster *Cluster) PinnedGroupName() string {
+	if cluster.Status.GroupReplication == nil {
+		return ""
+	}
+	return cluster.Status.GroupReplication.GroupName
+}
+
+// DesiredGroupName is the Group Replication group name to pin: the user-pinned
+// spec.replication.groupReplication.groupName when set, otherwise a freshly
+// generated UUID.
+func (cluster *Cluster) DesiredGroupName() string {
+	name := cluster.groupName()
+	if name != "" {
+		return name
+	}
+	return uuid.NewString()
+}
+
+// ResolvedGroupReplicationTunables resolves the spec Group Replication tunables
+// with their defaults applied, so rendering is correct even when the optional
+// spec.replication.groupReplication block (or a field) is omitted.
+type ResolvedGroupReplicationTunables struct {
+	Consistency     string
+	ExitStateAction string
+	AutoRejoinTries int
+}
+
+// ResolvedGroupReplicationTunables returns the Group Replication tunable values
+// with defaults applied.
+func (cluster *Cluster) ResolvedGroupReplicationTunables() ResolvedGroupReplicationTunables {
+	t := ResolvedGroupReplicationTunables{
+		Consistency:     "BEFORE_ON_PRIMARY_FAILOVER",
+		ExitStateAction: "READ_ONLY",
+		AutoRejoinTries: 3,
+	}
+	if cluster.Spec.Replication == nil || cluster.Spec.Replication.GroupReplication == nil {
+		return t
+	}
+	cfg := cluster.Spec.Replication.GroupReplication
+	if cfg.Consistency != "" {
+		t.Consistency = cfg.Consistency
+	}
+	if cfg.ExitStateAction != "" {
+		t.ExitStateAction = cfg.ExitStateAction
+	}
+	if cfg.AutoRejoinTries != nil {
+		t.AutoRejoinTries = int(*cfg.AutoRejoinTries)
+	}
+	return t
 }
 
 // groupNameRe matches a MySQL group_replication_group_name: a canonical UUID.
@@ -585,4 +645,61 @@ func (cluster *Cluster) GetSmartShutdownTimeout() int32 {
 		return *cluster.Spec.SmartShutdownTimeout
 	}
 	return int32(DefaultSmartShutdownTimeout)
+}
+
+// IsPrimaryLeaseEnabled reports whether the primary Lease fencing layer is
+// active, resolving the default (enabled).
+func (cluster *Cluster) IsPrimaryLeaseEnabled() bool {
+	return cluster.Spec.EnablePrimaryLease == nil || *cluster.Spec.EnablePrimaryLease
+}
+
+// IsEstablished reports whether the cluster has completed initial provisioning
+// at least once. It is anchored on status.EstablishedAt (set the first time the
+// cluster reaches Ready) rather than on phase, so a cluster that was once
+// operational stays established even when an intermediate reconcile re-stamps
+// its phase back to Provisioning.
+func (cluster *Cluster) IsEstablished() bool {
+	return cluster.Status.EstablishedAt != nil
+}
+
+// SemiSyncDurabilityPreferred reports whether semi-synchronous data durability
+// is "preferred" (the default when unset), under which the operator self-heals
+// the acknowledgement count instead of letting writes block.
+func (cluster *Cluster) SemiSyncDurabilityPreferred() bool {
+	if cluster.Spec.MySQL.SemiSync == nil {
+		return true
+	}
+	return cluster.Spec.MySQL.SemiSync.DataDurability != DataDurabilityRequired
+}
+
+// IsSemiSyncEnabled reports whether semi-synchronous replication is configured.
+func (cluster *Cluster) IsSemiSyncEnabled() bool {
+	return cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled
+}
+
+// ContinuousArchiving returns the cluster's continuous-archiving configuration,
+// or nil when it is not configured.
+func (cluster *Cluster) ContinuousArchiving() *ContinuousArchivingConfiguration {
+	if cluster.Spec.Backup == nil {
+		return nil
+	}
+	return cluster.Spec.Backup.ContinuousArchiving
+}
+
+// IsArchivingEnabled reports whether continuous binlog archiving is turned on
+// and has a destination object store to ship to.
+func (cluster *Cluster) IsArchivingEnabled() bool {
+	ca := cluster.ContinuousArchiving()
+	return ca != nil && ca.Enabled &&
+		cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil
+}
+
+// ArchiveRPOSeconds returns the configured RPO bound in seconds, defaulting to
+// 300 (5 minutes).
+func (cluster *Cluster) ArchiveRPOSeconds() int {
+	ca := cluster.ContinuousArchiving()
+	if ca == nil || ca.TargetRPOSeconds <= 0 {
+		return 300
+	}
+	return int(ca.TargetRPOSeconds)
 }
