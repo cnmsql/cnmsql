@@ -34,6 +34,7 @@ import (
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
@@ -156,7 +157,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
-	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed))
+	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster.Status.GroupReplication))
 	if topologyObservation.PrimaryAuthoritative {
 		observed.PrimaryName = topologyObservation.PrimaryName
 	}
@@ -173,39 +174,47 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
-	switch {
-	case len(observed.DivergedInstances) > 0:
-		observed.Phase = phaseDegraded
-		observed.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
-			observed.PrimaryName, strings.Join(observed.DivergedInstances, ", "))
-	case observed.Ready:
-		observed.Phase = phaseReady
-		observed.PhaseReason = "All instances are ready"
-	case len(observed.FailedInstances) > 0 || len(observed.ReplicationBrokenInstances) > 0:
-		// Positive evidence of a problem, not setup still in progress: a Pod that
-		// cannot even start (crashlooping or Failed), or a replica whose replication
-		// has aborted with an error (e.g. a duplicate-key conflict that stops the SQL
-		// thread). Surface it as Degraded regardless of whether the cluster ever
-		// finished provisioning, so a cluster that wedges during initial bring-up
-		// does not sit silently in "Provisioning" forever.
-		observed.Phase = phaseDegraded
-		observed.PhaseReason = degradedReason(observed, plan)
-	case cluster.IsEstablished():
-		// The cluster has already completed initial provisioning (it reached a
-		// Ready/operational phase before) but is no longer fully ready. A drop
-		// below full readiness, whether some instances are missing or every one
-		// is gone, is a degradation, not setup, so surface it as Degraded and
-		// name the lagging instances so an operator can see what is wrong (e.g. a
-		// partitioned or crashed node) instead of it silently sitting in
-		// "Provisioning" or "Pending".
-		observed.Phase = phaseDegraded
-		observed.PhaseReason = degradedReason(observed, plan)
-	case observed.ReadyInstances == 0:
-		observed.Phase = phasePending
-		observed.PhaseReason = "Waiting for the primary instance"
-	default:
-		observed.Phase = phaseProvisioning
-		observed.PhaseReason = fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
+
+	if isQuorumLost(cluster, observed) {
+		observed.Phase = phaseBlocked
+		observed.PhaseReason = "group has lost quorum; manual recovery required"
+		observed.Ready = false
+		observed.Progressing = false
+	} else {
+		switch {
+		case len(observed.DivergedInstances) > 0:
+			observed.Phase = phaseDegraded
+			observed.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
+				observed.PrimaryName, strings.Join(observed.DivergedInstances, ", "))
+		case observed.Ready:
+			observed.Phase = phaseReady
+			observed.PhaseReason = "All instances are ready"
+		case len(observed.FailedInstances) > 0 || len(observed.ReplicationBrokenInstances) > 0:
+			// Positive evidence of a problem, not setup still in progress: a Pod that
+			// cannot even start (crashlooping or Failed), or a replica whose replication
+			// has aborted with an error (e.g. a duplicate-key conflict that stops the SQL
+			// thread). Surface it as Degraded regardless of whether the cluster ever
+			// finished provisioning, so a cluster that wedges during initial bring-up
+			// does not sit silently in "Provisioning" forever.
+			observed.Phase = phaseDegraded
+			observed.PhaseReason = degradedReason(observed, plan)
+		case cluster.IsEstablished():
+			// The cluster has already completed initial provisioning (it reached a
+			// Ready/operational phase before) but is no longer fully ready. A drop
+			// below full readiness, whether some instances are missing or every one
+			// is gone, is a degradation, not setup, so surface it as Degraded and
+			// name the lagging instances so an operator can see what is wrong (e.g. a
+			// partitioned or crashed node) instead of it silently sitting in
+			// "Provisioning" or "Pending".
+			observed.Phase = phaseDegraded
+			observed.PhaseReason = degradedReason(observed, plan)
+		case observed.ReadyInstances == 0:
+			observed.Phase = phasePending
+			observed.PhaseReason = "Waiting for the primary instance"
+		default:
+			observed.Phase = phaseProvisioning
+			observed.PhaseReason = fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
+		}
 	}
 	return observed, nil
 }
@@ -445,6 +454,13 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
+	if observed.Phase == phaseBlocked && latest.IsGroupReplication() &&
+		latest.Status.GroupReplication != nil && !latest.Status.GroupReplication.HasQuorum {
+		if r.Recorder != nil {
+			r.Recorder.Event(latest, corev1.EventTypeWarning, "QuorumLost",
+				"Group has lost quorum; manual recovery required")
+		}
+	}
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
@@ -542,4 +558,39 @@ func conditionStatus(ok bool) metav1.ConditionStatus {
 		return metav1.ConditionTrue
 	}
 	return metav1.ConditionFalse
+}
+
+// isQuorumLost reports whether a Group Replication cluster has lost quorum:
+// the group was previously bootstrapped but the operator's view (online members
+// vs the sticky ObservedViewMax — the largest view ever seen) shows fewer than
+// a majority of the observed-max members ONLINE.
+func isQuorumLost(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool {
+	if !cluster.IsGroupReplication() {
+		return false
+	}
+	gr := cluster.Status.GroupReplication
+	if gr == nil || !gr.Bootstrapped {
+		return false
+	}
+	if observed.GroupReplication == nil {
+		// No member reports a group view. Treat as quorum-lost only when the
+		// group was previously observed at its full configured size — not during
+		// initial bootstrap or scale-up where observation is still converging.
+		return gr.ObservedViewMax >= cluster.Spec.Instances
+	}
+	// Use the sticky ObservedViewMax as the quorum denominator so that a
+	// shrunken group (members expelled) is flagged as quorum-lost, while a
+	// bootstrapping group that hasn't yet reached its full size uses the
+	// actual view size. MergeStatus applies the same logic when persisting.
+	denominator := gr.ObservedViewMax
+	if denominator <= 0 {
+		denominator = len(observed.GroupReplication.Members)
+	}
+	online := 0
+	for _, m := range observed.GroupReplication.Members {
+		if m.State == groupreplication.MemberStateOnline {
+			online++
+		}
+	}
+	return online*2 <= denominator
 }

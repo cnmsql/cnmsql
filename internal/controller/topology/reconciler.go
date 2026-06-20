@@ -23,6 +23,7 @@ import (
 	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
@@ -109,10 +110,12 @@ type FailoverResult struct {
 // ObservationInput contains the instance-manager reports used to derive
 // topology-specific cluster health.
 type ObservationInput struct {
-	PrimaryName      string
-	InstanceNames    []string
-	StatusByInstance map[string]*webserver.Status
-	GTIDByInstance   map[string]string
+	PrimaryName       string
+	InstanceNames     []string
+	StatusByInstance  map[string]*webserver.Status
+	GTIDByInstance    map[string]string
+	ConfiguredMembers int
+	ObservedViewMax   int
 }
 
 // Observation is the topology-specific portion of the operator's observed
@@ -147,6 +150,22 @@ type SemiSyncControl interface {
 		instanceName string,
 		count int,
 	) error
+}
+
+// QuorumResult reports whether a quorum-sensitive action is blocked.
+type QuorumResult struct {
+	Blocked     bool
+	Reason      string
+	CurrentSize int
+	Quorum      int
+}
+
+// ForceQuorumRecovery describes a guided quorum-recovery action (force_members
+// or total-outage re-bootstrap), computed by the operator.
+type ForceQuorumRecovery struct {
+	Action       string
+	Survivor     string
+	ForceMembers string
 }
 
 // Reconciler owns behavior that differs between replication topologies. The
@@ -193,4 +212,23 @@ type Reconciler interface {
 	Observe(input ObservationInput) Observation
 	MergeStatus(cluster *mysqlv1alpha1.Cluster, observed Observation)
 	ObservedFailover(before, after *mysqlv1alpha1.Cluster) (string, string, bool)
+
+	// FenceQuorumGuard returns a blocking reason if fencing any of the named
+	// instances would drop the group below quorum (GR mode), or nil (always
+	// allowed, async). The fenceSet is the full set of instances whose fencing
+	// annotation is already set, so the guard can subtract all pending leaves
+	// from the online count, not just the one being checked.
+	FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, fenceSet []string) *QuorumResult
+
+	// PDBMaxUnavailable returns the maxUnavailable count for topology-specific
+	// PDBs. For GR this is N - quorum; for async it carries the current split.
+	PDBMaxUnavailable(cluster *mysqlv1alpha1.Cluster) (primary, replica intstr.IntOrString)
+
+	// ScaleDownQuorumGuard returns a blocking reason if removing instanceName
+	// (typically the highest-ordinal member) would drop below quorum.
+	ScaleDownQuorumGuard(cluster *mysqlv1alpha1.Cluster, instanceName string) *QuorumResult
+
+	// ComputeForceQuorumRecovery computes the safe survivor set for an opt-in
+	// quorum-recovery action. It returns nil when recovery is unprovably safe.
+	ComputeForceQuorumRecovery(cluster *mysqlv1alpha1.Cluster) *ForceQuorumRecovery
 }

@@ -103,11 +103,25 @@ func observeGroup(input topology.ObservationInput) (*mysqlv1alpha1.GroupReplicat
 		}
 	}
 	return &mysqlv1alpha1.GroupReplicationStatus{
-		PrimaryMember: primaryInstance,
-		Members:       members,
-		ViewID:        view.ViewID,
-		HasQuorum:     onlineCount*2 > len(view.Members),
+		PrimaryMember:     primaryInstance,
+		Members:           members,
+		ViewID:            view.ViewID,
+		HasQuorum:         onlineCount*2 > quorumDenominator(input.ConfiguredMembers, input.ObservedViewMax, maxViewMembers),
+		ObservedViewMax:   maxViewMembers,
+		ObservedOnlineMax: onlineCount,
 	}, primaryInstance
+}
+
+// quorumDenominator returns the group size used for quorum arithmetic.
+// During bootstrap/scale-up (maxView < configured), use the actual view size
+// so the group reports quorum and new members can join via distributed
+// recovery. Once the group reaches its configured size, use the configured
+// count so that a shrunken group is detected as quorum-lost.
+func quorumDenominator(configured, observedMax, currentMax int) int {
+	if observedMax > 0 && observedMax >= configured {
+		return observedMax
+	}
+	return currentMax
 }
 
 // MergeStatus preserves sticky GR fields and mirrors the elected primary.
@@ -117,16 +131,32 @@ func (r *Reconciler) MergeStatus(cluster *mysqlv1alpha1.Cluster, observed topolo
 	if existing != nil {
 		merged.GroupName = existing.GroupName
 		merged.Bootstrapped = existing.Bootstrapped
+		merged.ObservedViewMax = existing.ObservedViewMax
+		merged.ObservedOnlineMax = existing.ObservedOnlineMax
 	}
 	if status := observed.GroupReplication; status != nil {
 		merged.PrimaryMember = status.PrimaryMember
 		merged.Members = status.Members
-		merged.HasQuorum = status.HasQuorum
 		merged.ViewID = status.ViewID
+		merged.ObservedViewMax = max(merged.ObservedViewMax, status.ObservedViewMax)
+		merged.ObservedOnlineMax = max(merged.ObservedOnlineMax, status.ObservedOnlineMax)
 		if status.PrimaryMember != "" {
 			merged.Bootstrapped = true
 			cluster.Status.CurrentPrimary = status.PrimaryMember
 		}
+	}
+	// Quorum: use the sticky max view size as the denominator so that a group
+	// that shrank (members expelled) is correctly flagged as quorum-lost, while
+	// a bootstrapping group that grows uses its actual size until it reaches
+	// the max observed.
+	if merged.ObservedViewMax > 0 {
+		online := 0
+		for _, m := range merged.Members {
+			if m.State == mysqlgr.MemberStateOnline {
+				online++
+			}
+		}
+		merged.HasQuorum = online*2 > merged.ObservedViewMax
 	}
 	cluster.Status.GroupReplication = merged
 }

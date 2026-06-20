@@ -58,6 +58,10 @@ type fakeLocal struct {
 	grStartErr        error
 	grBootstrapped    bool
 	grBootstrapErr    error
+	grStopped         bool
+	grStopErr         error
+	grForceMembers    bool
+	grForceMembersErr error
 	grRecoveryUser    string
 	grRecoveryChanSet bool
 }
@@ -91,6 +95,14 @@ func (f *fakeLocal) StartGroupReplication(context.Context) error {
 func (f *fakeLocal) BootstrapGroup(context.Context) error {
 	f.grBootstrapped = true
 	return f.grBootstrapErr
+}
+func (f *fakeLocal) StopGroupReplication(context.Context) error {
+	f.grStopped = true
+	return f.grStopErr
+}
+func (f *fakeLocal) ForceGroupMembers(_ context.Context, _ []string) error {
+	f.grForceMembers = true
+	return f.grForceMembersErr
 }
 
 func newReconciler(

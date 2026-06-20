@@ -96,6 +96,17 @@ const (
 	// the instance is reachable again. The grace period absorbs transient blips so
 	// a single failed poll does not churn Service endpoints.
 	unreachableSinceAnnotation = "cloudnative-mysql.cloudnative-mysql.io/unreachable-since"
+	// forceQuorumRecoveryAnnotation, when set to "yes" on the Cluster, triggers
+	// a guarded quorum recovery for a Group Replication cluster that has lost
+	// quorum. The operator computes the safe survivor set, stamps the survivor
+	// Pod with force-quorum-members, and clears this annotation. Recovery is
+	// never automatic — it gate-checks that no quorum exists and a safe survivor
+	// is provable, and refuses otherwise.
+	forceQuorumRecoveryAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-recovery"
+	// forceQuorumMembersAnnotation, when set on an instance Pod to a
+	// comma-separated list of XCom addresses, instructs the in-Pod reconciler to
+	// execute group_replication_force_members with that address set.
+	forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
 
 	configMapAnnotation       = "cloudnative-mysql.cloudnative-mysql.io/config-map"
 	configHashAnnotation      = "cloudnative-mysql.cloudnative-mysql.io/config-hash"
@@ -314,6 +325,18 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	observed, err := r.observe(ctx, cluster, plan)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	// Under GR, refuse to fence a member when doing so would break quorum.
+	// Remove the instance from the fenced set and surface Blocked instead
+	// so the in-Pod reconciler never executes STOP GROUP_REPLICATION.
+	if blockedReason := r.checkFenceQuorumGuard(ctx, cluster, &observed); blockedReason != "" {
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observed)
+	}
+	// Guarded quorum recovery is opt-in via annotation. The operator computes
+	// the safe survivor set, re-arms bootstrap, and lets the designated member
+	// re-form the group. Only runs when quorum is provably lost.
+	if result, err, handled := r.handleQuorumRecovery(ctx, cluster); handled {
+		return result, err
 	}
 	// An unreachable primary takes precedence over a manual switchover: drive
 	// automatic failover (bounded by spec.failoverDelay) before anything else.

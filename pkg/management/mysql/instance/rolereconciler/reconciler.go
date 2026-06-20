@@ -71,6 +71,12 @@ type LocalInstance interface {
 	// BootstrapGroup runs the exactly-once group-creation sequence on the
 	// designated bootstrap member.
 	BootstrapGroup(ctx context.Context) error
+	// StopGroupReplication stops the member's Group Replication, making it
+	// leave the group while keeping mysqld alive (the GR fencing primitive).
+	StopGroupReplication(ctx context.Context) error
+	// ForceGroupMembers executes group_replication_force_members with the
+	// given XCom addresses, re-forming the group after a quorum loss.
+	ForceGroupMembers(ctx context.Context, addresses []string) error
 }
 
 const (
@@ -122,20 +128,31 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// stopped, so the Status call below would fail. The operator has already
 	// pulled this Pod out of routing; here the in-Pod side releases the primary
 	// lease (so a fenced primary stops anchoring writes) and stops mysqld while
-	// the manager stays alive. Fence is idempotent, so this re-asserts the
-	// stopped state on every resync until the fence is cleared.
+	// the manager stays alive. Under GR, fencing stops Group Replication instead
+	// of stopping mysqld — the member gracefully leaves the group and becomes
+	// super_read_only/OFFLINE, reachable for inspection. Fence is idempotent, so
+	// this re-asserts the stopped state on every resync until the fence is cleared.
 	if isFenced(cluster, me) {
 		_ = r.releaseLease(ctx)
-		if err := r.Local.Fence(ctx); err != nil {
-			log.Error(err, "Could not fence instance; will retry", "instance", me)
-			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
+			if err := r.Local.StopGroupReplication(ctx); err != nil {
+				log.Error(err, "Could not fence Group Replication member; will retry", "instance", me)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
+			log.Info("Group Replication member fenced; stopped GR, mysqld still running", "instance", me)
+		} else {
+			if err := r.Local.Fence(ctx); err != nil {
+				log.Error(err, "Could not fence instance; will retry", "instance", me)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
+			log.Info("Instance is fenced; mysqld stopped", "instance", me)
 		}
-		log.Info("Instance is fenced; mysqld stopped", "instance", me)
 		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
 	}
 
-	// Not fenced: if a prior fence stopped mysqld, restart it before reconciling
-	// role. Unfence is a no-op when the instance was never fenced.
+	// Not fenced: if a prior fence stopped mysqld (async) or stopped GR, restart
+	// mysqld / rejoin the group before reconciling role. Unfence is a no-op when
+	// the instance was never fenced.
 	if err := r.Local.Unfence(ctx); err != nil {
 		log.Error(err, "Could not unfence instance; will retry", "instance", me)
 		return ctrl.Result{RequeueAfter: waitRequeue}, nil

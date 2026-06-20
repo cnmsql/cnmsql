@@ -3862,6 +3862,18 @@ spec:
                       - state
                       type: object
                     type: array
+                  observedOnlineMax:
+                    description: |-
+                      ObservedOnlineMax is the largest number of ONLINE members the operator
+                      has ever observed for this group. Sticky, tracked alongside ViewMax.
+                    type: integer
+                  observedViewMax:
+                    description: |-
+                      ObservedViewMax is the largest group view size the operator has ever
+                      observed for this group. Sticky: never decreases. Used as the quorum
+                      denominator so that a group that loses members is recognised as
+                      quorum-lost, while a bootstrapping group uses its current view size.
+                    type: integer
                   primaryMember:
                     description: |-
                       PrimaryMember is the pod name of the member the group elected PRIMARY.
@@ -3872,6 +3884,8 @@ spec:
                       ViewID is the current group view identifier. It changes on every membership
                       change and is one of the signals the operator reconciles on.
                     type: string
+                required:
+                - hasQuorum
                 type: object
               gtidExecutedByInstance:
                 additionalProperties:

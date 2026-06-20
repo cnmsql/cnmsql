@@ -96,6 +96,13 @@ func (m *Manager) SetAsPrimary(ctx context.Context, memberUUID string) error {
 	return m.exec(ctx, SetAsPrimaryStatement(memberUUID))
 }
 
+// ForceMembers resets the group membership to the given XCom addresses. This is
+// the dangerous minority-recovery primitive and must only be called on a single
+// surviving member after the operator has confirmed safety.
+func (m *Manager) ForceMembers(ctx context.Context, addresses []string) error {
+	return m.exec(ctx, ForceMembersStatement(addresses))
+}
+
 // GroupView is one member's parsed view of the group, read from
 // performance_schema.replication_group_members.
 type GroupView struct {

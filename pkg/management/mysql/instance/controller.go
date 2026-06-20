@@ -440,11 +440,25 @@ func (c *Controller) StartGroupReplication(ctx context.Context) error {
 	return c.gr.Start(ctx)
 }
 
+// StopGroupReplication stops the member's Group Replication, making it leave
+// the group while keeping mysqld alive (the GR fencing primitive). The member
+// becomes super_read_only/OFFLINE but stays reachable for inspection. Unfence
+// via StartGroupReplication rejoins via distributed recovery.
+func (c *Controller) StopGroupReplication(ctx context.Context) error {
+	return c.gr.Stop(ctx)
+}
+
 // BootstrapGroup runs the exactly-once group-creation sequence. The caller must
 // gate it on being the designated bootstrap member with the group not yet
 // bootstrapped (status.groupReplication.bootstrapped == false).
 func (c *Controller) BootstrapGroup(ctx context.Context) error {
 	return c.gr.Bootstrap(ctx)
+}
+
+// ForceGroupMembers executes group_replication_force_members with the given
+// XCom addresses on this member, re-forming the group after a quorum loss.
+func (c *Controller) ForceGroupMembers(ctx context.Context, addresses []string) error {
+	return c.gr.ForceMembers(ctx, addresses)
 }
 
 // Promote transitions a replica to primary.

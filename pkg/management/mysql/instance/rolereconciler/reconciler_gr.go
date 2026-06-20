@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ import (
 )
 
 const groupObservationAnnotation = "mysql.cloudnative-mysql.io/gr-observed"
+const forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
 
 // reconcileGroupRole is the Group Replication topology role strategy. It embodies
 // "the group decides, the operator reflects": this in-Pod side only ensures the
@@ -54,6 +56,38 @@ func (r *Reconciler) reconcileGroupRole(
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	me := r.InstanceName
+
+	// Guarded quorum recovery: the operator stamps this Pod with the force_members
+	// addresses when the group has lost quorum and this member is the designated
+	// survivor. Execute group_replication_force_members and clear the annotation.
+	// Use the doorbell client to avoid the informer cache, which requires
+	// cluster-scoped list/watch on Pods that the instance SA does not hold.
+	doorbellClient := r.DoorbellClient
+	if doorbellClient == nil {
+		doorbellClient = r.Client
+	}
+	pod := &corev1.Pod{}
+	key := types.NamespacedName{Namespace: r.ClusterKey.Namespace, Name: me}
+	if err := doorbellClient.Get(ctx, key, pod); err != nil {
+		// Pod not found or transient error; skip and try normal GR reconciliation.
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Could not read own Pod for force_members check", "instance", me)
+		}
+	} else if addrs, ok := pod.Annotations[forceQuorumMembersAnnotation]; ok && addrs != "" {
+		log.Info("Executing guarded quorum recovery via force_members",
+			"instance", me, "addresses", addrs)
+		if err := r.Local.ForceGroupMembers(ctx, []string{addrs}); err != nil {
+			log.Error(err, "force_members failed; will retry", "instance", me)
+			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		}
+		log.Info("force_members succeeded; group re-formed", "instance", me)
+		before := pod.DeepCopy()
+		delete(pod.Annotations, forceQuorumMembersAnnotation)
+		if err := doorbellClient.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+			log.Error(err, "Could not clear force-quorum-members annotation", "instance", me)
+		}
+		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+	}
 
 	// status.GroupReplication is non-nil once the plugin is running and the member
 	// appears in replication_group_members. A member that is in the group (ONLINE
