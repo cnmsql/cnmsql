@@ -151,6 +151,56 @@ var _ = Describe("Group Replication lifecycle", Ordered, func() {
 		expectClusterReady(cluster, instances, 15*time.Minute)
 	})
 
+	It("rolling-restarts every member primary-last while keeping quorum", func() {
+		members := []string{cluster + "-1", cluster + "-2", cluster + "-3"}
+
+		By("recording each member's pod UID before the rollout")
+		uidBefore := map[string]string{}
+		for _, m := range members {
+			uid, err := kubectl("get", "pod", m, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(uid)).NotTo(BeEmpty())
+			uidBefore[m] = strings.TrimSpace(uid)
+		}
+
+		By("requesting a rolling restart via the restart annotation")
+		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
+			"cloudnative-mysql.cloudnative-mysql.io/restart="+time.Now().UTC().Format(time.RFC3339), "--overwrite")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying every member's Pod is recreated (new UID) and the group regains all three ONLINE")
+		Eventually(func(g Gomega) {
+			for _, m := range members {
+				uid, err := kubectl("get", "pod", m, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(uid)).NotTo(Equal(uidBefore[m]),
+					"member %s must be recreated by the rolling restart", m)
+			}
+			states, err := clusterField(cluster, `{.status.groupReplication.members[*].state}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			fields := strings.Fields(states)
+			g.Expect(fields).To(HaveLen(instances))
+			for _, state := range fields {
+				g.Expect(state).To(Equal("ONLINE"), "every member must be ONLINE after the rollout")
+			}
+		}, e2eTimeout(20*time.Minute), 10*time.Second).Should(Succeed())
+
+		By("verifying the group never lost quorum and the primary still serves writes")
+		quorum, err := clusterField(cluster, `{.status.groupReplication.hasQuorum}`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(quorum).To(Equal("true"), "a rolling restart must preserve quorum throughout")
+		// The pre-rollout primary is restarted last, so after the rollout a primary
+		// is elected and writable again (either the same member or a clean handover).
+		Eventually(func(g Gomega) {
+			p := clusterPrimary(cluster)
+			g.Expect(p).NotTo(BeEmpty())
+			_, err := mysqlExec(p, "app", password, "app", "REPLACE INTO gr_life VALUES (2);")
+			g.Expect(err).NotTo(HaveOccurred(), "primary must serve writes after the rolling restart")
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+
+		expectClusterReady(cluster, instances, 15*time.Minute)
+	})
+
 	It("re-bootstraps the same group after a total outage with no data loss", func() {
 		By("killing every member so no ONLINE survivor remains (total outage)")
 		for _, member := range []string{cluster + "-1", cluster + "-2", cluster + "-3"} {
