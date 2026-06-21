@@ -16,7 +16,7 @@ import ThemedImage from '@theme/ThemedImage';
 
 :::note No affiliation
 
-CNMSQL - CloudNative for MySQL is an independent project. It is **not** affiliated with, endorsed by, or associated with the [CNCF](https://www.cncf.io/) or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
+CNMSQL - CloudNative for MySQL is an independent project. It is **not** affiliated with, endorsed by, or associated with Oracle, MySQL, the [CNCF](https://www.cncf.io/), or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
 
 :::
 

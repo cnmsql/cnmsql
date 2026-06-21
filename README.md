@@ -15,7 +15,7 @@
 
 A Kubernetes operator for [Percona Server for MySQL](https://www.percona.com/software/mysql-database/percona-server). It runs MySQL clusters with operator-owned lifecycle management, GTID replication with automatic failover, physical backups to S3-compatible object storage, and point-in-time recovery.
 
-> CNMSQL - CloudNative for MySQL is an independent project. It is not affiliated with, endorsed by, or associated with the [CNCF](https://www.cncf.io/) or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
+> CNMSQL - CloudNative for MySQL is an independent project. It is not affiliated with, endorsed by, or associated with Oracle, MySQL, the [CNCF](https://www.cncf.io/), or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
 
 Full documentation at **[cnmsql.co](https://cnmsql.co)**.
 

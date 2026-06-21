@@ -123,7 +123,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright &copy; ${new Date().getFullYear()} The CNMSQL - CloudNative for MySQL Authors. Built with <a href="https://docusaurus.io/" target="_blank">Docusaurus</a>.<br/><small>CNMSQL - CloudNative for MySQL is an independent project, not affiliated with the CNCF or CloudNativePG.</small>`,
+        copyright: `Copyright &copy; ${new Date().getFullYear()} The CNMSQL - CloudNative for MySQL Authors. Built with <a href="https://docusaurus.io/" target="_blank">Docusaurus</a>.<br/><small>CNMSQL - CloudNative for MySQL is an independent project, not affiliated with Oracle, MySQL, the CNCF, or CloudNativePG.</small>`,
       },
       prism: {
         theme: lightCodeTheme,
