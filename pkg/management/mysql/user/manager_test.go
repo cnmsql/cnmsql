@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -104,8 +104,8 @@ func TestManagerListDatabases(t *testing.T) {
 func TestManagerRejectsReservedUsers(t *testing.T) {
 	// No SQL is expected: the guard must reject before touching the connection.
 	reserved := []string{
-		"cloudnative-mysql_control", "cloudnative-mysql_repl",
-		"cloudnative-mysql_backup", "root", "mysql.sys",
+		"cnmsql_control", "cnmsql_repl",
+		"cnmsql_backup", "root", "mysql.sys",
 	}
 	for _, name := range reserved {
 		m, _ := newManager(t)

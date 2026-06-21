@@ -6,7 +6,7 @@ sidebar_position: 6
 
 # Group Replication
 
-cloudnative-mysql supports MySQL Group Replication as an alternative to the default
+cnmsql supports MySQL Group Replication as an alternative to the default
 GTID-based async/semi-sync replication. Group Replication is a Paxos-based,
 quorum-driven, virtually synchronous replication layer built into MySQL. Unlike
 async replication, where the operator elects primaries and orchestrates failover,
@@ -48,7 +48,7 @@ creation time. The mode is immutable once set, so an async cluster cannot be
 converted to Group Replication later, and vice versa.
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: cluster-gr
@@ -170,7 +170,7 @@ operator reacts to changes through three mechanisms, not a timer:
 3. **The `gr-observed` doorbell annotation.** Some transitions are invisible to
    readiness: a clean `set_as_primary` handover leaves both members `ONLINE` and
    Ready, yet the primary role moved. The in-Pod manager publishes a doorbell
-   annotation (`mysql.cloudnative-mysql.io/gr-observed`) on its own Pod whenever
+   annotation (`mysql.cnmsql.co/gr-observed`) on its own Pod whenever
    any part of its locally observed GR snapshot changes. The annotation is a
    wake-up, never authority: on reconcile the operator still reads the
    cross-validated majority group view over mTLS before changing routing.
@@ -262,7 +262,7 @@ replication. The kubectl plugin and the direct status-subresource patch both
 work.
 
 ```bash
-kubectl cnmysql promote cluster-gr cluster-gr-2
+kubectl cnmsql promote cluster-gr cluster-gr-2
 ```
 
 The operator then:
@@ -331,8 +331,8 @@ in-Pod action and the guards change:
   allowed to manufacture a quorum-loss outage.
 
 ```bash
-kubectl cnmysql fence on cluster-gr cluster-gr-2
-kubectl cnmysql fence off cluster-gr cluster-gr-2
+kubectl cnmsql fence on cluster-gr cluster-gr-2
+kubectl cnmsql fence off cluster-gr cluster-gr-2
 ```
 
 ## Quorum guards
@@ -394,10 +394,10 @@ The recovery path branches on whether any ONLINE survivor remains:
   (it might hold transactions the survivor lacks), the cluster stays Blocked.
 
 Recovery is triggered through the `force-quorum-recovery` annotation or the
-`kubectl cnmysql group recover` command:
+`kubectl cnmsql group recover` command:
 
 ```bash
-kubectl cnmysql group recover cluster-gr
+kubectl cnmsql group recover cluster-gr
 ```
 
 The command prints a consequence summary (split-brain risk, data loss potential)
@@ -439,15 +439,15 @@ over mTLS before changing routing.
 
 ### Operator metrics
 
-The operator publishes GR metrics on its `/metrics` endpoint under the `cnmysql`
+The operator publishes GR metrics on its `/metrics` endpoint under the `cnmsql`
 namespace:
 
 | Metric | Type | Description |
 |---|---|---|
-| `cnmysql_cluster_gr_has_quorum` | Gauge | 1 if the group has quorum, 0 otherwise. |
-| `cnmysql_cluster_gr_bootstrapped` | Gauge | 1 if the group has been bootstrapped, 0 otherwise. |
-| `cnmysql_cluster_gr_view_size` | Gauge | The sticky maximum group size used as the quorum denominator. |
-| `cnmysql_cluster_gr_members` | Gauge | Members per state (`ONLINE`, `RECOVERING`, `OFFLINE`, `ERROR`, `UNREACHABLE`). |
+| `cnmsql_cluster_gr_has_quorum` | Gauge | 1 if the group has quorum, 0 otherwise. |
+| `cnmsql_cluster_gr_bootstrapped` | Gauge | 1 if the group has been bootstrapped, 0 otherwise. |
+| `cnmsql_cluster_gr_view_size` | Gauge | The sticky maximum group size used as the quorum denominator. |
+| `cnmsql_cluster_gr_members` | Gauge | Members per state (`ONLINE`, `RECOVERING`, `OFFLINE`, `ERROR`, `UNREACHABLE`). |
 
 Labels are `namespace` and `cluster`. Async clusters emit nothing. The collector
 reads from the manager's cached client at scrape time, with no extra reconcile or
@@ -466,7 +466,7 @@ The plugin adds a `group status` command that renders the operator's
 cross-validated group view:
 
 ```bash
-kubectl cnmysql group status cluster-gr
+kubectl cnmsql group status cluster-gr
 ```
 
 Output shows the group name, whether it is bootstrapped, quorum status, the
@@ -476,7 +476,7 @@ role, and reachability.
 Add `-w` for continuous refresh:
 
 ```bash
-kubectl cnmysql group status cluster-gr -w
+kubectl cnmsql group status cluster-gr -w
 ```
 
 The command refuses to run against async clusters.
@@ -511,7 +511,7 @@ Some features are out of scope for the initial Group Replication support:
   topology mode is immutable at the API level. Switching means creating a new
   cluster and migrating data.
 - **Automatic unattended quorum recovery** is not supported. Quorum loss must be
-  explicitly confirmed by a human through `kubectl cnmysql group recover`.
+  explicitly confirmed by a human through `kubectl cnmsql group recover`.
 - **Cross-cluster Group Replication** (replica clusters following an external
   group) is not supported in combination with Group Replication.
 - **MySQL versions below 8.0.22** are rejected by the webhook.
@@ -526,7 +526,7 @@ Some features are out of scope for the initial Group Replication support:
 - Never manually write to a SECONDARY. Errant transactions prevent the member
   from rejoining the group.
 - Do not run `group_replication_force_members` manually. Use the operator's
-  guarded recovery path through `kubectl cnmysql group recover`, which validates
+  guarded recovery path through `kubectl cnmsql group recover`, which validates
   safety before acting.
 - Keep at least three instances in a multi-AZ spread so quorum can survive a
   single AZ loss.

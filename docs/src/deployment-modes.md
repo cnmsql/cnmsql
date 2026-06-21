@@ -31,7 +31,7 @@ scoped.
 This is what `make deploy` installs. One operator runs with a `ClusterRole` that
 grants reconciliation rights across the cluster, its cache watches every
 namespace, and a single `ValidatingWebhookConfiguration` named
-`cloudnative-mysql-validating-webhook-configuration` validates Cluster status
+`cnmsql-validating-webhook-configuration` validates Cluster status
 updates wherever they happen.
 
 Use it when one team owns the operator and Clusters can live in any namespace.

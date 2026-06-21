@@ -12,11 +12,11 @@
 # (or `kustomize build config/crd`), not per tenant.
 
 # Tenant namespace. Also drives the webhook namespaceSelector via replacements.
-namespace: cnmysql-system
+namespace: cnmsql-system
 
 # Per-tenant prefix; makes the cluster-scoped ValidatingWebhookConfiguration name
 # unique across cohabiting operators.
-namePrefix: cnmysql-
+namePrefix: cnmsql-
 
 resources:
 - ../crd

@@ -1,4 +1,4 @@
-# CNMySQL Design Index
+# CNMSQL Design Index
 
 Quick-reference index of every design document. Use this to find relevant plans instead of scanning all files.
 
@@ -23,7 +23,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 | 013 | [User-Managed TLS](013-user-managed-tls.md) | done | M11 | Independent per-field TLS cert overrides (`ServerCASecret`, `ServerTLSSecret`, `ClientCASecret`, `ReplicationTLSSecret`). |
 | 014 | [Declarative Config/Users/Databases](014-declarative-config-users-databases.md) | done | M12 | Managed roles in Cluster spec + `Database` CRD controller. Operator-side reconciliation via instance manager SQL execution API. Config key denylist. |
 | 015 | [Monitoring, Self-Healing, Guards](015-monitoring-self-healing-guards.md) | done | M13 | Prometheus exporter + PodMonitor, PDBs, semi-sync self-healing, fencing annotation, deletion guard, liveness isolation. |
-| 016 | [kubectl cnmysql CLI Plugin](016-kubectl-plugin.md) | done | M16 | Cobra-based kubectl plugin: status, logs, mysql shell, promote, fence, backup, bench, metrics, user/database CRUD, diagnostics. |
+| 016 | [kubectl cnmsql CLI Plugin](016-kubectl-plugin.md) | done | M16 | Cobra-based kubectl plugin: status, logs, mysql shell, promote, fence, backup, bench, metrics, user/database CRUD, diagnostics. |
 | 017 | [Primary Lease Fencing](017-primary-lease.md) | done | M13.4 | Per-cluster Lease object the acting primary must hold before accepting writes. Split-brain guard for async replication failover. |
 | 018 | [Manager Binary Injection](018-bootstrap-dbs.md) | done | M18 | Bootstrap-controller init container copies `/manager` from operator image into shared EmptyDir. Removes manager binary from instance image. |
 | 019 | [Operator Upgrades](019-operator-upgrade.md) | done | — | Rolling + in-place instance-manager upgrades. Spike-proven re-exec keeps mysqld alive. PID-based `DetachedSupervisor` + adopt mode. |

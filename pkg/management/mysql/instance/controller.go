@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,14 +30,14 @@ import (
 	"strings"
 	"time"
 
-	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/executablehash"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/groupreplication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )

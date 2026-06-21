@@ -1,23 +1,23 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/CloudNative-MySQL/cloudnative-mysql/main/docs/static/img/cnmysql.png" alt="CloudNative MySQL" width="200" />
+  <img src="https://raw.githubusercontent.com/cnmsql/cnmsql/main/docs/static/img/cnmsql.png" alt="CNMSQL - CloudNative for MySQL" width="200" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/CloudNative-MySQL/cloudnative-mysql/actions/workflows/test.yml"><img src="https://github.com/CloudNative-MySQL/cloudnative-mysql/actions/workflows/test.yml/badge.svg" alt="Unit Tests" /></a>
-  <a href="https://github.com/CloudNative-MySQL/cloudnative-mysql/actions/workflows/lint.yml"><img src="https://github.com/CloudNative-MySQL/cloudnative-mysql/actions/workflows/lint.yml/badge.svg" alt="Lint" /></a>
-  <a href="https://github.com/CloudNative-MySQL/cloudnative-mysql/actions/workflows/e2e.yml"><img src="https://github.com/CloudNative-MySQL/cloudnative-mysql/actions/workflows/e2e.yml/badge.svg" alt="E2E Tests" /></a>
-  <a href="https://github.com/CloudNative-MySQL/cloudnative-mysql/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
-  <a href="https://goreportcard.com/report/github.com/CloudNative-MySQL/cloudnative-mysql"><img src="https://goreportcard.com/badge/github.com/CloudNative-MySQL/cloudnative-mysql" alt="Go Report Card" /></a>
-  <a href="https://cloudnative-mysql.io"><img src="https://img.shields.io/badge/docs-cloudnative--mysql.io-blue" alt="Documentation" /></a>
+  <a href="https://github.com/cnmsql/cnmsql/actions/workflows/test.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/test.yml/badge.svg" alt="Unit Tests" /></a>
+  <a href="https://github.com/cnmsql/cnmsql/actions/workflows/lint.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/lint.yml/badge.svg" alt="Lint" /></a>
+  <a href="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml/badge.svg" alt="E2E Tests" /></a>
+  <a href="https://github.com/cnmsql/cnmsql/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://goreportcard.com/report/github.com/cnmsql/cnmsql"><img src="https://goreportcard.com/badge/github.com/cnmsql/cnmsql" alt="Go Report Card" /></a>
+  <a href="https://cnmsql.co"><img src="https://img.shields.io/badge/docs-cloudnative--mysql.io-blue" alt="Documentation" /></a>
 </p>
 
-# CloudNative MySQL
+# CNMSQL - CloudNative for MySQL
 
 A Kubernetes operator for [Percona Server for MySQL](https://www.percona.com/software/mysql-database/percona-server). It runs MySQL clusters with operator-owned lifecycle management, GTID replication with automatic failover, physical backups to S3-compatible object storage, and point-in-time recovery.
 
-> CloudNative MySQL is an independent project. It is not affiliated with, endorsed by, or associated with the [CNCF](https://www.cncf.io/) or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
+> CNMSQL - CloudNative for MySQL is an independent project. It is not affiliated with, endorsed by, or associated with the [CNCF](https://www.cncf.io/) or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
 
-Full documentation at **[cloudnative-mysql.io](https://cloudnative-mysql.io)**.
+Full documentation at **[cnmsql.co](https://cnmsql.co)**.
 
 ## What It Does
 
@@ -25,7 +25,7 @@ Declare a `Cluster` resource and the operator provisions Pods, PVCs, credentials
 
 **Replication and failover.** One primary plus GTID-based replicas. Planned switchover for upgrades, automatic failover when the primary goes down, and rejoin of a former primary as a replica.
 
-Each cluster gets three Services: a read-write endpoint for the primary (`-rw`), a read-only endpoint for replicas (`-ro`), and a read endpoint for any ready instance (`-r`). Routing follows the `mysql.cloudnative-mysql.io/role` label and tracks failover automatically.
+Each cluster gets three Services: a read-write endpoint for the primary (`-rw`), a read-only endpoint for replicas (`-ro`), and a read endpoint for any ready instance (`-r`). Routing follows the `mysql.cnmsql.co/role` label and tracks failover automatically.
 
 Physical backups run through XtraBackup to S3-compatible object storage. `Backup` resources trigger one-shot archives; `ScheduledBackup` handles cron-driven runs.
 
@@ -37,49 +37,49 @@ Continuous binlog archiving feeds point-in-time recovery so you can restore to a
 
 Prometheus metrics with mTLS between the operator and instances, plus MySQL TLS.
 
-API group: `mysql.cloudnative-mysql.io/v1alpha1`. Resources: `Cluster`, `Database`, `Backup`, `ScheduledBackup`, `ImageCatalog`, and `ClusterImageCatalog`. See the [API reference](https://cloudnative-mysql.io/api-reference) for every field.
+API group: `mysql.cnmsql.co/v1alpha1`. Resources: `Cluster`, `Database`, `Backup`, `ScheduledBackup`, `ImageCatalog`, and `ClusterImageCatalog`. See the [API reference](https://cnmsql.co/api-reference) for every field.
 
 ## CLI Plugin
 
-The repository includes a `kubectl` plugin, `kubectl cnmysql`, for day-to-day operations: cluster status, fencing, promotion, restart, reload, backups, and more.
+The repository includes a `kubectl` plugin, `kubectl cnmsql`, for day-to-day operations: cluster status, fencing, promotion, restart, reload, backups, and more.
 
 **Install the latest release (no checkout needed):**
 
 ```bash
-curl -sSfL https://github.com/CloudNative-MySQL/cloudnative-mysql/raw/main/hack/install-cnmysql-plugin.sh | sh -s -- -b ~/.local/bin
+curl -sSfL https://github.com/cnmsql/cnmsql/raw/main/hack/install-cnmsql-plugin.sh | sh -s -- -b ~/.local/bin
 ```
 
 **Or build from the repo:** `make install-plugin`.
 
 ## Quickstart
 
-Bring up the operator and a three-instance cluster in a local Kind environment. The [full quickstart](https://cloudnative-mysql.io/quickstart) has the complete walkthrough.
+Bring up the operator and a three-instance cluster in a local Kind environment. The [full quickstart](https://cnmsql.co/quickstart) has the complete walkthrough.
 
 **Prerequisites:** `go`, `docker`, `kubectl`, `kind`, `make`, and `cert-manager` in the target cluster.
 
 ```bash
 # Build and load images
-make docker-build IMG=cloudnative-mysql-controller:dev
-docker pull ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
-kind load docker-image cloudnative-mysql-controller:dev --name cloudnative-mysql-test-e2e
-kind load docker-image ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4 --name cloudnative-mysql-test-e2e
+make docker-build IMG=cnmsql-controller:dev
+docker pull ghcr.io/cnmsql/cnmsql-instance:8.4
+kind load docker-image cnmsql-controller:dev --name cnmsql-test-e2e
+kind load docker-image ghcr.io/cnmsql/cnmsql-instance:8.4 --name cnmsql-test-e2e
 
 # Deploy the operator
 make install
-make deploy IMG=cloudnative-mysql-controller:dev
+make deploy IMG=cnmsql-controller:dev
 make install-plugin
 ```
 
 Create a cluster:
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: cluster-sample
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+  imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
   storage:
     size: 10Gi
   mysql:
@@ -92,27 +92,27 @@ spec:
 
 ```bash
 kubectl wait --for=condition=Ready cluster/cluster-sample --timeout=15m
-kubectl cnmysql status cluster-sample
+kubectl cnmsql status cluster-sample
 ```
 
 Connect through `cluster-sample-rw`, `cluster-sample-ro`, or `cluster-sample-r`. Credentials are in a generated Secret:
 
 ```bash
-kubectl get secrets -l mysql.cloudnative-mysql.io/cluster=cluster-sample
+kubectl get secrets -l mysql.cnmsql.co/cluster=cluster-sample
 ```
 
 ## Documentation
 
-- [Cluster lifecycle](https://cloudnative-mysql.io/cluster-lifecycle)
-- [Replication and failover](https://cloudnative-mysql.io/replication-failover)
-- [Physical backup and recovery](https://cloudnative-mysql.io/backup-recovery)
-- [Point-in-time recovery](https://cloudnative-mysql.io/pitr)
-- [Scheduled backups](https://cloudnative-mysql.io/scheduled-backups)
-- [Object store configuration](https://cloudnative-mysql.io/object-store)
-- [Multi-tenancy](https://cloudnative-mysql.io/multi-tenancy)
-- [Security model](https://cloudnative-mysql.io/security-model)
-- [Operations runbooks](https://cloudnative-mysql.io/operations)
-- [Troubleshooting](https://cloudnative-mysql.io/troubleshooting)
+- [Cluster lifecycle](https://cnmsql.co/cluster-lifecycle)
+- [Replication and failover](https://cnmsql.co/replication-failover)
+- [Physical backup and recovery](https://cnmsql.co/backup-recovery)
+- [Point-in-time recovery](https://cnmsql.co/pitr)
+- [Scheduled backups](https://cnmsql.co/scheduled-backups)
+- [Object store configuration](https://cnmsql.co/object-store)
+- [Multi-tenancy](https://cnmsql.co/multi-tenancy)
+- [Security model](https://cnmsql.co/security-model)
+- [Operations runbooks](https://cnmsql.co/operations)
+- [Troubleshooting](https://cnmsql.co/troubleshooting)
 
 ## Development
 

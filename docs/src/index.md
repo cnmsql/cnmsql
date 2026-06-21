@@ -1,5 +1,5 @@
 ---
-title: "CloudNative MySQL"
+title: "CNMSQL - CloudNative for MySQL"
 description: "A Kubernetes operator for Percona Server for MySQL — operator-owned lifecycle, GTID replication with automatic failover, physical backups, and point-in-time recovery."
 sidebar_position: 1
 ---
@@ -7,16 +7,16 @@ sidebar_position: 1
 import ThemedImage from '@theme/ThemedImage';
 
 <p align="center">
-  <img src="/img/cnmysql.png" alt="CloudNative MySQL" width="180" />
+  <img src="/img/cnmsql.png" alt="CNMSQL - CloudNative for MySQL" width="180" />
 </p>
 
-# CloudNative MySQL
+# CNMSQL - CloudNative for MySQL
 
-**CloudNative MySQL** is a Kubernetes operator for [Percona Server for MySQL](https://www.percona.com/software/mysql-database/percona-server) that borrows design patterns from [CloudNativePG](https://cloudnative-pg.io/), adapted for MySQL. Declare a `Cluster` resource and the operator provisions Pods, PVCs, credentials, TLS, and role-routed Services — then handles replication, failover, backups, and point-in-time recovery so you don't have to.
+**CNMSQL - CloudNative for MySQL** is a Kubernetes operator for [Percona Server for MySQL](https://www.percona.com/software/mysql-database/percona-server) that borrows design patterns from [CloudNativePG](https://cloudnative-pg.io/), adapted for MySQL. Declare a `Cluster` resource and the operator provisions Pods, PVCs, credentials, TLS, and role-routed Services — then handles replication, failover, backups, and point-in-time recovery so you don't have to.
 
 :::note No affiliation
 
-CloudNative MySQL is an independent project. It is **not** affiliated with, endorsed by, or associated with the [CNCF](https://www.cncf.io/) or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
+CNMSQL - CloudNative for MySQL is an independent project. It is **not** affiliated with, endorsed by, or associated with the [CNCF](https://www.cncf.io/) or the [CloudNativePG](https://cloudnative-pg.io/) project and its maintainers.
 
 :::
 
@@ -59,7 +59,7 @@ Declare your desired state via Kubernetes custom resources. The operator continu
 | **Multi-tenancy** | Cluster-per-tenant or schema-per-tenant via declarative `Database` and managed role resources |
 | **Upgrades** | Rolling instance upgrades with primary switchover, plus in-place instance-manager binary swaps (no pod restart) |
 | **Self-healing** | PDBs, semi-sync reconciliation, primary-lease fencing, broken-replica detection and re-initialization |
-| **Observability** | Prometheus metrics, PodMonitor support, `kubectl cnmysql` CLI plugin for ad-hoc inspection |
+| **Observability** | Prometheus metrics, PodMonitor support, `kubectl cnmsql` CLI plugin for ad-hoc inspection |
 | **Slim images** | Custom Debian-based instance images (~75% smaller than upstream Percona), rootless by default |
 
 ---
@@ -75,7 +75,7 @@ Declare your desired state via Kubernetes custom resources. The operator continu
 | `ImageCatalog` | Cluster-wide image resolution by MySQL major version |
 | `ClusterImageCatalog` | Per-cluster image override catalog |
 
-All resources live under the `mysql.cloudnative-mysql.io/v1alpha1` API group. See the [API Reference](./api-reference.md) for every field.
+All resources live under the `mysql.cnmsql.co/v1alpha1` API group. See the [API Reference](./api-reference.md) for every field.
 
 ---
 

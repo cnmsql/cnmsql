@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,13 +33,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 )
 
 // databaseFinalizer guards the MySQL schema so the reclaim policy can run before
 // the Database object is removed.
-const databaseFinalizer = "mysql.cloudnative-mysql.io/database"
+const databaseFinalizer = "mysql.cnmsql.co/database"
 
 const reclaimDelete = "delete"
 
@@ -53,10 +53,10 @@ type DatabaseReconciler struct {
 	ControlClient InstanceControlClient
 }
 
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=databases,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=databases/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=databases/finalizers,verbs=update
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databases,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch

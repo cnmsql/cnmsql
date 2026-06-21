@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,17 +26,17 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 var clusterlog = logf.Log.WithName("cluster-status-validator")
 
-// +kubebuilder:webhook:path=/validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status,mutating=false,failurePolicy=fail,sideEffects=None,admissionReviewVersions=v1,groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=update,versions=v1alpha1,name=vclusterstatus-v1alpha1.cloudnative-mysql.io
+// +kubebuilder:webhook:path=/validate-mysql-cnmsql-io-v1alpha1-cluster-status,mutating=false,failurePolicy=fail,sideEffects=None,admissionReviewVersions=v1,groups=mysql.cnmsql.co,resources=clusters,verbs=update,versions=v1alpha1,name=vclusterstatus-v1alpha1.cnmsql.co
 
 // SetupClusterWebhookWithManager registers the validating webhook for Cluster status updates.
 func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
 	mgr.GetWebhookServer().Register(
-		"/validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status",
+		"/validate-mysql-cnmsql-io-v1alpha1-cluster-status",
 		&admission.Webhook{
 			Handler: &ClusterStatusValidator{Decoder: admission.NewDecoder(mgr.GetScheme())},
 		},

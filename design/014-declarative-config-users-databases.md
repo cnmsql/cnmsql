@@ -13,7 +13,7 @@ thin SQL execution endpoints over its existing mTLS control API.
 
 ## Why
 
-cnmysql currently has:
+cnmsql currently has:
 
 - **Bootstrap-only** database/user creation (`spec.bootstrap.initdb`): runs once
   during cluster initialisation; no ongoing reconciliation.
@@ -348,7 +348,7 @@ type RolePasswordState struct {
 In `cluster_funcs.go`, add `validateManagedRoles()`:
 
 - Reject duplicate `(name, host)` tuples.
-- Reject names matching reserved users (`root`, `mysql.*`, `cnmysql_*`).
+- Reject names matching reserved users (`root`, `mysql.*`, `cnmsql_*`).
 - Reject `host=''`.
 - Reject `Superuser=true` + non-empty `Privileges`.
 - Reject invalid `RequireTLS` values.
@@ -385,7 +385,7 @@ read RBAC), not forwarded by the instance manager.
 ### Controller Scaffold
 
 ```bash
-kubebuilder create api --group mysql.cloudnative-mysql.io --version v1alpha1 \
+kubebuilder create api --group mysql.cnmsql.co --version v1alpha1 \
   --kind Database --controller --resource=false
 ```
 
@@ -425,10 +425,10 @@ it in `cmd/main.go`.)
 The `DatabaseReconciler` needs:
 
 ```go
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=databases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=databases/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=databases/finalizers,verbs=update
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 ```
 

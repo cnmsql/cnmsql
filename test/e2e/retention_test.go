@@ -81,7 +81,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 
 		By("nudging a reconcile so the retention pass runs promptly")
 		_, err = kubectl("annotate", "cluster", retCluster, "-n", testNamespace,
-			"cloudnative-mysql.io/retention-nudge="+fmt.Sprint(time.Now().Unix()), "--overwrite")
+			"cnmsql.co/retention-nudge="+fmt.Sprint(time.Now().Unix()), "--overwrite")
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the stale backup directory is GC'd")
@@ -126,7 +126,7 @@ func mcObjectExists(key string) bool {
 }
 
 func retentionClusterManifest(name, policy string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s

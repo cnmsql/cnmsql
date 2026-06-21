@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 )
 
 // InstanceController is the behaviour the HTTP layer drives. It is implemented
@@ -141,7 +141,7 @@ func HealthHandler(controller InstanceController) http.Handler {
 // ManagerHashHeader carries the SHA-256 the streamed instance-manager binary
 // must hash to, so the receiving manager can reject a corrupted or mismatched
 // upload before replacing its own binary.
-const ManagerHashHeader = "X-CNMySQL-Manager-Hash"
+const ManagerHashHeader = "X-CNMSQL-Manager-Hash"
 
 // ErrInvalidInstanceManagerBinary is returned when a streamed instance-manager
 // binary does not hash to the expected value. It maps to a 400 so the operator
@@ -149,7 +149,7 @@ const ManagerHashHeader = "X-CNMySQL-Manager-Hash"
 var ErrInvalidInstanceManagerBinary = errors.New("invalid instance manager binary")
 
 // upgradeManagerHandler streams the request body (a new instance-manager binary)
-// to the controller, which validates it against the X-CNMySQL-Manager-Hash header
+// to the controller, which validates it against the X-CNMSQL-Manager-Hash header
 // then re-execs in place. A hash mismatch is a 400; anything else is a 500.
 func upgradeManagerHandler(controller InstanceController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

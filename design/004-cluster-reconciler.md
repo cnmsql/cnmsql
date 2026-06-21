@@ -58,12 +58,12 @@ Stable, predictable names so future milestones can extend the same objects inste
 
 Common labels on every owned object:
 
-- `app.kubernetes.io/name=cnmysql`
+- `app.kubernetes.io/name=cnmsql`
 - `app.kubernetes.io/instance=<cluster>`
 - `app.kubernetes.io/component=mysql`
-- `mysql.cloudnative-mysql.io/cluster=<cluster>`
-- `mysql.cloudnative-mysql.io/instance=<cluster>-1`
-- `mysql.cloudnative-mysql.io/role=primary`
+- `mysql.cnmsql.co/cluster=<cluster>`
+- `mysql.cnmsql.co/instance=<cluster>-1`
+- `mysql.cnmsql.co/role=primary`
 
 ### Reconciliation Loop
 
@@ -114,7 +114,7 @@ Updates should be idempotent and conflict-aware. Re-fetch before status updates,
 
 - M3 depends on cert-manager for TLS from the beginning (not hand-generated self-signed material).
 - The Pod runs `initdb` through the manager's `instance run` command owning first-boot initialization where supported; otherwise an init container for `manager instance initdb` guarded by a data-dir marker.
-- Default development image: when neither `imageName` nor `imageCatalogRef` is set, M3 uses `cnmysql-instance:8.0`. The CR stays CNPG-like: users select an image directly or a catalog major, and the reconciler derives the exact manager runtime version from the selected image tag (`8.0` → `8.0.46`, `8.4` → `8.4.0`, etc.). Production users should set an explicit image or catalog.
+- Default development image: when neither `imageName` nor `imageCatalogRef` is set, M3 uses `cnmsql-instance:8.0`. The CR stays CNPG-like: users select an image directly or a catalog major, and the reconciler derives the exact manager runtime version from the selected image tag (`8.0` → `8.0.46`, `8.4` → `8.4.0`, etc.). Production users should set an explicit image or catalog.
 
 ## Verification
 

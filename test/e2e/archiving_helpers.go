@@ -14,8 +14,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // archiveVersions is the set of Percona versions the continuous-archiving specs
@@ -67,7 +67,7 @@ var instanceImageRepo = func() string {
 	if v := strings.TrimSpace(os.Getenv("E2E_INSTANCE_IMAGE_REPO")); v != "" {
 		return v
 	}
-	return "ghcr.io/cloudnative-mysql/cloudnative-mysql-instance"
+	return "ghcr.io/cnmsql/cnmsql-instance"
 }()
 
 // setupMC deploys a long-lived mc (MinIO client) toolbox Pod with the bucket
@@ -213,7 +213,7 @@ func archivingDiagnostics(cluster string) string {
 // and small max binlog size keep the archiving loop active during the short
 // lifetime of an e2e spec.
 func continuousArchivingClusterManifest(name, version string, instances int) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

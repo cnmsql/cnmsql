@@ -1,12 +1,12 @@
 ---
 title: "Physical Backup and Recovery"
-description: "How cloudnative-mysql creates XtraBackup archives, uploads them to S3-compatible storage, and restores clusters."
+description: "How cnmsql creates XtraBackup archives, uploads them to S3-compatible storage, and restores clusters."
 sidebar_position: 11
 ---
 
 # Physical backup and recovery architecture
 
-cloudnative-mysql physical backups are Percona XtraBackup streams stored in an
+cnmsql physical backups are Percona XtraBackup streams stored in an
 S3-compatible object store. A `Backup` object is immutable once completed: it
 selects a source instance, creates a worker Job, uploads a single xbstream
 archive plus metadata, and records enough status for a future Cluster recovery.
@@ -42,7 +42,7 @@ the Backup object:
 spec:
   backup:
     objectStore:
-      bucket: cloudnative-mysql-backups
+      bucket: cnmsql-backups
       path: production
       endpoint: http://minio.minio.svc:9000
       region: us-east-1
@@ -68,7 +68,7 @@ A one-shot Backup references its Cluster. Use the plugin for a quick on-demand
 backup with sensible defaults:
 
 ```bash
-kubectl cnmysql backup cluster-sample
+kubectl cnmsql backup cluster-sample
 ```
 
 This creates a `Backup` object with `xtrabackup` method, `prefer-standby`
@@ -78,7 +78,7 @@ data path.
 You can also define a Backup by hand when you need more control:
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Backup
 metadata:
   name: backup-sample
@@ -95,7 +95,7 @@ available and falls back to the primary. `target: primary` requires the current
 primary.
 
 The reconciler creates a Kubernetes Job owned by the Backup. The Job uses the
-same cloudnative-mysql instance image as the Cluster so the XtraBackup version matches the
+same cnmsql instance image as the Cluster so the XtraBackup version matches the
 server version. Object-store credentials are mounted into the short-lived Job,
 not into the long-running database Pods.
 
@@ -116,7 +116,7 @@ captured as structured logs.
 
 ## Object layout
 
-cloudnative-mysql uses deterministic, inspectable object keys:
+cnmsql uses deterministic, inspectable object keys:
 
 ```text
 <path>/<cluster>/<backup-name>/<backup-id>/backup.xbstream
@@ -127,7 +127,7 @@ cloudnative-mysql uses deterministic, inspectable object keys:
 method, backup ID, object key, timing, size, checksum, and GTID/binlog metadata
 when available.
 
-SHA256 in cloudnative-mysql metadata is the integrity source of truth. S3 ETag may be
+SHA256 in cnmsql metadata is the integrity source of truth. S3 ETag may be
 useful provider metadata, but it is not used as the backup checksum.
 
 ## Backup status
@@ -155,13 +155,13 @@ object or use a `ScheduledBackup`.
 A new Cluster can recover from a completed Backup:
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: restored-cluster
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+  imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
   storage:
     size: 10Gi
   bootstrap:
@@ -170,7 +170,7 @@ spec:
         name: backup-sample
   backup:
     objectStore:
-      bucket: cloudnative-mysql-backups
+      bucket: cnmsql-backups
       path: production
       endpoint: http://minio.minio.svc:9000
       credentials:
@@ -205,13 +205,13 @@ S3 key prefix the backups were stored under. No source `Cluster` or `Backup` CR
 needs to exist anywhere.
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: recovered-cluster
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+  imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
   storage:
     size: 10Gi
   bootstrap:
@@ -223,7 +223,7 @@ spec:
   externalClusters:
     - name: prod-cluster
       objectStore:
-        bucket: cloudnative-mysql-backups
+        bucket: cnmsql-backups
         path: production
         endpoint: http://minio.minio.svc:9000
         credentials:
@@ -271,11 +271,11 @@ Kubernetes primitives.
   them.
 - Preserve both `backup.xbstream` and `metadata.json`; recovery needs metadata
   as well as bytes.
-- Use the same major-version-compatible cloudnative-mysql instance image for recovery.
+- Use the same major-version-compatible cnmsql instance image for recovery.
 - Prefer standby backups for large clusters when replicas can absorb the backup
   load.
 - Object-store retention and immutability are external responsibilities until
-  cloudnative-mysql retention GC is implemented.
+  cnmsql retention GC is implemented.
 - Physical backup alone restores only to the backup consistency point. Enable
   continuous archiving when PITR is required.
 

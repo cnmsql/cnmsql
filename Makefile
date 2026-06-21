@@ -1,9 +1,9 @@
 # Image URL to use all building/pushing image targets.
-# Defaults to ghcr.io/CloudNative-MySQL/cloudnative-mysql tagged with the current commit, with a
+# Defaults to ghcr.io/cnmsql/cnmsql tagged with the current commit, with a
 # "-dirty" suffix appended when the working tree has uncommitted changes.
 # ("+" is not a valid character in an OCI image tag, so we use "-dirty".)
 COMMIT_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet 2>/dev/null || echo "-dirty")
-IMG ?= ghcr.io/cloudnative-mysql/cloudnative-mysql:$(COMMIT_TAG)
+IMG ?= ghcr.io/cnmsql/cnmsql:$(COMMIT_TAG)
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -82,7 +82,7 @@ test-integration: ## Run the instance-manager integration tests against real Per
 # - KUBECTL_KUBERC=true
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= cloudnative-mysql-test-e2e
+KIND_CLUSTER ?= cnmsql-test-e2e
 # K8S_VERSION pins the kindest/node image (e.g. K8S_VERSION=v1.34.0) so the e2e
 # matrix can exercise a specific Kubernetes version. Empty uses Kind's default.
 K8S_VERSION ?=
@@ -185,21 +185,21 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
-# kubectl-cnmysql plugin.
-PLUGIN_PKG := github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd
+# kubectl-cnmsql plugin.
+PLUGIN_PKG := github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/cmd
 PLUGIN_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PLUGIN_COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 PLUGIN_DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 PLUGIN_LDFLAGS := -X $(PLUGIN_PKG).Version=$(PLUGIN_VERSION) -X $(PLUGIN_PKG).Commit=$(PLUGIN_COMMIT) -X $(PLUGIN_PKG).BuildDate=$(PLUGIN_DATE)
 
 .PHONY: build-plugin
-build-plugin: fmt vet ## Build the kubectl-cnmysql plugin binary.
-	go build -ldflags "$(PLUGIN_LDFLAGS)" -o bin/kubectl-cnmysql ./cmd/kubectl-cnmysql
+build-plugin: fmt vet ## Build the kubectl-cnmsql plugin binary.
+	go build -ldflags "$(PLUGIN_LDFLAGS)" -o bin/kubectl-cnmsql ./cmd/kubectl-cnmsql
 
 .PHONY: install-plugin
 install-plugin: build-plugin ## Install the plugin + completion shim onto your PATH (~/.local/bin).
-	install -D -m 0755 bin/kubectl-cnmysql $(HOME)/.local/bin/kubectl-cnmysql
-	install -D -m 0755 hack/kubectl_complete-cnmysql $(HOME)/.local/bin/kubectl_complete-cnmysql
+	install -D -m 0755 bin/kubectl-cnmsql $(HOME)/.local/bin/kubectl-cnmsql
+	install -D -m 0755 hack/kubectl_complete-cnmsql $(HOME)/.local/bin/kubectl_complete-cnmsql
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -213,7 +213,7 @@ docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
 # The slim instance images are built and published from the separate containers
-# repo (ghcr.io/cloudnative-mysql/cloudnative-mysql-instance). The operator and
+# repo (ghcr.io/cnmsql/cnmsql-instance). The operator and
 # e2e suite consume those published images; they are no longer built here.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
@@ -227,10 +227,10 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name cloudnative-mysql-builder
-	$(CONTAINER_TOOL) buildx use cloudnative-mysql-builder
+	- $(CONTAINER_TOOL) buildx create --name cnmsql-builder
+	$(CONTAINER_TOOL) buildx use cnmsql-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm cloudnative-mysql-builder
+	- $(CONTAINER_TOOL) buildx rm cnmsql-builder
 	rm Dockerfile.cross
 
 # OVERLAY selects the deployment topology: config/default (cluster-wide, default)

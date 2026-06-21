@@ -1,18 +1,18 @@
-# 016 — kubectl cnmysql CLI Plugin
+# 016 — kubectl cnmsql CLI Plugin
 
 **Status:** done
 **Milestone:** M16
 
-A `kubectl` plugin for managing cnmysql clusters, modeled on CNPG's `kubectl cnpg`. Provides cluster health at-a-glance, guarded state mutations, and admin commands.
+A `kubectl` plugin for managing cnmsql clusters, modeled on CNPG's `kubectl cnpg`. Provides cluster health at-a-glance, guarded state mutations, and admin commands.
 
-**Goal:** Build a `kubectl` plugin (`kubectl cnmysql`) that gives operators a
-first-class CLI for managing and administering cnmysql clusters. Modeled on
+**Goal:** Build a `kubectl` plugin (`kubectl cnmsql`) that gives operators a
+first-class CLI for managing and administering cnmsql clusters. Modeled on
 CNPG's `kubectl cnpg` plugin, leveraging the same communication channels already
-used by the cnmysql operator.
+used by the cnmsql operator.
 
 ## Why
 
-Currently, cnmysql administration requires raw `kubectl` commands, `kubectl
+Currently, cnmsql administration requires raw `kubectl` commands, `kubectl
 patch` on status subresources, direct HTTP/mTLS calls to instance managers, or
 SQL shells inside pods. This is usable but slow and error-prone. A dedicated
 plugin provides:
@@ -30,12 +30,12 @@ plugin provides:
 
 ### Plugin entry point
 
-**Binary:** `cmd/kubectl-cnmysql/` (separate binary, built by Makefile).
+**Binary:** `cmd/kubectl-cnmsql/` (separate binary, built by Makefile).
 
 **Framework:** Cobra + `k8s.io/cli-runtime` for kubeconfig/context/namespace
 auto-discovery (same as `kubectl`, `kubectl cert-manager`, `kubectl cnpg`).
 
-**Build target:** `kubectl-cnmysql` binary deployed in `$PATH` so `kubectl cnmysql
+**Build target:** `kubectl-cnmsql` binary deployed in `$PATH` so `kubectl cnmsql
 <cmd>` works natively.
 
 ### Communication channels (three tiers)
@@ -61,7 +61,7 @@ localhost connection. TLS material comes from the operator-managed secrets
 ### Project layout
 
 ```
-cmd/kubectl-cnmysql/
+cmd/kubectl-cnmsql/
   main.go                          # Cobra root, plugin setup
   plugin/
     client.go                      # k8s client + config init
@@ -95,7 +95,7 @@ cmd/kubectl-cnmysql/
 ### Command tree
 
 ```
-kubectl cnmysql
+kubectl cnmsql
 ├── status CLUSTER                    [quick-glance health overview]
 ├── logs CLUSTER [INSTANCE]           [stream logs, follow]
 ├── mysql CLUSTER [INSTANCE]          [shell into MySQL pod]
@@ -191,7 +191,7 @@ machine (documented as a plugin prerequisite).
 - Reads root password from operator-managed secret (via T1) and passes it via
   the `MYSQL_PWD` environment variable — **never** on the command line.
 - Passes through `--` after the instance name to pass extra args to mysql
-  (e.g., `kubectl cnmysql mysql mycluster -- --batch -e "SELECT 1"`).
+  (e.g., `kubectl cnmsql mysql mycluster -- --batch -e "SELECT 1"`).
 
 ### 4. `promote CLUSTER INSTANCE` — Planned switchover
 
@@ -219,8 +219,8 @@ service routing, role labels, and other replicas).
 debugging, or protecting a diverged replica).
 
 **Mechanism:**
-- `fence on`: `kubectl annotate pod <instance> cnmysql.cloudnative-mysql.io/fencing=true`
-- `fence off`: `kubectl annotate pod <instance> cnmysql.cloudnative-mysql.io/fencing-`
+- `fence on`: `kubectl annotate pod <instance> cnmsql.cnmsql.co/fencing=true`
+- `fence off`: `kubectl annotate pod <instance> cnmsql.cnmsql.co/fencing-`
 
 The operator's `reconcileFencing` picks up the annotation and:
 - Removes the instance from all routing services.
@@ -248,7 +248,7 @@ The operator's `reconcileFencing` picks up the annotation and:
 **Purpose:** Restart all instances (rolling) or a specific one.
 
 **Mechanism:**
-- Cluster-wide: writes a `cnmysql.cloudnative-mysql.io/restart` annotation
+- Cluster-wide: writes a `cnmsql.cnmsql.co/restart` annotation
   with a RFC3339 timestamp on the Cluster CR. The reconciler performs a
   rolling restart (primary last if `primaryUpdateMethod=switchover`,
   immediate otherwise).
@@ -262,7 +262,7 @@ The operator's `reconcileFencing` picks up the annotation and:
 
 **Purpose:** Apply `spec.mysql.parameters` changes without restarting.
 
-**Mechanism:** Writes a `cnmysql.cloudnative-mysql.io/reload` annotation on
+**Mechanism:** Writes a `cnmsql.cnmsql.co/reload` annotation on
 the Cluster CR with a RFC3339 timestamp. The reconciler re-renders my.cnf
 ConfigMaps and triggers the instance manager to reload without restarting
 mysqld (via unix-socket control connection: `SET GLOBAL ...` for supported
@@ -391,10 +391,10 @@ and send it only in the JSON request body over the mTLS port-forward.
 
 **Subcommands:**
 ```
-kubectl cnmysql user create CLUSTER --name=app_user --host=% --privileges="SELECT,INSERT" --on="mydb.*" --password-stdin
-kubectl cnmysql user alter CLUSTER --name=app_user --host=% --tls=x509
-kubectl cnmysql user drop CLUSTER --name=app_user --host=%
-kubectl cnmysql user list CLUSTER
+kubectl cnmsql user create CLUSTER --name=app_user --host=% --privileges="SELECT,INSERT" --on="mydb.*" --password-stdin
+kubectl cnmsql user alter CLUSTER --name=app_user --host=% --tls=x509
+kubectl cnmsql user drop CLUSTER --name=app_user --host=%
+kubectl cnmsql user list CLUSTER
 ```
 
 ### 16. `database create|drop|list CLUSTER` — Database management
@@ -410,9 +410,9 @@ control API.
 
 **Subcommands:**
 ```
-kubectl cnmysql database create CLUSTER --name=myapp --charset=utf8mb4 --collation=utf8mb4_unicode_ci
-kubectl cnmysql database drop CLUSTER --name=myapp
-kubectl cnmysql database list CLUSTER
+kubectl cnmsql database create CLUSTER --name=myapp --charset=utf8mb4 --collation=utf8mb4_unicode_ci
+kubectl cnmsql database drop CLUSTER --name=myapp
+kubectl cnmsql database list CLUSTER
 ```
 
 ### 17. `report operator|cluster` — Diagnostic bundles
@@ -420,7 +420,7 @@ kubectl cnmysql database list CLUSTER
 **Purpose:** Collect diagnostic information into a ZIP file for support.
 
 **Mechanism:**
-- `report operator`: Lists the cnmysql operator deployment(s), operator
+- `report operator`: Lists the cnmsql operator deployment(s), operator
   logs, related events, and cluster CRDs (T1).
 - `report cluster CLUSTER`: Collects Cluster CR, Backup CRs,
   ScheduledBackup CRs, pods, PVCs, services, events, instance logs, and
@@ -455,7 +455,7 @@ would be natural additions:
 ## Implementation order
 
 ### Phase 1 — Core infrastructure (M16.1)
-1. `cmd/kubectl-cnmysql/main.go` — Cobra root, kubeconfig setup.
+1. `cmd/kubectl-cnmsql/main.go` — Cobra root, kubeconfig setup.
 2. `plugin/client.go` — controller-runtime client + kubernetes typed client.
 3. `plugin/tls.go` — mTLS HTTP client factory (reads secrets, builds
    `tls.Config`, targets `https://<pod>.<ns>.svc:8080`).
@@ -503,7 +503,7 @@ would be natural additions:
 
 ## Conventions
 
-- **Plugin binary name:** `kubectl-cnmysql` → invoked as `kubectl cnmysql`.
+- **Plugin binary name:** `kubectl-cnmsql` → invoked as `kubectl cnmsql`.
 - **TLS secrets for mTLS:** `<cluster>-ca` (CA cert), `<cluster>-client-tls`
   (client cert/key).
 - **Instance manager access:** SPDY port-forward to the Pod's `control` port
@@ -511,10 +511,10 @@ would be natural additions:
   pinned to `<instanceName>.<namespace>.svc`.
 - **Control port:** 8080 (mTLS), **health port:** 8081, **metrics port:** 9187.
 - **Kubernetes annotations used:**
-  - Fencing: `cnmysql.cloudnative-mysql.io/fencing: "true"`
-  - Skip delete guard: `cnmysql.cloudnative-mysql.io/skipDeleteGuard: "true"`
-  - Reload trigger: `cnmysql.cloudnative-mysql.io/reload: "<rfc3339>"`
-  - Restart trigger: `cnmysql.cloudnative-mysql.io/restart: "<rfc3339>"`
+  - Fencing: `cnmsql.cnmsql.co/fencing: "true"`
+  - Skip delete guard: `cnmsql.cnmsql.co/skipDeleteGuard: "true"`
+  - Reload trigger: `cnmsql.cnmsql.co/reload: "<rfc3339>"`
+  - Restart trigger: `cnmsql.cnmsql.co/restart: "<rfc3339>"`
 - **Cluster short names:** `mysql`, `mysqlcluster`.
 - **Backup short name:** `mybackup`.
 - **ScheduledBackup short name:** `myscheduledbackup`.
@@ -540,8 +540,8 @@ Existing dependencies in `go.mod` that do not need new imports:
 ## Verification
 
 Each phase should pass:
-- `go build ./cmd/kubectl-cnmysql/...`
-- `go vet ./cmd/kubectl-cnmysql/...`
+- `go build ./cmd/kubectl-cnmsql/...`
+- `go vet ./cmd/kubectl-cnmsql/...`
 - `make lint-fix` (0 issues on plugin code)
-- `go test ./cmd/kubectl-cnmysql/...` (unit tests for client setup, helpers, formatters)
-- Manual smoke tests on a Kind cluster with a running cnmysql cluster
+- `go test ./cmd/kubectl-cnmsql/...` (unit tests for client setup, helpers, formatters)
+- Manual smoke tests on a Kind cluster with a running cnmsql cluster

@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   goreleaser:
-    name: Release kubectl-cnmysql
+    name: Release kubectl-cnmsql
     runs-on: ubuntu-latest
     permissions:
       contents: write

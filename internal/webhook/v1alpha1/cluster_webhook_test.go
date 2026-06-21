@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func TestClusterStatusValidator(t *testing.T) {

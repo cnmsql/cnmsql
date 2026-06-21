@@ -20,7 +20,7 @@ env:
 
 jobs:
   build-operator:
-    name: Operator image (cloudnative-mysql)
+    name: Operator image (cnmsql)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,7 +48,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cloudnative-mysql
+        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmsql
         tags: |
           type=ref,event=branch
           type=ref,event=tag

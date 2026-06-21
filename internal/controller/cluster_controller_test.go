@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,11 +38,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -307,7 +307,7 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(&mysqlv1alpha1.ImageCatalog{
 			ObjectMeta: metav1.ObjectMeta{Name: "images", Namespace: "default"},
 			Spec: mysqlv1alpha1.ImageCatalogSpec{Images: []mysqlv1alpha1.CatalogImage{
-				{Major: 8, Image: "registry.example/cloudnative-mysql:8.0"},
+				{Major: 8, Image: "registry.example/cnmsql:8.0"},
 			}},
 		}).Build(),
 		Scheme: scheme,
@@ -317,7 +317,7 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Image != "registry.example/cloudnative-mysql:8.0" {
+	if plan.Image != "registry.example/cnmsql:8.0" {
 		t.Fatalf("image = %q", plan.Image)
 	}
 	if plan.ServerVersion != defaultMySQL80ServerVersion {
@@ -328,10 +328,10 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 func TestResolveServerVersionFromImageTag(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
-		"ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.0": defaultMySQL80ServerVersion,
-		"ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4": defaultMySQL84ServerVersion,
-		"ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:9.x": defaultMySQL9xServerVersion,
-		"registry/cloudnative-mysql:8.0.46-37":                     "8.0.46-37",
+		"ghcr.io/cnmsql/cnmsql-instance:8.0": defaultMySQL80ServerVersion,
+		"ghcr.io/cnmsql/cnmsql-instance:8.4": defaultMySQL84ServerVersion,
+		"ghcr.io/cnmsql/cnmsql-instance:9.x": defaultMySQL9xServerVersion,
+		"registry/cnmsql:8.0.46-37":                     "8.0.46-37",
 	}
 
 	for image, want := range tests {
@@ -347,7 +347,7 @@ func TestResolveServerVersionFromImageTag(t *testing.T) {
 
 func TestResolveServerVersionRejectsMySQL56(t *testing.T) {
 	t.Parallel()
-	if _, err := resolveServerVersion("ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:5.6"); err == nil {
+	if _, err := resolveServerVersion("ghcr.io/cnmsql/cnmsql-instance:5.6"); err == nil {
 		t.Fatal("expected MySQL 5.6 image tag to be unsupported")
 	}
 }
@@ -946,7 +946,7 @@ func drainEvents(events <-chan string, phase string) bool {
 
 func testPlan() clusterPlan {
 	return clusterPlan{
-		Image:              "ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.0",
+		Image:              "ghcr.io/cnmsql/cnmsql-instance:8.0",
 		ServerVersion:      "8.0.46",
 		Instances:          1,
 		RootSecretName:     "demo-root",

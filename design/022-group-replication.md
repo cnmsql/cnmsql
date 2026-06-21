@@ -380,7 +380,7 @@ than guessing. This is opt-in/manual-confirmed in v1 (see Quorum guards).
 New members are provisioned by `instance join` as today, but the join target is
 the group, not a single source:
 
-- Reuse the existing replication user (`cloudnative-mysql_repl`) extended with the
+- Reuse the existing replication user (`cnmsql_repl`) extended with the
   privileges GR recovery needs (`REPLICATION SLAVE`, `BACKUP_ADMIN`,
   `CLONE_ADMIN`, `GROUP_REPLICATION_*` as required), configured on the
   `group_replication_recovery` channel via `CHANGE REPLICATION SOURCE TO ... FOR
@@ -485,7 +485,7 @@ what:
    "my role" would miss a membership change that does not touch this member. So the
    in-Pod manager publishes a doorbell whenever **any** part of its locally
    observed GR snapshot changes — a single advisory annotation on its *own* Pod,
-   `mysql.cloudnative-mysql.io/gr-observed`, whose value is a short fingerprint of
+   `mysql.cnmsql.co/gr-observed`, whose value is a short fingerprint of
    `(primaryMemberUUID, viewId, myMemberState, hasQuorum)`. It bumps on
    election/switchover, join/leave/expel, and quorum gain/loss alike.
    `Owns(&Pod{})` turns the bump into an immediate reconcile. The annotation is a
@@ -515,8 +515,8 @@ exactly **two** annotations on top of the existing set:
 
 | Annotation | On | Written by | Purpose / operator reaction |
 |---|---|---|---|
-| `mysql.cloudnative-mysql.io/gr-observed` | instance Pod | in-Pod manager (own Pod, `resourceNames`-scoped) | Doorbell. Bumps on any GR snapshot change (primary, view, member state, quorum). Wakes a reconcile; value is a hint, never trusted. |
-| `mysql.cloudnative-mysql.io/force-quorum-recovery` | Cluster | human / kubectl plugin | Explicit, confirmed opt-in to the guarded `force_members` / total-outage re-bootstrap path. `For(&Cluster{})` triggers the reconcile; the operator still computes and proves the safe survivor set before acting. |
+| `mysql.cnmsql.co/gr-observed` | instance Pod | in-Pod manager (own Pod, `resourceNames`-scoped) | Doorbell. Bumps on any GR snapshot change (primary, view, member state, quorum). Wakes a reconcile; value is a hint, never trusted. |
+| `mysql.cnmsql.co/force-quorum-recovery` | Cluster | human / kubectl plugin | Explicit, confirmed opt-in to the guarded `force_members` / total-outage re-bootstrap path. `For(&Cluster{})` triggers the reconcile; the operator still computes and proves the safe survivor set before acting. |
 
 Existing annotations are reused unchanged under GR and already trigger reconciles:
 `fencing` (now meaning `STOP GROUP_REPLICATION`), `restart`, `reload`, `reinit`
@@ -755,14 +755,14 @@ tests. GR stays behind `mode: groupReplication` throughout.
   via the existing prefer-standby source selection),
   monitoring (**done** — the operator publishes each GR cluster's authoritative
   `status.groupReplication` on its existing `/metrics` endpoint via a collector on
-  the controller-runtime registry: `cnmysql_cluster_gr_has_quorum`,
+  the controller-runtime registry: `cnmsql_cluster_gr_has_quorum`,
   `_gr_bootstrapped`, `_gr_view_size` (the quorum denominator), and
   `_gr_members{state}` counts per member state; reads the cached client at scrape
   time, so no extra reconcile or in-Pod query, and async clusters emit nothing),
-  kubectl plugin GR commands (**done** — `kubectl cnmysql group status` renders
+  kubectl plugin GR commands (**done** — `kubectl cnmsql group status` renders
   the operator's cross-validated group view (group name, bootstrapped, quorum,
   primary, per-member state/role/reachability) and refuses against async
-  clusters; `kubectl cnmysql group recover` requests a guarded quorum recovery by
+  clusters; `kubectl cnmsql group recover` requests a guarded quorum recovery by
   stamping the `force-quorum-recovery` annotation, gated on the same
   bootstrapped-and-quorum-lost precondition the operator enforces, behind a
   consequence summary + confirmation. The documentation contract and safety
@@ -884,7 +884,7 @@ The four hazards and their guards:
    offering XtraBackup pre-seed (faster for big datasets, more moving parts)?
    **Resolved:** Clone-first shipped; XtraBackup pre-seed is deferred.
 2. **Quorum recovery UX** — annotation-only, kubectl-only, or both?
-   **Resolved:** Both — annotation is the source of truth; `kubectl cnmysql group recover` is the ergonomic front.
+   **Resolved:** Both — annotation is the source of truth; `kubectl cnmsql group recover` is the ergonomic front.
 3. **Even instance counts** — warn only, or reject?
    **Resolved:** Warn (not reject); users legitimately run 2 for cost during scale-up.
 4. **`group_replication_consistency` default** — `BEFORE_ON_PRIMARY_FAILOVER`
@@ -905,7 +905,7 @@ All seven milestones (M-GR.1 through M-GR.7) are implemented and verified:
 - **M-GR.4** (Planned switchover): `set_as_primary` UDF, `maxSwitchoverDelay` bound, `gr-observed` doorbell annotation for event-driven handover detection.
 - **M-GR.5** (Observed failover): Group auto-elects on primary loss; operator mirrors via readiness/doorbell events; async failover loop, lease, and semi-sync disabled for GR.
 - **M-GR.6** (Fencing and quorum guards): GR fence via `STOP GROUP_REPLICATION`, quorum-preserving PDB (`maxUnavailable = N - quorum`), scale-down and fence quorum guards, quorum-loss detection + `Blocked` surfacing, guarded `force_members` recovery with GTID-dominant survivor selection.
-- **M-GR.7** (Lifecycle): Total-outage re-bootstrap with GTID-dominance safety bar, backup/restore into a fresh group, rolling upgrades preserving quorum, operator metrics (`cnmysql_cluster_gr_*`), kubectl plugin (`group status`, `group recover` with docs/safety contract), full E2E matrix + async regression suite.
+- **M-GR.7** (Lifecycle): Total-outage re-bootstrap with GTID-dominance safety bar, backup/restore into a fresh group, rolling upgrades preserving quorum, operator metrics (`cnmsql_cluster_gr_*`), kubectl plugin (`group status`, `group recover` with docs/safety contract), full E2E matrix + async regression suite.
 
 Key files:
 - `internal/controller/groupreplication/` — topology strategy implementation (observation, provisioning, quorum, RBAC, failover/switchover/lease/semisync no-ops)
@@ -915,7 +915,7 @@ Key files:
 - `pkg/management/mysql/groupreplication/` — in-Pod GR manager (bootstrap, start, stop, force members, group view, clone)
 - `pkg/management/mysql/instance/rolereconciler/reconciler_gr.go` — in-Pod GR role reconciler
 - `internal/webhook/v1alpha1/cluster_webhook.go` — status-authorization webhook with GR branch
-- `cmd/kubectl-cnmysql/cmd/group.go` — `group status` and `group recover` commands
+- `cmd/kubectl-cnmsql/cmd/group.go` — `group status` and `group recover` commands
 - `internal/controller/gr_metrics.go` — operator-level Prometheus metrics
 - `docs/src/group-replication.md` — user-facing documentation
 

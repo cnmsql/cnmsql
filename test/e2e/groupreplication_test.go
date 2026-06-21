@@ -15,7 +15,7 @@ import (
 // grClusterManifest renders a Group Replication Cluster manifest. M-GR.2 covers a
 // single-member group (instances: 1); M-GR.3 a 3-member group (instances: 3).
 func grClusterManifest(name string, instances int) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

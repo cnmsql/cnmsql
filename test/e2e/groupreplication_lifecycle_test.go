@@ -165,7 +165,7 @@ var _ = Describe("Group Replication lifecycle", Ordered, func() {
 
 		By("requesting a rolling restart via the restart annotation")
 		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			"cloudnative-mysql.cloudnative-mysql.io/restart="+time.Now().UTC().Format(time.RFC3339), "--overwrite")
+			"cnmsql.cnmsql.co/restart="+time.Now().UTC().Format(time.RFC3339), "--overwrite")
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying every member's Pod is recreated (new UID) and the group regains all three ONLINE")
@@ -226,7 +226,7 @@ var _ = Describe("Group Replication lifecycle", Ordered, func() {
 
 		By("verifying the operator re-forms the same group and restores quorum")
 		Eventually(func(g Gomega) {
-			ann, err := clusterField(cluster, `{.metadata.annotations.cloudnative-mysql\.cloudnative-mysql\.io/force-quorum-recovery}`)
+			ann, err := clusterField(cluster, `{.metadata.annotations.cnmsql\.cnmsql\.io/force-quorum-recovery}`)
 			g.Expect(err).NotTo(HaveOccurred())
 			if ann == "yes" {
 				return // still pending; the operator has not processed it yet

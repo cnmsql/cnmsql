@@ -1,4 +1,4 @@
-# cloudnative-mysql - AI Agent Guide
+# cnmsql - AI Agent Guide
 
 > **Primary instruction file:** `INSTRUCTION.md` in the project root contains the comprehensive guide for all AI agents working on this project - project overview, key decisions, features, milestone status, workflow conventions, operator upgrade architecture, and detailed references. This file supplements with kubebuilder-specific CLI details and reference materials.
 

@@ -11,13 +11,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
+	"github.com/cnmsql/cnmsql/test/utils"
 )
 
 // This spec exercises the M-GR.7 monitoring path: the operator publishes each
 // Group Replication cluster's authoritative status on its own /metrics endpoint
 // via the controller-runtime registry. With a GR cluster in scope, scraping the
-// operator metrics must expose the cnmysql_cluster_gr_* family labelled with the
+// operator metrics must expose the cnmsql_cluster_gr_* family labelled with the
 // cluster, proving the collector rides the existing secure endpoint.
 var _ = Describe("Group Replication operator metrics", Ordered, func() {
 	const (
@@ -25,7 +25,7 @@ var _ = Describe("Group Replication operator metrics", Ordered, func() {
 		instances = 1
 		// A dedicated binding so this spec is independent of the operator-deploy
 		// suite that creates the shared metrics binding.
-		grMetricsBinding = "cloudnative-mysql-gr-metrics-binding"
+		grMetricsBinding = "cnmsql-gr-metrics-binding"
 		grCurlPod        = "gr-curl-metrics"
 	)
 
@@ -45,7 +45,7 @@ var _ = Describe("Group Replication operator metrics", Ordered, func() {
 
 		By("granting the metrics reader role so the scrape is authorized")
 		_, _ = kubectl("create", "clusterrolebinding", grMetricsBinding,
-			"--clusterrole=cloudnative-mysql-metrics-reader",
+			"--clusterrole=cnmsql-metrics-reader",
 			fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName))
 		DeferCleanup(func() {
 			_, _ = kubectl("delete", "clusterrolebinding", grMetricsBinding, "--ignore-not-found")
@@ -105,13 +105,13 @@ var _ = Describe("Group Replication operator metrics", Ordered, func() {
 		By("asserting the GR metric families are present and labelled with the cluster")
 		out, err := kubectl("logs", grCurlPod, "-n", namespace)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(out).To(ContainSubstring("cnmysql_cluster_gr_has_quorum"),
+		Expect(out).To(ContainSubstring("cnmsql_cluster_gr_has_quorum"),
 			"the quorum gauge must be exposed on the operator endpoint")
-		Expect(out).To(ContainSubstring("cnmysql_cluster_gr_members"),
+		Expect(out).To(ContainSubstring("cnmsql_cluster_gr_members"),
 			"the per-state member gauge must be exposed")
 		Expect(out).To(ContainSubstring(`cluster="`+cluster+`"`),
 			"the GR series must be labelled with the cluster name")
-		Expect(out).To(ContainSubstring(`cnmysql_cluster_gr_has_quorum{cluster="`+cluster+`",namespace="`+ns+`"} 1`),
+		Expect(out).To(ContainSubstring(`cnmsql_cluster_gr_has_quorum{cluster="`+cluster+`",namespace="`+ns+`"} 1`),
 			"the operator must report quorum=1 for the ONLINE single-member group")
 	})
 })

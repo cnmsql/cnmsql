@@ -336,7 +336,7 @@ args:
   - --operator-image=$(OPERATOR_IMAGE)
 env:
   - name: OPERATOR_IMAGE
-    value: "cnmysql:latest"  # placeholder, overridden by kustomize/Helm
+    value: "cnmsql:latest"  # placeholder, overridden by kustomize/Helm
 ```
 
 **Modify:** `config/default/kustomization.yaml`

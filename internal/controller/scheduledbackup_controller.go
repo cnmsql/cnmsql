@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,15 +35,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 const (
 	// parentScheduledBackupLabel ties a Backup back to the ScheduledBackup that
 	// created it, regardless of the backupOwnerReference mode.
-	parentScheduledBackupLabel = "mysql.cloudnative-mysql.io/scheduled-backup"
+	parentScheduledBackupLabel = "mysql.cnmsql.co/scheduled-backup"
 	// immediateBackupLabel marks Backups created by the immediate-on-create path.
-	immediateBackupLabel = "mysql.cloudnative-mysql.io/immediate-backup"
+	immediateBackupLabel = "mysql.cnmsql.co/immediate-backup"
 
 	// backupParentScheduledBackupIndex is the field indexer key over the parent
 	// label, used for efficient child-Backup lookups.
@@ -57,10 +57,10 @@ type ScheduledBackupReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=scheduledbackups,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=scheduledbackups/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=backups,verbs=get;list;watch;create
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=scheduledbackups,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=scheduledbackups/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 

@@ -23,7 +23,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,9 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
-	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 )
 
 var (
@@ -70,13 +70,13 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 			return err
 		}
 	}
-	if err := r.ensurePasswordSecret(ctx, cluster, plan.ReplicationSecret, map[string]string{"username": "cloudnative-mysql_repl"}); err != nil {
+	if err := r.ensurePasswordSecret(ctx, cluster, plan.ReplicationSecret, map[string]string{"username": "cnmsql_repl"}); err != nil {
 		return err
 	}
-	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{"username": "cloudnative-mysql_backup"}); err != nil {
+	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{"username": "cnmsql_backup"}); err != nil {
 		return err
 	}
-	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{"username": "cloudnative-mysql_control"})
+	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{"username": "cnmsql_control"})
 }
 
 func (r *ClusterReconciler) ensurePasswordSecret(ctx context.Context, cluster *mysqlv1alpha1.Cluster, name string, data map[string]string) error {
@@ -455,7 +455,7 @@ func roleOf(inst instancePlan) string {
 
 func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName, role string) map[string]string {
 	labels := map[string]string{
-		"app.kubernetes.io/name":      "cloudnative-mysql",
+		"app.kubernetes.io/name":      "cnmsql",
 		"app.kubernetes.io/instance":  cluster.Name,
 		"app.kubernetes.io/component": "mysql",
 		clusterLabel:                  cluster.Name,

@@ -141,7 +141,7 @@ func secretPassword(secretName string) string {
 }
 
 func managedRoleClusterManifest(name, role string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s
@@ -181,7 +181,7 @@ stringData:
 }
 
 func databaseManifest(name, cluster, schema, dbUser, userSecret string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Database
 metadata:
   name: %s

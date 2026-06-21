@@ -13,12 +13,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
+	"github.com/cnmsql/cnmsql/test/utils"
 )
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/cloudnative-mysql:v0.0.1"
+	managerImage = "example.com/cnmsql:v0.0.1"
 	// instanceImage is the local instance image consumed by the sample Cluster.
 	// It tracks sampleVersion so a matrix job pinning E2E_MYSQL_VERSION runs the
 	// whole suite against that one version.
@@ -35,7 +35,7 @@ var (
 // To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting cloudnative-mysql e2e test suite\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting cnmsql e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 

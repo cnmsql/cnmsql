@@ -121,7 +121,7 @@ var _ = Describe("Point-in-time recovery", Ordered, func() {
 // backup and replays archived binlogs up to targetGTID. It points at the same
 // object store (for the binlog archive) but does not re-enable archiving.
 func pitrRecoveryClusterManifest(name, version, backup, targetGTID string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

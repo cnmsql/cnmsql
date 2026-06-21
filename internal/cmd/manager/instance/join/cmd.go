@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/instance"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // NewCommand builds the `instance join` command.

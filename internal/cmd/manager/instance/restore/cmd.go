@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,9 +25,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/binlog"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/instance"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 // NewCommand builds the `instance restore` command.
@@ -64,7 +64,7 @@ func NewCommand() *cobra.Command {
 		Long: "Download an XtraBackup archive from S3-compatible object storage, " +
 			"extract, prepare and restore it into the data directory. Idempotent: " +
 			"a no-op when the data directory is already initialised. Object-store " +
-			"credentials are read from the cloudnative-mysql_S3_* environment variables.",
+			"credentials are read from the cnmsql_S3_* environment variables.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := objectstore.NewClientFromEnv()
 			if err != nil {
@@ -76,7 +76,7 @@ func NewCommand() *cobra.Command {
 
 			// Resolve the optional point-in-time recovery target. Replay is enabled
 			// only when --source-cluster is set; the bucket/path come from the same
-			// cloudnative-mysql_S3_* env the run container receives.
+			// cnmsql_S3_* env the run container receives.
 			var target binlog.RecoveryTarget
 			if targetTime != "" {
 				ts, err := time.Parse(time.RFC3339, targetTime)
@@ -138,7 +138,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup account to reset to MYSQL_BACKUP_PASSWORD after restore")
 
 	// Point-in-time recovery (M7.2): replay archived binlogs after the base
-	// restore. Enabled by --source-cluster; bucket/path come from cloudnative-mysql_S3_*.
+	// restore. Enabled by --source-cluster; bucket/path come from cnmsql_S3_*.
 	cmd.Flags().StringVar(&sourceCluster, "source-cluster", "", "Name of the cluster whose binlog archive to replay; enables point-in-time recovery")
 	cmd.Flags().StringVar(&targetTime, "target-time", "", "Replay archived binlogs up to this RFC3339 timestamp")
 	cmd.Flags().StringVar(&targetGTID, "target-gtid", "", "Replay archived binlogs up to this GTID set")

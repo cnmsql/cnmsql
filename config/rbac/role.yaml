@@ -86,7 +86,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups
   verbs:
@@ -95,7 +95,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups/status
   - clusters/status
@@ -106,7 +106,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs
   - imagecatalogs
@@ -115,7 +115,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters
   - databases
@@ -127,7 +127,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters/finalizers
   - databases/finalizers

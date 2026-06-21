@@ -62,8 +62,8 @@ not wired into `cmd/main.go`. M8 fills those in.
      `none` = standalone.
 
 4. **Labels + indexer** (constants in `internal/controller`):
-   - `parentScheduledBackupLabel = "mysql.cloudnative-mysql.io/scheduled-backup"`
-   - `immediateBackupLabel = "mysql.cloudnative-mysql.io/immediate-backup"`
+   - `parentScheduledBackupLabel = "mysql.cnmsql.co/scheduled-backup"`
+   - `immediateBackupLabel = "mysql.cnmsql.co/immediate-backup"`
    - Field indexer on the parent label over `Backup` for efficient child lookup, registered
      in `SetupWithManager` (matches CNPG).
 

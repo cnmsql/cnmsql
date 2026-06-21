@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 #
-# Build the e2e job matrix for cloudnative-mysql, in the style of CloudNativePG.
+# Build the e2e job matrix for cnmsql, in the style of CloudNativePG.
 #
 # The matrix has two axes:
 #   - k8s_version   the kindest/node image tag the cluster runs on
-#   - mysql_version the cloudnative-mysql instance flavor (8.0 / 8.4 / 9.x) under test
+#   - mysql_version the cnmsql instance flavor (8.0 / 8.4 / 9.x) under test
 #
 # To keep the job count bounded we never run the full cartesian product. We run
 # a "cross": the two diagonal corners, plus the full k8s axis at the newest

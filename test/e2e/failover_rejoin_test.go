@@ -67,7 +67,7 @@ var _ = Describe("Failover rejoin", Ordered, func() {
 		Eventually(func(g Gomega) {
 			g.Expect(pvcUID(oldPrimary)).To(Equal(oldPrimaryPVCUID),
 				"the instance PVC must be retained across Pod recreation")
-			role := podLabel(g, oldPrimary, "mysql.cloudnative-mysql.io/role")
+			role := podLabel(g, oldPrimary, "mysql.cnmsql.co/role")
 			g.Expect(role).To(Equal("replica"), "the old primary must rejoin as a replica")
 			out, err := mysqlExec(oldPrimary, "app", password, "",
 				"SELECT id FROM app.failover_rejoin WHERE id = 2;")

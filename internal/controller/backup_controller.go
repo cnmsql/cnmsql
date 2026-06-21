@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,9 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 const (
@@ -59,9 +59,9 @@ type BackupReconciler struct {
 	OperatorImageName string
 }
 
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=backups,verbs=get;list;watch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=backups/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
@@ -267,10 +267,10 @@ func backupJob(
 			Name:      jobName,
 			Namespace: backup.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":            "cloudnative-mysql",
-				"app.kubernetes.io/managed-by":      "cloudnative-mysql",
+				"app.kubernetes.io/name":            "cnmsql",
+				"app.kubernetes.io/managed-by":      "cnmsql",
 				clusterLabel:                        cluster.Name,
-				"mysql.cloudnative-mysql.io/backup": backup.Name,
+				"mysql.cnmsql.co/backup": backup.Name,
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -324,21 +324,21 @@ func backupJob(
 
 func backupObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: "cloudnative-mysql_S3_ENDPOINT", Value: store.Endpoint},
-		{Name: "cloudnative-mysql_S3_REGION", Value: store.Region},
-		{Name: "cloudnative-mysql_S3_SIGNATURE_VERSION", Value: string(store.SignatureVersion)},
+		{Name: "cnmsql_S3_ENDPOINT", Value: store.Endpoint},
+		{Name: "cnmsql_S3_REGION", Value: store.Region},
+		{Name: "cnmsql_S3_SIGNATURE_VERSION", Value: string(store.SignatureVersion)},
 	}
 	if store.ForcePathStyle != nil {
-		env = append(env, corev1.EnvVar{Name: "cloudnative-mysql_S3_FORCE_PATH_STYLE", Value: fmt.Sprintf("%t", *store.ForcePathStyle)})
+		env = append(env, corev1.EnvVar{Name: "cnmsql_S3_FORCE_PATH_STYLE", Value: fmt.Sprintf("%t", *store.ForcePathStyle)})
 	}
 	if store.Credentials.AccessKeyID != nil {
-		env = append(env, secretKeyEnv("cloudnative-mysql_S3_ACCESS_KEY_ID", *store.Credentials.AccessKeyID))
+		env = append(env, secretKeyEnv("cnmsql_S3_ACCESS_KEY_ID", *store.Credentials.AccessKeyID))
 	}
 	if store.Credentials.SecretAccessKey != nil {
-		env = append(env, secretKeyEnv("cloudnative-mysql_S3_SECRET_ACCESS_KEY", *store.Credentials.SecretAccessKey))
+		env = append(env, secretKeyEnv("cnmsql_S3_SECRET_ACCESS_KEY", *store.Credentials.SecretAccessKey))
 	}
 	if store.Credentials.SessionToken != nil {
-		env = append(env, secretKeyEnv("cloudnative-mysql_S3_SESSION_TOKEN", *store.Credentials.SessionToken))
+		env = append(env, secretKeyEnv("cnmsql_S3_SESSION_TOKEN", *store.Credentials.SessionToken))
 	}
 	return env
 }

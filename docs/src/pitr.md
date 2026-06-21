@@ -1,12 +1,12 @@
 ---
 title: "Point-In-Time Recovery"
-description: "Architecture, component responsibilities, recovery flow, RPO/RTO model, and risks for cloudnative-mysql PITR."
+description: "Architecture, component responsibilities, recovery flow, RPO/RTO model, and risks for cnmsql PITR."
 sidebar_position: 17
 ---
 
 # Point-In-Time Recovery architecture
 
-This document explains how cloudnative-mysql implements point-in-time recovery (PITR) for
+This document explains how cnmsql implements point-in-time recovery (PITR) for
 integrators. PITR combines a physical base backup with continuously archived
 MySQL binary logs, then restores the base backup and replays the archived logs
 to a requested recovery target.
@@ -74,7 +74,7 @@ to an S3-compatible object store. The upload writes:
   compression flag, backup identity, and timing metadata.
 
 The backup archive is the recovery anchor. After copy-back, XtraBackup leaves
-`xtrabackup_binlog_info` in the restored data directory. cloudnative-mysql reads the GTID
+`xtrabackup_binlog_info` in the restored data directory. cnmsql reads the GTID
 set in that file to know which transactions the base backup already contains.
 
 ### Continuous binlog archiver
@@ -97,7 +97,7 @@ The commit order for every binlog segment is:
 4. Update the cluster-level archive index.
 
 A crash between the raw upload and manifest write leaves the file uncommitted
-from cloudnative-mysql's perspective; the next archive pass retries it.
+from cnmsql's perspective; the next archive pass retries it.
 
 ### Object store layout
 
@@ -121,7 +121,7 @@ this index instead of listing and inferring the full archive.
 
 ### Recovery planner
 
-During restore, cloudnative-mysql loads `_index.json` and plans replay from the base backup
+During restore, cnmsql loads `_index.json` and plans replay from the base backup
 anchor to the requested target.
 
 The planner:
@@ -162,7 +162,7 @@ sequenceDiagram
     Store-->>Init: binlog files
     Init->>MySQL: Start temporary mysqld (socket only)
     Init->>MySQL: mysqlbinlog | mysql (--exclude-gtids=anchor)
-    Note over Init: Write .cloudnative-mysql-pitr-done sentinel
+    Note over Init: Write .cnmsql-pitr-done sentinel
     Note over Op: Start recovered primary
 ```
 
@@ -175,7 +175,7 @@ and continuous archiving:
 spec:
   backup:
     objectStore:
-      bucket: cloudnative-mysql-backups
+      bucket: cnmsql-backups
       path: production
       endpoint: http://minio.minio.svc:9000
       credentials:
@@ -204,7 +204,7 @@ spec:
         targetGTID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-500"
   backup:
     objectStore:
-      bucket: cloudnative-mysql-backups
+      bucket: cnmsql-backups
       path: production
       endpoint: http://minio.minio.svc:9000
       credentials:
@@ -223,7 +223,7 @@ that source cluster's archive prefix.
 
 ## RPO model
 
-cloudnative-mysql's PITR RPO is bounded by the archived GTID frontier, not by the base
+cnmsql's PITR RPO is bounded by the archived GTID frontier, not by the base
 backup time.
 
 Under healthy conditions, the expected RPO is approximately the configured
@@ -278,14 +278,14 @@ RTO.
   writer through the existing role/fencing flow.
 - Archive progress is manifest driven. A raw object without a manifest is not
   considered complete.
-- SHA256 in cloudnative-mysql metadata is the integrity source of truth, not S3 ETag.
+- SHA256 in cnmsql metadata is the integrity source of truth, not S3 ETag.
 - Object keys include `server_uuid` to isolate timeline segments.
 - Existing manifests are never blindly overwritten with different bytes; a
   mismatch is treated as an archive collision.
 - The purge gate purges only files already shipped, so MySQL should not recycle
   unarchived logs unless an operator explicitly bypasses the guard.
-- Recovery replay is reentrant. After successful replay, cloudnative-mysql writes
-  `.cloudnative-mysql-pitr-done` in the data directory. If the init container retries, it
+- Recovery replay is reentrant. After successful replay, cnmsql writes
+  `.cnmsql-pitr-done` in the data directory. If the init container retries, it
   skips replay instead of reapplying GTIDs.
 
 ## Status and failure surfaces

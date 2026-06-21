@@ -51,7 +51,7 @@ A namespace-scoped cache transparently filters every controller's List/Watch, so
 
 ### Webhook handler is unchanged; uniqueness comes from packaging
 
-The registered route `/validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status` and the `ClusterStatusValidator` handler ([internal/webhook/v1alpha1/cluster_webhook.go](../internal/webhook/v1alpha1/cluster_webhook.go)) stay as-is. Each namespaced operator has its own webhook Server + Service, so the *route* need not be namespaced; uniqueness is provided by:
+The registered route `/validate-mysql-cnmsql-io-v1alpha1-cluster-status` and the `ClusterStatusValidator` handler ([internal/webhook/v1alpha1/cluster_webhook.go](../internal/webhook/v1alpha1/cluster_webhook.go)) stay as-is. Each namespaced operator has its own webhook Server + Service, so the *route* need not be namespaced; uniqueness is provided by:
 
 1. **A unique `ValidatingWebhookConfiguration` name** per tenant — the overlay's `namePrefix` renames the cluster-scoped resource (e.g. `tenant-a-validating-webhook-configuration`).
 2. **A `namespaceSelector`** restricting the webhook to its own namespace, using the always-present `kubernetes.io/metadata.name` label:

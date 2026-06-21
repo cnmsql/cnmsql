@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/metrics/scrapers"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics/scrapers"
 )
 
 const namespace = "mysql"

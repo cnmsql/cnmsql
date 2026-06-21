@@ -14,7 +14,7 @@ data path.
 For one-off on-demand backups, skip the YAML and use the plugin:
 
 ```bash
-kubectl cnmysql backup <cluster>
+kubectl cnmsql backup <cluster>
 ```
 
 This page covers recurring scheduled backups.
@@ -56,7 +56,7 @@ seconds field is required.
 ## Basic example
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ScheduledBackup
 metadata:
   name: cluster-sample-daily
@@ -87,7 +87,7 @@ second one.
 
 ## Concurrency guard
 
-cloudnative-mysql never overlaps backups for the same ScheduledBackup. Before evaluating
+cnmsql never overlaps backups for the same ScheduledBackup. Before evaluating
 the next cron slot, the controller lists child Backups for that schedule. If any
 child Backup is not done, meaning its phase is neither `completed` nor `failed`,
 the scheduler requeues and waits.
@@ -108,7 +108,7 @@ idempotent: if a previous reconcile created the Backup but missed the status
 update, the next reconcile observes and adopts the same child.
 
 If another Backup already occupies the deterministic name and is not labelled as
-owned by this ScheduledBackup, cloudnative-mysql refuses adoption, emits a warning Event,
+owned by this ScheduledBackup, cnmsql refuses adoption, emits a warning Event,
 skips that iteration, and resumes with the next schedule slot.
 
 ## Owner reference modes
@@ -124,13 +124,13 @@ objects:
 Every generated Backup is labelled with:
 
 ```text
-mysql.cloudnative-mysql.io/scheduled-backup=<scheduledbackup-name>
+mysql.cnmsql.co/scheduled-backup=<scheduledbackup-name>
 ```
 
 Immediate Backups also receive:
 
 ```text
-mysql.cloudnative-mysql.io/immediate-backup=true
+mysql.cnmsql.co/immediate-backup=true
 ```
 
 Labels are used for adoption and child lookup regardless of owner-reference

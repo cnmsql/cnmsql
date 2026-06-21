@@ -17,20 +17,20 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
+	"github.com/cnmsql/cnmsql/test/utils"
 )
 
 // namespace where the project is deployed in
-const namespace = "cloudnative-mysql-system"
+const namespace = "cnmsql-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "cloudnative-mysql-controller-manager"
+const serviceAccountName = "cnmsql-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "cloudnative-mysql-controller-manager-metrics-service"
+const metricsServiceName = "cnmsql-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "cloudnative-mysql-metrics-binding"
+const metricsRoleBindingName = "cnmsql-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -130,7 +130,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=cloudnative-mysql-metrics-reader",
+				"--clusterrole=cnmsql-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err := utils.Run(cmd)
@@ -169,7 +169,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the webhook service endpoints to be ready")
 			verifyWebhookEndpointsReady := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
-					"-l", "kubernetes.io/service-name=cloudnative-mysql-webhook-service",
+					"-l", "kubernetes.io/service-name=cnmsql-webhook-service",
 					"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
@@ -180,7 +180,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the validating webhook server is ready")
 			verifyValidatingWebhookReady := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations.admissionregistration.k8s.io",
-					"cloudnative-mysql-validating-webhook-configuration",
+					"cnmsql-validating-webhook-configuration",
 					"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "ValidatingWebhookConfiguration should exist")
@@ -262,7 +262,7 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyCAInjection := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get",
 					"validatingwebhookconfigurations.admissionregistration.k8s.io",
-					"cloudnative-mysql-validating-webhook-configuration",
+					"cnmsql-validating-webhook-configuration",
 					"-o", "go-template={{ range .webhooks }}{{ .clientConfig.caBundle }}{{ end }}")
 				vwhOutput, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -433,7 +433,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should block a cluster that sets a denied my.cnf parameter", func() {
 			By("applying a Cluster whose spec.mysql.parameters overrides datadir")
-			manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+			manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: denied-param
@@ -479,7 +479,7 @@ spec:
 
 		It("should report executable hash in status for operator upgrades", func() {
 			By("applying a single-instance Cluster")
-			manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+			manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: exec-hash
@@ -621,7 +621,7 @@ type tokenRequest struct {
 // every namespace. While it rolls it stops reconciling Clusters in other specs'
 // namespaces, so this must not run alongside any other spec.
 var _ = Describe("Operator Upgrade", Ordered, Serial, func() {
-	const v2Image = "example.com/cloudnative-mysql:v0.0.2"
+	const v2Image = "example.com/cnmsql:v0.0.2"
 
 	BeforeAll(func() {
 		By("building v2 manager image with a different binary hash")
@@ -645,7 +645,7 @@ var _ = Describe("Operator Upgrade", Ordered, Serial, func() {
 		defer deleteTestNamespace(ns, defaultTestNamespace)
 
 		By("applying a 3-instance Cluster")
-		manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+		manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: upgrade

@@ -6,9 +6,9 @@ sidebar_position: 4
 
 # Instance images and versions
 
-cloudnative-mysql runs Percona Server for MySQL, not Oracle MySQL. The database Pods use a
-custom cloudnative-mysql instance image that contains Percona Server, Percona XtraBackup,
-the cloudnative-mysql manager binary, and only the runtime tools needed by the operator.
+cnmsql runs Percona Server for MySQL, not Oracle MySQL. The database Pods use a
+custom cnmsql instance image that contains Percona Server, Percona XtraBackup,
+the cnmsql manager binary, and only the runtime tools needed by the operator.
 
 This mirrors the CloudNativePG model: the operator controls a database image
 with the instance manager built in instead of relying directly on upstream
@@ -27,13 +27,13 @@ The current version matrix is:
 ## Where the images come from
 
 The instance images are built and published from the separate
-[`containers`](https://github.com/CloudNative-MySQL/containers) repo, not from
+[`containers`](https://github.com/cnmsql/containers) repo, not from
 this operator repo. That repo holds the `Dockerfile.instance`, the build matrix
 (`images/versions.json`), and the build script, and a GitHub Actions workflow
 publishes the images to GHCR:
 
 ```text
-ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:<major>
+ghcr.io/cnmsql/cnmsql-instance:<major>
 ```
 
 Each major is published under a moving tag (`8.0`, `8.4`, `9.x`) that points to
@@ -51,28 +51,28 @@ Direct image selection:
 
 ```yaml
 spec:
-  imageName: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+  imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
 ```
 
 Catalog-based selection:
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ImageCatalog
 metadata:
   name: percona-images
 spec:
   images:
     - major: 8
-      image: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+      image: ghcr.io/cnmsql/cnmsql-instance:8.4
 ---
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: cluster-sample
 spec:
   imageCatalogRef:
-    apiGroup: mysql.cloudnative-mysql.io
+    apiGroup: mysql.cnmsql.co
     kind: ImageCatalog
     name: percona-images
     major: 8
@@ -92,7 +92,7 @@ The image keeps:
 - `mysqld` and version-specific initialization tools;
 - `mysql`, `mysqladmin`, and `mysqlbinlog`;
 - XtraBackup and `xbstream`;
-- the cloudnative-mysql `manager` binary.
+- the cnmsql `manager` binary.
 
 The image trims documentation, debug binaries, test fixtures, unused client
 utilities, static libraries, and similar non-runtime payloads.
@@ -107,12 +107,12 @@ The manager renders configuration and SQL differently by server version. Example
 - `super_read_only`, semi-sync plugin names, bootstrap SQL, and privilege grants
   are gated by server capability.
 
-This version-aware layer is why cloudnative-mysql builds and tests the full matrix instead
+This version-aware layer is why cnmsql builds and tests the full matrix instead
 of assuming all supported Percona majors behave the same way.
 
 ## Backup and restore compatibility
 
-Backup workers and restore init containers use the same cloudnative-mysql instance image
+Backup workers and restore init containers use the same cnmsql instance image
 as the Cluster. This keeps XtraBackup version-aligned with the server version
 and avoids moving backup payloads through the controller-manager process.
 

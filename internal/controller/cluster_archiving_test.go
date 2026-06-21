@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@ import (
 	"strings"
 	"testing"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 func archivingCluster() *mysqlv1alpha1.Cluster {
 	cluster := baseCluster()
 	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
-		ObjectStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cloudnative-mysql"},
+		ObjectStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cnmsql"},
 		ContinuousArchiving: &mysqlv1alpha1.ContinuousArchivingConfiguration{
 			Enabled:          true,
 			TargetRPOSeconds: 120,
@@ -66,7 +66,7 @@ func TestArchivingRunArgsAndEnv(t *testing.T) {
 	}
 
 	env := runEnv(cluster, testPlan())
-	want := map[string]string{"cloudnative-mysql_S3_BUCKET": "backups", "cloudnative-mysql_S3_PATH": "cloudnative-mysql"}
+	want := map[string]string{"cnmsql_S3_BUCKET": "backups", "cnmsql_S3_PATH": "cnmsql"}
 	for name, value := range want {
 		found := false
 		for _, e := range env {

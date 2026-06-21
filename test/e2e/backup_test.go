@@ -128,7 +128,7 @@ var _ = Describe("Physical backup and recovery", Ordered, func() {
 })
 
 func archivingClusterManifest(name string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s
@@ -152,7 +152,7 @@ spec:
 }
 
 func recoveryClusterManifest(name, backup string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s
@@ -176,7 +176,7 @@ spec:
 }
 
 func backupManifest(name, cluster string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Backup
 metadata:
   name: %s

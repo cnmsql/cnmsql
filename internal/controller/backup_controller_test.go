@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 // demoPrimaryInstance is the conventional primary instance name used across
@@ -39,7 +39,7 @@ const demoPrimaryInstance = "demo-1"
 func baseBackupCluster() *mysqlv1alpha1.Cluster {
 	cluster := baseCluster()
 	cluster.Status.CurrentPrimary = demoPrimaryInstance
-	cluster.Status.Image = "ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4"
+	cluster.Status.Image = "ghcr.io/cnmsql/cnmsql-instance:8.4"
 	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
 		ObjectStore: &mysqlv1alpha1.S3ObjectStore{
 			Bucket: "cluster-backups",
@@ -113,7 +113,7 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	container := job.Spec.Template.Spec.Containers[0]
-	if container.Image != "ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4" {
+	if container.Image != "ghcr.io/cnmsql/cnmsql-instance:8.4" {
 		t.Fatalf("worker image = %q", container.Image)
 	}
 	args := strings.Join(container.Args, " ")
@@ -276,9 +276,9 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 	var hasEndpoint, hasAccessKey bool
 	for _, env := range spec.InitContainers[1].Env {
 		switch env.Name {
-		case "cloudnative-mysql_S3_ENDPOINT":
+		case "cnmsql_S3_ENDPOINT":
 			hasEndpoint = true
-		case "cloudnative-mysql_S3_ACCESS_KEY_ID":
+		case "cnmsql_S3_ACCESS_KEY_ID":
 			hasAccessKey = true
 		}
 	}
@@ -361,9 +361,9 @@ func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
 	var hasBucket, hasPath bool
 	for _, env := range spec.InitContainers[1].Env {
 		switch env.Name {
-		case "cloudnative-mysql_S3_BUCKET":
+		case "cnmsql_S3_BUCKET":
 			hasBucket = env.Value == "cluster-backups"
-		case "cloudnative-mysql_S3_PATH":
+		case "cnmsql_S3_PATH":
 			hasPath = env.Value == "clusters"
 		}
 	}

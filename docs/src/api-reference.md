@@ -1,6 +1,6 @@
 ---
 title: "API Reference"
-description: "Complete field reference for all CloudNative MySQL CRDs, auto-generated from the OpenAPI schemas."
+description: "Complete field reference for all CNMSQL - CloudNative for MySQL CRDs, auto-generated from the OpenAPI schemas."
 sidebar_position: 15
 ---
 
@@ -11,16 +11,16 @@ Field tables on this page are auto-generated from the CRD OpenAPI schemas via [c
 The API group is:
 
 ```text
-mysql.cloudnative-mysql.io/v1alpha1
+mysql.cnmsql.co/v1alpha1
 ```
 
 The API is still `v1alpha1`, so fields may change while the operator is under active development.
 
 ## Packages
-- [mysql.cloudnative-mysql.io/v1alpha1](#mysqlcloudnative-mysqliov1alpha1)
+- [mysql.cnmsql.co/v1alpha1](#mysqlcnmsqliov1alpha1)
 
 
-## mysql.cloudnative-mysql.io/v1alpha1
+## mysql.cnmsql.co/v1alpha1
 
 Package v1alpha1 contains API Schema definitions for the mysql v1alpha1 API group.
 
@@ -73,7 +73,7 @@ _Appears in:_
 **Example:**
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Backup
 metadata:
   name: backup-sample
@@ -96,7 +96,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `Backup` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -138,7 +138,7 @@ BackupList contains a list of Backup.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `BackupList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -384,13 +384,13 @@ _Appears in:_
 ### Minimal example
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: cluster-sample
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+  imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
   storage:
     size: 10Gi
   mysql:
@@ -407,13 +407,13 @@ Use either `imageName` for a direct reference or `imageCatalogRef` to resolve vi
 
 ```yaml
 spec:
-  imageName: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+  imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
 ```
 
 ```yaml
 spec:
   imageCatalogRef:
-    apiGroup: mysql.cloudnative-mysql.io
+    apiGroup: mysql.cnmsql.co
     kind: ImageCatalog
     name: percona-images
     major: 8
@@ -509,7 +509,7 @@ spec:
   externalClusters:
     - name: prod-cluster
       objectStore:
-        bucket: cloudnative-mysql-backups
+        bucket: cnmsql-backups
         path: production
         endpoint: http://minio.minio.svc:9000
         credentials:
@@ -616,7 +616,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `Cluster` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -634,16 +634,16 @@ _Appears in:_
 **Example:**
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ClusterImageCatalog
 metadata:
   name: global-percona-images
 spec:
   images:
     - major: 8
-      image: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+      image: ghcr.io/cnmsql/cnmsql-instance:8.4
     - major: 9
-      image: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:9.x
+      image: ghcr.io/cnmsql/cnmsql-instance:9.x
 ```
 
 Reference it from a Cluster with `imageCatalogRef` using `kind: ClusterImageCatalog`.
@@ -658,7 +658,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ClusterImageCatalog` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -678,7 +678,7 @@ ClusterImageCatalogList contains a list of ClusterImageCatalog.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ClusterImageCatalogList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -698,7 +698,7 @@ ClusterList contains a list of Cluster.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ClusterList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -893,7 +893,7 @@ _Appears in:_
 **Example:**
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Database
 metadata:
   name: tenant-a
@@ -927,7 +927,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `Database` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -965,7 +965,7 @@ DatabaseList contains a list of Database.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `DatabaseList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -1108,16 +1108,16 @@ _Appears in:_
 **Example:**
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ImageCatalog
 metadata:
   name: percona-images
 spec:
   images:
     - major: 8
-      image: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.4
+      image: ghcr.io/cnmsql/cnmsql-instance:8.4
     - major: 9
-      image: ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:9.x
+      image: ghcr.io/cnmsql/cnmsql-instance:9.x
 ```
 
 Each `major` value can appear at most once in the images list (minimum one, maximum eight).
@@ -1131,7 +1131,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ImageCatalog` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -1151,7 +1151,7 @@ ImageCatalogList contains a list of ImageCatalog.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ImageCatalogList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -1638,7 +1638,7 @@ _Appears in:_
 **Example:**
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ScheduledBackup
 metadata:
   name: cluster-sample-daily
@@ -1655,7 +1655,7 @@ spec:
 
 `schedule` uses six-field cron format: `second minute hour day-of-month month day-of-week`.
 
-Generated Backups are labelled with `mysql.cloudnative-mysql.io/scheduled-backup=<name>` and immediate Backups also carry `mysql.cloudnative-mysql.io/immediate-backup=true`.
+Generated Backups are labelled with `mysql.cnmsql.co/scheduled-backup=<name>` and immediate Backups also carry `mysql.cnmsql.co/immediate-backup=true`.
 
 ScheduledBackup is the Schema for the scheduledbackups API.
 
@@ -1666,7 +1666,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ScheduledBackup` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -1687,7 +1687,7 @@ ScheduledBackupList contains a list of ScheduledBackup.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `mysql.cloudnative-mysql.io/v1alpha1` | | |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
 | `kind` _string_ | `ScheduledBackupList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
@@ -1902,7 +1902,7 @@ _Appears in:_
 
 ### Common Conditions
 
-CloudNative MySQL resources use Kubernetes `metav1.Condition` entries. Common condition types:
+CNMSQL - CloudNative for MySQL resources use Kubernetes `metav1.Condition` entries. Common condition types:
 
 | Condition | Meaning |
 |-----------|---------|

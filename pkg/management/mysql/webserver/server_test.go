@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 )
 
 // fakeController is a configurable InstanceController for handler tests.
@@ -297,7 +297,7 @@ func TestLifecycleActions(t *testing.T) {
 	if rec := do(t, h, http.MethodPost, "/demote"); rec.Code != http.StatusOK || !fc.demoteCalled {
 		t.Errorf("demote = %d called=%v", rec.Code, fc.demoteCalled)
 	}
-	body := `{"source":{"host":"demo-2.default.svc","port":3306,"user":"cloudnative-mysql_repl","autoPosition":true,"ssl":true}}` //nolint:lll
+	body := `{"source":{"host":"demo-2.default.svc","port":3306,"user":"cnmsql_repl","autoPosition":true,"ssl":true}}` //nolint:lll
 	rec := doWithBody(t, h, "/replica/source", body)
 	if rec.Code != http.StatusOK || fc.configureSource == nil {
 		t.Errorf("configure replica = %d source=%#v", rec.Code, fc.configureSource)

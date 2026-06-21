@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -388,7 +388,7 @@ func (spec *ClusterSpec) validateManagedRoles(path *field.Path) field.ErrorList 
 		if isReservedRoleName(role.Name) {
 			allErrs = append(allErrs, field.Invalid(
 				rolePath.Child("name"), role.Name,
-				"role name is reserved (root, mysql.*, cloudnative-mysql_*)"))
+				"role name is reserved (root, mysql.*, cnmsql_*)"))
 		}
 		if role.Host == "" {
 			allErrs = append(allErrs, field.Required(rolePath.Child("host"), "role host is required"))
@@ -421,7 +421,7 @@ func isReservedRoleName(name string) bool {
 	if name == "root" {
 		return true
 	}
-	return strings.HasPrefix(name, "mysql.") || strings.HasPrefix(name, "cloudnative-mysql_")
+	return strings.HasPrefix(name, "mysql.") || strings.HasPrefix(name, "cnmsql_")
 }
 
 // validateManagedServices checks the user-defined service exposition: the rw

@@ -172,7 +172,7 @@ var _ = Describe("Group Replication point-in-time recovery", Ordered, func() {
 // RPO and small max binlog size keep the archiving loop active during the short
 // lifetime of an e2e spec.
 func grArchivingClusterManifest(name, version string, instances int) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s
@@ -206,7 +206,7 @@ spec:
 // binlogs up to targetGTID. It points at the same object store (for the binlog
 // archive) but does not re-enable archiving.
 func grPitrRecoveryClusterManifest(name, version string, instances int, backup, targetGTID string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

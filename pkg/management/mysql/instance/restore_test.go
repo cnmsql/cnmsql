@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import (
 func TestCredentialReconcileStatements(t *testing.T) {
 	stmts := credentialReconcileStatements(
 		"8.4.0", "rootpw",
-		"cloudnative-mysql_control", "ctlpw",
-		"cloudnative-mysql_backup", "bkppw",
+		"cnmsql_control", "ctlpw",
+		"cnmsql_backup", "bkppw",
 	)
 	out := strings.Join(stmts, "\n")
 
@@ -36,15 +36,15 @@ func TestCredentialReconcileStatements(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpw'",
-		"ALTER USER 'cloudnative-mysql_control'@'%' IDENTIFIED BY 'ctlpw'",
-		"ALTER USER 'cloudnative-mysql_backup'@'%' IDENTIFIED BY 'bkppw'",
+		"ALTER USER 'cnmsql_control'@'%' IDENTIFIED BY 'ctlpw'",
+		"ALTER USER 'cnmsql_backup'@'%' IDENTIFIED BY 'bkppw'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("reconcile statements missing %q:\n%s", want, out)
 		}
 	}
 	// The replication account uses mTLS, so it must never be reset here.
-	if strings.Contains(out, "cloudnative-mysql_repl") {
+	if strings.Contains(out, "cnmsql_repl") {
 		t.Fatalf("replication account must not be reset:\n%s", out)
 	}
 }
@@ -52,8 +52,8 @@ func TestCredentialReconcileStatements(t *testing.T) {
 func TestCredentialReconcileStatementsEmptyWhenNoPasswords(t *testing.T) {
 	if stmts := credentialReconcileStatements(
 		"8.4.0", "",
-		"cloudnative-mysql_control", "",
-		"cloudnative-mysql_backup", "",
+		"cnmsql_control", "",
+		"cnmsql_backup", "",
 	); stmts != nil {
 		t.Fatalf("expected no statements without passwords, got: %v", stmts)
 	}

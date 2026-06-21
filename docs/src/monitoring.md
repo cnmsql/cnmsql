@@ -6,7 +6,7 @@ sidebar_position: 14
 
 # Monitoring
 
-cloudnative-mysql instances expose Prometheus metrics on port `9187` at `/metrics`.
+cnmsql instances expose Prometheus metrics on port `9187` at `/metrics`.
 The metrics server is separate from the mTLS control API and the health probe
 server.
 
@@ -18,28 +18,28 @@ families and custom query loading are planned as M13.1 continues.
 ## Group Replication metrics
 
 The operator exposes Group Replication metrics on its `/metrics` endpoint under
-the `cnmysql` namespace. These reflect the operator's own cross-validated view of
+the `cnmsql` namespace. These reflect the operator's own cross-validated view of
 each GR cluster and are read from the manager's cached client at scrape time:
 
 | Metric | Description |
 |---|---|
-| `cnmysql_cluster_gr_has_quorum` | 1 if the group has quorum, 0 otherwise. |
-| `cnmysql_cluster_gr_bootstrapped` | 1 if the group has been bootstrapped. |
-| `cnmysql_cluster_gr_view_size` | The sticky maximum group size used as the quorum denominator. |
-| `cnmysql_cluster_gr_members` | Members per state (`ONLINE`, `RECOVERING`, `OFFLINE`, `ERROR`, `UNREACHABLE`). |
+| `cnmsql_cluster_gr_has_quorum` | 1 if the group has quorum, 0 otherwise. |
+| `cnmsql_cluster_gr_bootstrapped` | 1 if the group has been bootstrapped. |
+| `cnmsql_cluster_gr_view_size` | The sticky maximum group size used as the quorum denominator. |
+| `cnmsql_cluster_gr_members` | Members per state (`ONLINE`, `RECOVERING`, `OFFLINE`, `ERROR`, `UNREACHABLE`). |
 
 Labels are `namespace` and `cluster`. Async clusters emit nothing. Alert on
-`cnmysql_cluster_gr_has_quorum == 0` for any GR cluster to catch quorum loss.
+`cnmsql_cluster_gr_has_quorum == 0` for any GR cluster to catch quorum loss.
 
 ## Ad-hoc metrics inspection
 
 Scrape an instance's current metrics directly from your terminal:
 
 ```bash
-kubectl cnmysql metrics <cluster>                # primary
-kubectl cnmysql metrics <cluster> <instance>     # specific instance
-kubectl cnmysql metrics <cluster> -w             # refresh every 2s
-kubectl cnmysql metrics <cluster> --filter=mysql_global_status_threads
+kubectl cnmsql metrics <cluster>                # primary
+kubectl cnmsql metrics <cluster> <instance>     # specific instance
+kubectl cnmsql metrics <cluster> -w             # refresh every 2s
+kubectl cnmsql metrics <cluster> --filter=mysql_global_status_threads
 ```
 
 The plugin opens an mTLS port-forward to the instance manager and scrapes
@@ -48,11 +48,11 @@ monitoring. Use the `PodMonitor` for Prometheus integration.
 
 ## PodMonitor
 
-When the Prometheus Operator CRDs are installed, cloudnative-mysql can create an owned
+When the Prometheus Operator CRDs are installed, cnmsql can create an owned
 `PodMonitor` for a cluster:
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: cluster-sample
@@ -64,7 +64,7 @@ spec:
 The generated `PodMonitor` selects pods with:
 
 ```yaml
-cloudnative-mysql.io/cluster: <cluster-name>
+cnmsql.co/cluster: <cluster-name>
 ```
 
 and scrapes the named container port `metrics`.
@@ -77,7 +77,7 @@ PKI as the control API: the instance presents its server certificate and
 requires the scraper to present a client certificate signed by the cluster CA.
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: cluster-sample
@@ -90,7 +90,7 @@ spec:
 
 No extra certificates are needed. The instance Pods already mount the
 `server-tls` certificate and the `client-ca` bundle. When a `PodMonitor` is
-generated, cloudnative-mysql wires the scrape-side TLS configuration automatically:
+generated, cnmsql wires the scrape-side TLS configuration automatically:
 
 - the endpoint scheme becomes `https`;
 - the cluster CA secret (`<cluster>-ca`, key `ca.crt`) verifies the server cert;

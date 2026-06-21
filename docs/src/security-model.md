@@ -6,7 +6,7 @@ sidebar_position: 5
 
 # Security model
 
-cloudnative-mysql separates control-plane access, MySQL traffic, replication traffic, and
+cnmsql separates control-plane access, MySQL traffic, replication traffic, and
 object-store credentials. The design goal is to keep long-lived database Pods
 focused on database operation while short-lived Jobs and init containers handle
 backup and restore data movement.
@@ -49,7 +49,7 @@ the instance manager converge locally from Cluster status.
 
 ## MySQL transport TLS
 
-cloudnative-mysql renders MySQL TLS configuration:
+cnmsql renders MySQL TLS configuration:
 
 - `ssl_ca`
 - `ssl_cert`
@@ -57,7 +57,7 @@ cloudnative-mysql renders MySQL TLS configuration:
 
 Replication uses TLS material and a replication account that requires X509.
 
-Application TLS enforcement is a user choice. cloudnative-mysql does not force
+Application TLS enforcement is a user choice. cnmsql does not force
 `require_secure_transport` by default. To require encrypted application
 connections:
 
@@ -70,13 +70,13 @@ spec:
 
 ## Certificates
 
-By default cloudnative-mysql uses cert-manager to generate a cluster CA, per-instance
+By default cnmsql uses cert-manager to generate a cluster CA, per-instance
 server certificates, and the operator replication/client certificate. The
 operator reconciles issuers/certificates and waits for the resulting Secrets
 before creating Pods that need them.
 
 You can bring your own TLS material with `spec.certificates`. Each field is
-optional and independent; cloudnative-mysql only asks cert-manager to generate the
+optional and independent; cnmsql only asks cert-manager to generate the
 material you did not provide:
 
 ```yaml
@@ -97,12 +97,12 @@ certificate. Invalid or missing user-provided Secrets block reconciliation with
 a `Blocked` condition before Pods are created.
 
 `serverAltDNSNames` is appended to the automatically generated service DNS names
-when cloudnative-mysql generates server certificates. If you provide `serverTLSSecret`,
+when cnmsql generates server certificates. If you provide `serverTLSSecret`,
 you own the SAN list in that certificate.
 
 ## Database accounts
 
-cloudnative-mysql manages internal accounts for:
+cnmsql manages internal accounts for:
 
 - root/bootstrap;
 - application owner and database;
@@ -144,7 +144,7 @@ so the identity cannot be reused later.
 ### Status admission webhook
 
 A validating admission webhook at
-`/validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status` enforces
+`/validate-mysql-cnmsql-io-v1alpha1-cluster-status` enforces
 field-level access control for instance-originated writes to the Cluster
 status:
 

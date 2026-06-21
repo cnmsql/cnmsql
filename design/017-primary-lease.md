@@ -38,7 +38,7 @@ old primary must keep renewing, and if it stops, the token expires on its own.
 
 The lease is common machinery in etcd, ZooKeeper, and `pg_auto_failover`. CNPG
 gets away without it because they use quorum-based synchronous replication, but
-cnmysql supports async replication where quorum does not apply.
+cnmsql supports async replication where quorum does not apply.
 
 ## How it works
 
@@ -55,7 +55,7 @@ Cluster "demo"
       acquireTime:           <RFC3339 microtime>
       leaseTransitions:      0
     ownerReferences:
-      - apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+      - apiVersion: mysql.cnmsql.co/v1alpha1
         kind: Cluster
         name: demo
 

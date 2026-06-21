@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,26 +33,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 const (
 	// defaultInstanceImage is the published slim instance image, built and pushed
 	// from the separate containers repo to GHCR. See docs/src/instance-images.md.
-	defaultInstanceImage = "ghcr.io/cloudnative-mysql/cloudnative-mysql-instance:8.0"
+	defaultInstanceImage = "ghcr.io/cnmsql/cnmsql-instance:8.0"
 
-	clusterLabel           = "mysql.cloudnative-mysql.io/cluster"
-	podMonitorClusterLabel = "cloudnative-mysql.io/cluster"
-	instanceLabel          = "mysql.cloudnative-mysql.io/instance"
-	roleLabel              = "mysql.cloudnative-mysql.io/role"
+	clusterLabel           = "mysql.cnmsql.co/cluster"
+	podMonitorClusterLabel = "cnmsql.co/cluster"
+	instanceLabel          = "mysql.cnmsql.co/instance"
+	roleLabel              = "mysql.cnmsql.co/role"
 	// routableLabel gates membership of the rw/ro/r routing Services. Every
 	// instance Pod carries it set to "true"; fencing flips it to "false" so the
 	// fenced Pod is dropped from all routing Services (Service selectors are
 	// equality-only, so a positive gate is the way to exclude a member).
-	routableLabel = "mysql.cloudnative-mysql.io/routable"
+	routableLabel = "mysql.cnmsql.co/routable"
 
 	rolePrimary = "primary"
 	roleReplica = "replica"
@@ -63,16 +63,16 @@ const (
 	// fencingAnnotation, when set to "true" on an instance Pod, fences that
 	// instance: it is removed from routing, kept read-only, and not eligible as a
 	// failover candidate. Clearing it restores the instance.
-	fencingAnnotation = "cloudnative-mysql.cloudnative-mysql.io/fencing"
+	fencingAnnotation = "cnmsql.cnmsql.co/fencing"
 	// restartAnnotation, when set to an RFC3339 timestamp on the Cluster, triggers
 	// a rolling restart of every instance: its value is folded into the Pod
 	// template hash, so bumping it rolls the Pods one at a time (gated on the
 	// previous instance becoming Ready) without otherwise changing the spec.
-	restartAnnotation = "cloudnative-mysql.cloudnative-mysql.io/restart"
+	restartAnnotation = "cnmsql.cnmsql.co/restart"
 	// reloadAnnotation, when set to an RFC3339 timestamp on the Cluster, requests
 	// that dynamic my.cnf parameters be re-applied to the running mysqld via the
 	// instance manager control API, without restarting the process.
-	reloadAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reload"
+	reloadAnnotation = "cnmsql.cnmsql.co/reload"
 	// reinitAnnotation, when set on the Cluster to a comma-separated list of
 	// instance names, requests that each listed instance be re-initialised from
 	// scratch: the operator deletes its Pod and PVC and lets the normal reconcile
@@ -83,12 +83,12 @@ const (
 	// data. It lives on the Cluster, not the Pod, so the request survives the Pod
 	// being deleted mid-flight; the operator clears each name once its teardown
 	// completes. The current primary is never re-initialised this way.
-	reinitAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reinit"
+	reinitAnnotation = "cnmsql.cnmsql.co/reinit"
 	// reloadAppliedAnnotation records, on each instance Pod, the reload token that
 	// was last applied to that instance. The reconciler compares it to the
 	// Cluster's reloadAnnotation to decide whether a reload is still pending,
 	// making the SET GLOBAL pass idempotent without a CRD status change.
-	reloadAppliedAnnotation = "cloudnative-mysql.cloudnative-mysql.io/reload-applied"
+	reloadAppliedAnnotation = "cnmsql.cnmsql.co/reload-applied"
 	// unreachableSinceAnnotation records, on an instance Pod, the RFC3339 time the
 	// operator first failed to reach that instance's control endpoint. Once an
 	// established replica has been unreachable for deRouteGracePeriod it is pulled
@@ -96,33 +96,33 @@ const (
 	// from a partitioned node; the annotation and routing are restored as soon as
 	// the instance is reachable again. The grace period absorbs transient blips so
 	// a single failed poll does not churn Service endpoints.
-	unreachableSinceAnnotation = "cloudnative-mysql.cloudnative-mysql.io/unreachable-since"
+	unreachableSinceAnnotation = "cnmsql.cnmsql.co/unreachable-since"
 	// forceQuorumRecoveryAnnotation, when set to "yes" on the Cluster, triggers
 	// a guarded quorum recovery for a Group Replication cluster that has lost
 	// quorum. The operator computes the safe survivor set, stamps the survivor
 	// Pod with force-quorum-members, and clears this annotation. Recovery is
 	// never automatic — it gate-checks that no quorum exists and a safe survivor
 	// is provable, and refuses otherwise.
-	forceQuorumRecoveryAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-recovery"
+	forceQuorumRecoveryAnnotation = "cnmsql.cnmsql.co/force-quorum-recovery"
 	// forceQuorumMembersAnnotation, when set on an instance Pod to a
 	// comma-separated list of XCom addresses, instructs the in-Pod reconciler to
 	// execute group_replication_force_members with that address set.
-	forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
+	forceQuorumMembersAnnotation = "cnmsql.cnmsql.co/force-quorum-members"
 	// forceGroupRebootstrapAnnotation, when set to "yes" on an instance Pod,
 	// instructs the in-Pod reconciler to re-bootstrap the group from that member
 	// after a total outage (no member survived ONLINE). It is the operator's
 	// guarded signal that this member holds every committed transaction.
-	forceGroupRebootstrapAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-group-rebootstrap"
+	forceGroupRebootstrapAnnotation = "cnmsql.cnmsql.co/force-group-rebootstrap"
 
 	// groupObservationAnnotation is published by the in-Pod reconciler as a
 	// doorbell on the instance Pod whenever its locally observed Group Replication
 	// snapshot changes. The operator must preserve it across ensurePod patches so
 	// it is not lost between in-Pod manager updates.
-	groupObservationAnnotation = "mysql.cloudnative-mysql.io/gr-observed"
+	groupObservationAnnotation = "mysql.cnmsql.co/gr-observed"
 
-	configMapAnnotation       = "cloudnative-mysql.cloudnative-mysql.io/config-map"
-	configHashAnnotation      = "cloudnative-mysql.cloudnative-mysql.io/config-hash"
-	podTemplateHashAnnotation = "cloudnative-mysql.cloudnative-mysql.io/pod-template-hash"
+	configMapAnnotation       = "cnmsql.cnmsql.co/config-map"
+	configHashAnnotation      = "cnmsql.cnmsql.co/config-hash"
+	podTemplateHashAnnotation = "cnmsql.cnmsql.co/pod-template-hash"
 
 	conditionReady               = "Ready"
 	conditionProgressing         = "Progressing"
@@ -135,10 +135,10 @@ const (
 	configPath    = "/etc/mysql/my.cnf"
 	joinBackupDir = "/backup"
 
-	replicationUser = "cloudnative-mysql_repl"
-	backupUser      = "cloudnative-mysql_backup"
-	controlUser     = "cloudnative-mysql_control"
-	metricsUser     = "cloudnative-mysql_metrics"
+	replicationUser = "cnmsql_repl"
+	backupUser      = "cnmsql_backup"
+	controlUser     = "cnmsql_control"
+	metricsUser     = "cnmsql_metrics"
 	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// provisioningRequeue paces reconciles while the instance is still coming up.
@@ -207,12 +207,12 @@ type ClusterReconciler struct {
 	podMonitorAvailable bool
 }
 
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=imagecatalogs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusterimagecatalogs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=imagecatalogs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusterimagecatalogs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps;pods;pods/status;persistentvolumeclaims;secrets;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete

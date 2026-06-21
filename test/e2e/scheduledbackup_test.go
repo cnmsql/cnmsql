@@ -24,9 +24,9 @@ var _ = Describe("Scheduled backups", Ordered, func() {
 		// keeps backups from overlapping, so this is a cadence ceiling, not a
 		// guarantee of a backup every 20s.
 		tightSchedule        = "*/20 * * * * *"
-		parentLabel          = "mysql.cloudnative-mysql.io/scheduled-backup"
+		parentLabel          = "mysql.cnmsql.co/scheduled-backup"
 		parentLabelSelector  = parentLabel + "=" + scheduleName
-		immediateBackupLabel = "mysql.cloudnative-mysql.io/immediate-backup"
+		immediateBackupLabel = "mysql.cnmsql.co/immediate-backup"
 	)
 
 	var ns, prevNS string
@@ -111,7 +111,7 @@ func jsonpathEscape(key string) string {
 }
 
 func scheduledBackupManifest(name, cluster, schedule string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ScheduledBackup
 metadata:
   name: %s

@@ -3,21 +3,21 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: (devel)
-domain: cloudnative-mysql.io
+domain: cnmsql.co
 layout:
 - go.kubebuilder.io/v4
 - helm.kubebuilder.io/v2-alpha
-projectName: cloudnative-mysql
-repo: github.com/CloudNative-MySQL/cloudnative-mysql
+projectName: cnmsql
+repo: github.com/cnmsql/cnmsql
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: cloudnative-mysql.io
+  domain: cnmsql.co
   group: mysql
   kind: Cluster
-  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -25,40 +25,40 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
-  domain: cloudnative-mysql.io
+  domain: cnmsql.co
   group: mysql
   kind: Backup
-  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: cloudnative-mysql.io
+  domain: cnmsql.co
   group: mysql
   kind: ScheduledBackup
-  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: cloudnative-mysql.io
+  domain: cnmsql.co
   group: mysql
   kind: Database
-  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: cloudnative-mysql.io
+  domain: cnmsql.co
   group: mysql
   kind: ImageCatalog
-  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
-  domain: cloudnative-mysql.io
+  domain: cnmsql.co
   group: mysql
   kind: ClusterImageCatalog
-  path: github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
 version: "3"

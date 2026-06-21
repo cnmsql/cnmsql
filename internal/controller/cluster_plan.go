@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,10 +24,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 type clusterPlan struct {
@@ -91,7 +91,7 @@ type recoveryPlan struct {
 	Bucket      string
 	ArchiveKey  string
 	MetadataKey string
-	// StoreEnv carries the cloudnative-mysql_S3_* environment (endpoint, region, signing,
+	// StoreEnv carries the cnmsql_S3_* environment (endpoint, region, signing,
 	// credentials, bucket, path) the restore worker needs to reach the object
 	// store and reconstruct binlog archive keys.
 	StoreEnv []corev1.EnvVar

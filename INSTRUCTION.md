@@ -1,10 +1,10 @@
-# CNMySQL — AI Agent Instructions
+# CNMSQL — AI Agent Instructions
 
 Cloudnative MySQL: a CNPG-analog operator for Percona Server for MySQL.
 
 ## Project Overview
 
-No operator exists to manage MySQL in a good way — some exist but they all have flaws. CNMySQL reproduces what CNPG did with PostgreSQL but for MySQL, ensuring good operations. Kubernetes APIs are the source of truth for MySQL operations, with guards and QoL like CNPG.
+No operator exists to manage MySQL in a good way — some exist but they all have flaws. CNMSQL reproduces what CNPG did with PostgreSQL but for MySQL, ensuring good operations. Kubernetes APIs are the source of truth for MySQL operations, with guards and QoL like CNPG.
 
 ## Key Decisions
 
@@ -14,13 +14,13 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | D2 | Build for **Percona Server for MySQL** only (8.0, 8.4, 9.x) | Percona ships the tooling (XtraBackup, etc.) we rely on. 5.6 is NOT supported |
 | D3 | **Pods + PVCs + instance-manager** (CNPG-style), NOT StatefulSets | Max control over per-instance lifecycle, promotion, failover |
 | D4 | First replication topology: **async / semi-sync GTID** primary-replica | Closest analog to CNPG streaming replication; Group Replication deferred |
-| D5 | API group `mysql.cloudnative-mysql.io` | From scaffolded PROJECT file |
+| D5 | API group `mysql.cnmsql.co` | From scaffolded PROJECT file |
 | D6 | Replica provisioning: **XtraBackup-first** (Clone plugin later) | Universal across supported versions, Percona-native |
 | D7 | Operator↔instance control API: **HTTP + mTLS** | Simple, debuggable, CNPG parity |
 | D8 | Instance image: **custom slim Debian+Percona APT image** (`Dockerfile.instance`), rootless (uid 1001) | Lighter than upstream percona/percona-server (~75% smaller), only tools we need |
 | D9 | Instance manager reaches mysqld via **admin interface** (`admin_address`/`admin_port`, 8.0.14+), falls back to socket + reserved slot | Socket does NOT bypass `max_connections`; manager must never be locked out |
 | D10 | Manager binary injected at pod startup via bootstrap-controller init container copying `/manager` from operator image into shared `scratch-data` emptyDir | CNPG pattern; operator and instance manager versions always identical |
-| D11 | Backup worker Jobs use the **same cnmysql instance image** as the Cluster | Keeps worker version-aligned with XtraBackup tooling |
+| D11 | Backup worker Jobs use the **same cnmsql instance image** as the Cluster | Keeps worker version-aligned with XtraBackup tooling |
 | D12 | Integration tests run a **version matrix** (8.0, 8.4, 9.x) | Every supported version exercised end-to-end |
 | D13 | Structured logs project-wide (operator, instance manager, child processes) | controller-runtime `logr`, K8s logging style; child-process output wrapped into structured log entries |
 | D14 | Per-instance ServiceAccount identity + validating status webhook | Prevents a rogue instance from patching `Cluster` status fields it does not own; see `design/020-status-instance-webhook.md` |
@@ -44,7 +44,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 - User-defined service exposition (additional services, templates)
 - User-managed TLS certificates
 - ProxySQL support (M14, pending)
-- `kubectl cnmysql` CLI plugin
+- `kubectl cnmsql` CLI plugin
 - Operation gated with mTLS where necessary, TLS otherwise
 
 ## Project Structure
@@ -176,9 +176,9 @@ kubebuilder create api --group <external-group> --version <version> --kind <Kind
 
 **RBAC markers:**
 ```go
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cloudnative-mysql.io,resources=clusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 ```
@@ -205,7 +205,7 @@ make deploy IMG=$IMG
 
 # Verify
 kubectl apply -k config/samples/
-kubectl logs -n cnmysql-system deployment/cnmysql-controller-manager -c manager -f
+kubectl logs -n cnmsql-system deployment/cnmsql-controller-manager -c manager -f
 ```
 
 ## Operator Upgrade Architecture
@@ -265,13 +265,13 @@ The decoupling (see `design/019-operator-upgrade.md`) redesigned the supervisor:
 - [x] **M12** — Declarative config / users / databases. → `design/014-declarative-config-users-databases.md`
 - [x] **M13** — Monitoring, self-healing, guards. → `design/015-monitoring-self-healing-guards.md`
 - [x] **M13.4** — Primary Lease for failover fencing. → `design/017-primary-lease.md`
-- [x] **M16** — `kubectl cnmysql` CLI Plugin. → `design/016-kubectl-plugin.md`
+- [x] **M16** — `kubectl cnmsql` CLI Plugin. → `design/016-kubectl-plugin.md`
 - [x] **M18** — Manager binary injection at pod startup. → `design/018-bootstrap-dbs.md`
 - [x] **Operator upgrades** — Rolling + in-place instance-manager upgrades. → `design/019-operator-upgrade.md`
 
 ## CNPG-Parity Follow-Ups (from NOTES.md)
 
-- Check CNMySQL has the same safety posture as CNPG around instance status collection and failover decisions: operator-side instance-manager status queries during reconciliation/resync, Kubernetes Pod `Ready` as the decisive primary-unserviceable signal, no failover solely because the manager status endpoint is temporarily unreachable, instance-manager-side guarded status updates for primary role transitions.
+- Check CNMSQL has the same safety posture as CNPG around instance status collection and failover decisions: operator-side instance-manager status queries during reconciliation/resync, Kubernetes Pod `Ready` as the decisive primary-unserviceable signal, no failover solely because the manager status endpoint is temporarily unreachable, instance-manager-side guarded status updates for primary role transitions.
 - Add optional remote backup cleanup on `Backup` deletion through a finalizer. Needs an explicit safety policy: deleting a `Backup` CR could remove `backup.xbstream` and `metadata.json` from the object store, but should be opt-in or guarded so users don't accidentally destroy their recovery window.
 
 ## References

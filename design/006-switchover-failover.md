@@ -154,7 +154,7 @@ M5 needs a small GTID-set comparator for MySQL GTID intervals (`uuid:1-10,uuid2:
 
 ## Decisions
 
-- Do not create a cnmysql plugin or command in M5. Add a helper for e2e tests if useful.
+- Do not create a cnmsql plugin or command in M5. Add a helper for e2e tests if useful.
 - Treat `spec.failoverDelay=0` as immediate failover, matching CNPG.
 - Handle former-primary recovery like CNPG: restart/rejoin it as a replica when compatible; block and surface the problem when it cannot safely rejoin.
 

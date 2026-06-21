@@ -74,7 +74,7 @@ var _ = Describe("Guards", Ordered, func() {
 	})
 })
 
-const fencingAnnotation = "cloudnative-mysql.cloudnative-mysql.io/fencing"
+const fencingAnnotation = "cnmsql.cnmsql.co/fencing"
 
 // clusterPrimaryName returns the cluster's bootstrap primary Pod name without
 // requiring an elected primary (used while the cluster is terminating).
@@ -97,7 +97,7 @@ func rServiceEndpoints(g Gomega, cluster string) []string {
 }
 
 func basicClusterManifest(name string, instances int) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

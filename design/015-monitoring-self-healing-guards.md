@@ -89,7 +89,7 @@ small (50–150 lines each) and straightforward to adapt.
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  Connection: Unix socket →                                     │
-│    cnmysql_metrics_exporter@unix(/var/run/mysqld/mysqld.sock)/ │
+│    cnmsql_metrics_exporter@unix(/var/run/mysqld/mysqld.sock)/ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -125,7 +125,7 @@ small (50–150 lines each) and straightforward to adapt.
    Thread-safe via `sync.RWMutex`.
 
 6. **Metrics exporter MySQL user** — Created at instance bootstrap.
-   `cnmysql_metrics_exporter@localhost` with `PROCESS`, `REPLICATION CLIENT`,
+   `cnmsql_metrics_exporter@localhost` with `PROCESS`, `REPLICATION CLIENT`,
    `REPLICATION SLAVE`, `SELECT` on `performance_schema.*` and user-defined
    databases. Connects via local Unix socket (passwordless).
 
@@ -153,7 +153,7 @@ small (50–150 lines each) and straightforward to adapt.
 | `pkg/management/mysql/metrics/parser.go` | **NEW** — YAML parser for query definitions (`UserQueries`, `UserQuery`, `Mapping` with `Usage` enum: GAUGE/COUNTER/LABEL/DISCARD/HISTOGRAM) |
 | `pkg/management/mysql/metrics/mappings.go` | **NEW** — `MetricMapSet`, `ColumnMapping`, `DBToFloat64`/`DBToString` conversion functions |
 | `pkg/management/mysql/webserver/metricserver/metrics.go` | **NEW** — `MetricsServer` struct, `New(instance, exporter)` constructor: creates `prometheus.Registry`, registers `Exporter` + `GoCollector`, mounts `/metrics` on a standalone HTTP server on port 9187 |
-| `pkg/management/mysql/instance/controller.go` | **MODIFY** — Add `CreateMetricsExporterUser()` at bootstrap; expose `GetMetricsDB(dbName)` method that returns a `*sql.DB` for the metrics exporter connection pool (Unix socket as `cnmysql_metrics_exporter`) |
+| `pkg/management/mysql/instance/controller.go` | **MODIFY** — Add `CreateMetricsExporterUser()` at bootstrap; expose `GetMetricsDB(dbName)` method that returns a `*sql.DB` for the metrics exporter connection pool (Unix socket as `cnmsql_metrics_exporter`) |
 | `cmd/manager/subcmd/run.go` (or equivalent instance entry point) | **MODIFY** — Create `Exporter`, create `MetricsServer`, `mgr.Add(metricsServer)` |
 | `config/manager/default-monitoring.yaml` | **NEW** — Default monitoring ConfigMap with MySQL custom queries |
 | `internal/controller/cluster_monitoring.go` | **NEW** — Operator-side: `reconcilePodMonitor` (create/update/delete PodMonitor CR), `injectDefaultMonitoringConfigMap` (copy default queries into cluster namespace), watch for custom query ConfigMap/Secret changes |
@@ -192,7 +192,7 @@ small (50–150 lines each) and straightforward to adapt.
 
 **In scope:**
 
-- **Fencing annotation** `cnmysql.cloudnative-mysql.io/fencing` — when set on
+- **Fencing annotation** `cnmsql.cnmsql.co/fencing` — when set on
   an instance Pod, the operator:
   - Removes the instance from all routing services (rw/ro/r and user-defined).
   - The instance manager skips binlog archiving when fenced (pre-stop hook
@@ -202,7 +202,7 @@ small (50–150 lines each) and straightforward to adapt.
 - **Deletion guard** — an admission webhook or reconciliation-time check
   prevents accidental `kubectl delete cluster` when the cluster still has
   running instances. The guard can be bypassed with
-  `cnmysql.cloudnative-mysql.io/skipDeleteGuard=true`.
+  `cnmsql.cnmsql.co/skipDeleteGuard=true`.
 
 **Out of scope:**
 
@@ -267,19 +267,19 @@ SetupWithManager:        → Owns(&policyv1.PodDisruptionBudget{})
 pkg/management/mysql/webserver/metrics.go  → NEW: /metrics handler (promhttp)
                                               + query executor + cache
 pkg/management/mysql/webserver/server.go   → add /metrics route
-pkg/management/mysql/instance/controller.go → create cnmysql_metrics_exporter user
+pkg/management/mysql/instance/controller.go → create cnmsql_metrics_exporter user
                                               at bootstrap; wire MetricsCollector
 ```
 
 ## Conventions
 
-- PodMonitor selector label: `cnmysql.io/cluster: <cluster-name>`
-- Fencing annotation: `cnmysql.cloudnative-mysql.io/fencing` (`true` / `false`)
-- Deletion guard annotation: `cnmysql.cloudnative-mysql.io/skipDeleteGuard`
-- Default monitoring ConfigMap name: `cnmysql-default-monitoring` (in operator namespace)
+- PodMonitor selector label: `cnmsql.io/cluster: <cluster-name>`
+- Fencing annotation: `cnmsql.cnmsql.co/fencing` (`true` / `false`)
+- Deletion guard annotation: `cnmsql.cnmsql.co/skipDeleteGuard`
+- Default monitoring ConfigMap name: `cnmsql-default-monitoring` (in operator namespace)
 - Metrics port: 9187, path: `/metrics`
-- Metrics exporter MySQL user: `cnmysql_metrics_exporter`
-- All queries run via `application_name=cnmysql_metrics_exporter`
+- Metrics exporter MySQL user: `cnmsql_metrics_exporter`
+- All queries run via `application_name=cnmsql_metrics_exporter`
 
 ## Execution order
 
@@ -297,5 +297,5 @@ pkg/management/mysql/instance/controller.go → create cnmysql_metrics_exporter 
 - CNPG PDB logic: `cloudnative-pg/internal/controller/cluster_create.go`
 - CNPG MonitoringConfiguration: `cloudnative-pg/api/v1/cluster_types.go`
 - CNPG specs builder: `cloudnative-pg/internal/controller/specs/`
-- Current cnmysql types: `api/v1alpha1/cluster_types.go`
+- Current cnmsql types: `api/v1alpha1/cluster_types.go`
 - Current reconciliation: `internal/controller/cluster_controller.go`

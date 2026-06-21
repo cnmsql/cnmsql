@@ -110,13 +110,13 @@ ignored (raw-S3 recovery does not connect to a live instance).
 ### Example: full raw-S3 recovery spec
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: recovered-cluster
 spec:
   instances: 3
-  imageName: cnmysql-instance:8.4
+  imageName: cnmsql-instance:8.4
   storage:
     size: 10Gi
   bootstrap:
@@ -128,7 +128,7 @@ spec:
   externalClusters:
     - name: prod-cluster              # S3 key prefix: path/prod-cluster/...
       objectStore:
-        bucket: cnmysql-backups
+        bucket: cnmsql-backups
         path: production
         endpoint: https://s3.example.com
         region: us-east-1

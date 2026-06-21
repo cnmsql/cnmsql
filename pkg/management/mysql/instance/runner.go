@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,13 +34,13 @@ import (
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/instance/rolereconciler"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/metrics"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver/metricserver"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance/rolereconciler"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver/metricserver"
 )
 
 // RunOptions configures the PID1 run loop.

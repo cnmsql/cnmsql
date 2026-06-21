@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"io"
 	"testing"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func TestBuildBackupKeys(t *testing.T) {
@@ -29,18 +29,18 @@ func TestBuildBackupKeys(t *testing.T) {
 
 	keys, err := BuildBackupKeys(mysqlv1alpha1.S3ObjectStore{
 		Bucket: "backups",
-		Path:   "/cloudnative-mysql//prod/",
+		Path:   "/cnmsql//prod/",
 	}, "cluster-sample", "backup-sample", "backup-sample-123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if keys.ArchiveKey != "cloudnative-mysql/prod/cluster-sample/backup-sample/backup-sample-123/backup.xbstream" {
+	if keys.ArchiveKey != "cnmsql/prod/cluster-sample/backup-sample/backup-sample-123/backup.xbstream" {
 		t.Fatalf("archive key = %q", keys.ArchiveKey)
 	}
-	if keys.MetadataKey != "cloudnative-mysql/prod/cluster-sample/backup-sample/backup-sample-123/metadata.json" {
+	if keys.MetadataKey != "cnmsql/prod/cluster-sample/backup-sample/backup-sample-123/metadata.json" {
 		t.Fatalf("metadata key = %q", keys.MetadataKey)
 	}
-	wantURI := "s3://backups/cloudnative-mysql/prod/cluster-sample/backup-sample/backup-sample-123/backup.xbstream"
+	wantURI := "s3://backups/cnmsql/prod/cluster-sample/backup-sample/backup-sample-123/backup.xbstream"
 	if keys.ArchiveURI != wantURI {
 		t.Fatalf("archive URI = %q", keys.ArchiveURI)
 	}
@@ -54,7 +54,7 @@ func TestClusterPrefix(t *testing.T) {
 		cluster string
 		want    string
 	}{
-		{path: "/cloudnative-mysql//prod/", cluster: "demo", want: "cloudnative-mysql/prod/demo/"},
+		{path: "/cnmsql//prod/", cluster: "demo", want: "cnmsql/prod/demo/"},
 		{path: "", cluster: "demo", want: "demo/"},
 		{path: "backups", cluster: "demo", want: "backups/demo/"},
 	}

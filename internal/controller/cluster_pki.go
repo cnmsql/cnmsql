@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
@@ -43,7 +43,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 		if err := r.ensureCertManagerResource(ctx, cluster, plan.CAIssuer, map[string]any{
 			"secretName": plan.ServerCASecretName,
 			"isCA":       true,
-			"commonName": cluster.Name + ".ca.cloudnative-mysql",
+			"commonName": cluster.Name + ".ca.cnmsql",
 			"issuerRef": map[string]any{
 				"name": plan.SelfSignedIssuer,
 				"kind": "Issuer",
@@ -91,7 +91,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 	}
 	return r.ensureCertManagerResource(ctx, cluster, cluster.Name+"-client", map[string]any{
 		"secretName": plan.ClientTLSSecret,
-		"commonName": "cloudnative-mysql-operator",
+		"commonName": "cnmsql-operator",
 		"usages": []any{
 			"client auth",
 		},

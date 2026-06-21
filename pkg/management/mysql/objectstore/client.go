@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,25 +30,25 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 // Environment variables consumed by NewClientFromEnv. The backup/recovery
 // workers receive these from the operator, sourcing the secret-backed ones from
 // the configured S3 credentials.
 const (
-	EnvEndpoint         = "cloudnative-mysql_S3_ENDPOINT"
-	EnvRegion           = "cloudnative-mysql_S3_REGION"
-	EnvSignatureVersion = "cloudnative-mysql_S3_SIGNATURE_VERSION"
-	EnvForcePathStyle   = "cloudnative-mysql_S3_FORCE_PATH_STYLE"
-	EnvAccessKeyID      = "cloudnative-mysql_S3_ACCESS_KEY_ID"
-	EnvSecretAccessKey  = "cloudnative-mysql_S3_SECRET_ACCESS_KEY"
-	EnvSessionToken     = "cloudnative-mysql_S3_SESSION_TOKEN"
+	EnvEndpoint         = "cnmsql_S3_ENDPOINT"
+	EnvRegion           = "cnmsql_S3_REGION"
+	EnvSignatureVersion = "cnmsql_S3_SIGNATURE_VERSION"
+	EnvForcePathStyle   = "cnmsql_S3_FORCE_PATH_STYLE"
+	EnvAccessKeyID      = "cnmsql_S3_ACCESS_KEY_ID"
+	EnvSecretAccessKey  = "cnmsql_S3_SECRET_ACCESS_KEY"
+	EnvSessionToken     = "cnmsql_S3_SESSION_TOKEN"
 	// EnvBucket and EnvPath carry the (non-secret) destination bucket and key
 	// prefix. The continuous archiver reads these to know where to ship binlogs;
 	// the one-shot backup worker still takes them as flags.
-	EnvBucket = "cloudnative-mysql_S3_BUCKET"
-	EnvPath   = "cloudnative-mysql_S3_PATH"
+	EnvBucket = "cnmsql_S3_BUCKET"
+	EnvPath   = "cnmsql_S3_PATH"
 )
 
 // StoreFromEnv builds an S3ObjectStore destination (bucket + path) from the
@@ -80,7 +80,7 @@ type Config struct {
 	ForcePathStyle bool
 }
 
-// ConfigFromEnv builds a Config from the cloudnative-mysql_S3_* environment variables.
+// ConfigFromEnv builds a Config from the cnmsql_S3_* environment variables.
 func ConfigFromEnv() Config {
 	cfg := Config{
 		Endpoint:        os.Getenv(EnvEndpoint),
@@ -161,7 +161,7 @@ func NewClient(cfg Config) (*Client, error) {
 	return &Client{mc: mc}, nil
 }
 
-// NewClientFromEnv builds a client from the cloudnative-mysql_S3_* environment variables.
+// NewClientFromEnv builds a client from the cnmsql_S3_* environment variables.
 func NewClientFromEnv() (*Client, error) {
 	return NewClient(ConfigFromEnv())
 }

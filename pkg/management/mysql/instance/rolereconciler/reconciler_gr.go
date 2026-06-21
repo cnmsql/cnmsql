@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,14 +29,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/groupreplication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
-const groupObservationAnnotation = "mysql.cloudnative-mysql.io/gr-observed"
-const forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
-const forceGroupRebootstrapAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-group-rebootstrap"
+const groupObservationAnnotation = "mysql.cnmsql.co/gr-observed"
+const forceQuorumMembersAnnotation = "cnmsql.cnmsql.co/force-quorum-members"
+const forceGroupRebootstrapAnnotation = "cnmsql.cnmsql.co/force-group-rebootstrap"
 
 // clusterPhaseBlocked mirrors topology.PhaseBlocked. The in-Pod agent must not
 // pull in the controller's internal packages, so the literal is duplicated here.

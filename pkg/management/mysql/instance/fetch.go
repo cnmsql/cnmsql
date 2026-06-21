@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/xtrabackup"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
 )
 
 // FetchOptions configures pulling a streamed backup from a source instance's

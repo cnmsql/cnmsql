@@ -10,12 +10,12 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status
+      path: /validate-mysql-cnmsql-io-v1alpha1-cluster-status
   failurePolicy: Fail
-  name: vclusterstatus-v1alpha1.cloudnative-mysql.io
+  name: vclusterstatus-v1alpha1.cnmsql.co
   rules:
   - apiGroups:
-    - mysql.cloudnative-mysql.io
+    - mysql.cnmsql.co
     apiVersions:
     - v1alpha1
     operations:

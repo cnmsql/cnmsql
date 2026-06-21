@@ -3,18 +3,18 @@ kind: Namespace
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     control-plane: controller-manager
-  name: cloudnative-mysql-system
+  name: cnmsql-system
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: backups.mysql.cloudnative-mysql.io
+  name: backups.mysql.cnmsql.co
 spec:
-  group: mysql.cloudnative-mysql.io
+  group: mysql.cnmsql.co
   names:
     kind: Backup
     listKind: BackupList
@@ -347,9 +347,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: clusterimagecatalogs.mysql.cloudnative-mysql.io
+  name: clusterimagecatalogs.mysql.cnmsql.co
 spec:
-  group: mysql.cloudnative-mysql.io
+  group: mysql.cnmsql.co
   names:
     kind: ClusterImageCatalog
     listKind: ClusterImageCatalogList
@@ -428,9 +428,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: clusters.mysql.cloudnative-mysql.io
+  name: clusters.mysql.cnmsql.co
 spec:
-  group: mysql.cloudnative-mysql.io
+  group: mysql.cnmsql.co
   names:
     categories:
     - all
@@ -4450,9 +4450,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: databases.mysql.cloudnative-mysql.io
+  name: databases.mysql.cnmsql.co
 spec:
-  group: mysql.cloudnative-mysql.io
+  group: mysql.cnmsql.co
   names:
     kind: Database
     listKind: DatabaseList
@@ -4696,9 +4696,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: imagecatalogs.mysql.cloudnative-mysql.io
+  name: imagecatalogs.mysql.cnmsql.co
 spec:
-  group: mysql.cloudnative-mysql.io
+  group: mysql.cnmsql.co
   names:
     kind: ImageCatalog
     listKind: ImageCatalogList
@@ -4775,9 +4775,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: scheduledbackups.mysql.cloudnative-mysql.io
+  name: scheduledbackups.mysql.cnmsql.co
 spec:
-  group: mysql.cloudnative-mysql.io
+  group: mysql.cnmsql.co
   names:
     kind: ScheduledBackup
     listKind: ScheduledBackupList
@@ -4910,18 +4910,18 @@ kind: ServiceAccount
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-controller-manager
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-controller-manager
+  namespace: cnmsql-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-leader-election-role
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-leader-election-role
+  namespace: cnmsql-system
 rules:
 - apiGroups:
   - ""
@@ -4960,17 +4960,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-backup-admin-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-backup-admin-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups
   verbs:
   - '*'
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups/status
   verbs:
@@ -4981,11 +4981,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-backup-editor-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-backup-editor-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups
   verbs:
@@ -4997,7 +4997,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups/status
   verbs:
@@ -5008,11 +5008,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-backup-viewer-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-backup-viewer-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups
   verbs:
@@ -5020,7 +5020,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups/status
   verbs:
@@ -5031,17 +5031,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-cluster-admin-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-cluster-admin-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters
   verbs:
   - '*'
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters/status
   verbs:
@@ -5052,11 +5052,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-cluster-editor-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-cluster-editor-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters
   verbs:
@@ -5068,7 +5068,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters/status
   verbs:
@@ -5079,11 +5079,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-cluster-viewer-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-cluster-viewer-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters
   verbs:
@@ -5091,7 +5091,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters/status
   verbs:
@@ -5102,17 +5102,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-clusterimagecatalog-admin-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-clusterimagecatalog-admin-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs
   verbs:
   - '*'
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs/status
   verbs:
@@ -5123,11 +5123,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-clusterimagecatalog-editor-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-clusterimagecatalog-editor-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs
   verbs:
@@ -5139,7 +5139,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs/status
   verbs:
@@ -5150,11 +5150,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-clusterimagecatalog-viewer-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-clusterimagecatalog-viewer-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs
   verbs:
@@ -5162,7 +5162,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs/status
   verbs:
@@ -5173,17 +5173,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-database-admin-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-database-admin-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - databases
   verbs:
   - '*'
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - databases/status
   verbs:
@@ -5194,11 +5194,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-database-editor-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-database-editor-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - databases
   verbs:
@@ -5210,7 +5210,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - databases/status
   verbs:
@@ -5221,11 +5221,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-database-viewer-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-database-viewer-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - databases
   verbs:
@@ -5233,7 +5233,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - databases/status
   verbs:
@@ -5244,17 +5244,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-imagecatalog-admin-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-imagecatalog-admin-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - imagecatalogs
   verbs:
   - '*'
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - imagecatalogs/status
   verbs:
@@ -5265,11 +5265,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-imagecatalog-editor-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-imagecatalog-editor-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - imagecatalogs
   verbs:
@@ -5281,7 +5281,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - imagecatalogs/status
   verbs:
@@ -5292,11 +5292,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-imagecatalog-viewer-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-imagecatalog-viewer-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - imagecatalogs
   verbs:
@@ -5304,7 +5304,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - imagecatalogs/status
   verbs:
@@ -5313,7 +5313,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cloudnative-mysql-manager-role
+  name: cnmsql-manager-role
 rules:
 - apiGroups:
   - ""
@@ -5397,7 +5397,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups
   verbs:
@@ -5406,7 +5406,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - backups/status
   - clusters/status
@@ -5417,7 +5417,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusterimagecatalogs
   - imagecatalogs
@@ -5426,7 +5426,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters
   - databases
@@ -5438,7 +5438,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - clusters/finalizers
   - databases/finalizers
@@ -5473,7 +5473,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cloudnative-mysql-metrics-auth-role
+  name: cnmsql-metrics-auth-role
 rules:
 - apiGroups:
   - authentication.k8s.io
@@ -5491,7 +5491,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cloudnative-mysql-metrics-reader
+  name: cnmsql-metrics-reader
 rules:
 - nonResourceURLs:
   - /metrics
@@ -5503,17 +5503,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-scheduledbackup-admin-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-scheduledbackup-admin-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - scheduledbackups
   verbs:
   - '*'
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - scheduledbackups/status
   verbs:
@@ -5524,11 +5524,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-scheduledbackup-editor-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-scheduledbackup-editor-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - scheduledbackups
   verbs:
@@ -5540,7 +5540,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - scheduledbackups/status
   verbs:
@@ -5551,11 +5551,11 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-scheduledbackup-viewer-role
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-scheduledbackup-viewer-role
 rules:
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - scheduledbackups
   verbs:
@@ -5563,7 +5563,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mysql.cloudnative-mysql.io
+  - mysql.cnmsql.co
   resources:
   - scheduledbackups/status
   verbs:
@@ -5574,56 +5574,56 @@ kind: RoleBinding
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-leader-election-rolebinding
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-leader-election-rolebinding
+  namespace: cnmsql-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: cloudnative-mysql-leader-election-role
+  name: cnmsql-leader-election-role
 subjects:
 - kind: ServiceAccount
-  name: cloudnative-mysql-controller-manager
-  namespace: cloudnative-mysql-system
+  name: cnmsql-controller-manager
+  namespace: cnmsql-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-manager-rolebinding
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cloudnative-mysql-manager-role
+  name: cnmsql-manager-role
 subjects:
 - kind: ServiceAccount
-  name: cloudnative-mysql-controller-manager
-  namespace: cloudnative-mysql-system
+  name: cnmsql-controller-manager
+  namespace: cnmsql-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cloudnative-mysql-metrics-auth-rolebinding
+  name: cnmsql-metrics-auth-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cloudnative-mysql-metrics-auth-role
+  name: cnmsql-metrics-auth-role
 subjects:
 - kind: ServiceAccount
-  name: cloudnative-mysql-controller-manager
-  namespace: cloudnative-mysql-system
+  name: cnmsql-controller-manager
+  namespace: cnmsql-system
 ---
 apiVersion: v1
 kind: Service
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     control-plane: controller-manager
-  name: cloudnative-mysql-controller-manager-metrics-service
-  namespace: cloudnative-mysql-system
+  name: cnmsql-controller-manager-metrics-service
+  namespace: cnmsql-system
 spec:
   ports:
   - name: https
@@ -5631,7 +5631,7 @@ spec:
     protocol: TCP
     targetPort: 8443
   selector:
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     control-plane: controller-manager
 ---
 apiVersion: v1
@@ -5639,16 +5639,16 @@ kind: Service
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-webhook-service
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-webhook-service
+  namespace: cnmsql-system
 spec:
   ports:
   - port: 443
     protocol: TCP
     targetPort: 9443
   selector:
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     control-plane: controller-manager
 ---
 apiVersion: apps/v1
@@ -5656,22 +5656,22 @@ kind: Deployment
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     control-plane: controller-manager
-  name: cloudnative-mysql-controller-manager
-  namespace: cloudnative-mysql-system
+  name: cnmsql-controller-manager
+  namespace: cnmsql-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: cloudnative-mysql
+      app.kubernetes.io/name: cnmsql
       control-plane: controller-manager
   template:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
       labels:
-        app.kubernetes.io/name: cloudnative-mysql
+        app.kubernetes.io/name: cnmsql
         control-plane: controller-manager
     spec:
       containers:
@@ -5679,11 +5679,11 @@ spec:
         - --metrics-bind-address=:8443
         - --leader-elect
         - --health-probe-bind-address=:8081
-        - --operator-image=ghcr.io/cloudnative-mysql/cloudnative-mysql:latest
+        - --operator-image=ghcr.io/cnmsql/cnmsql:latest
         - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         command:
         - /manager
-        image: ghcr.io/cloudnative-mysql/cloudnative-mysql:latest
+        image: ghcr.io/cnmsql/cnmsql:latest
         livenessProbe:
           httpGet:
             path: /healthz
@@ -5725,7 +5725,7 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: cloudnative-mysql-controller-manager
+      serviceAccountName: cnmsql-controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
       - name: webhook-certs
@@ -5737,16 +5737,16 @@ kind: Certificate
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-metrics-certs
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-metrics-certs
+  namespace: cnmsql-system
 spec:
   dnsNames:
   - SERVICE_NAME.SERVICE_NAMESPACE.svc
   - SERVICE_NAME.SERVICE_NAMESPACE.svc.cluster.local
   issuerRef:
     kind: Issuer
-    name: cloudnative-mysql-selfsigned-issuer
+    name: cnmsql-selfsigned-issuer
   secretName: metrics-server-cert
 ---
 apiVersion: cert-manager.io/v1
@@ -5754,16 +5754,16 @@ kind: Certificate
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-serving-cert
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-serving-cert
+  namespace: cnmsql-system
 spec:
   dnsNames:
-  - cloudnative-mysql-webhook-service.cloudnative-mysql-system.svc
-  - cloudnative-mysql-webhook-service.cloudnative-mysql-system.svc.cluster.local
+  - cnmsql-webhook-service.cnmsql-system.svc
+  - cnmsql-webhook-service.cnmsql-system.svc.cluster.local
   issuerRef:
     kind: Issuer
-    name: cloudnative-mysql-selfsigned-issuer
+    name: cnmsql-selfsigned-issuer
   secretName: webhook-server-cert
 ---
 apiVersion: cert-manager.io/v1
@@ -5771,9 +5771,9 @@ kind: Issuer
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: cloudnative-mysql
-  name: cloudnative-mysql-selfsigned-issuer
-  namespace: cloudnative-mysql-system
+    app.kubernetes.io/name: cnmsql
+  name: cnmsql-selfsigned-issuer
+  namespace: cnmsql-system
 spec:
   selfSigned: {}
 ---
@@ -5781,21 +5781,21 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   annotations:
-    cert-manager.io/inject-ca-from: cloudnative-mysql-system/cloudnative-mysql-serving-cert
-  name: cloudnative-mysql-validating-webhook-configuration
+    cert-manager.io/inject-ca-from: cnmsql-system/cnmsql-serving-cert
+  name: cnmsql-validating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: cloudnative-mysql-webhook-service
-      namespace: cloudnative-mysql-system
-      path: /validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status
+      name: cnmsql-webhook-service
+      namespace: cnmsql-system
+      path: /validate-mysql-cnmsql-io-v1alpha1-cluster-status
   failurePolicy: Fail
-  name: vclusterstatus-v1alpha1.cloudnative-mysql.io
+  name: vclusterstatus-v1alpha1.cnmsql.co
   rules:
   - apiGroups:
-    - mysql.cloudnative-mysql.io
+    - mysql.cnmsql.co
     apiVersions:
     - v1alpha1
     operations:

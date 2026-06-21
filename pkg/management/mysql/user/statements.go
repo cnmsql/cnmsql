@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package user builds and executes the SQL that manages MySQL users and
 // databases declaratively. The statement builders here are pure so they can be
-// unit-tested without a running server. cloudnative-mysql targets Percona Server 8.0/8.4/
+// unit-tested without a running server. cnmsql targets Percona Server 8.0/8.4/
 // 9.x only, so the modern syntax (CREATE USER IF NOT EXISTS, ALTER USER ...
 // IDENTIFIED BY, REQUIRE X509) is always used; no MySQL 5.x branches exist.
 package user
@@ -39,10 +39,10 @@ const (
 // internal/controller constants and instance/bootstrap.go); touching them would
 // break the control plane, replication, backups or monitoring.
 var reservedUsers = map[string]struct{}{
-	"cloudnative-mysql_control": {},
-	"cloudnative-mysql_repl":    {},
-	"cloudnative-mysql_backup":  {},
-	"cloudnative-mysql_metrics": {},
+	"cnmsql_control": {},
+	"cnmsql_repl":    {},
+	"cnmsql_backup":  {},
+	"cnmsql_metrics": {},
 	"root":                      {},
 }
 
@@ -313,8 +313,8 @@ func ListUsersQuery() string {
 	return "SELECT User, Host, max_user_connections, max_questions, max_updates, " +
 		"max_connections, ssl_type FROM mysql.user " +
 		"WHERE User NOT LIKE 'mysql.%' AND User <> 'root' " +
-		"AND User NOT IN ('cloudnative-mysql_control', 'cloudnative-mysql_repl', " +
-		"'cloudnative-mysql_backup', 'cloudnative-mysql_metrics') " +
+		"AND User NOT IN ('cnmsql_control', 'cnmsql_repl', " +
+		"'cnmsql_backup', 'cnmsql_metrics') " +
 		"ORDER BY User, Host"
 }
 

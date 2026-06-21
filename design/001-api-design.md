@@ -7,7 +7,7 @@ Define the full CRD surface as Go types with kubebuilder markers covering `Clust
 
 ## Overview
 
-All types live in `api/v1alpha1` (single group `mysql`, domain `cloudnative-mysql.io`). Start at `v1alpha1` since the API is unstable. No reconciliation in M1 — output compiles, `make manifests generate` produces CRDs + deepcopy, and unit tests cover defaulting/validation helpers.
+All types live in `api/v1alpha1` (single group `mysql`, domain `cnmsql.co`). Start at `v1alpha1` since the API is unstable. No reconciliation in M1 — output compiles, `make manifests generate` produces CRDs + deepcopy, and unit tests cover defaulting/validation helpers.
 
 ## Design
 

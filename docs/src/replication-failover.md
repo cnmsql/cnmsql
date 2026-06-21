@@ -1,12 +1,12 @@
 ---
 title: "Replication and Failover"
-description: "How cloudnative-mysql manages GTID replicas, service routing, planned switchovers, and automatic failover."
+description: "How cnmsql manages GTID replicas, service routing, planned switchovers, and automatic failover."
 sidebar_position: 10
 ---
 
 # Replication and failover architecture
 
-cloudnative-mysql builds a primary-replica topology with Percona Server for MySQL GTID
+cnmsql builds a primary-replica topology with Percona Server for MySQL GTID
 replication. The operator owns topology policy, while each instance manager
 owns local mysqld role changes. This split keeps primary changes declarative:
 the operator writes the intended primary in Cluster status, and the pods
@@ -129,8 +129,8 @@ Fencing takes a single instance out of service without deleting it or its data.
 Use the plugin:
 
 ```bash
-kubectl cnmysql fence on <cluster> <cluster>-2
-kubectl cnmysql fence off <cluster> <cluster>-2
+kubectl cnmsql fence on <cluster> <cluster>-2
+kubectl cnmsql fence off <cluster> <cluster>-2
 ```
 
 The operator drops the Pod from every routing Service (rw, ro, r, and any
@@ -228,7 +228,7 @@ survive the Cluster deletion, and use RBAC to restrict who can delete Clusters.
 
 ## Role services
 
-cloudnative-mysql creates three default Services:
+cnmsql creates three default Services:
 
 - `<cluster>-rw`: selects the current primary.
 - `<cluster>-ro`: selects ready replicas.
@@ -319,7 +319,7 @@ re-cloned over its retained PVC.
 
 ## Planned switchover
 
-A planned switchover promotes a named healthy replica. cloudnative-mysql models this like
+A planned switchover promotes a named healthy replica. cnmsql models this like
 CloudNativePG: the request is a status transition rather than a spec change.
 The normal trigger is to set `status.targetPrimary` to a replica name.
 
@@ -388,7 +388,7 @@ follow the promoted primary.
 
 If its GTID set is contained in the new primary's GTID set, it can safely rejoin
 as a replica. If it contains errant transactions that the promoted primary never
-saw, cloudnative-mysql marks it diverged and keeps it out of service. The retained PVC is
+saw, cnmsql marks it diverged and keeps it out of service. The retained PVC is
 left for deliberate human recovery instead of being destroyed.
 
 ## Detecting a silently broken replica
@@ -420,10 +420,10 @@ retained PVC on its own, so errant data is preserved for diagnosis until you
 decide to discard it. Trigger it with the plugin or the annotation:
 
 ```bash
-kubectl cnmysql reinit <cluster> <cluster>-2
+kubectl cnmsql reinit <cluster> <cluster>-2
 # or, equivalently:
 kubectl annotate cluster <cluster> \
-  cloudnative-mysql.cloudnative-mysql.io/reinit=<cluster>-2
+  cnmsql.cnmsql.co/reinit=<cluster>-2
 ```
 
 The annotation is a comma-separated list of instance names the operator consumes,

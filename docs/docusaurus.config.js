@@ -5,13 +5,13 @@ const darkCodeTheme = require('prism-react-renderer').themes.dracula;
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'CloudNative MySQL',
+  title: 'CNMSQL - CloudNative for MySQL',
   tagline: 'A Kubernetes operator for Percona Server for MySQL',
-  favicon: 'img/cnmysql.png',
-  url: 'https://cloudnative-mysql.io',
+  favicon: 'img/cnmsql.png',
+  url: 'https://cnmsql.co',
   baseUrl: '/',
-  organizationName: 'CloudNative-MySQL',
-  projectName: 'cloudnative-mysql',
+  organizationName: 'cnmsql',
+  projectName: 'cnmsql',
   onBrokenLinks: 'throw',
 
   markdown: {
@@ -46,11 +46,11 @@ const config = {
     ({
       image: 'img/social-card.svg',
       navbar: {
-        title: 'CloudNative MySQL',
+        title: 'CNMSQL - CloudNative for MySQL',
         logo: {
-          alt: 'CloudNative MySQL',
-          src: 'img/cnmysql.png',
-          srcDark: 'img/cnmysql.png',
+          alt: 'CNMSQL - CloudNative for MySQL',
+          src: 'img/cnmsql.png',
+          srcDark: 'img/cnmsql.png',
         },
         items: [
           {
@@ -65,7 +65,7 @@ const config = {
             position: 'left',
           },
           {
-            href: 'https://github.com/CloudNative-MySQL/cloudnative-mysql',
+            href: 'https://github.com/cnmsql/cnmsql',
             position: 'right',
             className: 'header-github-link',
             'aria-label': 'GitHub repository',
@@ -114,7 +114,7 @@ const config = {
             items: [
               {
                 label: 'GitHub',
-                href: 'https://github.com/CloudNative-MySQL/cloudnative-mysql',
+                href: 'https://github.com/cnmsql/cnmsql',
               },
               {
                 label: 'Percona Server',
@@ -123,7 +123,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright &copy; ${new Date().getFullYear()} The CloudNative MySQL Authors. Built with <a href="https://docusaurus.io/" target="_blank">Docusaurus</a>.<br/><small>CloudNative MySQL is an independent project, not affiliated with the CNCF or CloudNativePG.</small>`,
+        copyright: `Copyright &copy; ${new Date().getFullYear()} The CNMSQL - CloudNative for MySQL Authors. Built with <a href="https://docusaurus.io/" target="_blank">Docusaurus</a>.<br/><small>CNMSQL - CloudNative for MySQL is an independent project, not affiliated with the CNCF or CloudNativePG.</small>`,
       },
       prism: {
         theme: lightCodeTheme,

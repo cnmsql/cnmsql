@@ -2,16 +2,16 @@ version: 2
 
 dist: build/goreleaser
 
-project_name: kubectl-cnmysql
+project_name: kubectl-cnmsql
 
 before:
   hooks:
   - go mod tidy
 
 builds:
-- id: kubectl-cnmysql
-  main: ./cmd/kubectl-cnmysql
-  binary: kubectl-cnmysql
+- id: kubectl-cnmsql
+  main: ./cmd/kubectl-cnmsql
+  binary: kubectl-cnmsql
   goos:
   - linux
   - darwin
@@ -26,9 +26,9 @@ builds:
   - CGO_ENABLED=0
   ldflags:
   - -s -w
-  - -X github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd.Version={{.Version}}
-  - -X github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd.Commit={{.Commit}}
-  - -X github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/cmd.BuildDate={{.Date}}
+  - -X github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/cmd.Version={{.Version}}
+  - -X github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/cmd.Commit={{.Commit}}
+  - -X github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/cmd.BuildDate={{.Date}}
 
 archives:
 - id: default
@@ -64,9 +64,9 @@ release:
     ## Plugin Installation
 
     ```sh
-    curl -sSfL https://github.com/CloudNative-MySQL/cloudnative-mysql/raw/main/hack/install-cnmysql-plugin.sh | sh -s -- -b /usr/local/bin {{ .Tag }}
+    curl -sSfL https://github.com/cnmsql/cnmsql/raw/main/hack/install-cnmsql-plugin.sh | sh -s -- -b /usr/local/bin {{ .Tag }}
     ```
 
     Omit the tag to install the latest release, or replace `/usr/local/bin` with any directory on your `PATH`.
 
-    The script also installs a `kubectl_complete-cnmysql` shim so `kubectl cnmysql <TAB>` autocompletes subcommands and cluster names.
+    The script also installs a `kubectl_complete-cnmsql` shim so `kubectl cnmsql <TAB>` autocompletes subcommands and cluster names.

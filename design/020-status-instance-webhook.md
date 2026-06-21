@@ -31,7 +31,7 @@ Every instance Pod used to run as the same ServiceAccount. We now create one Ser
 
 Properties:
 
-- Each SA is labeled with the cluster and instance labels (`mysql.cloudnative-mysql.io/cluster`, `mysql.cloudnative-mysql.io/instance`).
+- Each SA is labeled with the cluster and instance labels (`mysql.cnmsql.co/cluster`, `mysql.cnmsql.co/instance`).
 - Each SA is owned by the `Cluster` CR so it is garbage-collected with the cluster.
 - The same per-Cluster Role and RoleBinding are reused; the binding subjects now enumerate every desired instance SA.
 - When the cluster is scaled down, stale instance SAs are deleted so the removed identity cannot be reused later.
@@ -43,7 +43,7 @@ The single shared SA file no longer exists; `clusterPlan` now computes the per-i
 A custom admission webhook is registered at:
 
 ```
-/validate-mysql-cloudnative-mysql-io-v1alpha1-cluster-status
+/validate-mysql-cnmsql-io-v1alpha1-cluster-status
 ```
 
 It only validates `UPDATE` requests to the `clusters` resource, and only the `status` subresource.

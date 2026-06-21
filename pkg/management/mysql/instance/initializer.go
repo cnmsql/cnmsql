@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,9 +27,9 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/config"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // InitOptions configures a fresh data-directory initialisation.
@@ -64,7 +64,7 @@ func (o *InitOptions) applyDefaults() {
 // bootstrapSentinel is created atomically after a complete bootstrap so the
 // next run can reliably distinguish a fully initialized directory from one
 // where initialization was interrupted partway.
-const bootstrapSentinel = ".cloudnative-mysql-bootstrapped"
+const bootstrapSentinel = ".cnmsql-bootstrapped"
 
 // hasSystemSchema reports whether the data directory contains the mysql system
 // schema laid down by --initialize, regardless of whether bootstrap completed.

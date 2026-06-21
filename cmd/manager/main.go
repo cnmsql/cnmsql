@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command manager is the in-pod instance manager for cloudnative-mysql. It runs as PID1
+// Command manager is the in-pod instance manager for cnmsql. It runs as PID1
 // inside every MySQL pod, supervises mysqld, bootstraps and joins instances,
 // drives GTID replication, and exposes a control API to the operator.
 package main
@@ -27,7 +27,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager"
+	"github.com/cnmsql/cnmsql/internal/cmd/manager"
 )
 
 func main() {

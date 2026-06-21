@@ -1,8 +1,8 @@
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: ClusterImageCatalog
 metadata:
   labels:
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     app.kubernetes.io/managed-by: kustomize
   name: clusterimagecatalog-sample
 spec: # TODO(user): Add fields here

@@ -146,7 +146,7 @@ var _ = Describe("TLS Certificate Renewal", Ordered, func() {
 })
 
 func tlsRenewalClusterManifest(name string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s

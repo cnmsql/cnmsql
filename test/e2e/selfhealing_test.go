@@ -151,7 +151,7 @@ func otherInstance(cluster string, instances int, primary string) string {
 }
 
 func semiSyncClusterManifest(name string, instances, minSync, maxSync int, durability string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

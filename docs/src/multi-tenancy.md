@@ -1,18 +1,18 @@
 ---
 title: "Multi-Tenancy"
-description: "Using cloudnative-mysql to host many tenants: cluster-per-tenant vs schema-per-tenant, declarative roles and databases, privilege scoping, isolation, and safety controls."
+description: "Using cnmsql to host many tenants: cluster-per-tenant vs schema-per-tenant, declarative roles and databases, privilege scoping, isolation, and safety controls."
 sidebar_position: 7
 ---
 
-# Multi-tenancy with cloudnative-mysql
+# Multi-tenancy with cnmsql
 
-cloudnative-mysql is operator owned: the operator holds the policy and converges MySQL
+cnmsql is operator owned: the operator holds the policy and converges MySQL
 toward a declared state. That property is what makes it usable as a
 multi-tenancy platform. Instead of handing out root and trusting humans to keep
 tenants apart, you declare the tenants and their schemas, accounts, privileges,
 and connection rules as Kubernetes objects, and the operator reconciles them.
 
-This guide covers the two tenancy models cloudnative-mysql supports, the declarative
+This guide covers the two tenancy models cnmsql supports, the declarative
 building blocks they share, how isolation is enforced, and the safety controls
 that stop one tenant (or one careless manifest) from affecting the rest.
 
@@ -40,7 +40,7 @@ flowchart TB
 
 Each tenant gets its own `Cluster`: dedicated Pods, dedicated PVCs, dedicated
 credentials, and dedicated TLS material. This is the strongest isolation
-cloudnative-mysql offers.
+cnmsql offers.
 
 Use it when tenants need:
 
@@ -111,7 +111,7 @@ A single `Database` declares:
 - a reclaim policy controlling what happens to the schema on deletion.
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Database
 metadata:
   name: tenant-a
@@ -164,7 +164,7 @@ differently:
 
 ## Isolation and how it is enforced
 
-Logical isolation in the schema-per-tenant model rests on grants. cloudnative-mysql makes
+Logical isolation in the schema-per-tenant model rests on grants. cnmsql makes
 the safe path the default.
 
 ### Privileges default to the tenant's schema
@@ -180,7 +180,7 @@ break the isolation the model depends on.
 ### Reserved and operator-owned accounts are protected
 
 Managed-role names that collide with operator internals are rejected up front:
-`root`, the `mysql.*` system accounts, and the `cloudnative-mysql_*` user-name prefix the
+`root`, the `mysql.*` system accounts, and the `cnmsql_*` user-name prefix the
 operator reserves for its own bootstrap, replication, instance-manager, and
 backup accounts. Tenants cannot declare their way into an account that controls
 the cluster.
@@ -214,7 +214,7 @@ one shared namespace; isolation there rests on MySQL grants, not on namespaces.
 
 In any shared model, `spec.mysql.parameters` is a privileged surface: a
 parameter that relocates the data directory, disables TLS plumbing, or rewrites
-log paths affects every tenant on the cluster. cloudnative-mysql guards it:
+log paths affects every tenant on the cluster. cnmsql guards it:
 
 - **Operator-owned keys** (data directory, server id, TLS material, log
   positions, and the rest of the lifecycle-critical set) cannot be overridden.
@@ -238,7 +238,7 @@ for the full lists.
 - **Operator-generated passwords.** Omit `passwordSecret` on a managed role and
   the operator generates a strong password into `<cluster>-<roleName>`
   (key `password`). Good for accounts a human never types.
-- **User-provided passwords.** Reference your own Secret. cloudnative-mysql does not
+- **User-provided passwords.** Reference your own Secret. cnmsql does not
   overwrite Secrets you supply.
 - **Rotation.** Update the referenced Secret. The operator (for managed roles)
   and the Database controller track the applied Secret `resourceVersion` and
@@ -278,7 +278,7 @@ stringData:
   password: "CHANGE-ME-OR-GENERATE"
 ---
 # 2. The tenant: a schema, a scoped account, and a reclaim policy.
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Database
 metadata:
   name: tenant-a
@@ -332,7 +332,7 @@ databases, scoping, and reclaim applies unchanged within it.
   and PITR operate on the whole cluster. Per-tenant point-in-time restore is not
   possible without cluster-per-tenant.
 - **NetworkPolicy is not shipped.** Network-level tenant isolation between
-  namespaces is left to your cluster's policies; cloudnative-mysql does not install them.
+  namespaces is left to your cluster's policies; cnmsql does not install them.
 
 ## See also
 

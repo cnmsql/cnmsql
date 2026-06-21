@@ -129,7 +129,7 @@ var _ = Describe("Group Replication backup and restore into a fresh group", Orde
 // grBackupClusterManifest renders a Group Replication Cluster that archives to
 // the e2e object store.
 func grBackupClusterManifest(name string, instances int) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s
@@ -157,7 +157,7 @@ spec:
 // grRecoveryClusterManifest renders a Group Replication Cluster that bootstraps
 // by recovering a physical backup into a fresh group.
 func grRecoveryClusterManifest(name string, instances int, backup string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %[1]s

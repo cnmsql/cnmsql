@@ -1,20 +1,20 @@
 ---
 title: "Troubleshooting"
-description: "Common cloudnative-mysql symptoms, likely causes, and first commands to run."
+description: "Common cnmsql symptoms, likely causes, and first commands to run."
 sidebar_position: 18
 ---
 
 # Troubleshooting
 
-This page starts with symptoms and points to the first places to inspect. cloudnative-mysql
+This page starts with symptoms and points to the first places to inspect. cnmsql
 surfaces most issues through Cluster/Backup status, Kubernetes Events, and the
 instance-manager logs.
 
 ## First commands
 
 ```bash
-kubectl cnmysql status <cluster>
-kubectl cnmysql logs <cluster>
+kubectl cnmsql status <cluster>
+kubectl cnmsql logs <cluster>
 kubectl describe cluster <cluster>
 kubectl get events --sort-by=.lastTimestamp
 kubectl get backup
@@ -24,7 +24,7 @@ kubectl get scheduledbackup
 Operator logs:
 
 ```bash
-kubectl logs -n cloudnative-mysql-system deployment/cloudnative-mysql-controller-manager -c manager
+kubectl logs -n cnmsql-system deployment/cnmsql-controller-manager -c manager
 ```
 
 Instance logs:
@@ -38,8 +38,8 @@ kubectl logs pod/<cluster>-1 -c manager
 Check:
 
 ```bash
-kubectl cnmysql status <cluster>
-kubectl cnmysql logs <cluster>
+kubectl cnmsql status <cluster>
+kubectl cnmsql logs <cluster>
 kubectl describe pod <pod>
 ```
 
@@ -85,7 +85,7 @@ names the instance and its replication error.
 Check:
 
 ```bash
-kubectl cnmysql status <cluster>
+kubectl cnmsql status <cluster>
 kubectl get cluster <cluster> -o jsonpath='{.status.replicationBrokenInstances}'
 kubectl logs pod/<replica-pod> -c manager
 ```
@@ -102,7 +102,7 @@ re-initialise it. The operator deletes its Pod and PVC and re-clones a fresh
 copy from a backup, keeping the instance's name and `server_id`:
 
 ```bash
-kubectl cnmysql reinit <cluster> <replica>
+kubectl cnmsql reinit <cluster> <replica>
 ```
 
 This is destructive: data only on that instance (including errant transactions)
@@ -115,7 +115,7 @@ switch over first if you need to rebuild a former primary. See the
 Inspect:
 
 ```bash
-kubectl cnmysql status <cluster>
+kubectl cnmsql status <cluster>
 ```
 
 Common causes:
@@ -131,12 +131,12 @@ Check `status.currentPrimary`, `status.targetPrimary`,
 
 ## Automatic failover did not happen
 
-cloudnative-mysql blocks failover when it cannot prove a safe candidate.
+cnmsql blocks failover when it cannot prove a safe candidate.
 
 Check:
 
 ```bash
-kubectl cnmysql status <cluster>
+kubectl cnmsql status <cluster>
 ```
 
 Likely explanations:
@@ -186,7 +186,7 @@ Inspect:
 
 ```bash
 kubectl describe scheduledbackup <scheduledbackup>
-kubectl get backup -l mysql.cloudnative-mysql.io/scheduled-backup=<scheduledbackup>
+kubectl get backup -l mysql.cnmsql.co/scheduled-backup=<scheduledbackup>
 ```
 
 Common causes:
@@ -241,10 +241,10 @@ planned finalizer/retention feature.
 ## Useful labels
 
 ```text
-mysql.cloudnative-mysql.io/cluster=<cluster>
-mysql.cloudnative-mysql.io/instance=<instance>
-mysql.cloudnative-mysql.io/role=primary|replica
-mysql.cloudnative-mysql.io/scheduled-backup=<scheduledbackup>
+mysql.cnmsql.co/cluster=<cluster>
+mysql.cnmsql.co/instance=<instance>
+mysql.cnmsql.co/role=primary|replica
+mysql.cnmsql.co/scheduled-backup=<scheduledbackup>
 ```
 
 These labels make it easier to list Pods, PVCs, Services, and generated Backups

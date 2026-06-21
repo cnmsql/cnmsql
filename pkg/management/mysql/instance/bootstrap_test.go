@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -107,17 +107,17 @@ func TestBootstrapControlUserWithoutDynamicPrivileges(t *testing.T) {
 func TestBootstrapBackupUserWithDynamicPrivileges(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:              "rootpw",
-		BackupUser:                "cloudnative-mysql_backup",
+		BackupUser:                "cnmsql_backup",
 		BackupPassword:            "bkpw",
 		SupportsDynamicPrivileges: true,
 	})
 	for _, want := range []string{
-		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_backup'@'%' IDENTIFIED BY 'bkpw'",
-		"GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cloudnative-mysql_backup'@'%'",
-		"GRANT BACKUP_ADMIN ON *.* TO 'cloudnative-mysql_backup'@'%'",
-		"GRANT SELECT ON performance_schema.log_status TO 'cloudnative-mysql_backup'@'%'",
-		"GRANT SELECT ON performance_schema.keyring_component_status TO 'cloudnative-mysql_backup'@'%'",
-		"GRANT SELECT ON performance_schema.replication_group_members TO 'cloudnative-mysql_backup'@'%'",
+		"CREATE USER IF NOT EXISTS 'cnmsql_backup'@'%' IDENTIFIED BY 'bkpw'",
+		"GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cnmsql_backup'@'%'",
+		"GRANT BACKUP_ADMIN ON *.* TO 'cnmsql_backup'@'%'",
+		"GRANT SELECT ON performance_schema.log_status TO 'cnmsql_backup'@'%'",
+		"GRANT SELECT ON performance_schema.keyring_component_status TO 'cnmsql_backup'@'%'",
+		"GRANT SELECT ON performance_schema.replication_group_members TO 'cnmsql_backup'@'%'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -183,7 +183,7 @@ func TestBootstrapAsyncOmitsGroupReplicationGrants(t *testing.T) {
 func TestBootstrapBackupUserLegacyHasNoPerfSchemaGrants(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:   "rootpw",
-		BackupUser:     "cloudnative-mysql_backup",
+		BackupUser:     "cnmsql_backup",
 		BackupPassword: "bkpw",
 	})
 	if strings.Contains(out, "performance_schema") {
@@ -194,10 +194,10 @@ func TestBootstrapBackupUserLegacyHasNoPerfSchemaGrants(t *testing.T) {
 func TestBootstrapBackupUserLegacyHasNoBackupAdmin(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:   "rootpw",
-		BackupUser:     "cloudnative-mysql_backup",
+		BackupUser:     "cnmsql_backup",
 		BackupPassword: "bkpw",
 	})
-	want := "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cloudnative-mysql_backup'@'%'"
+	want := "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'cnmsql_backup'@'%'"
 	if !strings.Contains(out, want) {
 		t.Errorf("backup user should still get static grants:\n%s", out)
 	}
@@ -209,7 +209,7 @@ func TestBootstrapBackupUserLegacyHasNoBackupAdmin(t *testing.T) {
 func TestBootstrapBackupUserValidation(t *testing.T) {
 	if _, err := BootstrapStatements(BootstrapParams{
 		RootPassword: "x",
-		BackupUser:   "cloudnative-mysql_backup",
+		BackupUser:   "cnmsql_backup",
 	}); err == nil {
 		t.Error("expected error when backup password missing")
 	}
@@ -224,12 +224,12 @@ func TestBootstrapControlUserValidation(t *testing.T) {
 func TestBootstrapMetricsUser(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword: "rootpw",
-		MetricsUser:  "cloudnative-mysql_metrics",
+		MetricsUser:  "cnmsql_metrics",
 	})
 	for _, want := range []string{
-		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_metrics'@'localhost'",
-		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cloudnative-mysql_metrics'@'localhost'",
-		"GRANT SELECT ON performance_schema.* TO 'cloudnative-mysql_metrics'@'localhost'",
+		"CREATE USER IF NOT EXISTS 'cnmsql_metrics'@'localhost'",
+		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cnmsql_metrics'@'localhost'",
+		"GRANT SELECT ON performance_schema.* TO 'cnmsql_metrics'@'localhost'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

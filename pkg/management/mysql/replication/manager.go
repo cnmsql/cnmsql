@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // Manager executes replication and role-transition statements against a mysqld

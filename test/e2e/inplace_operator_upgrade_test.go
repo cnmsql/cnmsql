@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
+	"github.com/cnmsql/cnmsql/test/utils"
 )
 
 // This spec proves the Phase 2 slice-2 path end to end on a real cluster: with
@@ -28,7 +28,7 @@ import (
 // namespaces, so this must not run alongside any other spec.
 var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, func() {
 	const (
-		v3Image     = "example.com/cloudnative-mysql:v0.0.3-inplace"
+		v3Image     = "example.com/cnmsql:v0.0.3-inplace"
 		clusterName = "inplace-upgrade"
 	)
 
@@ -54,7 +54,7 @@ var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, func()
 		defer deleteTestNamespace(ns, defaultTestNamespace)
 
 		By("applying a 3-instance Cluster on the currently-deployed operator")
-		manifest := fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+		manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s
@@ -104,7 +104,7 @@ spec:
 		By("deploying the new operator (the cluster opts into in-place updates via its spec)")
 		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v3Image)))
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the in-place upgrade operator")
-		_, err = utils.Run(exec.Command("kubectl", "rollout", "status", "deployment", "cloudnative-mysql-controller-manager",
+		_, err = utils.Run(exec.Command("kubectl", "rollout", "status", "deployment", "cnmsql-controller-manager",
 			"-n", namespace, "--timeout=180s"))
 		Expect(err).NotTo(HaveOccurred(), "Operator did not roll out after the new deploy")
 

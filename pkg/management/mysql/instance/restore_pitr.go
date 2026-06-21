@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,9 +27,9 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/binlog"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/xtrabackup"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
 )
 
 // binlogInfoFile is the XtraBackup artifact holding the base backup's binlog
@@ -41,7 +41,7 @@ const binlogInfoFile = "xtrabackup_binlog_info"
 // pitrSentinelFile marks, on the durable data directory, that point-in-time
 // replay has completed. It makes the replay reentrant: a retry skips it instead
 // of re-applying already-executed GTIDs (which mysqld rejects).
-const pitrSentinelFile = ".cloudnative-mysql-pitr-done"
+const pitrSentinelFile = ".cnmsql-pitr-done"
 
 // maybeReplay runs the point-in-time replay unless a previous attempt already
 // completed it (sentinel present on the data directory).

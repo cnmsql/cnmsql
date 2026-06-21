@@ -2,7 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   labels:
-    app.kubernetes.io/name: cloudnative-mysql
+    app.kubernetes.io/name: cnmsql
     app.kubernetes.io/managed-by: kustomize
   name: leader-election-rolebinding
 roleRef:

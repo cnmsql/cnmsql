@@ -54,7 +54,7 @@ Labels extend M3's set; `role` becomes dynamic (`primary` / `replica`) and is th
 
 ### Instance-Manager Additions
 
-1. **Streaming backup endpoint** (primary side) on the **existing mTLS control port**, e.g. `GET /cluster/backup` → runs `xtrabackup --backup --stream=xbstream` (compression on by default) against the local datadir and streams stdout to the caller. Auth via the existing client cert; the XtraBackup connection uses a **dedicated `cnmysql_backup` user with `BACKUP_ADMIN`**, added to the M3 bootstrap.
+1. **Streaming backup endpoint** (primary side) on the **existing mTLS control port**, e.g. `GET /cluster/backup` → runs `xtrabackup --backup --stream=xbstream` (compression on by default) against the local datadir and streams stdout to the caller. Auth via the existing client cert; the XtraBackup connection uses a **dedicated `cnmsql_backup` user with `BACKUP_ADMIN`**, added to the M3 bootstrap.
 2. **Manager-driven join over the stream.** Extend `instance join` (or a new `--source-manager-url`) so the replica pulls the stream from the primary's endpoint, runs `xbstream -x` into the backup dir, then the existing prepare → copy-back → `ProvisionFromBackup` path. The current file-based `--backup-dir` stays as the tested seam.
 3. **mysqld TLS config keys** in `pkg/management/mysql/config` (`ssl_ca`, `ssl_cert`, `ssl_key`, optional `require_secure_transport`), version-gated as needed.
 4. No new promote/demote code — M2 already ships `Promote`/`Demote`; M4 only wires the role labels, leaving the triggers to M5.
@@ -114,7 +114,7 @@ primary is unavailable).
 ## Decisions
 
 - Streaming transport: **xbstream over the existing mTLS control port** (no new port/sidecar).
-- Backup identity: **dedicated `cnmysql_backup` user** (`BACKUP_ADMIN`), not a reused account.
+- Backup identity: **dedicated `cnmsql_backup` user** (`BACKUP_ADMIN`), not a reused account.
 - Replication client cert: **reuse the per-instance server cert** as the replication client cert (no separate cert issued).
 - Scale-down: **retain replica PVCs** — delete only the Pod; the user decides whether to delete the leftover PVC. GC owned PVCs only on cluster delete.
 - `require_secure_transport`: **not enforced** on mysqld. TLS material is configured and available, but the user decides whether to require it (exposed via `spec.mysql.parameters`).

@@ -2,12 +2,12 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/mysql.cloudnative-mysql.io_clusters.yaml
-- bases/mysql.cloudnative-mysql.io_backups.yaml
-- bases/mysql.cloudnative-mysql.io_scheduledbackups.yaml
-- bases/mysql.cloudnative-mysql.io_databases.yaml
-- bases/mysql.cloudnative-mysql.io_imagecatalogs.yaml
-- bases/mysql.cloudnative-mysql.io_clusterimagecatalogs.yaml
+- bases/mysql.cnmsql.co_clusters.yaml
+- bases/mysql.cnmsql.co_backups.yaml
+- bases/mysql.cnmsql.co_scheduledbackups.yaml
+- bases/mysql.cnmsql.co_databases.yaml
+- bases/mysql.cnmsql.co_imagecatalogs.yaml
+- bases/mysql.cnmsql.co_clusterimagecatalogs.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -90,7 +90,7 @@ volume snapshots remain later work unless explicitly pulled in.
 6. **Compression:** keep compression off by default until the image has a
    proven, version-compatible compression toolchain. The API can carry explicit
    XtraBackup options, but the controller should not silently require qpress.
-7. **Worker image:** backup and restore worker Jobs use the same cnmysql
+7. **Worker image:** backup and restore worker Jobs use the same cnmsql
    instance image as the Cluster. The image already carries the manager binary,
    XtraBackup, xbstream, TLS material paths, and the same version-compatible
    tooling used by instance Pods.
@@ -153,7 +153,7 @@ spec:
   online: true
   objectStore:
     bucket: backups
-    path: cnmysql
+    path: cnmsql
     credentials:
       accessKeyId:
         name: minio-credentials

@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/test/utils"
+	"github.com/cnmsql/cnmsql/test/utils"
 )
 
 // These specs prove both supported operator topologies (design/021) bring a
@@ -29,13 +29,13 @@ const (
 	nsModeBPfx = "nsb-"
 	// clusterWideWebhook and clusterWideDeployment identify the shared suite
 	// operator, stood down for the duration of the namespaced specs.
-	clusterWideWebhook    = "cloudnative-mysql-validating-webhook-configuration"
-	clusterWideDeployment = "cloudnative-mysql-controller-manager"
+	clusterWideWebhook    = "cnmsql-validating-webhook-configuration"
+	clusterWideDeployment = "cnmsql-controller-manager"
 )
 
 // twoInstanceClusterManifest renders a minimal 2-instance Cluster in ns.
 func twoInstanceClusterManifest(name, ns string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s

@@ -1,6 +1,6 @@
 ---
 title: "Operator Upgrades"
-description: "How cloudnative-mysql detects and rolls out operator version upgrades: rolling Pod replacement, in-place binary streaming, primary handling strategies, and executable hash tracking."
+description: "How cnmsql detects and rolls out operator version upgrades: rolling Pod replacement, in-place binary streaming, primary handling strategies, and executable hash tracking."
 sidebar_position: 9
 ---
 
@@ -89,7 +89,7 @@ rollout proceeds without waiting.
 When `spec.inPlaceInstanceManagerUpdates` is set to `true`, the operator streams
 the new manager binary to each stale instance through its control API at
 `POST /instance/manager/upgrade`. The instance manager validates the binary
-against the SHA-256 hash sent in the `X-CNMySQL-Manager-Hash` header, writes it
+against the SHA-256 hash sent in the `X-CNMSQL-Manager-Hash` header, writes it
 to disk atomically, and re-execs itself in place.
 
 mysqld stays running throughout the swap. The re-exec'd manager inherits the
@@ -119,13 +119,13 @@ retries on the next reconcile.
 
 ## Manual in-place restart
 
-The `kubectl cnmysql restart-inplace` command triggers a byte-identical re-exec
+The `kubectl cnmsql restart-inplace` command triggers a byte-identical re-exec
 of an instance manager without a version upgrade. It calls the
 `POST /instance/manager/restart-inplace` endpoint, which re-execs the current
 binary from `/proc/self/exe` instead of streaming a new one:
 
 ```bash
-kubectl cnmysql restart-inplace cluster-sample cluster-sample-2
+kubectl cnmsql restart-inplace cluster-sample cluster-sample-2
 ```
 
 This is useful for verifying that mysqld survives a manager swap. After the
@@ -184,7 +184,7 @@ switchover](./operations.md#planned-switchover)), or set the strategy to
 `unsupervised` if you prefer automatic handling.
 
 **An in-place upgrade fails with a hash mismatch.** The binary streamed from the
-operator did not match the expected hash declared in the `X-CNMySQL-Manager-Hash`
+operator did not match the expected hash declared in the `X-CNMSQL-Manager-Hash`
 header. The stale binary on the instance is not replaced. This is a 400 error.
 Check that the operator and instance images are compatible: the operator binary
 must be the same architecture and build as the one in the bootstrap-controller
@@ -194,7 +194,7 @@ images.
 
 **A replicated instance is stuck unready after a rolling upgrade.** The
 recreated Pod may be unable to join replication. Check its logs with
-`kubectl cnmysql logs` and verify the bootstrap-controller init container
+`kubectl cnmsql logs` and verify the bootstrap-controller init container
 completed. If the instance diverged during the upgrade, re-initialise it (see
 [Re-initialise an
 instance](./operations.md#re-initialise-an-instance-from-scratch)).

@@ -196,13 +196,13 @@ forbidden. The operator retains full control over selector (based on
 ### Example: LoadBalancer read-write, custom read service
 
 ```yaml
-apiVersion: mysql.cloudnative-mysql.io/v1alpha1
+apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: exposed-cluster
 spec:
   instances: 3
-  imageName: cnmysql-instance:8.4
+  imageName: cnmsql-instance:8.4
   storage:
     size: 10Gi
   managed:

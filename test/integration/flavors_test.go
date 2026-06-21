@@ -1,7 +1,7 @@
 //go:build integration
 
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // flavor describes a supported MySQL/Percona version under test. The integration
@@ -94,7 +94,7 @@ func instanceImageRepo() string {
 	if v := strings.TrimSpace(os.Getenv("INSTANCE_IMAGE_REPO")); v != "" {
 		return v
 	}
-	return "ghcr.io/cloudnative-mysql/cloudnative-mysql-instance"
+	return "ghcr.io/cnmsql/cnmsql-instance"
 }
 
 // instanceImage returns the published slim instance image reference for a

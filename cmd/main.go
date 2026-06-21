@@ -23,12 +23,12 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/bootstrap"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/cmd/manager/instance"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller"
-	webhookv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/internal/webhook/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/cmd/manager/bootstrap"
+	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance"
+	"github.com/cnmsql/cnmsql/internal/controller"
+	webhookv1alpha1 "github.com/cnmsql/cnmsql/internal/webhook/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/executablehash"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -124,7 +124,7 @@ func main() {
 				WebhookServer:          webhookServer,
 				HealthProbeBindAddress: probeAddr,
 				LeaderElection:         enableLeaderElection,
-				LeaderElectionID:       "e924591d.cloudnative-mysql.io",
+				LeaderElectionID:       "e924591d.cnmsql.co",
 			}
 
 			// WATCH_NAMESPACE selects the operator topology: empty means cluster-wide

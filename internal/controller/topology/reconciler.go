@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,9 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 // Cluster status phases recorded on the Cluster CRD.
@@ -47,8 +47,8 @@ const (
 
 // TLS paths inside the instance container.
 const (
-	ClientCAPath  = "/etc/cloudnative-mysql/tls/client-ca"
-	ServerTLSPath = "/etc/cloudnative-mysql/tls/server"
+	ClientCAPath  = "/etc/cnmsql/tls/client-ca"
+	ServerTLSPath = "/etc/cnmsql/tls/server"
 )
 
 // PatchClusterStatus fetches the latest Cluster, applies mutate and patches the

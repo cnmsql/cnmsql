@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The CloudNative MySQL Authors.
+Copyright 2026 The CNMSQL - CloudNative for MySQL Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,10 +22,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
-	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
-	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) corev1.PodSpec {
@@ -186,7 +186,7 @@ func restoreArgs(plan clusterPlan) []string {
 		"--backup-user=" + backupUser,
 	}
 	// Point-in-time recovery: replay archived binlogs after the base restore.
-	// --source-cluster enables the replay; bucket/path come from cloudnative-mysql_S3_* env.
+	// --source-cluster enables the replay; bucket/path come from cnmsql_S3_* env.
 	if plan.Recovery.HasTarget {
 		args = append(args, "--source-cluster="+plan.Recovery.SourceCluster)
 		if plan.Recovery.TargetTime != "" {

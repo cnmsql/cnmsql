@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	forceQuorumRecoveryAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-recovery"
+	forceQuorumRecoveryAnnotation = "cnmsql.cnmsql.co/force-quorum-recovery"
 )
 
 // These specs exercise M-GR.6 end to end: GR-native fencing (STOP/START
@@ -212,7 +212,7 @@ var _ = Describe("Group Replication fencing and quorum guards", Ordered, func() 
 		By("verifying the operator clears the annotation and the survivor re-forms the group")
 		Eventually(func(g Gomega) {
 			// The annotation should be cleared by the operator after processing.
-			ann, err := clusterField(cluster, `{.metadata.annotations.cloudnative-mysql\.cloudnative-mysql\.io/force-quorum-recovery}`)
+			ann, err := clusterField(cluster, `{.metadata.annotations.cnmsql\.cnmsql\.io/force-quorum-recovery}`)
 			g.Expect(err).NotTo(HaveOccurred())
 			// Either the annotation is gone (processed) or it's still there (retry).
 			// When processed, hasQuorum should become true as the survivor re-forms.
