@@ -357,7 +357,7 @@ func TestRenderMyCnfGroupReplicationBlock(t *testing.T) {
 	plan.Instances = 1
 	inst := plan.instanceFor(cluster, 1)
 
-	rendered, err := (&ClusterReconciler{}).renderMyCnf(cluster, plan, inst)
+	rendered, err := (&ClusterReconciler{}).renderMyCnf(cluster, plan, inst, plan.instanceNames(cluster))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,6 +376,42 @@ func TestRenderMyCnfGroupReplicationBlock(t *testing.T) {
 	// Async-only semi-sync settings must not appear under GR.
 	if strings.Contains(rendered, "rpl_semi_sync") {
 		t.Fatalf("GR config must not render semi-sync settings:\n%s", rendered)
+	}
+}
+
+// TestScaleDoesNotRollExistingMembers verifies that growing the group (3→5)
+// leaves an existing member's Pod template hash unchanged, so a scale-up no
+// longer rolls the healthy members. The seed list does change in the member's
+// actual rendered config (configHash), proving the seeds were normalised out of
+// the roll-triggering template hash only, not dropped from the real config.
+func TestScaleDoesNotRollExistingMembers(t *testing.T) {
+	t.Parallel()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{GroupName: "group-uuid-123"})
+	reconciler := &ClusterReconciler{}
+
+	annotationsFor := func(instances int) map[string]string {
+		plan := testPlan()
+		plan.Instances = instances
+		plan.PrimaryName = instanceName(cluster, 1)
+		inst := plan.instanceFor(cluster, 1)
+		labels := labelsFor(cluster, inst.Name, roleOf(inst))
+		spec := reconciler.podSpec(cluster, plan, inst)
+		annotations, err := reconciler.podAnnotations(cluster, plan, inst, labels, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return annotations
+	}
+
+	three := annotationsFor(3)
+	five := annotationsFor(5)
+
+	if three[podTemplateHashAnnotation] != five[podTemplateHashAnnotation] {
+		t.Fatalf("template hash changed on scale 3->5: %q vs %q (existing member would needlessly roll)",
+			three[podTemplateHashAnnotation], five[podTemplateHashAnnotation])
+	}
+	if three[configHashAnnotation] == five[configHashAnnotation] {
+		t.Fatal("config hash unchanged on scale 3->5: the seed list should differ in the actual config")
 	}
 }
 

@@ -71,7 +71,7 @@ func TestRenderMyCnfUsesBootstrapSafeSemiSyncWaitCountForPreferredDurability(t *
 	t.Parallel()
 
 	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityPreferred)
-	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"})
+	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"}, []string{"demo-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestRenderMyCnfKeepsConfiguredSemiSyncWaitCountForRequiredDurability(t *tes
 	t.Parallel()
 
 	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityRequired)
-	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"})
+	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"}, []string{"demo-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

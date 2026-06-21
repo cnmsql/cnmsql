@@ -85,7 +85,7 @@ func TestArchivingRunArgsAndEnv(t *testing.T) {
 
 func TestArchivingMyCnfRendersDurability(t *testing.T) {
 	cluster := archivingCluster()
-	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"})
+	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"}, []string{"demo-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

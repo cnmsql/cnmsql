@@ -526,7 +526,7 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if err := reconciler.ensurePod(ctx, cluster, plan, inst); err != nil {
+	if _, err := reconciler.ensurePod(ctx, cluster, plan, inst, true); err != nil {
 		t.Fatal(err)
 	}
 	got := &corev1.Pod{}
@@ -535,7 +535,7 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 		t.Fatalf("stale Pod get error = %v, want not found", err)
 	}
 
-	if err := reconciler.ensurePod(ctx, cluster, plan, inst); err != nil {
+	if _, err := reconciler.ensurePod(ctx, cluster, plan, inst, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, got); err != nil {
@@ -617,7 +617,7 @@ func TestEnsurePodDoesNotRecreateForPrimaryRoleChange(t *testing.T) {
 
 	plan.PrimaryName = testReplica2
 	inst = plan.instanceFor(cluster, 1)
-	if err := reconciler.ensurePod(ctx, cluster, plan, inst); err != nil {
+	if _, err := reconciler.ensurePod(ctx, cluster, plan, inst, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -661,7 +661,7 @@ func TestEnsurePodPreservesFencingAnnotation(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if err := reconciler.ensurePod(ctx, cluster, plan, inst); err != nil {
+	if _, err := reconciler.ensurePod(ctx, cluster, plan, inst, true); err != nil {
 		t.Fatal(err)
 	}
 	got := &corev1.Pod{}
