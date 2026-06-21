@@ -41,6 +41,14 @@ func newMetricsCommand() *cobra.Command {
 			"namespace; without INSTANCE, the primary is used.",
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
+		Example: `  # Scrape metrics from the primary
+  kubectl cnmysql metrics cluster-sample
+
+  # Scrape metrics from a specific instance
+  kubectl cnmysql metrics cluster-sample cluster-sample-2
+
+  # Watch metrics refresh every 2 seconds, filtered to thread counters
+  kubectl cnmysql metrics -w --filter=mysql_global_status_threads cluster-sample`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()

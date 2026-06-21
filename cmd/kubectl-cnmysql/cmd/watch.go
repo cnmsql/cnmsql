@@ -35,7 +35,7 @@ const defaultWatchInterval = 2 * time.Second
 // human-readable). When --watch is enabled the command re-invokes runFn on a
 // timer; otherwise it runs once and exits.
 func newWatchingCommand(
-	use, short, labelPrefix string,
+	use, short, long, example, labelPrefix string,
 	runFn func(context.Context, string, string) error,
 ) *cobra.Command {
 	var (
@@ -46,6 +46,8 @@ func newWatchingCommand(
 	cmd := &cobra.Command{
 		Use:               use,
 		Short:             short,
+		Long:              long,
+		Example:           example,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {

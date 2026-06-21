@@ -33,7 +33,19 @@ func newFenceCommand() *cobra.Command {
 		Short: "Fence (isolate) or unfence an instance from routing",
 		Long: "Fence an instance by stamping the fencing annotation on its Pod, " +
 			"which the operator picks up to remove it from routing and exclude it " +
-			"from failover. Use '*' as INSTANCE to fence every instance.",
+			"from failover. Use '*' as INSTANCE to fence every instance.\n\n" +
+			"Fencing the primary stops writes for the cluster because the rw Service " +
+			"loses its endpoint. Under Group Replication, fencing runs STOP " +
+			"GROUP_REPLICATION and is quorum-guarded: the operator refuses if fencing " +
+			"would drop the group below majority.",
+		Example: `  # Fence a specific instance
+  kubectl cnmysql fence on cluster-sample cluster-sample-2
+
+  # Unfence it
+  kubectl cnmysql fence off cluster-sample cluster-sample-2
+
+  # Fence every instance in the cluster
+  kubectl cnmysql fence on cluster-sample '*'`,
 		Args: cobra.ExactArgs(3),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			switch len(args) {

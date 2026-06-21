@@ -37,6 +37,8 @@ func newReloadCommand() *cobra.Command {
 			"'restart' for those.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
+		Example: `  # Reload dynamic parameters after changing spec.mysql.parameters
+  kubectl cnmysql reload cluster-sample`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReload(cmd.Context(), firstArg(args))
 		},

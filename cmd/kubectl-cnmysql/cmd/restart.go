@@ -38,6 +38,14 @@ func newRestartCommand() *cobra.Command {
 			"sole cluster in the namespace; pass INSTANCE only together with CLUSTER.",
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
+		Example: `  # Rolling restart all instances
+  kubectl cnmysql restart cluster-sample
+
+  # Restart a single instance (the primary prompts for confirmation)
+  kubectl cnmysql restart cluster-sample cluster-sample-2
+
+  # Skip confirmation prompts
+  kubectl cnmysql restart cluster-sample --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			instance := ""
 			if len(args) == 2 {

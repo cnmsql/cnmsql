@@ -39,9 +39,14 @@ func newReinitCommand() *cobra.Command {
 			"data is discarded.\n\n" +
 			"This is the remediation for a diverged or irrecoverably broken replica " +
 			"(MySQL has no pg_rewind to surgically realign one). It is DESTRUCTIVE and " +
-			"IRREVERSIBLE: any data only present on this instance — e.g. errant " +
-			"transactions — is lost. The current primary cannot be re-initialised this way.",
+			"IRREVERSIBLE: any data only present on this instance, such as errant " +
+			"transactions, is lost. The current primary cannot be re-initialised this way.",
 		Args: cobra.ExactArgs(2),
+		Example: `  # Re-initialise a diverged or broken replica (destroys its data)
+  kubectl cnmysql reinit cluster-sample cluster-sample-2
+
+  # Skip confirmation prompt
+  kubectl cnmysql reinit cluster-sample cluster-sample-2 --yes`,
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			switch len(args) {
 			case 0:

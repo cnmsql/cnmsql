@@ -40,13 +40,36 @@ func newGroupCommand() *cobra.Command {
 			"a guarded quorum recovery after a group has lost majority.\n\n" +
 			"These commands only apply to clusters with " +
 			"spec.replication.mode: groupReplication.",
+		Example: `  # Show the group view for a cluster
+  kubectl cnmysql group status cluster-gr
+
+  # Watch the group view continuously
+  kubectl cnmysql group status -w cluster-gr
+
+  # Request guarded quorum recovery (DANGER: see --help for risks)
+  kubectl cnmysql group recover cluster-gr`,
 	}
 	cmd.AddCommand(newGroupStatusCommand(), newGroupRecoverCommand())
 	return cmd
 }
 
 func newGroupStatusCommand() *cobra.Command {
-	return newWatchingCommand("status [CLUSTER]", "Show the live group view: members, roles and quorum",
+	return newWatchingCommand("status [CLUSTER]",
+		"Show the live group view: members, roles and quorum",
+		`Display the operator's cross-validated Group Replication group view: group
+name, bootstrapped status, quorum health, the elected primary, online member
+count, and a per-member table with state, role and reachability.
+
+This command only works with Group Replication clusters
+(spec.replication.mode: groupReplication).`,
+		`  # Show the group view
+  kubectl cnmysql group status cluster-gr
+
+  # Watch the group view every 2 seconds
+  kubectl cnmysql group status -w cluster-gr
+
+  # Output the group view as JSON
+  kubectl cnmysql group status -o json cluster-gr`,
 		"group status ", runGroupStatus)
 }
 
@@ -139,6 +162,11 @@ func newGroupRecoverCommand() *cobra.Command {
 			"stays Blocked.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
+		Example: `  # Request guarded quorum recovery for a cluster that has lost majority
+  kubectl cnmysql group recover cluster-gr
+
+  # Skip the confirmation prompt (use with caution)
+  kubectl cnmysql group recover cluster-gr --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGroupRecover(cmd.Context(), firstArg(args), yes)
 		},

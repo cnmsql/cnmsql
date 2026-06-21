@@ -35,7 +35,18 @@ func NewRootCommand() *cobra.Command {
 		Use:   "cnmysql",
 		Short: "Manage and inspect cloudnative-mysql clusters",
 		Long: "kubectl cnmysql is a kubectl plugin for managing " +
-			"cloudnative-mysql (Percona Server) clusters.",
+			"cloudnative-mysql (Percona Server) clusters.\n\n" +
+			"Most commands accept an optional CLUSTER argument that defaults to the " +
+			"sole cluster in the current namespace. Run a subcommand with --help " +
+			"for details and examples.",
+		Example: `  # Show cluster status
+  kubectl cnmysql status
+
+  # Promote a replica to primary
+  kubectl cnmysql promote cluster-sample cluster-sample-2
+
+  # Stream logs from all instances
+  kubectl cnmysql logs -f cluster-sample`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

@@ -11,8 +11,25 @@ The metrics server is separate from the mTLS control API and the health probe
 server.
 
 The current exporter publishes built-in Go runtime metrics plus MySQL global
-status metrics from `SHOW GLOBAL STATUS`. More MySQL scraper families and custom
-query loading are planned as M13.1 continues.
+status metrics from `SHOW GLOBAL STATUS`. For Group Replication clusters, the
+operator also publishes cluster-level GR metrics (see below). More MySQL scraper
+families and custom query loading are planned as M13.1 continues.
+
+## Group Replication metrics
+
+The operator exposes Group Replication metrics on its `/metrics` endpoint under
+the `cnmysql` namespace. These reflect the operator's own cross-validated view of
+each GR cluster and are read from the manager's cached client at scrape time:
+
+| Metric | Description |
+|---|---|
+| `cnmysql_cluster_gr_has_quorum` | 1 if the group has quorum, 0 otherwise. |
+| `cnmysql_cluster_gr_bootstrapped` | 1 if the group has been bootstrapped. |
+| `cnmysql_cluster_gr_view_size` | The sticky maximum group size used as the quorum denominator. |
+| `cnmysql_cluster_gr_members` | Members per state (`ONLINE`, `RECOVERING`, `OFFLINE`, `ERROR`, `UNREACHABLE`). |
+
+Labels are `namespace` and `cluster`. Async clusters emit nothing. Alert on
+`cnmysql_cluster_gr_has_quorum == 0` for any GR cluster to catch quorum loss.
 
 ## Ad-hoc metrics inspection
 

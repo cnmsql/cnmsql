@@ -34,7 +34,10 @@ func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print plugin version information",
-		Args:  cobra.NoArgs,
+		Long:  "Print the kubectl-cnmysql plugin version, commit hash, build date and Go runtime version.",
+		Example: `  # Print the plugin version
+  kubectl cnmysql version`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			fmt.Printf("kubectl-cnmysql version %s\n", Version)
 			fmt.Printf("  commit:     %s\n", Commit)

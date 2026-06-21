@@ -402,3 +402,55 @@ throughput issue.
 - Use semi-sync when acknowledged-write durability matters.
 - Keep object-store lifecycle rules aligned with backup and PITR retention.
 - Treat retained PVCs and remote backups as recovery assets.
+
+## Group Replication operations
+
+These commands apply only to clusters with `spec.replication.mode: groupReplication`.
+They refuse to run against async clusters.
+
+### Inspect the group view
+
+```bash
+kubectl cnmysql group status cluster-gr
+kubectl cnmysql group status cluster-gr -w
+```
+
+Shows the group name, whether it is bootstrapped, quorum status, the current
+primary, online member count, view ID, and a per-member table with state, role,
+and reachability.
+
+### Recover from quorum loss
+
+When a Group Replication cluster loses quorum (fewer than a majority of members
+are ONLINE), writes are blocked and the cluster reports `Phase=Blocked`.
+Recovery is a deliberate, confirmed human action through the plugin:
+
+```bash
+kubectl cnmysql group recover cluster-gr
+```
+
+Before acting, read the full command help and the [Group Replication](./group-replication.md#quorum-loss-and-recovery)
+page. Quorum recovery overrides Paxos consensus with
+`group_replication_force_members` and can cause split-brain and permanent data
+loss if a lost member is still running elsewhere. The command prints a
+consequence summary and requires confirmation. The operator independently
+verifies quorum is lost and a safe survivor exists before acting; it refuses if
+safety is unprovable.
+
+### Fencing under Group Replication
+
+Fencing works the same way (`kubectl cnmysql fence on/off`) but acts differently
+under the hood:
+
+- Instead of stopping mysqld, the fenced member runs `STOP GROUP_REPLICATION`,
+  gracefully leaving the group. mysqld stays up and reachable for inspection.
+- Fencing the primary triggers a group re-election. Fencing a secondary shrinks
+  the group, and the operator refuses if it would drop the group below quorum.
+
+### Switchover under Group Replication
+
+Switchover works the same way (`kubectl cnmysql promote <cluster> <target>`) but
+uses `group_replication_set_as_primary` on the group instead of the async
+stop/promote/demote dance. The operator validates that the target is an ONLINE
+SECONDARY, invokes the UDF, and observes the result. Bounded by
+`spec.maxSwitchoverDelay` as with async.

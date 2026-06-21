@@ -1,7 +1,7 @@
 # 022 — Group Replication Support
 
-**Status:** proposed
-**Milestone:** M-GR (proposed, phased M-GR.1 … M-GR.7)
+**Status:** implemented (M-GR.1 through M-GR.7 complete)
+**Milestone:** M-GR (completed)
 
 Add MySQL **Group Replication (GR)** as a second replication topology alongside the
 existing async / semi-sync GTID primary-replica topology (decision D4, "Group
@@ -878,20 +878,46 @@ The four hazards and their guards:
 - **Strategy split** keeps async and GR isolated so the proven path cannot
   regress.
 
-## Open questions
+## Open questions (resolved)
 
 1. **Recovery seeding default** — Clone-only first (simpler, GR-native) vs always
    offering XtraBackup pre-seed (faster for big datasets, more moving parts)?
-   Plan assumes Clone-first; pre-seed as a follow-up optimisation.
-2. **Quorum recovery UX** — annotation-only, kubectl-only, or both? Plan assumes
-   both (annotation is the source of truth; the plugin is the ergonomic front).
-3. **Even instance counts** — warn only, or reject? Plan warns (some users
-   legitimately run 2 for cost during a scale-up window).
+   **Resolved:** Clone-first shipped; XtraBackup pre-seed is deferred.
+2. **Quorum recovery UX** — annotation-only, kubectl-only, or both?
+   **Resolved:** Both — annotation is the source of truth; `kubectl cnmysql group recover` is the ergonomic front.
+3. **Even instance counts** — warn only, or reject?
+   **Resolved:** Warn (not reject); users legitimately run 2 for cost during scale-up.
 4. **`group_replication_consistency` default** — `BEFORE_ON_PRIMARY_FAILOVER`
    (read-your-writes on failover, low overhead) vs `EVENTUAL` (CNPG-like async
-   feel)? Plan defaults to `BEFORE_ON_PRIMARY_FAILOVER`.
+   feel)?
+   **Resolved:** Defaults to `BEFORE_ON_PRIMARY_FAILOVER`.
 5. **Migration path async↔GR** — out of scope here; design later as a
    clone-into-new-cluster operation, since the mode is immutable.
+   **Resolved:** Deferred; mode is immutable.
+
+## Implementation notes
+
+All seven milestones (M-GR.1 through M-GR.7) are implemented and verified:
+
+- **M-GR.1** (Foundations): API surface, config rendering with golden tests, version gating, status-authorization webhook with GR branch and monotonic invariants.
+- **M-GR.2** (Single-member group): Exactly-once bootstrap, in-Pod GR role strategy, operator observation -> `currentPrimary`.
+- **M-GR.3** (Multi-member join): 3-member group via Clone distributed recovery, quorum-aware provisioning gate, routing by group role, non-ONLINE de-routing, GR-health to `/readyz` bridge.
+- **M-GR.4** (Planned switchover): `set_as_primary` UDF, `maxSwitchoverDelay` bound, `gr-observed` doorbell annotation for event-driven handover detection.
+- **M-GR.5** (Observed failover): Group auto-elects on primary loss; operator mirrors via readiness/doorbell events; async failover loop, lease, and semi-sync disabled for GR.
+- **M-GR.6** (Fencing and quorum guards): GR fence via `STOP GROUP_REPLICATION`, quorum-preserving PDB (`maxUnavailable = N - quorum`), scale-down and fence quorum guards, quorum-loss detection + `Blocked` surfacing, guarded `force_members` recovery with GTID-dominant survivor selection.
+- **M-GR.7** (Lifecycle): Total-outage re-bootstrap with GTID-dominance safety bar, backup/restore into a fresh group, rolling upgrades preserving quorum, operator metrics (`cnmysql_cluster_gr_*`), kubectl plugin (`group status`, `group recover` with docs/safety contract), full E2E matrix + async regression suite.
+
+Key files:
+- `internal/controller/groupreplication/` — topology strategy implementation (observation, provisioning, quorum, RBAC, failover/switchover/lease/semisync no-ops)
+- `internal/controller/async/` — existing async topology, unchanged
+- `internal/controller/topology/reconciler.go` — shared interface
+- `api/v1alpha1/cluster_types.go` — `ReplicationConfiguration`, `GroupReplicationStatus`
+- `pkg/management/mysql/groupreplication/` — in-Pod GR manager (bootstrap, start, stop, force members, group view, clone)
+- `pkg/management/mysql/instance/rolereconciler/reconciler_gr.go` — in-Pod GR role reconciler
+- `internal/webhook/v1alpha1/cluster_webhook.go` — status-authorization webhook with GR branch
+- `cmd/kubectl-cnmysql/cmd/group.go` — `group status` and `group recover` commands
+- `internal/controller/gr_metrics.go` — operator-level Prometheus metrics
+- `docs/src/group-replication.md` — user-facing documentation
 
 ## Verification (definition of done for the milestone set)
 

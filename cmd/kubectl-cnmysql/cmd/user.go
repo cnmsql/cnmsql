@@ -31,7 +31,30 @@ func newUserCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "user",
 		Short: "Manage MySQL users on a cluster",
-		Long:  "Create, alter, drop and list MySQL users via the instance manager control API on the primary.",
+		Long: "Create, alter, drop and list MySQL users via the instance manager control API on the primary.\n\n" +
+			"Passwords are never accepted as command-line flags. Use --password-stdin to " +
+			"pipe from a file or secret, or let the plugin prompt on the terminal with " +
+			"echo disabled.\n\n" +
+			"All subcommands require a reachable primary. Reserved operator accounts " +
+			"(cloudnative-mysql_*) cannot be managed.",
+		Example: `  # Create a user (prompts for password)
+  kubectl cnmysql user create cluster-sample --name=app
+
+  # Create a user with a password from a secret on stdin
+  kubectl get secret app-creds -o jsonpath='{.data.password}' | base64 -d | \
+    kubectl cnmysql user create cluster-sample --name=app --password-stdin
+
+  # Create a superuser with X509 TLS requirement
+  kubectl cnmysql user create cluster-sample --name=admin --superuser --require-tls=x509
+
+  # Alter a user password (prompts for new password)
+  kubectl cnmysql user alter cluster-sample --name=app
+
+  # List users
+  kubectl cnmysql user list cluster-sample
+
+  # Drop a user
+  kubectl cnmysql user drop cluster-sample --name=app`,
 	}
 	cmd.AddCommand(newUserCreateCommand(), newUserAlterCommand(), newUserDropCommand(), newUserListCommand())
 	return cmd
@@ -70,6 +93,18 @@ func newUserCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "create [CLUSTER] --name=USER",
 		Short:             "Create a MySQL user",
+		Long:              "Create a new MySQL user on the cluster's primary. Passwords are read from stdin (--password-stdin) or prompted on the terminal. Use --superuser for ALL PRIVILEGES, or --privileges for specific grants.",
+		Example: `  # Create a user (prompts for password)
+  kubectl cnmysql user create cluster-sample --name=app
+
+  # Create a user with password from a file
+  kubectl cnmysql user create cluster-sample --name=app --password-stdin < secret.txt
+
+  # Create a user with specific privileges
+  kubectl cnmysql user create cluster-sample --name=reader --privileges=SELECT --on=mydb.*
+
+  # Create a superuser requiring X509 client certificate
+  kubectl cnmysql user create cluster-sample --name=admin --superuser --require-tls=x509`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -128,7 +163,16 @@ func newUserAlterCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:               "alter [CLUSTER] --name=USER",
-		Short:             "Alter a MySQL user",
+		Short:             "Alter a MySQL user's password or TLS requirement",
+		Long:              "Alter a MySQL user's password, TLS requirement, or both. The new password is read from stdin (--password-stdin) or prompted on the terminal.",
+		Example: `  # Change a user's password (prompts)
+  kubectl cnmysql user alter cluster-sample --name=app
+
+  # Change password from stdin
+  kubectl cnmysql user alter cluster-sample --name=app --password-stdin < newpass.txt
+
+  # Set TLS requirement to X509
+  kubectl cnmysql user alter cluster-sample --name=app --require-tls=x509`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -175,6 +219,9 @@ func newUserDropCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "drop [CLUSTER] --name=USER",
 		Short:             "Drop a MySQL user",
+		Long:              "Drop a MySQL user from the cluster's primary. Reserved operator accounts (cloudnative-mysql_*) cannot be dropped.",
+		Example: `  # Drop a user
+  kubectl cnmysql user drop cluster-sample --name=app`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -207,6 +254,9 @@ func newUserListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "list [CLUSTER]",
 		Short:             "List managed MySQL users",
+		Long:              "List all managed MySQL users on the cluster's primary, with their host patterns, TLS requirements and grants.",
+		Example: `  # List users
+  kubectl cnmysql user list cluster-sample`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {

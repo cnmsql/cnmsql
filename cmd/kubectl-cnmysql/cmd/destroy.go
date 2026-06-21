@@ -41,6 +41,14 @@ func newDestroyCommand() *cobra.Command {
 			"survives, letting you re-import the data later.",
 		Args:              cobra.ExactArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
+		Example: `  # Destroy an instance and its PVC (with confirmation prompt)
+  kubectl cnmysql destroy cluster-sample cluster-sample-3
+
+  # Destroy an instance but keep the PVC (detach it from the cluster)
+  kubectl cnmysql destroy cluster-sample cluster-sample-3 --keep-pvc
+
+  # Skip confirmation prompt
+  kubectl cnmysql destroy cluster-sample cluster-sample-3 --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDestroy(cmd.Context(), args[0], args[1], keepPVC, yes)
 		},

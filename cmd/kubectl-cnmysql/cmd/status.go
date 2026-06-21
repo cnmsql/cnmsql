@@ -34,7 +34,24 @@ const (
 )
 
 func newStatusCommand() *cobra.Command {
-	return newWatchingCommand("status [CLUSTER]", "Show the status of a cluster and its instances",
+	return newWatchingCommand("status [CLUSTER]",
+		"Show the status of a cluster and its instances",
+		`Display a human-readable summary of a cloudnative-mysql cluster: the current
+phase, primary, ready instance count, conditions, and a per-instance table with
+role, readiness, and flags.
+
+CLUSTER defaults to the sole cluster in the current namespace.`,
+		`  # Show the status of the default cluster in the current namespace
+  kubectl cnmysql status
+
+  # Show the status of a specific cluster
+  kubectl cnmysql status cluster-sample
+
+  # Watch status refresh every 2 seconds
+  kubectl cnmysql status -w
+
+  # Output the full Cluster object as YAML
+  kubectl cnmysql status -o yaml`,
 		"status ", runStatus)
 }
 

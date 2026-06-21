@@ -39,6 +39,14 @@ func newBackupCommand() *cobra.Command {
 			"the backup Job and reports progress in the Backup's status.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
+		Example: `  # Take an on-demand backup (xtrabackup, prefer-standby target)
+  kubectl cnmysql backup cluster-sample
+
+  # Take a backup from the primary
+  kubectl cnmysql backup cluster-sample --target=primary
+
+  # Name the backup explicitly
+  kubectl cnmysql backup cluster-sample --name=pre-upgrade`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()
