@@ -63,7 +63,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 func baseCluster() *mysqlv1alpha1.Cluster {
 	cluster := &mysqlv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "demo",
+			Name:      scheduledTestCluster,
 			Namespace: "default",
 		},
 		Spec: mysqlv1alpha1.ClusterSpec{
@@ -973,7 +973,7 @@ func assertOwnedObject(t *testing.T, ctx context.Context, reconciler *ClusterRec
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, obj); err != nil {
 		t.Fatal(err)
 	}
-	if len(obj.GetOwnerReferences()) != 1 || obj.GetOwnerReferences()[0].Name != "demo" {
+	if len(obj.GetOwnerReferences()) != 1 || obj.GetOwnerReferences()[0].Name != scheduledTestCluster {
 		t.Fatalf("%T owner refs = %#v, want demo owner", obj, obj.GetOwnerReferences())
 	}
 }
@@ -992,7 +992,7 @@ func assertOwnedUnstructuredResource(
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, obj); err != nil {
 		t.Fatalf("%s %s: %v", resourceName, name, err)
 	}
-	if len(obj.GetOwnerReferences()) != 1 || obj.GetOwnerReferences()[0].Name != "demo" {
+	if len(obj.GetOwnerReferences()) != 1 || obj.GetOwnerReferences()[0].Name != scheduledTestCluster {
 		t.Fatalf("%s owner refs = %#v, want demo owner", resourceName, obj.GetOwnerReferences())
 	}
 }

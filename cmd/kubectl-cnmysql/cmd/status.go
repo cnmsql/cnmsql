@@ -28,6 +28,11 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/plugin"
 )
 
+const (
+	readyYes = "yes"
+	readyNo  = "no"
+)
+
 func newStatusCommand() *cobra.Command {
 	return newWatchingCommand("status [CLUSTER]", "Show the status of a cluster and its instances",
 		"status ", runStatus)
@@ -103,9 +108,9 @@ func printInstances(c *mysqlv1alpha1.Cluster, pods []corev1.Pod) {
 		if pod.Name == primary {
 			role = "primary"
 		}
-		ready := "no"
+		ready := readyNo
 		if plugin.PodReady(pod) {
-			ready = "yes"
+			ready = readyYes
 		}
 		flags := ""
 		if plugin.Contains(c.Status.FencedInstances, pod.Name) {

@@ -48,7 +48,7 @@ func TestGroupMemberRowsAreSortedAndFormatted(t *testing.T) {
 		t.Errorf("rows not sorted by instance: %v", rows)
 	}
 	// REACHABLE column renders the bool as yes/no.
-	if rows[0][3] != "yes" || rows[2-1][3] != "no" {
+	if rows[0][3] != readyYes || rows[2-1][3] != readyNo {
 		t.Errorf("reachable not rendered as yes/no: %v", rows)
 	}
 	if rows[0][1] != "ONLINE" || rows[0][2] != "PRIMARY" {
