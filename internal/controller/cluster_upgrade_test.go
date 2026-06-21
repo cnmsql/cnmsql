@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
@@ -298,6 +299,45 @@ func TestReconcileUpgradeRollsInstancesInOrder(t *testing.T) {
 	}
 }
 
+// Under Group Replication the operator never promotes (the group elects) and the
+// GR ReconcileSwitchover is a no-op, so an operator-binary upgrade of a stale GR
+// primary must roll it directly — delete its Pod and let the group re-elect —
+// rather than setting a switchover target that would move nothing and deadlock.
+func TestReconcileUpgradeGroupReplicationRollsPrimaryWithoutSwitchover(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler, observed := upgradeFixture(t, 3, mysqlv1alpha1.PrimaryUpdateStrategyUnsupervised)
+	cluster.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
+		Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
+	}
+
+	// Replicas are already on the new manager; only the primary is stale.
+	observed.ExecutableHashByInstance[testReplica2] = upgradeNewHash
+	observed.ExecutableHashByInstance[testReplica3] = upgradeNewHash
+	observed.ExecutableHashByInstance[testPrimary] = oldHash
+
+	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected the stale GR primary upgrade to be handled")
+	}
+
+	// The primary Pod must have been rolled directly.
+	if missing := anyPodMissing(t, reconciler, cluster, []string{testPrimary}); missing != testPrimary {
+		t.Fatal("GR primary Pod should have been deleted for a direct roll")
+	}
+	// No switchover target must have been set.
+	got := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary != "" {
+		t.Fatalf("GR primary upgrade must not set a switchover target, got %q", got.Status.TargetPrimary)
+	}
+}
+
 const upgradeNewHash = "new"
 
 // upgradeFixture builds a cluster of the given size with all Pods ready, plus an
@@ -397,8 +437,8 @@ func TestReconcileUpgradeSupervisedWaitsForUserOnStalePrimary(t *testing.T) {
 	if missing := anyPodMissing(t, reconciler, cluster, observed.InstanceNames); missing != "" {
 		t.Fatalf("supervised upgrade rolled Pod %q, want no Pod deleted", missing)
 	}
-	if phase := clusterPhase(t, reconciler, cluster); phase != phaseWaitingForUser {
-		t.Fatalf("phase = %q, want %q", phase, phaseWaitingForUser)
+	if phase := clusterPhase(t, reconciler, cluster); phase != topology.PhaseWaitingForUser {
+		t.Fatalf("phase = %q, want %q", phase, topology.PhaseWaitingForUser)
 	}
 }
 
@@ -419,7 +459,7 @@ func TestReconcileUpgradeSupervisedRollsReplicasWhilePrimaryCurrent(t *testing.T
 	if !handled {
 		t.Fatal("stale replica should be rolled even under supervised")
 	}
-	if phase := clusterPhase(t, reconciler, cluster); phase == phaseWaitingForUser {
+	if phase := clusterPhase(t, reconciler, cluster); phase == topology.PhaseWaitingForUser {
 		t.Fatal("should not wait for user when only replicas are stale")
 	}
 	if missing := anyPodMissing(t, reconciler, cluster, observed.InstanceNames); missing != testReplica2 {
@@ -442,7 +482,7 @@ func TestReconcileUpgradeSingleInstanceSupervisedRestartsInPlace(t *testing.T) {
 	if !handled {
 		t.Fatal("single-instance supervised primary should be rolled in place")
 	}
-	if phase := clusterPhase(t, reconciler, cluster); phase == phaseWaitingForUser {
+	if phase := clusterPhase(t, reconciler, cluster); phase == topology.PhaseWaitingForUser {
 		t.Fatal("single-instance supervised primary must not wait for user")
 	}
 	if missing := anyPodMissing(t, reconciler, cluster, observed.InstanceNames); missing != testPrimary {
@@ -534,7 +574,7 @@ func TestReconcileUpgradeInPlaceIgnoresSupervisedGate(t *testing.T) {
 	if !handled {
 		t.Fatal("in-place stale primary should be handled, not left waiting")
 	}
-	if phase := clusterPhase(t, reconciler, cluster); phase == phaseWaitingForUser {
+	if phase := clusterPhase(t, reconciler, cluster); phase == topology.PhaseWaitingForUser {
 		t.Fatal("in-place upgrade must not wait for user on a supervised primary")
 	}
 	if !equalStrings(rec.upgraded, []string{testPrimary}) {

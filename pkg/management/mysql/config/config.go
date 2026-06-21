@@ -37,6 +37,22 @@ const DefaultAdminPort = 33062
 // manager), never from the network.
 const DefaultAdminAddress = "127.0.0.1"
 
+// DefaultGroupReplicationPort is the port the Group Replication communication
+// (XCom) layer listens on, used for group_replication_local_address and the
+// group seeds. Operator-owned; not user-tunable in v1.
+const DefaultGroupReplicationPort = 33061
+
+// TopologyMode selects the replication topology an instance is rendered for. It
+// mirrors spec.replication.mode; an empty value renders async (the default).
+type TopologyMode string
+
+const (
+	// TopologyAsync renders asynchronous / semi-synchronous GTID replication.
+	TopologyAsync TopologyMode = "async"
+	// TopologyGroupReplication renders single-primary MySQL Group Replication.
+	TopologyGroupReplication TopologyMode = "groupReplication"
+)
+
 // Role is the replication role an instance is rendered for.
 type Role string
 
@@ -99,8 +115,38 @@ type ServerConfig struct {
 	// Archiving configures continuous binary-log archiving durability/RPO
 	// settings. Rendered only when enabled.
 	Archiving Archiving
+	// TopologyMode selects async (default) vs Group Replication rendering. When
+	// TopologyGroupReplication the GroupReplication block below is rendered.
+	TopologyMode TopologyMode
+	// GroupReplication holds the Group Replication settings. Rendered only when
+	// TopologyMode is TopologyGroupReplication.
+	GroupReplication GroupReplication
 	// UserParameters are operator-validated user my.cnf settings.
 	UserParameters map[string]string
+}
+
+// GroupReplication is the fully-resolved input to rendering the
+// group_replication_* settings. Addresses, seeds and the group name are
+// operator-computed; the tunables mirror spec.replication.groupReplication.
+type GroupReplication struct {
+	// GroupName is the pinned group_replication_group_name (a UUID), stable for
+	// the life of the group and identical on every member.
+	GroupName string
+	// LocalAddress is this member's XCom address, "<pod-fqdn>:<port>".
+	LocalAddress string
+	// GroupSeeds is the comma-separated list of member XCom addresses used to
+	// reach an existing group when (re)joining.
+	GroupSeeds string
+	// IPAllowlist scopes group_replication_ip_allowlist to the cluster's network
+	// (e.g. the Pod CIDR or service domain). Empty leaves the server default.
+	IPAllowlist string
+	// Consistency, ExitStateAction and AutoRejoinTries mirror the spec tunables.
+	Consistency     string
+	ExitStateAction string
+	AutoRejoinTries int
+	// RecoverySSL, when set, renders the distributed-recovery SSL channel paths,
+	// reusing the cluster's TLS material.
+	RecoverySSL TLSPaths
 }
 
 // Archiving configures the binary-log settings continuous archiving relies on.
@@ -202,9 +248,53 @@ func normalizeKey(key string) string {
 	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
 }
 
+// groupReplicationKeyPrefix matches the entire group_replication_* namespace
+// plus plugin_load_add, which the operator owns under Group Replication. Treated
+// as managed so a user parameter can never destabilise the group.
+const groupReplicationKeyPrefix = "group_replication_"
+
+// isGroupReplicationManagedKey reports whether the (normalized) key falls in the
+// operator-owned Group Replication namespace.
+func isGroupReplicationManagedKey(normalized string) bool {
+	return strings.HasPrefix(normalized, groupReplicationKeyPrefix) || normalized == "plugin_load_add"
+}
+
+// StripGroupReplication removes every operator-owned Group Replication line
+// (the group_replication_* namespace and plugin_load_add) from a rendered
+// my.cnf, leaving comments, the section header and all other settings intact.
+//
+// It exists for `mysqld --initialize`: that mode deliberately ignores
+// plugin_load_add (see MySQL warning MY-013501), so group_replication.so is
+// never loaded and every group_replication_* setting becomes an "unknown
+// variable" that aborts initialization after the data directory has been
+// partially written. The GR block is meaningless during --initialize anyway, so
+// the initializer feeds mysqld a stripped copy of the runtime config.
+func StripGroupReplication(content string) string {
+	lines := strings.Split(content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "[") {
+			key := trimmed
+			if before, _, ok := strings.Cut(trimmed, "="); ok {
+				key = before
+			}
+			if isGroupReplicationManagedKey(normalizeKey(key)) {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // IsManagedKey reports whether the given my.cnf key is owned by the operator.
 func IsManagedKey(key string) bool {
-	_, ok := managedKeys[normalizeKey(key)]
+	k := normalizeKey(key)
+	if isGroupReplicationManagedKey(k) {
+		return true
+	}
+	_, ok := managedKeys[k]
 	return ok
 }
 
@@ -213,6 +303,9 @@ func IsManagedKey(key string) bool {
 // destabilise the instance.
 func IsDeniedKey(key string) bool {
 	k := normalizeKey(key)
+	if isGroupReplicationManagedKey(k) {
+		return true
+	}
 	if _, ok := managedKeys[k]; ok {
 		return true
 	}
@@ -392,6 +485,73 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 			key, value := binlogExpire(ver, c.Archiving.BinlogExpireSeconds)
 			pairs = append(pairs, pair{key, value})
 		}
+	}
+
+	if c.TopologyMode == TopologyGroupReplication {
+		pairs = append(pairs, c.groupReplicationSettings(ver)...)
+	}
+
+	return pairs
+}
+
+// groupReplicationSettings renders the operator-owned group_replication_*
+// namespace. The operator controls start and bootstrap: start_on_boot=OFF so a
+// restarting member never rejoins unsupervised, and bootstrap_group is never
+// rendered ON (a config-file ON would re-bootstrap on every boot, splitting the
+// group). Bootstrap is a runtime SET GLOBAL, never a file default.
+func (c *ServerConfig) groupReplicationSettings(ver version.Version) []pair {
+	gr := c.GroupReplication
+	pairs := []pair{
+		{"plugin_load_add", "group_replication.so"},
+		{"group_replication_group_name", gr.GroupName},
+		{"group_replication_local_address", gr.LocalAddress},
+		{"group_replication_group_seeds", gr.GroupSeeds},
+		{"group_replication_start_on_boot", "OFF"},
+		{"group_replication_bootstrap_group", "OFF"},
+		{"group_replication_single_primary_mode", "ON"},
+		{"group_replication_enforce_update_everywhere_checks", "OFF"},
+	}
+
+	if gr.Consistency != "" {
+		pairs = append(pairs, pair{"group_replication_consistency", gr.Consistency})
+	}
+	if gr.ExitStateAction != "" {
+		pairs = append(pairs, pair{"group_replication_exit_state_action", gr.ExitStateAction})
+	}
+	pairs = append(pairs, pair{"group_replication_autorejoin_tries", strconv.Itoa(gr.AutoRejoinTries)})
+
+	// Distributed recovery and XCom run over TLS, reusing the cluster TLS
+	// material so a joining member authenticates the donor.
+	pairs = append(pairs,
+		pair{"group_replication_ssl_mode", "REQUIRED"},
+		pair{"group_replication_recovery_use_ssl", "ON"},
+	)
+
+	// Clone-plugin distributed recovery: when the server supports it (8.0.17+),
+	// load the clone plugin so a joining member can recover a full snapshot from a
+	// donor whenever binlog catch-up is impossible (the donor purged GTIDs the
+	// joiner needs) or past group_replication_clone_threshold. The default
+	// threshold keeps GR binlog-first with clone as the automatic fallback, which
+	// is the safe GR-native behaviour, so the operator only loads the plugin and
+	// does not override the threshold. The clone shared library is mysql_clone.so.
+	if ver.HasGroupReplicationClone() {
+		pairs = append(pairs, pair{"plugin_load_add", "mysql_clone.so"})
+	}
+	if gr.RecoverySSL.isset() {
+		pairs = append(pairs,
+			pair{"group_replication_recovery_ssl_ca", gr.RecoverySSL.CA},
+			pair{"group_replication_recovery_ssl_cert", gr.RecoverySSL.Cert},
+			pair{"group_replication_recovery_ssl_key", gr.RecoverySSL.Key},
+		)
+	}
+	if gr.IPAllowlist != "" {
+		pairs = append(pairs, pair{"group_replication_ip_allowlist", gr.IPAllowlist})
+	}
+
+	// Before 8.0.21 Group Replication rejects a non-NONE binlog checksum; newer
+	// servers tolerate the default CRC32, so only force NONE where required.
+	if ver.GroupReplicationRequiresNoBinlogChecksum() {
+		pairs = append(pairs, pair{"binlog_checksum", "NONE"})
 	}
 
 	return pairs

@@ -32,6 +32,7 @@ import (
 
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/executablehash"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
@@ -58,12 +59,17 @@ type Controller struct {
 	name       string
 	conn       pool.Connection
 	repl       *replication.Manager
+	gr         *groupreplication.Manager
 	users      *user.Manager
 	version    version.Version
 	versionStr string
 	expected   webserver.Role
 	supervisor Supervisor
-	backup     *BackupConfig
+	// groupReplication enables the Group Replication code paths (status GR block,
+	// start/bootstrap). It stays false for async clusters so the async status path
+	// is untouched and never queries the GR tables.
+	groupReplication bool
+	backup           *BackupConfig
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus
@@ -107,6 +113,7 @@ func NewController(
 		name:         name,
 		conn:         conn,
 		repl:         replication.NewManager(conn, v),
+		gr:           groupreplication.NewManager(conn, v),
 		users:        user.NewManager(conn),
 		version:      v,
 		versionStr:   versionStr,
@@ -190,6 +197,14 @@ func (c *Controller) Readyz(ctx context.Context) error {
 	if err := c.conn.PingContext(ctx); err != nil {
 		return err
 	}
+	// Under Group Replication readiness is bound to the member's group state: a
+	// member serves consistent traffic only when ONLINE. This is the GR-health ⇄
+	// readiness bridge — the kubelet turns each ONLINE/not-ONLINE transition into a
+	// Pod Ready condition change the operator already watches via Owns(&Pod{}), so
+	// member join/recover/expel becomes event-driven without operator polling.
+	if c.groupReplication {
+		return c.groupReplicationReady(ctx)
+	}
 	state, err := c.repl.ReplicaState(ctx)
 	if err != nil {
 		return err
@@ -204,6 +219,35 @@ func (c *Controller) Readyz(ctx context.Context) error {
 	return nil
 }
 
+// groupReplicationReady reports readiness for a Group Replication member: the
+// local member must appear in performance_schema.replication_group_members in the
+// ONLINE state. A member that has not yet joined (no row for its server_uuid), is
+// still RECOVERING, or is OFFLINE/ERROR/UNREACHABLE is not ready, so the kubelet
+// keeps it out of the routing Services until the group accepts it.
+func (c *Controller) groupReplicationReady(ctx context.Context) error {
+	view, err := c.gr.ReadGroupView(ctx)
+	if err != nil {
+		return err
+	}
+	if !view.Configured {
+		return errors.New("instance has not joined the group yet")
+	}
+	uuid, err := c.serverUUID(ctx)
+	if err != nil {
+		return err
+	}
+	for _, m := range view.Members {
+		if m.MemberID != uuid {
+			continue
+		}
+		if m.State == groupreplication.MemberStateOnline {
+			return nil
+		}
+		return fmt.Errorf("group member is not ONLINE (state=%s)", m.State)
+	}
+	return errors.New("instance has not joined the group yet")
+}
+
 // Status assembles the full instance status from the server.
 func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	roState, err := c.repl.ReadOnly(ctx)
@@ -216,12 +260,13 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	}
 
 	status := &webserver.Status{
-		InstanceName:  c.name,
-		Version:       c.versionStr,
-		Role:          c.role(replicaState),
-		ReadOnly:      roState.ReadOnly,
-		SuperReadOnly: roState.SuperReadOnly,
-		IsReady:       c.Readyz(ctx) == nil,
+		InstanceName:     c.name,
+		Version:          c.versionStr,
+		Role:             c.role(replicaState),
+		ReadOnly:         roState.ReadOnly,
+		SuperReadOnly:    roState.SuperReadOnly,
+		IsReady:          c.Readyz(ctx) == nil,
+		InPlaceUpgrading: IsInPlaceUpgrading(),
 	}
 
 	if hash, err := executablehash.Get(); err == nil {
@@ -259,7 +304,182 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 		}
 	}
 
+	// Under Group Replication, report this member's view of the group. It is the
+	// signal the operator aggregates in observe() to set currentPrimary and the
+	// status.groupReplication block. Left nil for async clusters and best-effort
+	// (a transient read failure must not blank the rest of the status).
+	if c.groupReplication {
+		if gr := c.groupReplicationStatus(ctx); gr != nil {
+			status.GroupReplication = gr
+		}
+	}
+
 	return status, nil
+}
+
+// EnableGroupReplication turns on the Group Replication status and control paths.
+// The run loop calls it for GR-mode clusters; async clusters leave it off.
+func (c *Controller) EnableGroupReplication() {
+	c.groupReplication = true
+}
+
+// groupReplicationStatus reads this member's view of the group from
+// performance_schema.replication_group_members and shapes it into the webserver
+// status. It returns nil when the member is not yet configured in a group (no
+// rows), so a GR member that has not joined reports a nil block exactly like an
+// async instance.
+func (c *Controller) groupReplicationStatus(ctx context.Context) *webserver.GroupReplicationMemberStatus {
+	view, err := c.gr.ReadGroupView(ctx)
+	if err != nil || !view.Configured {
+		return nil
+	}
+
+	gr := &webserver.GroupReplicationMemberStatus{
+		Members: make([]webserver.GroupReplicationMember, 0, len(view.Members)),
+	}
+	if serverUUID, err := c.serverUUID(ctx); err == nil {
+		gr.MemberID = serverUUID
+	}
+	for _, m := range view.Members {
+		gr.Members = append(gr.Members, webserver.GroupReplicationMember{
+			MemberID: m.MemberID,
+			Host:     m.Host,
+			Port:     m.Port,
+			State:    m.State,
+			Role:     m.Role,
+		})
+		if m.MemberID == gr.MemberID {
+			gr.State = m.State
+			gr.Role = m.Role
+		}
+		if m.Role == groupreplication.MemberRolePrimary {
+			gr.PrimaryMemberID = m.MemberID
+		}
+	}
+	if name, err := c.groupName(ctx); err == nil {
+		gr.GroupName = name
+	}
+	return gr
+}
+
+// serverUUID reads this member's @@server_uuid, the key the group uses to
+// identify it in replication_group_members.
+func (c *Controller) serverUUID(ctx context.Context) (string, error) {
+	var uuid string
+	if err := c.conn.QueryRowContext(ctx, "SELECT @@global.server_uuid").Scan(&uuid); err != nil {
+		return "", err
+	}
+	return uuid, nil
+}
+
+// groupName reads the active group_replication_group_name as this member sees it.
+func (c *Controller) groupName(ctx context.Context) (string, error) {
+	var name string
+	if err := c.conn.QueryRowContext(ctx, "SELECT @@global.group_replication_group_name").Scan(&name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// GroupView reads the local member's view of the group. It backs the in-Pod GR
+// role strategy's steady-state check.
+func (c *Controller) GroupView(ctx context.Context) (groupreplication.GroupView, error) {
+	return c.gr.ReadGroupView(ctx)
+}
+
+// PrepareGroupJoin readies a member to join the group via distributed recovery,
+// before StartGroupReplication. It:
+//
+//   - Clears the GTIDs initdb authored locally (a fresh member only) so the group
+//     does not see them as errant transactions, and forces a full clone so the
+//     member is provisioned wholesale from a donor rather than by replaying the
+//     donor's binlogs onto a server that already holds the cluster's accounts.
+//   - Sets the distributed-recovery account on the group_replication_recovery
+//     channel. The channel's TLS comes from the rendered
+//     group_replication_recovery_ssl_* settings, so an X509 account needs no
+//     password (empty password).
+//
+// A member that already holds group data (it cloned a donor and restarted, or is
+// rejoining) is left to recover incrementally: its GTIDs are not self-authored,
+// so neither the reset nor the forced clone runs.
+func (c *Controller) PrepareGroupJoin(ctx context.Context, recoveryUser, password string) error {
+	fresh, err := c.isFreshMember(ctx)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		if err := c.repl.ResetBinaryLogs(ctx); err != nil {
+			return fmt.Errorf("clearing local GTIDs before group join: %w", err)
+		}
+		if err := c.gr.ForceClone(ctx); err != nil {
+			return fmt.Errorf("forcing clone for group join: %w", err)
+		}
+	}
+	return c.gr.ConfigureRecoveryChannel(ctx, recoveryUser, password)
+}
+
+// isFreshMember reports whether this member has never been part of the group and
+// must therefore be provisioned wholesale (clear local initdb GTIDs + force a
+// clone) rather than recovered incrementally.
+//
+// A member is fresh only when it holds GTIDs it authored itself (its own
+// server_uuid, written by initdb) AND no group transactions. Group view-change
+// events are logged under the group-name UUID, so any member that was ever part
+// of the group — a rejoining replica or a restarted former primary — carries
+// group-name GTIDs and must not be reset/cloned. This is essential for a former
+// primary: it authored the group's data under its own server_uuid, so a
+// self-authored check alone would misclassify it as fresh and wipe it into a
+// clone loop. Members with group history are left to GR's distributed recovery,
+// which decides incremental catch-up vs. clone vs. reject on its own.
+func (c *Controller) isFreshMember(ctx context.Context) (bool, error) {
+	uuid, err := c.serverUUID(ctx)
+	if err != nil {
+		return false, err
+	}
+	gtids, err := c.repl.GTIDExecuted(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !strings.Contains(gtids, uuid) {
+		// No self-authored GTIDs: empty (a brand-new server before any write) or
+		// only a donor's GTIDs (already cloned). Either way, leave it to distributed
+		// recovery rather than resetting and forcing another clone.
+		return false, nil
+	}
+	groupName, err := c.groupName(ctx)
+	if err != nil {
+		return false, err
+	}
+	// Self-authored GTIDs but no group view-change history ⇒ a fresh, never-joined
+	// member (initdb GTIDs only). With group history it is a returning member.
+	return groupName == "" || !strings.Contains(gtids, groupName), nil
+}
+
+// StartGroupReplication joins an existing group via distributed recovery. It
+// never bootstraps; the bootstrap member uses BootstrapGroup instead.
+func (c *Controller) StartGroupReplication(ctx context.Context) error {
+	return c.gr.Start(ctx)
+}
+
+// StopGroupReplication stops the member's Group Replication, making it leave
+// the group while keeping mysqld alive (the GR fencing primitive). The member
+// becomes super_read_only/OFFLINE but stays reachable for inspection. Unfence
+// via StartGroupReplication rejoins via distributed recovery.
+func (c *Controller) StopGroupReplication(ctx context.Context) error {
+	return c.gr.Stop(ctx)
+}
+
+// BootstrapGroup runs the exactly-once group-creation sequence. The caller must
+// gate it on being the designated bootstrap member with the group not yet
+// bootstrapped (status.groupReplication.bootstrapped == false).
+func (c *Controller) BootstrapGroup(ctx context.Context) error {
+	return c.gr.Bootstrap(ctx)
+}
+
+// ForceGroupMembers executes group_replication_force_members with the given
+// XCom addresses on this member, re-forming the group after a quorum loss.
+func (c *Controller) ForceGroupMembers(ctx context.Context, addresses []string) error {
+	return c.gr.ForceMembers(ctx, addresses)
 }
 
 // Promote transitions a replica to primary.

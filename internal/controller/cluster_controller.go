@@ -34,6 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/user"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -96,6 +97,22 @@ const (
 	// the instance is reachable again. The grace period absorbs transient blips so
 	// a single failed poll does not churn Service endpoints.
 	unreachableSinceAnnotation = "cloudnative-mysql.cloudnative-mysql.io/unreachable-since"
+	// forceQuorumRecoveryAnnotation, when set to "yes" on the Cluster, triggers
+	// a guarded quorum recovery for a Group Replication cluster that has lost
+	// quorum. The operator computes the safe survivor set, stamps the survivor
+	// Pod with force-quorum-members, and clears this annotation. Recovery is
+	// never automatic — it gate-checks that no quorum exists and a safe survivor
+	// is provable, and refuses otherwise.
+	forceQuorumRecoveryAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-recovery"
+	// forceQuorumMembersAnnotation, when set on an instance Pod to a
+	// comma-separated list of XCom addresses, instructs the in-Pod reconciler to
+	// execute group_replication_force_members with that address set.
+	forceQuorumMembersAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-quorum-members"
+	// forceGroupRebootstrapAnnotation, when set to "yes" on an instance Pod,
+	// instructs the in-Pod reconciler to re-bootstrap the group from that member
+	// after a total outage (no member survived ONLINE). It is the operator's
+	// guarded signal that this member holds every committed transaction.
+	forceGroupRebootstrapAnnotation = "cloudnative-mysql.cloudnative-mysql.io/force-group-rebootstrap"
 
 	configMapAnnotation       = "cloudnative-mysql.cloudnative-mysql.io/config-map"
 	configHashAnnotation      = "cloudnative-mysql.cloudnative-mysql.io/config-hash"
@@ -105,27 +122,17 @@ const (
 	conditionProgressing         = "Progressing"
 	conditionContinuousArchiving = "ContinuousArchiving"
 
-	phasePending        = "Pending"
-	phaseProvisioning   = "Provisioning"
-	phaseReady          = "Ready"
-	phaseBlocked        = "Blocked"
-	phaseSwitchover     = "Switchover"
-	phaseDegraded       = "Degraded"
-	phaseFailingOver    = "FailingOver"
-	phaseUpgrading      = "Upgrading"
-	phaseWaitingForUser = "WaitingForUser"
+	eventFailoverObserved = "FailoverObserved"
 
 	dataDir       = "/var/lib/mysql"
 	socketPath    = "/var/run/mysqld/mysqld.sock"
 	configPath    = "/etc/mysql/my.cnf"
-	serverTLSPath = "/etc/cloudnative-mysql/tls/server"
-	clientCAPath  = "/etc/cloudnative-mysql/tls/client-ca"
 	joinBackupDir = "/backup"
 
 	replicationUser = "cloudnative-mysql_repl"
 	backupUser      = "cloudnative-mysql_backup"
 	controlUser     = "cloudnative-mysql_control"
-	metricsUser     = "cloudnative-mysql_metrics_exporter"
+	metricsUser     = "cloudnative-mysql_metrics"
 	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// provisioningRequeue paces reconciles while the instance is still coming up.
@@ -229,7 +236,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if reason := unsupportedReason(cluster); reason != "" {
 		log.Info("Cluster shape is not supported by M3", "reason", reason)
 		return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
+			Phase:       topology.PhaseBlocked,
 			PhaseReason: reason,
 			Ready:       false,
 			Progressing: false,
@@ -241,7 +248,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	plan, err := r.buildPlan(ctx, cluster)
 	if err != nil {
 		return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
+			Phase:       topology.PhaseBlocked,
 			PhaseReason: err.Error(),
 			Ready:       false,
 			Progressing: false,
@@ -263,6 +270,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	if err := r.topologyReconciler(cluster).EnsureConfigured(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if result, err, handled := r.ensureInfrastructure(ctx, cluster, plan); handled {
 		return result, err
 	}
@@ -273,7 +284,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	if !certsReady {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseProvisioning,
+			Phase:       topology.PhaseProvisioning,
 			PhaseReason: "Waiting for cert-manager certificates",
 			Ready:       false,
 			Progressing: true,
@@ -309,6 +320,18 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Under GR, refuse to fence a member when doing so would break quorum.
+	// Remove the instance from the fenced set and surface Blocked instead
+	// so the in-Pod reconciler never executes STOP GROUP_REPLICATION.
+	if blockedReason := r.checkFenceQuorumGuard(ctx, cluster, &observed); blockedReason != "" {
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observed)
+	}
+	// Guarded quorum recovery is opt-in via annotation. The operator computes
+	// the safe survivor set, re-arms bootstrap, and lets the designated member
+	// re-form the group. Only runs when quorum is provably lost.
+	if result, err, handled := r.handleQuorumRecovery(ctx, cluster, observed); handled {
+		return result, err
+	}
 	// An unreachable primary takes precedence over a manual switchover: drive
 	// automatic failover (bounded by spec.failoverDelay) before anything else.
 	failoverHandled, failoverResult, err := r.reconcileFailover(ctx, cluster, plan, observed)
@@ -322,7 +345,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	switched, err := r.reconcileSwitchover(ctx, cluster, plan, observed)
+	switched, err := r.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -374,7 +397,7 @@ func (r *ClusterReconciler) ensureInfrastructure(ctx context.Context, cluster *m
 	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
 		return ctrl.Result{}, err, true
 	}
-	if err := r.ensurePrimaryLease(ctx, cluster); err != nil {
+	if err := r.topologyReconciler(cluster).EnsurePrimaryLease(ctx, cluster); err != nil {
 		return ctrl.Result{}, err, true
 	}
 	if ok, result, err := r.blockOnInvalidCertificate(ctx, cluster, plan); ok {
@@ -404,7 +427,7 @@ func (r *ClusterReconciler) handleBackupCheck(ctx context.Context, cluster *mysq
 	if check.Retry != nil {
 		log.Info("Could not verify backup destination, will retry", "error", check.Retry.Error())
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseProvisioning,
+			Phase:       topology.PhaseProvisioning,
 			PhaseReason: "Verifying backup destination is empty",
 			Ready:       false,
 			Progressing: true,
@@ -415,7 +438,7 @@ func (r *ClusterReconciler) handleBackupCheck(ctx context.Context, cluster *mysq
 		log.Info("Blocking cluster: backup destination is not empty", "reason", check.Blocked)
 		r.Recorder.Event(cluster, corev1.EventTypeWarning, "BackupDestinationNotEmpty", check.Blocked)
 		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
+			Phase:       topology.PhaseBlocked,
 			PhaseReason: check.Blocked,
 			Ready:       false,
 			Progressing: false,
@@ -434,7 +457,7 @@ func (r *ClusterReconciler) handleRecoveryCheck(ctx context.Context, cluster *my
 	if check.Retry != nil {
 		log.Info("Could not verify recovery target, will retry", "error", check.Retry.Error())
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseProvisioning,
+			Phase:       topology.PhaseProvisioning,
 			PhaseReason: "Verifying recovery target is reachable from the archive",
 			Ready:       false,
 			Progressing: true,
@@ -445,7 +468,7 @@ func (r *ClusterReconciler) handleRecoveryCheck(ctx context.Context, cluster *my
 		log.Info("Blocking cluster: recovery target is unsatisfiable", "reason", check.Blocked)
 		r.Recorder.Event(cluster, corev1.EventTypeWarning, "RecoveryTargetUnsatisfiable", check.Blocked)
 		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
+			Phase:       topology.PhaseBlocked,
 			PhaseReason: check.Blocked,
 			Ready:       false,
 			Progressing: false,
@@ -466,7 +489,7 @@ func (r *ClusterReconciler) blockOnInvalidCertificate(ctx context.Context, clust
 			r.Recorder.Event(cluster, corev1.EventTypeWarning, "InvalidUserCertificate", err.Error())
 		}
 		return true, ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       phaseBlocked,
+			Phase:       topology.PhaseBlocked,
 			PhaseReason: err.Error(),
 			Ready:       false,
 			Progressing: false,
@@ -480,7 +503,7 @@ func (r *ClusterReconciler) blockOnInvalidCertificate(ctx context.Context, clust
 // happen while the cluster is degraded, not only after it returns to Ready.
 func (r *ClusterReconciler) reconcileAvailability(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed observedCluster) {
 	log := logf.FromContext(ctx)
-	if err := r.reconcileSemiSync(ctx, cluster, observed); err != nil {
+	if err := r.topologyReconciler(cluster).ReconcileAvailability(ctx, cluster, topologyAvailabilityState(observed)); err != nil {
 		log.Info("Semi-sync self-healing pass failed, will retry", "error", err.Error())
 	}
 }

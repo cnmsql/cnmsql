@@ -167,6 +167,9 @@ func main() {
 				setupLog.Error(err, "Failed to create controller", "controller", "cluster")
 				return err
 			}
+			// Publish per-cluster Group Replication status (quorum, member states)
+			// on the operator's existing /metrics endpoint.
+			controller.RegisterGRMetrics(mgr.GetClient())
 			if err := (&controller.BackupReconciler{
 				Client:            mgr.GetClient(),
 				Scheme:            mgr.GetScheme(),

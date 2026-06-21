@@ -88,6 +88,14 @@ func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, op
 	return m.configureSource(ctx, opts, false)
 }
 
+// ResetBinaryLogs clears the binary logs and the GTID execution history,
+// resetting gtid_executed to empty. Group Replication distributed recovery uses
+// it on a freshly initialised joiner so the transactions initdb authored locally
+// are not seen as errant transactions (which would block a clone from a donor).
+func (m *Manager) ResetBinaryLogs(ctx context.Context) error {
+	return m.exec(ctx, ResetBinaryLogsStatement(m.version))
+}
+
 // StartReplica starts the replication threads.
 func (m *Manager) StartReplica(ctx context.Context) error {
 	return m.exec(ctx, StartReplicaStatement(m.version))

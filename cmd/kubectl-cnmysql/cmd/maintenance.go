@@ -32,7 +32,16 @@ func newMaintenanceCommand() *cobra.Command {
 		Short: "Toggle the node maintenance window on a cluster",
 		Long: "Set or clear spec.nodeMaintenanceWindow.inProgress. While set, the " +
 			"operator tolerates node drains; with --reuse-pvc it reattaches the " +
-			"existing PVCs to rescheduled Pods.",
+			"existing PVCs to rescheduled Pods.\n\n" +
+			"Use this before draining a node or performing Kubernetes node maintenance.",
+		Example: `  # Begin a maintenance window
+  kubectl cnmysql maintenance set cluster-sample
+
+  # Begin a maintenance window and reuse existing PVCs across node restarts
+  kubectl cnmysql maintenance set cluster-sample --reuse-pvc
+
+  # End the maintenance window
+  kubectl cnmysql maintenance unset cluster-sample`,
 	}
 	cmd.AddCommand(newMaintenanceSetCommand(), newMaintenanceUnsetCommand())
 	return cmd
@@ -43,6 +52,9 @@ func newMaintenanceSetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "set [CLUSTER]",
 		Short:             "Begin a node maintenance window",
+		Long:              "Set spec.nodeMaintenanceWindow.inProgress to true. While the maintenance window is active, the operator tolerates node drains. Use --reuse-pvc to reattach existing PVCs to rescheduled Pods instead of re-cloning from backup.",
+		Example:           `  kubectl cnmysql maintenance set cluster-sample
+  kubectl cnmysql maintenance set cluster-sample --reuse-pvc`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -57,6 +69,8 @@ func newMaintenanceUnsetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "unset [CLUSTER]",
 		Short:             "End a node maintenance window",
+		Long:              "Clear spec.nodeMaintenanceWindow.inProgress. The operator resumes normal disruption handling.",
+		Example:           `  kubectl cnmysql maintenance unset cluster-sample`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -58,6 +58,10 @@ type BootstrapParams struct {
 	// SupportsDynamicPrivileges enables the MySQL 8.0+ dynamic privilege grants
 	// the control user needs (admin-interface access, super_read_only, etc.).
 	SupportsDynamicPrivileges bool
+	// GroupReplication extends the replication account with the privileges Group
+	// Replication distributed recovery needs (Clone-plugin snapshot recovery and,
+	// on 8.0.27+, the recovery stream privilege). It is a no-op for async clusters.
+	GroupReplication bool
 	// MySQLVersion selects the SQL dialect (e.g. older MySQL lacks
 	// CREATE USER ... IF NOT EXISTS and sets the root password differently).
 	// Defaults to modern syntax when empty.
@@ -76,6 +80,21 @@ var controlDynamicPrivileges = []string{
 	"REPLICATION_SLAVE_ADMIN",
 	"BACKUP_ADMIN",
 	"CLONE_ADMIN",
+}
+
+// hasGroupReplicationStreamPrivilege reports whether the server version defines
+// the GROUP_REPLICATION_STREAM privilege (8.0.27+), which the recovery account
+// must hold from that release on. An unparseable or empty version is treated as
+// modern.
+func (p BootstrapParams) hasGroupReplicationStreamPrivilege() bool {
+	if p.MySQLVersion == "" {
+		return true
+	}
+	v, err := version.Parse(p.MySQLVersion)
+	if err != nil {
+		return true
+	}
+	return v.AtLeast(8, 0, 27)
 }
 
 // Validate checks the parameters are internally consistent.
@@ -146,6 +165,24 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 			fmt.Sprintf("GRANT REPLICATION SLAVE ON *.* TO '%s'@'%%'",
 				escapeName(p.ReplicationUser)),
 		)
+		// Under Group Replication the same account drives distributed recovery on the
+		// group_replication_recovery channel. Clone-plugin recovery needs BACKUP_ADMIN
+		// on the donor and CLONE_ADMIN on the joiner; 8.0.27+ additionally require
+		// GROUP_REPLICATION_STREAM on the recovery account. All members share these
+		// credentials, so granting them on the bootstrap member is enough (joiners
+		// clone the donor's accounts). All are dynamic privileges (8.0+).
+		if p.GroupReplication && p.SupportsDynamicPrivileges {
+			stmts = append(stmts,
+				fmt.Sprintf("GRANT BACKUP_ADMIN, CLONE_ADMIN ON *.* TO '%s'@'%%'",
+					escapeName(p.ReplicationUser)),
+			)
+			if p.hasGroupReplicationStreamPrivilege() {
+				stmts = append(stmts,
+					fmt.Sprintf("GRANT GROUP_REPLICATION_STREAM ON *.* TO '%s'@'%%'",
+						escapeName(p.ReplicationUser)),
+				)
+			}
+		}
 	}
 
 	// Backup account used by XtraBackup on the primary to clone replicas. The

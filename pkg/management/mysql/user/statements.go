@@ -39,11 +39,11 @@ const (
 // internal/controller constants and instance/bootstrap.go); touching them would
 // break the control plane, replication, backups or monitoring.
 var reservedUsers = map[string]struct{}{
-	"cloudnative-mysql_control":          {},
-	"cloudnative-mysql_repl":             {},
-	"cloudnative-mysql_backup":           {},
-	"cloudnative-mysql_metrics_exporter": {},
-	"root":                               {},
+	"cloudnative-mysql_control": {},
+	"cloudnative-mysql_repl":    {},
+	"cloudnative-mysql_backup":  {},
+	"cloudnative-mysql_metrics": {},
+	"root":                      {},
 }
 
 // IsReservedUser reports whether name is an operator/server-managed account that
@@ -314,7 +314,7 @@ func ListUsersQuery() string {
 		"max_connections, ssl_type FROM mysql.user " +
 		"WHERE User NOT LIKE 'mysql.%' AND User <> 'root' " +
 		"AND User NOT IN ('cloudnative-mysql_control', 'cloudnative-mysql_repl', " +
-		"'cloudnative-mysql_backup', 'cloudnative-mysql_metrics_exporter') " +
+		"'cloudnative-mysql_backup', 'cloudnative-mysql_metrics') " +
 		"ORDER BY User, Host"
 }
 

@@ -22,7 +22,11 @@ import (
 // proof is that every instance's reported executable hash converges to the new
 // operator hash while the mysql container restart count stays flat, mysqld uptime
 // keeps climbing, and the primary never changes.
-var _ = Describe("In-place operator upgrade (streamed)", Ordered, func() {
+//
+// Serial: `make deploy` rolls the shared cluster-wide operator, which watches
+// every namespace. While it rolls it stops reconciling Clusters in other specs'
+// namespaces, so this must not run alongside any other spec.
+var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, func() {
 	const (
 		v3Image     = "example.com/cloudnative-mysql:v0.0.3-inplace"
 		clusterName = "inplace-upgrade"

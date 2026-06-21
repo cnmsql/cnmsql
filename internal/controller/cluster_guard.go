@@ -28,19 +28,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
 
 // reconcilePDB keeps the cluster's PodDisruptionBudgets in step with the spec.
 //
-// When spec.enablePDB is true (the default) the operator maintains two PDBs:
+// Under async replication the operator maintains two PDBs:
 //
 //   - {cluster}-primary: maxUnavailable=1, matches the pod holding role=primary.
 //   - {cluster}-replicas: maxUnavailable=floor(N/2) for N replicas, matches pods
 //     with role=replica. Single-instance clusters (no replicas) skip it.
+//
+// Under Group Replication a single quorum-aware PDB replaces the split:
+//
+//   - {cluster}-group: maxUnavailable = N - quorum (e.g. N=3 → 1, N=5 → 2),
+//     matching every cluster Pod by cluster label only, so voluntary disruptions
+//     can never break quorum.
 //
 // During a node maintenance window (spec.nodeMaintenanceWindow.inProgress with
 // reusePVC) the relevant PDBs are torn down so the kubelet can drain the node;
@@ -55,6 +64,21 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	// cluster, where the lone pod must be allowed to move with its (reused) PVC.
 	maintenance := inNodeMaintenance(cluster)
 	singleInstance := plan.Instances <= 1
+
+	// Group Replication uses a single quorum-aware PDB; remove the async split.
+	if cluster.IsGroupReplication() {
+		if !pdbEnabled || singleInstance {
+			_ = r.reconcileOnePDB(ctx, cluster, groupPDBName(cluster), false, nil)
+			r.deleteAsyncSplitPDBs(ctx, cluster)
+			return nil
+		}
+		r.deleteAsyncSplitPDBs(ctx, cluster)
+		primaryMax, _ := r.topologyReconciler(cluster).PDBMaxUnavailable(cluster)
+		wantGroup := pdbEnabled && !maintenance
+		return r.reconcileOnePDB(ctx, cluster, groupPDBName(cluster), wantGroup, func() *policyv1.PodDisruptionBudget {
+			return buildClusterWidePDB(cluster, groupPDBName(cluster), primaryMax)
+		})
+	}
 
 	wantPrimary := pdbEnabled && (!maintenance || !singleInstance)
 	wantReplica := pdbEnabled && !singleInstance && !maintenance
@@ -71,6 +95,13 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	return r.reconcileOnePDB(ctx, cluster, replicaPDBName(cluster), wantReplica, func() *policyv1.PodDisruptionBudget {
 		return buildPDB(cluster, replicaPDBName(cluster), roleReplica, intstr.FromInt32(int32(replicas/2)))
 	})
+}
+
+// deleteAsyncSplitPDBs removes the async-style primary and replica PDBs, ensuring
+// a switch from async to GR (or vice versa) cleans up the old topology's PDBs.
+func (r *ClusterReconciler) deleteAsyncSplitPDBs(ctx context.Context, cluster *mysqlv1alpha1.Cluster) {
+	_ = r.reconcileOnePDB(ctx, cluster, primaryPDBName(cluster), false, nil)
+	_ = r.reconcileOnePDB(ctx, cluster, replicaPDBName(cluster), false, nil)
 }
 
 // reconcileOnePDB creates/updates the named PDB when want is true, or deletes it
@@ -132,6 +163,31 @@ func buildPDB(cluster *mysqlv1alpha1.Cluster, name, role string, maxUnavailable 
 	}
 }
 
+// buildClusterWidePDB returns a PDB that selects every cluster Pod without a
+// role filter, used for the single quorum-aware GR PDB.
+func buildClusterWidePDB(cluster *mysqlv1alpha1.Cluster, name string, maxUnavailable intstr.IntOrString) *policyv1.PodDisruptionBudget {
+	labels := labelsFor(cluster, "", "")
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: &maxUnavailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					clusterLabel: cluster.Name,
+				},
+			},
+		},
+	}
+}
+
+func groupPDBName(cluster *mysqlv1alpha1.Cluster) string {
+	return cluster.Name + "-group"
+}
+
 // inNodeMaintenance reports whether a node maintenance window is active for the
 // cluster. The window only relaxes PDBs when PVCs are reused, otherwise draining
 // a node would discard the instance's data.
@@ -158,6 +214,196 @@ func isPodFenced(pod *corev1.Pod) bool {
 	return pod.Annotations[fencingAnnotation] == routableTrue
 }
 
+// checkFenceQuorumGuard ensures that under Group Replication, fencing a member
+// (which executes STOP GROUP_REPLICATION) never breaks quorum. It splits the
+// observed fenced set into already-persisted (safe, group survived) and new
+// additions, then checks whether fencing the new set would drop below quorum.
+// If so the new instances are removed from the observed fenced set, the cluster
+// is blocked with a quorum-guard reason, and a Warning Event is emitted.
+// Returns the blocking reason (empty when all clear).
+func (r *ClusterReconciler) checkFenceQuorumGuard(ctx context.Context, cluster *mysqlv1alpha1.Cluster, observed *observedCluster) string {
+	if !cluster.IsGroupReplication() || len(observed.FencedInstances) == 0 {
+		return ""
+	}
+	// Separate already-persisted fenced instances (from the last reconcile)
+	// from newly observed ones. The persisted set represents fences that
+	// already took effect; the group survived them, so they are safe.
+	persisted := setFrom(cluster.Status.FencedInstances)
+	var newFences []string
+	for _, name := range observed.FencedInstances {
+		if !persisted[name] {
+			newFences = append(newFences, name)
+		}
+	}
+	if len(newFences) == 0 {
+		return ""
+	}
+
+	// Merge the fresh GR observation so quorum math sees latest member states.
+	latest := cluster.DeepCopy()
+	r.topologyReconciler(cluster).MergeStatus(latest, topology.Observation{
+		GroupReplication: observed.GroupReplication,
+	})
+
+	// Persisted fenced members have already been instructed to leave the
+	// group; the group view may be stale and still show them ONLINE. Remove
+	// them so the quorum math sees the effective member count after all
+	// persisted fences take effect.
+	if gr := latest.Status.GroupReplication; gr != nil && len(persisted) > 0 {
+		filtered := gr.Members[:0]
+		for _, m := range gr.Members {
+			if !persisted[m.Instance] {
+				filtered = append(filtered, m)
+			}
+		}
+		gr.Members = filtered
+	}
+
+	// Check whether fencing the new instances (on top of the ones already
+	// fenced) would break quorum.
+	topo := r.topologyReconciler(cluster)
+	if guard := topo.FenceQuorumGuard(latest, newFences); guard != nil && guard.Blocked {
+		// Remove the new fences from the observed set so the in-Pod
+		// reconciler never executes STOP GROUP_REPLICATION for them.
+		for _, name := range newFences {
+			observed.FencedInstances = removeString(observed.FencedInstances, name)
+		}
+		logf.FromContext(ctx).Info("Blocking cluster: fencing would break quorum",
+			"newFences", newFences, "reason", guard.Reason)
+		if r.Recorder != nil {
+			r.Recorder.Event(cluster, corev1.EventTypeWarning, "FenceQuorumGuardBlocked", guard.Reason)
+		}
+		observed.Phase = topology.PhaseBlocked
+		observed.PhaseReason = guard.Reason
+		observed.Ready = false
+		observed.Progressing = false
+		return guard.Reason
+	}
+	return ""
+}
+
+// removeString returns a copy of ss without the first occurrence of s, leaving
+// the input slice (and its backing array) untouched.
+func removeString(ss []string, s string) []string {
+	for i, v := range ss {
+		if v == s {
+			out := make([]string, 0, len(ss)-1)
+			out = append(out, ss[:i]...)
+			return append(out, ss[i+1:]...)
+		}
+	}
+	return ss
+}
+
+// handleQuorumRecovery is the opt-in, guarded quorum recovery path for Group
+// Replication clusters. It triggers only when the Cluster carries the
+// force-quorum-recovery annotation and quorum is provably lost. The operator
+// computes a safe survivor via ComputeForceQuorumRecovery, stamps the survivor
+// Pod with the force_members addresses so its in-Pod reconciler executes
+// group_replication_force_members, and clears the Cluster annotation. When
+// safety is unprovable the annotation is kept and the cluster stays Blocked.
+func (r *ClusterReconciler) handleQuorumRecovery(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	observed observedCluster,
+) (ctrl.Result, error, bool) {
+	if !cluster.IsGroupReplication() {
+		return ctrl.Result{}, nil, false
+	}
+	// Re-fetch the cluster to see the latest annotations. The passed-in
+	// cluster may be stale if this reconcile was triggered by a Pod change
+	// rather than the annotation itself.
+	latestCluster := &mysqlv1alpha1.Cluster{}
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+	if err := r.Get(ctx, key, latestCluster); err != nil {
+		return ctrl.Result{}, err, true
+	}
+	if latestCluster.Annotations[forceQuorumRecoveryAnnotation] != "yes" {
+		return ctrl.Result{}, nil, false
+	}
+	gr := latestCluster.Status.GroupReplication
+	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
+		logf.FromContext(ctx).Info("Cannot perform quorum recovery: group is not in a recoverable state",
+			"hasQuorum", gr != nil && gr.HasQuorum, "bootstrapped", gr != nil && gr.Bootstrapped)
+		r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+		return ctrl.Result{}, nil, false
+	}
+
+	recovery := r.topologyReconciler(latestCluster).ComputeForceQuorumRecovery(latestCluster, observed.GTIDByInstance)
+	if recovery == nil {
+		logf.FromContext(ctx).Info("Cannot compute safe quorum recovery survivor; cluster stays Blocked")
+		r.Recorder.Event(latestCluster, corev1.EventTypeWarning, "QuorumRecoveryUnsafe",
+			"No safe survivor set could be proven for quorum recovery")
+		return ctrl.Result{RequeueAfter: readyResync}, nil, false
+	}
+
+	logf.FromContext(ctx).Info("Executing guarded quorum recovery",
+		"survivor", recovery.Survivor, "action", recovery.Action, "forceMembers", recovery.ForceMembers)
+	r.Recorder.Eventf(latestCluster, corev1.EventTypeNormal, "QuorumRecovery",
+		"Designating %s as the quorum recovery member (%s)", recovery.Survivor, recovery.Action)
+
+	survivorPod := &corev1.Pod{}
+	survivorKey := types.NamespacedName{Namespace: latestCluster.Namespace, Name: recovery.Survivor}
+	if err := r.Get(ctx, survivorKey, survivorPod); err != nil {
+		if apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).Info("Survivor Pod not found; cannot proceed with quorum recovery", "survivor", recovery.Survivor)
+			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, false
+		}
+		return ctrl.Result{}, err, true
+	}
+	podBefore := survivorPod.DeepCopy()
+	if survivorPod.Annotations == nil {
+		survivorPod.Annotations = map[string]string{}
+	}
+	// Stamp the survivor with the action-specific doorbell. force_members resets a
+	// surviving (but sub-quorum) view; rebootstrap re-creates the group from
+	// scratch after a total outage where no view survived.
+	switch recovery.Action {
+	case topology.QuorumRecoveryRebootstrap:
+		survivorPod.Annotations[forceGroupRebootstrapAnnotation] = "yes"
+	default:
+		survivorPod.Annotations[forceQuorumMembersAnnotation] = recovery.ForceMembers
+	}
+	if err := r.Patch(ctx, survivorPod, client.MergeFrom(podBefore)); err != nil {
+		return ctrl.Result{}, err, true
+	}
+
+	// Reset the sticky ObservedViewMax so the re-formed group reports
+	// quorum against its actual (smaller) view size. Otherwise DonorAvailable
+	// blocks member provisioning because the pre-crash max (e.g. 3) makes
+	// a 1-member post-recovery group falsely read as quorum-lost.
+	statusBefore := latestCluster.DeepCopy()
+	if latestCluster.Status.GroupReplication != nil {
+		latestCluster.Status.GroupReplication.ObservedViewMax = 0
+		latestCluster.Status.GroupReplication.ObservedOnlineMax = 0
+	}
+	if err := r.Status().Patch(ctx, latestCluster, client.MergeFrom(statusBefore)); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not reset ObservedViewMax after quorum recovery")
+	}
+
+	r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+	return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
+}
+
+// clearAnnotation removes annotation key from the Cluster and persists the change.
+func (r *ClusterReconciler) clearAnnotation(ctx context.Context, cluster *mysqlv1alpha1.Cluster, key string) {
+	latest := &mysqlv1alpha1.Cluster{}
+	nsKey := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+	if err := r.Get(ctx, nsKey, latest); err != nil {
+		return
+	}
+	if latest.Annotations == nil {
+		return
+	}
+	before := latest.DeepCopy()
+	delete(latest.Annotations, key)
+	if err := r.Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not clear Cluster annotation", "key", key)
+		return
+	}
+	latest.DeepCopyInto(cluster)
+}
+
 // reconcileFencing keeps each instance Pod's routable label in step with its
 // fencing annotation and the operator's ability to reach it. A Pod gets
 // routable=false — which drops it from every routing Service, whose selectors
@@ -177,7 +423,7 @@ func (r *ClusterReconciler) reconcileFencing(ctx context.Context, cluster *mysql
 	}
 	// Only pull members out of routing for an already-established cluster; during
 	// initial provisioning a not-yet-reachable replica is expected, not degraded.
-	deRouteEligible := clusterEstablished(cluster)
+	deRouteEligible := cluster.IsEstablished()
 	now := time.Now().Truncate(time.Second)
 
 	for _, name := range observed.InstanceNames {

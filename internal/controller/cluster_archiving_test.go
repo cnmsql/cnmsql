@@ -40,10 +40,10 @@ func archivingCluster() *mysqlv1alpha1.Cluster {
 
 func TestArchivingDisabledByDefault(t *testing.T) {
 	cluster := baseCluster()
-	if archivingEnabled(cluster) {
+	if cluster.IsArchivingEnabled() {
 		t.Fatal("archiving should be off by default")
 	}
-	args := runArgs(cluster, testPlan(), instancePlan{})
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	for _, a := range args {
 		if strings.Contains(a, "continuous-archiving") {
 			t.Fatalf("unexpected archiving flag: %v", args)
@@ -53,11 +53,11 @@ func TestArchivingDisabledByDefault(t *testing.T) {
 
 func TestArchivingRunArgsAndEnv(t *testing.T) {
 	cluster := archivingCluster()
-	if !archivingEnabled(cluster) {
+	if !cluster.IsArchivingEnabled() {
 		t.Fatal("archiving should be enabled")
 	}
 
-	args := runArgs(cluster, testPlan(), instancePlan{})
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	if !containsArg(args, "--continuous-archiving") {
 		t.Fatalf("missing --continuous-archiving: %v", args)
 	}
@@ -85,7 +85,7 @@ func TestArchivingRunArgsAndEnv(t *testing.T) {
 
 func TestArchivingMyCnfRendersDurability(t *testing.T) {
 	cluster := archivingCluster()
-	out, err := renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"})
+	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"}, []string{"demo-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

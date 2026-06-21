@@ -21,11 +21,52 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // defaultWatchInterval is the refresh period used by --watch when no
 // --watch-interval is given.
 const defaultWatchInterval = 2 * time.Second
+
+// newWatchingCommand creates a cobra.Command that supports the --watch,
+// --watch-interval, and --output flags. The runFn receives the cluster name
+// (or empty string for the default cluster) and the output format (empty for
+// human-readable). When --watch is enabled the command re-invokes runFn on a
+// timer; otherwise it runs once and exits.
+func newWatchingCommand(
+	use, short, long, example, labelPrefix string,
+	runFn func(context.Context, string, string) error,
+) *cobra.Command {
+	var (
+		output   string
+		watch    bool
+		interval time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:               use,
+		Short:             short,
+		Long:              long,
+		Example:           example,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeClusterArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			clusterName := firstArg(args)
+			label := clusterName
+			if label == "" {
+				label = "<default cluster>"
+			}
+			return watchOrOnce(cmd.Context(), watch, labelPrefix+label, interval,
+				func(ctx context.Context) error {
+					return runFn(ctx, clusterName, output)
+				})
+		},
+	}
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output format: json or yaml (default human-readable)")
+	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "continuously refresh until interrupted")
+	cmd.Flags().DurationVar(&interval, "watch-interval", defaultWatchInterval, "refresh interval for --watch")
+	return cmd
+}
 
 // runWatch repeatedly invokes render, clearing the screen between frames, until
 // the context is cancelled (Ctrl-C). A per-frame error is printed but does not

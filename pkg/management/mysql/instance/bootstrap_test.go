@@ -125,6 +125,61 @@ func TestBootstrapBackupUserWithDynamicPrivileges(t *testing.T) {
 	}
 }
 
+func TestBootstrapGroupReplicationGrantsRecoveryPrivileges(t *testing.T) {
+	// On 8.0.27+ the replication account drives Clone-plugin distributed recovery
+	// (BACKUP_ADMIN on the donor, CLONE_ADMIN on the joiner) and the recovery
+	// stream (GROUP_REPLICATION_STREAM).
+	out := joinStmts(t, BootstrapParams{
+		RootPassword:              "rootpw",
+		ReplicationUser:           "repl",
+		ReplicationRequireX509:    true,
+		SupportsDynamicPrivileges: true,
+		GroupReplication:          true,
+		MySQLVersion:              "8.0.36",
+	})
+	for _, want := range []string{
+		"GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%'",
+		"GRANT BACKUP_ADMIN, CLONE_ADMIN ON *.* TO 'repl'@'%'",
+		"GRANT GROUP_REPLICATION_STREAM ON *.* TO 'repl'@'%'",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestBootstrapGroupReplicationOmitsStreamPrivilegeBelow8_0_27(t *testing.T) {
+	// GROUP_REPLICATION_STREAM does not exist before 8.0.27; granting it would
+	// fail, so only the clone privileges are issued at the GR floor (8.0.22).
+	out := joinStmts(t, BootstrapParams{
+		RootPassword:              "rootpw",
+		ReplicationUser:           "repl",
+		ReplicationRequireX509:    true,
+		SupportsDynamicPrivileges: true,
+		GroupReplication:          true,
+		MySQLVersion:              "8.0.22",
+	})
+	if !strings.Contains(out, "GRANT BACKUP_ADMIN, CLONE_ADMIN ON *.* TO 'repl'@'%'") {
+		t.Errorf("expected clone privileges at 8.0.22:\n%s", out)
+	}
+	if strings.Contains(out, "GROUP_REPLICATION_STREAM") {
+		t.Errorf("8.0.22 must not be granted GROUP_REPLICATION_STREAM:\n%s", out)
+	}
+}
+
+func TestBootstrapAsyncOmitsGroupReplicationGrants(t *testing.T) {
+	// Async clusters never get the GR recovery privileges on the replication user.
+	out := joinStmts(t, BootstrapParams{
+		RootPassword:              "rootpw",
+		ReplicationUser:           "repl",
+		ReplicationRequireX509:    true,
+		SupportsDynamicPrivileges: true,
+	})
+	if strings.Contains(out, "CLONE_ADMIN") || strings.Contains(out, "GROUP_REPLICATION_STREAM") {
+		t.Errorf("async replication user must not get GR recovery privileges:\n%s", out)
+	}
+}
+
 func TestBootstrapBackupUserLegacyHasNoPerfSchemaGrants(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword:   "rootpw",
@@ -169,12 +224,12 @@ func TestBootstrapControlUserValidation(t *testing.T) {
 func TestBootstrapMetricsUser(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
 		RootPassword: "rootpw",
-		MetricsUser:  "cloudnative-mysql_metrics_exporter",
+		MetricsUser:  "cloudnative-mysql_metrics",
 	})
 	for _, want := range []string{
-		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_metrics_exporter'@'localhost'",
-		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cloudnative-mysql_metrics_exporter'@'localhost'",
-		"GRANT SELECT ON performance_schema.* TO 'cloudnative-mysql_metrics_exporter'@'localhost'",
+		"CREATE USER IF NOT EXISTS 'cloudnative-mysql_metrics'@'localhost'",
+		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cloudnative-mysql_metrics'@'localhost'",
+		"GRANT SELECT ON performance_schema.* TO 'cloudnative-mysql_metrics'@'localhost'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

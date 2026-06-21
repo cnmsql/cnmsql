@@ -42,6 +42,17 @@ func newLogsCommand() *cobra.Command {
 			"logs from all instances are merged with a per-instance prefix.",
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
+		Example: `  # Stream logs from all instances (merged with [podname] prefix)
+  kubectl cnmysql logs cluster-sample
+
+  # Stream logs from a single instance
+  kubectl cnmysql logs cluster-sample cluster-sample-2
+
+  # Follow new log entries as they arrive
+  kubectl cnmysql logs -f cluster-sample
+
+  # Show the last 100 lines with timestamps
+  kubectl cnmysql logs cluster-sample --tail=100 --timestamps`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()

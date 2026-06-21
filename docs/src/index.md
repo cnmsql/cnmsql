@@ -51,7 +51,7 @@ Declare your desired state via Kubernetes custom resources. The operator continu
 | Category | Capabilities |
 |----------|-------------|
 | **MySQL versions** | Percona Server 8.0, 8.4, and 9.x |
-| **Replication** | GTID-based semi-synchronous replication with planned switchover and automatic failover |
+| **Replication** | GTID-based asynchronous and semi-synchronous replication, plus MySQL Group Replication with quorum-based consensus, planned switchover, and automatic failover |
 | **Traffic routing** | Three role-aware Services: read-write, read-only (replicas), and read (any ready) |
 | **Backups** | Physical backups via Percona XtraBackup to S3-compatible storage |
 | **PITR** | Continuous binlog archiving for point-in-time recovery to any timestamp |
@@ -88,24 +88,25 @@ All resources live under the `mysql.cloudnative-mysql.io/v1alpha1` API group. Se
 ## Core Operations
 
 4. **[Replication and Failover](./replication-failover.md)** — GTID replication model, planned switchover, automatic failover, and rejoin.
-5. **[Security Model](./security-model.md)** — mTLS, TLS, RBAC, per-instance identity, and the threat model.
-6. **[Multi-Tenancy](./multi-tenancy.md)** — isolate tenants with Cluster-per-namespace or schema-per-tenant patterns.
-7. **[Operator Upgrades](./operator-upgrades.md)** — rolling and in-place operator/instance-manager upgrades.
+5. **[Group Replication](./group-replication.md)** — quorum-based consensus, automatic primary election, and event-driven observation.
+6. **[Security Model](./security-model.md)** — mTLS, TLS, RBAC, per-instance identity, and the threat model.
+7. **[Multi-Tenancy](./multi-tenancy.md)** — isolate tenants with Cluster-per-namespace or schema-per-tenant patterns.
+8. **[Operator Upgrades](./operator-upgrades.md)** — rolling and in-place operator/instance-manager upgrades.
 
 ## Backup and Recovery
 
-8. **[Physical Backup and Recovery](./backup-recovery.md)** — one-shot XtraBackup archives and restore.
-9. **[Scheduled Backups](./scheduled-backups.md)** — cron-driven backup schedules.
-10. **[Point-In-Time Recovery](./pitr.md)** — continuous binlog archiving and timestamped recovery.
-11. **[Backup Retention and Deletion](./backup-retention-deletion.md)** — cleanup semantics and planned GC.
-12. **[Object Store Configuration](./object-store.md)** — S3-compatible providers, credentials, and TLS.
+9. **[Physical Backup and Recovery](./backup-recovery.md)** — one-shot XtraBackup archives and restore.
+10. **[Scheduled Backups](./scheduled-backups.md)** — cron-driven backup schedules.
+11. **[Point-In-Time Recovery](./pitr.md)** — continuous binlog archiving and timestamped recovery.
+12. **[Backup Retention and Deletion](./backup-retention-deletion.md)** — cleanup semantics and planned GC.
+13. **[Object Store Configuration](./object-store.md)** — S3-compatible providers, credentials, and TLS.
 
 ## Day-2 Operations
 
-13. **[Operations Runbooks](./operations.md)** — scaling, switchover, fencing, restart, reload, maintenance.
-14. **[Monitoring](./monitoring.md)** — Prometheus metrics, PodMonitor, kubectl plugin inspection.
-15. **[Troubleshooting](./troubleshooting.md)** — symptom-driven guide for common issues.
+14. **[Operations Runbooks](./operations.md)** — scaling, switchover, fencing, restart, reload, maintenance.
+15. **[Monitoring](./monitoring.md)** — Prometheus metrics, PodMonitor, kubectl plugin inspection.
+16. **[Troubleshooting](./troubleshooting.md)** — symptom-driven guide for common issues.
 
 ## Reference
 
-16. **[API Reference](./api-reference.md)** — complete field reference for every CRD.
+17. **[API Reference](./api-reference.md)** — complete field reference for every CRD.

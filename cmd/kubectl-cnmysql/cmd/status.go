@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -29,33 +28,31 @@ import (
 	"github.com/CloudNative-MySQL/cloudnative-mysql/cmd/kubectl-cnmysql/plugin"
 )
 
+const (
+	readyYes = "yes"
+	readyNo  = "no"
+)
+
 func newStatusCommand() *cobra.Command {
-	var (
-		output   string
-		watch    bool
-		interval time.Duration
-	)
-	cmd := &cobra.Command{
-		Use:               "status [CLUSTER]",
-		Short:             "Show the status of a cluster and its instances",
-		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: completeClusterArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			clusterName := firstArg(args)
-			label := clusterName
-			if label == "" {
-				label = "<default cluster>"
-			}
-			return watchOrOnce(cmd.Context(), watch, "status "+label, interval,
-				func(ctx context.Context) error {
-					return runStatus(ctx, clusterName, output)
-				})
-		},
-	}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "output format: json or yaml (default human-readable)")
-	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "continuously refresh until interrupted")
-	cmd.Flags().DurationVar(&interval, "watch-interval", defaultWatchInterval, "refresh interval for --watch")
-	return cmd
+	return newWatchingCommand("status [CLUSTER]",
+		"Show the status of a cluster and its instances",
+		`Display a human-readable summary of a cloudnative-mysql cluster: the current
+phase, primary, ready instance count, conditions, and a per-instance table with
+role, readiness, and flags.
+
+CLUSTER defaults to the sole cluster in the current namespace.`,
+		`  # Show the status of the default cluster in the current namespace
+  kubectl cnmysql status
+
+  # Show the status of a specific cluster
+  kubectl cnmysql status cluster-sample
+
+  # Watch status refresh every 2 seconds
+  kubectl cnmysql status -w
+
+  # Output the full Cluster object as YAML
+  kubectl cnmysql status -o yaml`,
+		"status ", runStatus)
 }
 
 func runStatus(ctx context.Context, clusterName, output string) error {
@@ -128,9 +125,9 @@ func printInstances(c *mysqlv1alpha1.Cluster, pods []corev1.Pod) {
 		if pod.Name == primary {
 			role = "primary"
 		}
-		ready := "no"
+		ready := readyNo
 		if plugin.PodReady(pod) {
-			ready = "yes"
+			ready = readyYes
 		}
 		flags := ""
 		if plugin.Contains(c.Status.FencedInstances, pod.Name) {

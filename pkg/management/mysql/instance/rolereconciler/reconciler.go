@@ -34,6 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -57,6 +58,25 @@ type LocalInstance interface {
 	// Unfence restarts mysqld after a fence is cleared. It is a no-op when the
 	// instance is not fenced.
 	Unfence(ctx context.Context) error
+
+	// GroupView reports the local member's view of the Group Replication group.
+	// Used only by the group role strategy.
+	GroupView(ctx context.Context) (groupreplication.GroupView, error)
+	// PrepareGroupJoin readies the member for distributed recovery (clears local
+	// GTIDs and forces a clone for a fresh member, sets the recovery-channel
+	// account) before joining with StartGroupReplication.
+	PrepareGroupJoin(ctx context.Context, user, password string) error
+	// StartGroupReplication joins an existing group (no bootstrap).
+	StartGroupReplication(ctx context.Context) error
+	// BootstrapGroup runs the exactly-once group-creation sequence on the
+	// designated bootstrap member.
+	BootstrapGroup(ctx context.Context) error
+	// StopGroupReplication stops the member's Group Replication, making it
+	// leave the group while keeping mysqld alive (the GR fencing primitive).
+	StopGroupReplication(ctx context.Context) error
+	// ForceGroupMembers executes group_replication_force_members with the
+	// given XCom addresses, re-forming the group after a quorum loss.
+	ForceGroupMembers(ctx context.Context, addresses []string) error
 }
 
 const (
@@ -65,11 +85,17 @@ const (
 	waitRequeue = 2 * time.Second
 	// steadyRequeue re-checks role periodically even without a Cluster event.
 	steadyRequeue = 30 * time.Second
+	// groupObservationRequeue watches the cheap local GR snapshot closely enough
+	// to turn elections and membership changes into Kubernetes Pod events.
+	groupObservationRequeue = time.Second
 )
 
 // Reconciler keeps the local instance's role in sync with the Cluster status.
 type Reconciler struct {
 	client.Client
+	// DoorbellClient bypasses the informer cache when patching this instance's
+	// Pod. The role-manager cache is deliberately scoped to Cluster and Lease.
+	DoorbellClient client.Client
 	// ClusterKey identifies the owning Cluster.
 	ClusterKey types.NamespacedName
 	// InstanceName is this instance's Pod/instance name.
@@ -102,20 +128,31 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// stopped, so the Status call below would fail. The operator has already
 	// pulled this Pod out of routing; here the in-Pod side releases the primary
 	// lease (so a fenced primary stops anchoring writes) and stops mysqld while
-	// the manager stays alive. Fence is idempotent, so this re-asserts the
-	// stopped state on every resync until the fence is cleared.
+	// the manager stays alive. Under GR, fencing stops Group Replication instead
+	// of stopping mysqld — the member gracefully leaves the group and becomes
+	// super_read_only/OFFLINE, reachable for inspection. Fence is idempotent, so
+	// this re-asserts the stopped state on every resync until the fence is cleared.
 	if isFenced(cluster, me) {
 		_ = r.releaseLease(ctx)
-		if err := r.Local.Fence(ctx); err != nil {
-			log.Error(err, "Could not fence instance; will retry", "instance", me)
-			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
+			if err := r.Local.StopGroupReplication(ctx); err != nil {
+				log.Error(err, "Could not fence Group Replication member; will retry", "instance", me)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
+			log.Info("Group Replication member fenced; stopped GR, mysqld still running", "instance", me)
+		} else {
+			if err := r.Local.Fence(ctx); err != nil {
+				log.Error(err, "Could not fence instance; will retry", "instance", me)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
+			log.Info("Instance is fenced; mysqld stopped", "instance", me)
 		}
-		log.Info("Instance is fenced; mysqld stopped", "instance", me)
 		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
 	}
 
-	// Not fenced: if a prior fence stopped mysqld, restart it before reconciling
-	// role. Unfence is a no-op when the instance was never fenced.
+	// Not fenced: if a prior fence stopped mysqld (async) or stopped GR, restart
+	// mysqld / rejoin the group before reconciling role. Unfence is a no-op when
+	// the instance was never fenced.
 	if err := r.Local.Unfence(ctx); err != nil {
 		log.Error(err, "Could not unfence instance; will retry", "instance", me)
 		return ctrl.Result{RequeueAfter: waitRequeue}, nil
@@ -126,6 +163,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		// mysqld not reachable yet; try again shortly.
 		return ctrl.Result{RequeueAfter: waitRequeue}, nil //nolint:nilerr // transient, retried
 	}
+
+	// Topology strategy split: under Group Replication the group elects the
+	// primary and the operator reflects it; the in-Pod side only ensures
+	// membership and never self-promotes or writes Cluster status. The async path
+	// below is unchanged.
+	if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
+		return r.reconcileGroupRole(ctx, cluster, status)
+	}
+	return r.reconcileAsyncRole(ctx, cluster, status)
+}
+
+// reconcileAsyncRole is the asynchronous topology role strategy: the CNPG
+// pull-model where an instance promotes itself when it is the target and follows
+// the current primary otherwise. Its behaviour is unchanged from before the
+// topology split.
+func (r *Reconciler) reconcileAsyncRole(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	status *webserver.Status,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	me := r.InstanceName
 
 	target := cluster.Status.TargetPrimary
 	current := cluster.Status.CurrentPrimary

@@ -132,6 +132,12 @@ type ClusterSpec struct {
 	// +optional
 	MySQL MySQLConfiguration `json:"mysql,omitempty"`
 
+	// Replication selects and tunes the replication topology (asynchronous /
+	// semi-synchronous GTID replication, or quorum-based Group Replication). The
+	// mode is immutable after creation; when omitted the cluster is async.
+	// +optional
+	Replication *ReplicationConfiguration `json:"replication,omitempty"`
+
 	// Storage configuration for the instance data directory.
 	// +kubebuilder:validation:Required
 	Storage StorageConfiguration `json:"storage"`
@@ -364,6 +370,64 @@ type SemiSyncConfiguration struct {
 	// +kubebuilder:default:=preferred
 	// +optional
 	DataDurability string `json:"dataDurability,omitempty"`
+}
+
+// ReplicationMode selects the cluster replication topology.
+const (
+	// ReplicationModeAsync is asynchronous / semi-synchronous GTID replication
+	// with operator-driven primary election. This is the default.
+	ReplicationModeAsync = "async"
+	// ReplicationModeGroupReplication is quorum-based MySQL Group Replication in
+	// single-primary mode. The group elects the primary; the operator observes.
+	ReplicationModeGroupReplication = "groupReplication"
+)
+
+// ReplicationConfiguration selects and tunes the replication topology.
+type ReplicationConfiguration struct {
+	// Mode is the replication topology. Immutable after creation.
+	// +kubebuilder:validation:Enum=async;groupReplication
+	// +kubebuilder:default:=async
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// GroupReplication tunes the group when Mode=groupReplication. It must not be
+	// set unless Mode is groupReplication.
+	// +optional
+	GroupReplication *GroupReplicationConfiguration `json:"groupReplication,omitempty"`
+}
+
+// GroupReplicationConfiguration tunes MySQL Group Replication. All fields map to
+// group_replication_* server variables; the operator owns the rest of the
+// namespace (group name, addresses, seeds, start/bootstrap control).
+type GroupReplicationConfiguration struct {
+	// Consistency maps to group_replication_consistency, the transaction
+	// consistency guarantee the group enforces.
+	// +kubebuilder:validation:Enum=EVENTUAL;BEFORE_ON_PRIMARY_FAILOVER;BEFORE;AFTER;BEFORE_AND_AFTER
+	// +kubebuilder:default:=BEFORE_ON_PRIMARY_FAILOVER
+	// +optional
+	Consistency string `json:"consistency,omitempty"`
+
+	// ExitStateAction maps to group_replication_exit_state_action: what a member
+	// does when it involuntarily leaves the group (e.g. on an unrecoverable error
+	// or loss of quorum).
+	// +kubebuilder:validation:Enum=READ_ONLY;OFFLINE_MODE;ABORT_SERVER
+	// +kubebuilder:default:=READ_ONLY
+	// +optional
+	ExitStateAction string `json:"exitStateAction,omitempty"`
+
+	// AutoRejoinTries maps to group_replication_autorejoin_tries: how many times a
+	// member tries to automatically rejoin after being expelled before giving up.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default:=3
+	// +optional
+	AutoRejoinTries *int32 `json:"autoRejoinTries,omitempty"`
+
+	// GroupName, when set, pins group_replication_group_name (a UUID). When unset
+	// the operator generates one on first bootstrap and persists it to
+	// status.groupReplication.groupName. Immutable once the group exists; a
+	// changed group name fractures the group.
+	// +optional
+	GroupName string `json:"groupName,omitempty"`
 }
 
 // ImageCatalogRef references an ImageCatalog or ClusterImageCatalog entry to
@@ -992,6 +1056,75 @@ type ClusterStatus struct {
 	// managed roles.
 	// +optional
 	ManagedRolesStatus *ManagedRolesStatus `json:"managedRolesStatus,omitempty"`
+
+	// GroupReplication reflects the live group membership and quorum, mirrored
+	// from performance_schema.replication_group_members. Nil for async clusters.
+	// The operator is the sole writer of this block.
+	// +optional
+	GroupReplication *GroupReplicationStatus `json:"groupReplication,omitempty"`
+}
+
+// GroupReplicationStatus is the operator's cross-validated view of the group,
+// aggregated from every member's reported replication_group_members.
+type GroupReplicationStatus struct {
+	// GroupName is the pinned group_replication_group_name (a UUID). Sticky and
+	// immutable once set: a changed group name fractures the group.
+	// +optional
+	GroupName string `json:"groupName,omitempty"`
+
+	// Bootstrapped records that the group has been created at least once. Sticky:
+	// false→true on first bootstrap, never auto-cleared. It makes group bootstrap
+	// exactly-once across restarts and re-elections; re-arming it is the path to a
+	// split-brain second group.
+	// +optional
+	Bootstrapped bool `json:"bootstrapped,omitempty"`
+
+	// PrimaryMember is the pod name of the member the group elected PRIMARY.
+	// status.currentPrimary is mirrored from this field.
+	// +optional
+	PrimaryMember string `json:"primaryMember,omitempty"`
+
+	// Members is the per-member view of the group.
+	// +optional
+	Members []GroupMember `json:"members,omitempty"`
+
+	// HasQuorum reports whether a majority of configured members is ONLINE and
+	// reachable, i.e. the group can make progress.
+	HasQuorum bool `json:"hasQuorum"`
+
+	// ObservedViewMax is the largest group view size the operator has ever
+	// observed for this group. Sticky: never decreases. Used as the quorum
+	// denominator so that a group that loses members is recognised as
+	// quorum-lost, while a bootstrapping group uses its current view size.
+	// +optional
+	ObservedViewMax int `json:"observedViewMax,omitempty"`
+
+	// ObservedOnlineMax is the largest number of ONLINE members the operator
+	// has ever observed for this group. Sticky, tracked alongside ViewMax.
+	// +optional
+	ObservedOnlineMax int `json:"observedOnlineMax,omitempty"`
+
+	// ViewID is the current group view identifier. It changes on every membership
+	// change and is one of the signals the operator reconciles on.
+	// +optional
+	ViewID string `json:"viewId,omitempty"`
+}
+
+// GroupMember is one member's state within the group.
+type GroupMember struct {
+	// Instance is the pod name of the member.
+	Instance string `json:"instance"`
+
+	// State is the member's group state: ONLINE, RECOVERING, OFFLINE, ERROR or
+	// UNREACHABLE.
+	State string `json:"state"`
+
+	// Role is the member's group role: PRIMARY or SECONDARY.
+	Role string `json:"role"`
+
+	// Reachable reports whether the group currently considers this member
+	// reachable (not UNREACHABLE).
+	Reachable bool `json:"reachable"`
 }
 
 // ManagedRolesStatus reports the reconciliation state of managed roles.

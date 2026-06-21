@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -157,6 +158,8 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 		log.Info("Data directory already initialized; skipping base restore")
 	} else if err := opts.restoreBase(ctx); err != nil {
 		return err
+	} else if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
+		return fmt.Errorf("marking restored data directory as bootstrapped: %w", err)
 	}
 
 	// 6. Point-in-time recovery: replay archived binlogs onto the restored data

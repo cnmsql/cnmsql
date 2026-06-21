@@ -136,6 +136,9 @@ func Join(ctx context.Context, opts JoinOptions) error {
 	if err := opts.configureReplication(ctx, ver, binlogInfo.GTIDSet); err != nil {
 		return err
 	}
+	if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
+		return fmt.Errorf("marking data directory as bootstrapped: %w", err)
+	}
 	log.Info("Completed replica join")
 	return nil
 }

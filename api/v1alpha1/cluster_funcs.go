@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 )
@@ -196,6 +198,170 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateBackup(specPath.Child("backup"))...)
 	allErrs = append(allErrs, spec.validateManagedServices(specPath.Child("managed", "services"))...)
 	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
+	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
+
+	return allErrs
+}
+
+// ValidateUpdate returns the validation errors specific to updating an existing
+// Cluster: the fields that are immutable once set. It is additive to Validate,
+// which the caller still runs for field-level checks.
+func (cluster *Cluster) ValidateUpdate(old *Cluster) field.ErrorList {
+	var allErrs field.ErrorList
+	path := field.NewPath("spec", "replication")
+
+	// replication.mode is immutable: switching topology on a live cluster is a
+	// data-path change that cannot be done safely in place.
+	if old.ReplicationMode() != cluster.ReplicationMode() {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("mode"), cluster.ReplicationMode(),
+			"replication.mode is immutable"))
+	}
+
+	// A pinned group name is immutable: a changed group_replication_group_name
+	// fractures the group.
+	oldName := old.groupName()
+	newName := cluster.groupName()
+	if oldName != "" && newName != "" && oldName != newName {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("groupReplication", "groupName"), newName,
+			"groupReplication.groupName is immutable once set"))
+	}
+
+	return allErrs
+}
+
+// ReplicationMode returns the effective replication mode, defaulting to async.
+func (cluster *Cluster) ReplicationMode() string {
+	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Mode == "" {
+		return ReplicationModeAsync
+	}
+	return cluster.Spec.Replication.Mode
+}
+
+// groupName returns the group name pinned in the spec, if any.
+func (cluster *Cluster) groupName() string {
+	if cluster.Spec.Replication == nil || cluster.Spec.Replication.GroupReplication == nil {
+		return ""
+	}
+	return cluster.Spec.Replication.GroupReplication.GroupName
+}
+
+// IsGroupReplication reports whether the cluster runs MySQL Group Replication.
+func (cluster *Cluster) IsGroupReplication() bool {
+	return cluster.ReplicationMode() == ReplicationModeGroupReplication
+}
+
+// PinnedGroupName returns the group_replication_group_name pinned in status, or
+// the empty string when it has not been pinned yet.
+func (cluster *Cluster) PinnedGroupName() string {
+	if cluster.Status.GroupReplication == nil {
+		return ""
+	}
+	return cluster.Status.GroupReplication.GroupName
+}
+
+// DesiredGroupName is the Group Replication group name to pin: the user-pinned
+// spec.replication.groupReplication.groupName when set, otherwise a freshly
+// generated UUID.
+func (cluster *Cluster) DesiredGroupName() string {
+	name := cluster.groupName()
+	if name != "" {
+		return name
+	}
+	return uuid.NewString()
+}
+
+// ResolvedGroupReplicationTunables resolves the spec Group Replication tunables
+// with their defaults applied, so rendering is correct even when the optional
+// spec.replication.groupReplication block (or a field) is omitted.
+type ResolvedGroupReplicationTunables struct {
+	Consistency     string
+	ExitStateAction string
+	AutoRejoinTries int
+}
+
+// ResolvedGroupReplicationTunables returns the Group Replication tunable values
+// with defaults applied.
+func (cluster *Cluster) ResolvedGroupReplicationTunables() ResolvedGroupReplicationTunables {
+	t := ResolvedGroupReplicationTunables{
+		Consistency:     "BEFORE_ON_PRIMARY_FAILOVER",
+		ExitStateAction: "READ_ONLY",
+		AutoRejoinTries: 3,
+	}
+	if cluster.Spec.Replication == nil || cluster.Spec.Replication.GroupReplication == nil {
+		return t
+	}
+	cfg := cluster.Spec.Replication.GroupReplication
+	if cfg.Consistency != "" {
+		t.Consistency = cfg.Consistency
+	}
+	if cfg.ExitStateAction != "" {
+		t.ExitStateAction = cfg.ExitStateAction
+	}
+	if cfg.AutoRejoinTries != nil {
+		t.AutoRejoinTries = int(*cfg.AutoRejoinTries)
+	}
+	return t
+}
+
+// groupNameRe matches a MySQL group_replication_group_name: a canonical UUID.
+var groupNameRe = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validateReplication checks the replication topology selection: Group
+// Replication is incompatible with semi-synchronous replication, a pinned group
+// name must be a UUID, and the groupReplication tuning block is only meaningful
+// when the mode selects it.
+func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if spec.Replication == nil {
+		return allErrs
+	}
+
+	mode := spec.Replication.Mode
+	if mode == "" {
+		mode = ReplicationModeAsync
+	}
+
+	if mode != ReplicationModeGroupReplication {
+		// The tuning block is only honoured under Group Replication; flag it rather
+		// than silently ignoring a setting the user expected to take effect.
+		if spec.Replication.GroupReplication != nil {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("groupReplication"), spec.Replication.GroupReplication,
+				"groupReplication settings require replication.mode=groupReplication"))
+		}
+		return allErrs
+	}
+
+	// Group Replication has its own group-wide consistency model; the operator's
+	// semi-synchronous replication path does not apply and the two must not be
+	// combined.
+	if spec.MySQL.SemiSync != nil && spec.MySQL.SemiSync.Enabled {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("mode"), mode,
+			"group replication is incompatible with semi-synchronous replication (spec.mysql.semiSync.enabled)"))
+	}
+
+	if gr := spec.Replication.GroupReplication; gr != nil && gr.GroupName != "" {
+		if !groupNameRe.MatchString(gr.GroupName) {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("groupReplication", "groupName"), gr.GroupName,
+				"groupName must be a valid UUID"))
+		}
+	}
+
+	// MySQL Group Replication requires at least 8.0; reject obviously-too-old
+	// catalogs at admission. The authoritative version floor (8.0.22) is enforced
+	// by the instance manager before it starts the group, where the full server
+	// version is known.
+	if spec.ImageCatalogRef != nil && spec.ImageCatalogRef.Major < 8 {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("mode"), mode,
+			fmt.Sprintf("group replication requires MySQL 8.0+, but the image catalog targets major version %d",
+				spec.ImageCatalogRef.Major)))
+	}
 
 	return allErrs
 }
@@ -479,4 +645,61 @@ func (cluster *Cluster) GetSmartShutdownTimeout() int32 {
 		return *cluster.Spec.SmartShutdownTimeout
 	}
 	return int32(DefaultSmartShutdownTimeout)
+}
+
+// IsPrimaryLeaseEnabled reports whether the primary Lease fencing layer is
+// active, resolving the default (enabled).
+func (cluster *Cluster) IsPrimaryLeaseEnabled() bool {
+	return cluster.Spec.EnablePrimaryLease == nil || *cluster.Spec.EnablePrimaryLease
+}
+
+// IsEstablished reports whether the cluster has completed initial provisioning
+// at least once. It is anchored on status.EstablishedAt (set the first time the
+// cluster reaches Ready) rather than on phase, so a cluster that was once
+// operational stays established even when an intermediate reconcile re-stamps
+// its phase back to Provisioning.
+func (cluster *Cluster) IsEstablished() bool {
+	return cluster.Status.EstablishedAt != nil
+}
+
+// SemiSyncDurabilityPreferred reports whether semi-synchronous data durability
+// is "preferred" (the default when unset), under which the operator self-heals
+// the acknowledgement count instead of letting writes block.
+func (cluster *Cluster) SemiSyncDurabilityPreferred() bool {
+	if cluster.Spec.MySQL.SemiSync == nil {
+		return true
+	}
+	return cluster.Spec.MySQL.SemiSync.DataDurability != DataDurabilityRequired
+}
+
+// IsSemiSyncEnabled reports whether semi-synchronous replication is configured.
+func (cluster *Cluster) IsSemiSyncEnabled() bool {
+	return cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled
+}
+
+// ContinuousArchiving returns the cluster's continuous-archiving configuration,
+// or nil when it is not configured.
+func (cluster *Cluster) ContinuousArchiving() *ContinuousArchivingConfiguration {
+	if cluster.Spec.Backup == nil {
+		return nil
+	}
+	return cluster.Spec.Backup.ContinuousArchiving
+}
+
+// IsArchivingEnabled reports whether continuous binlog archiving is turned on
+// and has a destination object store to ship to.
+func (cluster *Cluster) IsArchivingEnabled() bool {
+	ca := cluster.ContinuousArchiving()
+	return ca != nil && ca.Enabled &&
+		cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil
+}
+
+// ArchiveRPOSeconds returns the configured RPO bound in seconds, defaulting to
+// 300 (5 minutes).
+func (cluster *Cluster) ArchiveRPOSeconds() int {
+	ca := cluster.ContinuousArchiving()
+	if ca == nil || ca.TargetRPOSeconds <= 0 {
+		return 300
+	}
+	return int(ca.TargetRPOSeconds)
 }

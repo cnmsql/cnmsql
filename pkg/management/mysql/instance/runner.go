@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,6 +69,11 @@ type RunOptions struct {
 	ClusterName    string
 	Namespace      string
 	SourceTemplate replication.SourceOptions
+	// GroupReplication enables the MySQL Group Replication code paths in this Pod:
+	// the controller reports the GR status block and the in-Pod role reconciler
+	// uses the group role strategy instead of async promote/follow. Off for async
+	// clusters.
+	GroupReplication bool
 	// Control describes the privileged control connection used for monitoring.
 	Control pool.ControlParams
 	// WebserverAddr is the listen address for the control API.
@@ -297,6 +303,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		if err := sup.AdoptProcess(adoptPID); err != nil {
 			return err
 		}
+		MarkRecentlyReExecd()
 	} else {
 		log.Info("Starting mysqld", "binary", opts.MysqldPath, "pidFile", opts.PIDFile, "fifo", fifoPath)
 		if err := sup.Start(ctx); err != nil {
@@ -324,6 +331,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		return err
+	}
+	if opts.GroupReplication {
+		controller.EnableGroupReplication()
 	}
 	// Skip destructive (re)configuration when adopting: mysqld is already running,
 	// configured, and serving its role. Semi-sync plugins are already installed and
@@ -460,15 +470,27 @@ func Run(ctx context.Context, opts RunOptions) error {
 		}
 	}()
 
-	// mysqld exit signals the supervisor's wait channel. A crash is fatal to the
-	// run loop (PID 1 exits, the kubelet restarts the Pod). An intentional stop
-	// while the instance is fenced is not: the manager stays alive with mysqld
-	// down and restarts it once the instance is unfenced.
+	// mysqld exit signals the supervisor's wait channel. A crash (non-zero exit
+	// while unfenced) is fatal to the run loop (PID 1 exits, the kubelet restarts
+	// the Pod). An intentional stop while the instance is fenced is not: the
+	// manager stays alive with mysqld down and restarts it once the instance is
+	// unfenced. A clean exit (zero) while unfenced is the clone restart case:
+	// MySQL 8.0's CLONE INSTANCE shuts down the server after a successful clone,
+	// expecting to be restarted by the supervisor; we restart mysqld in-place
+	// instead of propagating the exit and restarting the Pod.
 	mysqldExit := make(chan error, 1)
 	go func() {
 		for {
 			err := sup.Wait()
 			if !fence.IsFenced() {
+				if err == nil {
+					log.Info("mysqld exited cleanly after clone; restarting")
+					if serr := sup.Start(ctx); serr != nil {
+						mysqldExit <- fmt.Errorf("restarting mysqld after clone: %w", serr)
+						return
+					}
+					continue
+				}
 				mysqldExit <- err
 				return
 			}
@@ -571,6 +593,12 @@ func buildHealthServer(opts RunOptions, controller webserver.InstanceController)
 // startCertWatcher watches the certificate files managed by cm and calls
 // cm.Reload() whenever any of them are modified. Debouncing handles short-lived
 // write bursts (e.g. atomic rename, multiple Secrets updating).
+//
+// Kubernetes mounts Secrets as symlinks into atomic per-update directories, so a
+// plain inotify watch on the resolved file misses Secret updates (the symlink
+// target changes but the old inode never fires). Watching the parent directory
+// catches the atomic swap the kubelet performs. A periodic poll guards against
+// edge cases where the directory watch also misses events.
 func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -580,25 +608,29 @@ func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 
 	log := logf.FromContext(ctx).WithName("cert-watcher")
 
-	seen := map[string]struct{}{}
+	dirs := map[string]struct{}{}
 	for _, f := range cm.WatchedFiles() {
-		if _, ok := seen[f]; ok {
-			continue
-		}
-		seen[f] = struct{}{}
-		if err := watcher.Add(f); err != nil {
-			log.Error(err, "Failed to watch certificate file, reload only via SIGHUP",
-				"file", f)
+		dirs[filepath.Dir(f)] = struct{}{}
+	}
+	for d := range dirs {
+		if err := watcher.Add(d); err != nil {
+			log.Error(err, "Failed to watch certificate directory, reload only via SIGHUP",
+				"dir", d)
 			_ = watcher.Close()
 			return
 		}
 	}
 
+	files := cm.WatchedFiles()
+
 	go func() {
 		defer func() { _ = watcher.Close() }()
 		debounce := 500 * time.Millisecond
+		pollInterval := 60 * time.Second
 		var timer *time.Timer
 		var reloadC <-chan time.Time
+		pollTicker := time.NewTicker(pollInterval)
+		defer pollTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -611,11 +643,15 @@ func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 					return
 				}
 				if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0 {
+					if !affectsWatchedFiles(event.Name, files) {
+						continue
+					}
 					if timer != nil {
 						timer.Stop()
 					}
 					timer = time.NewTimer(debounce)
 					reloadC = timer.C
+					log.V(1).Info("Certificate directory event", "name", event.Name, "op", event.Op)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -630,9 +666,33 @@ func startCertWatcher(ctx context.Context, cm *webserver.TLSCertManager) {
 				} else {
 					log.Info("TLS certificates reloaded")
 				}
+			case <-pollTicker.C:
+				log.V(1).Info("Polling for certificate changes")
+				if err := cm.Reload(ctx); err != nil {
+					log.V(1).Info("Polling reload skipped", "error", err.Error())
+				}
 			}
 		}
 	}()
+}
+
+// affectsWatchedFiles reports whether name is or is inside any of the watched
+// file paths (or their parent directories), so directory-level fsnotify events
+// are filtered to only the certificate directories.
+func affectsWatchedFiles(name string, files []string) bool {
+	for _, f := range files {
+		if name == f {
+			return true
+		}
+		dir := filepath.Dir(f)
+		if name == dir {
+			return true
+		}
+		if strings.HasPrefix(name, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildServer constructs the control API server, with or without mTLS.

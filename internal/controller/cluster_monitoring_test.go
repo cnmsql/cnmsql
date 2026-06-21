@@ -106,7 +106,7 @@ func TestBuildPodMonitorPlainHTTP(t *testing.T) {
 func TestRunArgsMetricsTLS(t *testing.T) {
 	t.Parallel()
 
-	off := runArgs(baseCluster(), testPlan(), instancePlan{})
+	off := (&ClusterReconciler{}).runArgs(baseCluster(), testPlan(), instancePlan{})
 	if containsArg(off, "--metrics-tls") {
 		t.Fatalf("--metrics-tls present without monitoring TLS: %v", off)
 	}
@@ -115,7 +115,7 @@ func TestRunArgsMetricsTLS(t *testing.T) {
 	cluster.Spec.Monitoring = &mysqlv1alpha1.MonitoringConfiguration{
 		TLSConfig: &mysqlv1alpha1.ClusterMonitoringTLSConfig{Enabled: true},
 	}
-	on := runArgs(cluster, testPlan(), instancePlan{})
+	on := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	if !containsArg(on, "--metrics-tls") {
 		t.Fatalf("missing --metrics-tls with monitoring TLS enabled: %v", on)
 	}

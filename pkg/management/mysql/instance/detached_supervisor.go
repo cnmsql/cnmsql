@@ -103,14 +103,27 @@ func NewDetachedSupervisor(binary string, args []string, opts ...DetachedOption)
 }
 
 // Start launches the process with inherited output descriptors, records its PID
-// (and writes the pidfile), and supervises it via cmd.Wait. It returns an error
-// if a process is already running or it fails to start.
+// (and writes the pidfile), and supervises it via cmd.Wait. If a previous process
+// has exited its leftover state is cleared first so the supervisor can restart.
 func (s *DetachedSupervisor) Start(_ context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.done != nil {
-		return errors.New("supervisor: process already running")
+	done := s.done
+	if done != nil {
+		select {
+		case <-done:
+			// Previous process exited; clear state (pidfile, fifo) outside the lock.
+			s.mu.Unlock()
+			s.clear()
+		default:
+			s.mu.Unlock()
+			return errors.New("supervisor: process already running")
+		}
+	} else {
+		s.mu.Unlock()
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	cmd := exec.Command(s.binary, s.args...)
 	// Inherited *os.File targets: exec.Cmd passes the descriptor directly, so
@@ -132,7 +145,7 @@ func (s *DetachedSupervisor) Start(_ context.Context) error {
 		return fmt.Errorf("supervisor: writing pidfile: %w", err)
 	}
 
-	done := make(chan struct{})
+	done = make(chan struct{})
 	s.pid = pid
 	s.done = done
 	s.exitErr = nil
@@ -153,10 +166,22 @@ func (s *DetachedSupervisor) Start(_ context.Context) error {
 // identically for an adopted process.
 func (s *DetachedSupervisor) AdoptProcess(pid int) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.done != nil {
-		return errors.New("supervisor: process already running")
+	done := s.done
+	if done != nil {
+		select {
+		case <-done:
+			s.mu.Unlock()
+			s.clear()
+		default:
+			s.mu.Unlock()
+			return errors.New("supervisor: process already running")
+		}
+	} else {
+		s.mu.Unlock()
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if pid <= 0 {
 		return fmt.Errorf("supervisor: invalid pid to adopt: %d", pid)
 	}
@@ -169,7 +194,7 @@ func (s *DetachedSupervisor) AdoptProcess(pid int) error {
 		return fmt.Errorf("supervisor: writing pidfile: %w", err)
 	}
 
-	done := make(chan struct{})
+	done = make(chan struct{})
 	s.pid = pid
 	s.done = done
 	s.exitErr = nil

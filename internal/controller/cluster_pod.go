@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
 )
@@ -64,7 +65,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				Image:           plan.Image,
 				ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 				Command:         []string{"/controller/manager"},
-				Args:            bootstrapArgs(cluster, plan, inst),
+				Args:            r.bootstrapArgs(cluster, plan, inst),
 				Env:             bootstrapEnv(plan, inst),
 				VolumeMounts:    volumeMounts(),
 				Resources:       cluster.Spec.Resources,
@@ -76,7 +77,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 			Command:         []string{"/controller/manager"},
-			Args:            runArgs(cluster, plan, inst),
+			Args:            r.runArgs(cluster, plan, inst),
 			Env:             runEnv(cluster, plan),
 			EnvFrom:         cluster.Spec.EnvFrom,
 			Ports: []corev1.ContainerPort{
@@ -142,13 +143,24 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 
 // bootstrapArgs returns the init-container command: the primary initialises a
 // fresh data dir (initdb) or restores a physical backup from object storage
-// (recovery); a replica clones the primary over the streamed backup.
-func bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
+// (recovery); an async replica clones the primary over the streamed backup,
+// while a Group Replication member initialises an empty server and provisions
+// itself from a group donor via distributed recovery at run time.
+func (r *ClusterReconciler) bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
 	if inst.IsPrimary {
 		if plan.Recovery != nil {
 			return restoreArgs(plan)
 		}
-		return initdbArgs(cluster.Spec.Bootstrap.InitDB)
+		return r.initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB)
+	}
+	if r.topologyReconciler(cluster).PodPolicy(cluster).InitializeReplica {
+		// A GR member is not seeded by an XtraBackup clone of the primary (which
+		// would configure an async replication channel and copy the donor's
+		// server_uuid, both of which break START GROUP_REPLICATION). It initialises
+		// an empty server with the cluster's internal accounts but no application
+		// schema, then the in-Pod role strategy clears the initdb GTIDs and clones
+		// from a group donor via distributed recovery.
+		return r.initdbArgs(cluster, nil)
 	}
 	return joinArgs(cluster, plan)
 }
@@ -190,7 +202,7 @@ func restoreArgs(plan clusterPlan) []string {
 	return args
 }
 
-func initdbArgs(initdb *mysqlv1alpha1.BootstrapInitDB) []string {
+func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 	args := []string{
 		"instance", "initdb",
 		"--mysqld=" + mysqldBinary,
@@ -204,17 +216,22 @@ func initdbArgs(initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 		"--control-user=" + controlUser,
 		"--metrics-user=" + metricsUser,
 	}
-	if initdb.Database != "" {
-		args = append(args, "--database="+initdb.Database)
-	}
-	if initdb.Owner != "" {
-		args = append(args, "--owner="+initdb.Owner)
-	}
-	if initdb.CharacterSet != "" {
-		args = append(args, "--character-set="+initdb.CharacterSet)
-	}
-	if initdb.Collation != "" {
-		args = append(args, "--collation="+initdb.Collation)
+	args = append(args, r.topologyReconciler(cluster).PodPolicy(cluster).InitDBArgs...)
+	// initdb is nil for a GR joining member: it initialises an empty server (no
+	// application schema) and recovers the data from a group donor.
+	if initdb != nil {
+		if initdb.Database != "" {
+			args = append(args, "--database="+initdb.Database)
+		}
+		if initdb.Owner != "" {
+			args = append(args, "--owner="+initdb.Owner)
+		}
+		if initdb.CharacterSet != "" {
+			args = append(args, "--character-set="+initdb.CharacterSet)
+		}
+		if initdb.Collation != "" {
+			args = append(args, "--collation="+initdb.Collation)
+		}
 	}
 	return args
 }
@@ -235,15 +252,15 @@ func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 		"--source-port=3306",
 		"--replication-user=" + replicationUser,
 		"--source-ssl",
-		"--source-ssl-ca=" + clientCAPath + "/ca.crt",
-		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
-		"--source-ssl-key=" + serverTLSPath + "/tls.key",
+		"--source-ssl-ca=" + topology.ClientCAPath + "/ca.crt",
+		"--source-ssl-cert=" + topology.ServerTLSPath + "/tls.crt",
+		"--source-ssl-key=" + topology.ServerTLSPath + "/tls.key",
 		"--source-manager-url=https://" + primaryFQDN + ":8080/cluster/backup",
 		"--source-manager-server-name=" + primaryFQDN,
 	}
 }
 
-func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []string {
+func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []string {
 	// Role is dynamic: the in-Pod reconciler watches the Cluster and drives the
 	// local mysqld to match status.targetPrimary / currentPrimary. The run
 	// command therefore carries no --role/--source-host; it gets the owning
@@ -265,36 +282,28 @@ func runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []st
 		fmt.Sprintf("--admin-port=%d", mysqlconfig.DefaultAdminPort),
 		"--web-addr=:8080",
 		"--health-addr=:8081",
-		"--tls-cert=" + serverTLSPath + "/tls.crt",
-		"--tls-key=" + serverTLSPath + "/tls.key",
-		"--tls-client-ca=" + clientCAPath + "/ca.crt",
+		"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
+		"--tls-key=" + topology.ServerTLSPath + "/tls.key",
+		"--tls-client-ca=" + topology.ClientCAPath + "/ca.crt",
 		"--source-port=3306",
 		"--replication-user=" + replicationUser,
 		"--source-ssl",
-		"--source-ssl-ca=" + clientCAPath + "/ca.crt",
-		"--source-ssl-cert=" + serverTLSPath + "/tls.crt",
-		"--source-ssl-key=" + serverTLSPath + "/tls.key",
+		"--source-ssl-ca=" + topology.ClientCAPath + "/ca.crt",
+		"--source-ssl-cert=" + topology.ServerTLSPath + "/tls.crt",
+		"--source-ssl-key=" + topology.ServerTLSPath + "/tls.key",
 	}
+	args = append(args, r.topologyReconciler(cluster).PodPolicy(cluster).RunArgs...)
 	if monitoringTLSEnabled(cluster) {
 		// Serve metrics over the same mutual TLS as the control API: the pod
 		// already mounts server-tls and client-ca, so no extra key material is
 		// needed. Prometheus authenticates with the operator's client cert.
 		args = append(args, "--metrics-tls")
 	}
-	if archivingEnabled(cluster) {
+	if cluster.IsArchivingEnabled() {
 		args = append(args,
 			"--continuous-archiving",
-			fmt.Sprintf("--archive-rpo-seconds=%d", archiveRPOSeconds(cluster)),
+			fmt.Sprintf("--archive-rpo-seconds=%d", cluster.ArchiveRPOSeconds()),
 		)
-	}
-	if cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled {
-		args = append(args,
-			"--semi-sync",
-			fmt.Sprintf("--semi-sync-wait-for-replica-count=%d", initialSemiSyncWaitForReplicaCount(cluster)),
-		)
-		if cluster.Spec.MySQL.SemiSync.TimeoutMillis != nil {
-			args = append(args, fmt.Sprintf("--semi-sync-timeout-millis=%d", *cluster.Spec.MySQL.SemiSync.TimeoutMillis))
-		}
 	}
 	args = append(args,
 		fmt.Sprintf("--stop-delay=%d", cluster.GetMaxStopDelay()),
@@ -340,7 +349,7 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 		secretEnv("MYSQL_CONTROL_PASSWORD", plan.ControlSecretName),
 		secretEnv("MYSQL_BACKUP_PASSWORD", plan.BackupSecretName),
 	}
-	if cluster != nil && archivingEnabled(cluster) {
+	if cluster != nil && cluster.IsArchivingEnabled() {
 		store := *cluster.Spec.Backup.ObjectStore
 		env = append(env, backupObjectStoreEnv(store)...)
 		env = append(env,
@@ -368,8 +377,8 @@ func volumeMounts() []corev1.VolumeMount {
 		{Name: "run", MountPath: "/var/run/mysqld"},
 		{Name: "backup", MountPath: joinBackupDir},
 		{Name: "config", MountPath: configPath, SubPath: "my.cnf", ReadOnly: true},
-		{Name: "server-tls", MountPath: serverTLSPath, ReadOnly: true},
-		{Name: "client-ca", MountPath: clientCAPath, ReadOnly: true},
+		{Name: "server-tls", MountPath: topology.ServerTLSPath, ReadOnly: true},
+		{Name: "client-ca", MountPath: topology.ClientCAPath, ReadOnly: true},
 	}
 }
 

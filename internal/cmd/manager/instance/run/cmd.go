@@ -34,34 +34,35 @@ import (
 // NewCommand builds the `instance run` command.
 func NewCommand() *cobra.Command {
 	var (
-		mysqldPath     string
-		dataDir        string
-		configFile     string
-		socket         string
-		serverVersion  string
-		instanceName   string
-		controlUser    string
-		adminAddress   string
-		adminPort      int
-		webAddr        string
-		healthAddr     string
-		metricsAddr    string
-		metricsTLS     bool
-		serverCert     string
-		serverKey      string
-		clientCA       string
-		role           string
-		sourceHost     string
-		sourcePort     int
-		replUser       string
-		useSourceTLS   bool
-		sourceSSLCA    string
-		sourceSSLCert  string
-		sourceSSLKey   string
-		backupUser     string
-		xtrabackupPath string
-		clusterName    string
-		namespace      string
+		mysqldPath       string
+		dataDir          string
+		configFile       string
+		socket           string
+		serverVersion    string
+		instanceName     string
+		controlUser      string
+		adminAddress     string
+		adminPort        int
+		webAddr          string
+		healthAddr       string
+		metricsAddr      string
+		metricsTLS       bool
+		serverCert       string
+		serverKey        string
+		clientCA         string
+		role             string
+		sourceHost       string
+		sourcePort       int
+		replUser         string
+		useSourceTLS     bool
+		sourceSSLCA      string
+		sourceSSLCert    string
+		sourceSSLKey     string
+		backupUser       string
+		xtrabackupPath   string
+		clusterName      string
+		namespace        string
+		groupReplication bool
 
 		archiving         bool
 		archiveRPOSeconds int
@@ -167,6 +168,7 @@ func NewCommand() *cobra.Command {
 				Source:                source,
 				ClusterName:           clusterName,
 				Namespace:             namespace,
+				GroupReplication:      groupReplication,
 				SourceTemplate:        sourceTemplate,
 				WebserverAddr:         webAddr,
 				HealthAddr:            healthAddr,
@@ -223,6 +225,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "xtrabackup", "Path to the xtrabackup binary")
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Owning Cluster name; enables the in-Pod role reconciler (dynamic role)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Cluster namespace (defaults to POD_NAMESPACE)")
+	cmd.Flags().BoolVar(&groupReplication, "group-replication", false, "Run as a MySQL Group Replication member (the group role strategy and GR status)")
 	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from cloudnative-mysql_S3_* env)")
 	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")
 	cmd.Flags().BoolVar(&archivePurge, "archive-purge", true, "Purge binary logs once archived (the active purge gate)")

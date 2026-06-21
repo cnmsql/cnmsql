@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 )
 
 // ensureInstanceRBAC provisions the per-Cluster Role and the per-instance
@@ -39,6 +40,7 @@ import (
 // Cluster for garbage collection.
 func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	name := cluster.Name + "-instance"
+	topologyReconciler := r.topologyReconciler(cluster)
 
 	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
@@ -50,19 +52,8 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 				Verbs:         []string{"get", "list", "watch"},
 				ResourceNames: []string{cluster.Name},
 			},
-			{
-				APIGroups:     []string{mysqlv1alpha1.GroupVersion.Group},
-				Resources:     []string{"clusters/status"},
-				Verbs:         []string{"get", "update", "patch"},
-				ResourceNames: []string{cluster.Name},
-			},
-			{
-				APIGroups:     []string{"coordination.k8s.io"},
-				Resources:     []string{"leases"},
-				Verbs:         []string{"get", "create", "update", "patch", "delete", "watch", "list"},
-				ResourceNames: []string{primaryLeaseName(cluster)},
-			},
 		}
+		role.Rules = append(role.Rules, topologyReconciler.InstancePolicyRules(cluster)...)
 		return controllerutil.SetControllerReference(cluster, role, r.Scheme)
 	}); err != nil {
 		return err
@@ -76,6 +67,13 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
 			sa.Labels = labelsFor(cluster, inst, "")
 			return controllerutil.SetControllerReference(cluster, sa, r.Scheme)
+		}); err != nil {
+			return err
+		}
+		if err := topologyReconciler.ReconcileInstanceRBAC(ctx, cluster, topology.InstanceIdentity{
+			InstanceName:       inst,
+			ServiceAccountName: saName,
+			Labels:             labelsFor(cluster, inst, ""),
 		}); err != nil {
 			return err
 		}

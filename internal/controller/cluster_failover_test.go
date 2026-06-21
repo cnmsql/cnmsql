@@ -30,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	controllerasync "github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/async"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
 
@@ -65,7 +67,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, testGTID),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3", got, reason)
 	}
@@ -73,7 +75,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 	// Equal GTID: lowest ordinal wins.
 	observed.GTIDByInstance[testReplica2] = testGTID
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
-	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica2 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica2 {
 		t.Fatalf("candidate = %q, want demo-2 on equal GTID", got)
 	}
 }
@@ -92,7 +94,7 @@ func TestSelectFailoverCandidateBlocksOnDivergedGTID(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "other:1-4"),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -119,11 +121,11 @@ func TestSelectFailoverCandidateExcludesKnownDivergedReplica(t *testing.T) {
 		},
 	}
 	// Sanity: without the guard the diverged superset would be chosen.
-	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica3 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("precondition: candidate = %q, want the diverged superset demo-3 to dominate", got)
 	}
 	// With it flagged diverged, the clean replica wins instead.
-	got, reason := selectFailoverCandidate(observed, []string{testReplica3})
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica3})
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want the clean replica demo-2", got, reason)
 	}
@@ -144,7 +146,7 @@ func TestSelectFailoverCandidateBlocksWhenOnlyCandidateDiverged(t *testing.T) {
 			testReplica2: healthyReplicaStatus(testReplica2, "a:1-15,b:1-3"),
 		},
 	}
-	got, reason := selectFailoverCandidate(observed, []string{testReplica2})
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica2})
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -169,7 +171,7 @@ func TestSelectFailoverCandidateSkipsUnhealthyReplicas(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "uuid:1-7"),
 		},
 	}
-	if got, _ := selectFailoverCandidate(observed, nil); got != testReplica3 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("candidate = %q, want demo-3 (demo-2 has stalled SQL thread)", got)
 	}
 }
@@ -197,7 +199,7 @@ func TestSelectFailoverCandidateAllowsStoppedIOThread(t *testing.T) {
 		},
 	}
 
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want demo-2", got, reason)
 	}
@@ -214,7 +216,7 @@ func TestSelectFailoverCandidateSkipsReplicasWithoutGTID(t *testing.T) {
 		},
 	}
 
-	got, reason := selectFailoverCandidate(observed, nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
 	if got != "" {
 		t.Fatalf("candidate = %q (reason %q), want empty without GTID status", got, reason)
 	}
@@ -234,7 +236,7 @@ func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 			testReplica3: "a:1-15,b:1-3",
 		},
 	}
-	diverged := detectDivergedReplicas(observed)
+	diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil)).DivergedInstances
 	if len(diverged) != 1 || diverged[0] != testReplica3 {
 		t.Fatalf("diverged = %v, want [%s]", diverged, testReplica3)
 	}
@@ -247,7 +249,7 @@ func TestDetectDivergedReplicasIgnoresUnknownGTID(t *testing.T) {
 		InstanceNames:  []string{testPrimary, testReplica2},
 		GTIDByInstance: map[string]string{testReplica2: "a:1-5"},
 	}
-	if diverged := detectDivergedReplicas(observed); diverged != nil {
+	if diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil)).DivergedInstances; diverged != nil {
 		t.Fatalf("diverged = %v, want nil when primary GTID is unknown", diverged)
 	}
 }
@@ -293,7 +295,7 @@ func TestReconcilePrimaryChangeAbortsWhenTargetLagsPastMaxSwitchoverDelay(t *tes
 		},
 	}
 
-	switched, err := reconciler.reconcileSwitchover(ctx, cluster, plan, observed)
+	switched, err := reconciler.reconcileSwitchover(ctx, cluster, observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,8 +309,8 @@ func TestReconcilePrimaryChangeAbortsWhenTargetLagsPastMaxSwitchoverDelay(t *tes
 	if gotCluster.Status.TargetPrimary != testPrimary {
 		t.Fatalf("targetPrimary = %q, want reset to %q", gotCluster.Status.TargetPrimary, testPrimary)
 	}
-	if gotCluster.Status.Phase != phaseBlocked {
-		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, phaseBlocked)
+	if gotCluster.Status.Phase != topology.PhaseBlocked {
+		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseBlocked)
 	}
 }
 
@@ -391,8 +393,8 @@ func TestReconcileFailoverPromotesBestCandidateImmediately(t *testing.T) {
 	if gotCluster.Status.PrimaryFailingSince != "" {
 		t.Fatalf("primaryFailingSince = %q, want cleared", gotCluster.Status.PrimaryFailingSince)
 	}
-	if gotCluster.Status.Phase != phaseFailingOver {
-		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, phaseFailingOver)
+	if gotCluster.Status.Phase != topology.PhaseFailingOver {
+		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseFailingOver)
 	}
 }
 
@@ -422,8 +424,8 @@ func TestReconcileFailoverWaitsForFailoverDelay(t *testing.T) {
 	if gotCluster.Status.PrimaryFailingSince == "" {
 		t.Fatal("primaryFailingSince was not recorded")
 	}
-	if gotCluster.Status.Phase != phaseDegraded {
-		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, phaseDegraded)
+	if gotCluster.Status.Phase != topology.PhaseDegraded {
+		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseDegraded)
 	}
 }
 
@@ -454,8 +456,8 @@ func TestReconcileFailoverWaitsForActivePrimaryLease(t *testing.T) {
 	if !handled {
 		t.Fatal("failover was not handled")
 	}
-	if result.RequeueAfter != primaryLeaseDuration {
-		t.Fatalf("requeue = %s, want %s", result.RequeueAfter, primaryLeaseDuration)
+	if result.RequeueAfter != 15*time.Second {
+		t.Fatalf("requeue = %s, want %s", result.RequeueAfter, 15*time.Second)
 	}
 	gotPod := &corev1.Pod{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testPrimary}, gotPod); err != nil {
@@ -491,8 +493,8 @@ func TestReconcileFailoverBlocksWithoutSafeCandidate(t *testing.T) {
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster); err != nil {
 		t.Fatal(err)
 	}
-	if gotCluster.Status.Phase != phaseBlocked {
-		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, phaseBlocked)
+	if gotCluster.Status.Phase != topology.PhaseBlocked {
+		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseBlocked)
 	}
 }
 
@@ -533,7 +535,7 @@ func TestReconcileFailoverYieldsToProvisioningBeforeAnyReplica(t *testing.T) {
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster); err != nil {
 		t.Fatal(err)
 	}
-	if gotCluster.Status.Phase == phaseBlocked {
+	if gotCluster.Status.Phase == topology.PhaseBlocked {
 		t.Fatalf("cluster must not be Blocked during bootstrap, phase=%q", gotCluster.Status.Phase)
 	}
 }

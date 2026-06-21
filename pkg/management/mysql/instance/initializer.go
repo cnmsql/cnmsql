@@ -27,6 +27,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/pool"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/version"
 )
@@ -60,11 +61,25 @@ func (o *InitOptions) applyDefaults() {
 	}
 }
 
-// IsInitialized reports whether the data directory already contains a MySQL
-// system schema.
-func IsInitialized(dataDir string) bool {
+// bootstrapSentinel is created atomically after a complete bootstrap so the
+// next run can reliably distinguish a fully initialized directory from one
+// where initialization was interrupted partway.
+const bootstrapSentinel = ".cloudnative-mysql-bootstrapped"
+
+// hasSystemSchema reports whether the data directory contains the mysql system
+// schema laid down by --initialize, regardless of whether bootstrap completed.
+func hasSystemSchema(dataDir string) bool {
 	info, err := os.Stat(filepath.Join(dataDir, "mysql"))
 	return err == nil && info.IsDir()
+}
+
+// IsInitialized reports whether the data directory is fully initialised
+// (bootstrap completed). It checks for a sentinel file written only after a
+// successful bootstrap, so a directory with system tables but no sentinel
+// (interrupted initialization) is considered uninitialised.
+func IsInitialized(dataDir string) bool {
+	_, err := os.Stat(filepath.Join(dataDir, bootstrapSentinel))
+	return err == nil
 }
 
 // Initialize initialises a fresh data directory and applies the bootstrap
@@ -101,19 +116,65 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 		return nil
 	}
 
+	// If system tables exist but the sentinel is missing, a previous
+	// initialization was interrupted after --initialize-insecure but before
+	// (or during) bootstrap cleanup. Wipe the partial state so we re-run
+	// both --initialize and bootstrap from scratch.
+	if hasSystemSchema(opts.DataDir) {
+		log.Info("Data directory has system tables without bootstrap sentinel; cleaning up partial state")
+		if err := purgeDataDir(opts.DataDir); err != nil {
+			log.Error(err, "Failed to clean partial data directory")
+		}
+	}
+
 	if err := os.MkdirAll(opts.DataDir, 0o750); err != nil {
 		return fmt.Errorf("creating data dir: %w", err)
 	}
 	log.Info("Created data directory")
 
 	if err := opts.runInitialize(ctx); err != nil {
+		// A failed --initialize leaves a half-written data directory (auto.cnf,
+		// the mysql/ system-schema dir, tablespaces). Without cleanup a retry
+		// would find the partial state, attempt --initialize over it (which
+		// fails), and wedge. Wipe it so a retry starts from a clean slate.
+		if cleanErr := purgeDataDir(opts.DataDir); cleanErr != nil {
+			log.Error(cleanErr, "Failed to clean partial data directory after a failed initialize")
+		}
 		return err
 	}
 
 	if err := opts.runBootstrap(ctx); err != nil {
+		// --initialize already laid down the mysql/ system schema, so
+		// hasSystemSchema would now report the directory as initialized and the
+		// next attempt would skip straight past bootstrap, leaving a
+		// half-initialized server (system tables present, but no operator
+		// accounts and a passwordless root). Wipe the partial state so a retry
+		// re-runs both --initialize and the bootstrap SQL.
+		if cleanErr := purgeDataDir(opts.DataDir); cleanErr != nil {
+			log.Error(cleanErr, "Failed to clean partial data directory after a failed bootstrap")
+		}
 		return err
 	}
+
+	if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
+		return fmt.Errorf("marking data directory as bootstrapped: %w", err)
+	}
 	log.Info("Completed data directory initialization")
+	return nil
+}
+
+// purgeDataDir empties a data directory in place (keeping the directory itself,
+// which may be a mount point) so a failed initialization can be retried cleanly.
+func purgeDataDir(dataDir string) error {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return fmt.Errorf("reading data dir: %w", err)
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dataDir, entry.Name())); err != nil {
+			return fmt.Errorf("removing %s: %w", entry.Name(), err)
+		}
+	}
 	return nil
 }
 
@@ -127,13 +188,47 @@ func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysqld initialize", "binary", o.MysqldPath)
 	args := []string{}
 	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
+		// --initialize ignores plugin_load_add, so group_replication.so is never
+		// loaded and the group_replication_* settings become unknown variables
+		// that abort initialization. Feed mysqld a copy of the config with the GR
+		// block stripped out (it is meaningless during --initialize anyway).
+		initConfig, err := o.writeInitConfig()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.Remove(initConfig) }()
+		args = append(args, "--defaults-file="+initConfig)
 	}
 	args = append(args,
 		"--initialize-insecure",
 		"--datadir="+o.DataDir,
 	)
 	return runStdio(ctx, o.MysqldPath, args, "mysqld --initialize-insecure")
+}
+
+// writeInitConfig writes a temporary copy of the runtime config with the Group
+// Replication block stripped, suitable for `mysqld --initialize`, and returns
+// its path. The caller is responsible for removing it.
+func (o *InitOptions) writeInitConfig() (string, error) {
+	content, err := os.ReadFile(o.ConfigFile)
+	if err != nil {
+		return "", fmt.Errorf("reading config file: %w", err)
+	}
+	stripped := config.StripGroupReplication(string(content))
+	f, err := os.CreateTemp("", "mysqld-init-*.cnf")
+	if err != nil {
+		return "", fmt.Errorf("creating init config: %w", err)
+	}
+	if _, err := f.WriteString(stripped); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("writing init config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("closing init config: %w", err)
+	}
+	return f.Name(), nil
 }
 
 func runStdio(ctx context.Context, binary string, args []string, what string) error {
@@ -159,6 +254,15 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 		"--datadir="+o.DataDir,
 		"--socket="+o.Socket,
 		"--skip-networking",
+		// The bootstrap SQL creates accounts and sets the root password, so the
+		// temporary server must be writable. A replica's rendered config carries
+		// read_only/super_read_only=ON (and a Group Replication member always
+		// renders as a replica until the group elects it primary), which would make
+		// every bootstrap statement fail with ER_OPTION_PREVENTS_STATEMENT. Override
+		// both off on the command line so the temporary server is writable
+		// regardless of the member's eventual role.
+		"--read-only=OFF",
+		"--super-read-only=OFF",
 	)
 
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))

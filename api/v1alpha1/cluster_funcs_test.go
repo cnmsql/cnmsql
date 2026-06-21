@@ -397,3 +397,83 @@ var _ = Describe("Cluster helpers", func() {
 		Expect(err).To(HaveOccurred())
 	})
 })
+
+var _ = Describe("Group Replication validation", func() {
+	newGRCluster := func() *Cluster {
+		cluster := &Cluster{
+			Spec: ClusterSpec{
+				ImageName:   "percona/percona-server:8.0",
+				Instances:   3,
+				Storage:     StorageConfiguration{Size: "10Gi"},
+				Replication: &ReplicationConfiguration{Mode: ReplicationModeGroupReplication},
+			},
+		}
+		cluster.SetDefaults()
+		return cluster
+	}
+
+	It("accepts a valid group replication cluster", func() {
+		Expect(newGRCluster().Validate()).To(BeEmpty())
+	})
+
+	It("rejects group replication combined with semi-sync", func() {
+		cluster := newGRCluster()
+		cluster.Spec.MySQL.SemiSync = &SemiSyncConfiguration{Enabled: true}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("accepts a valid pinned group name", func() {
+		cluster := newGRCluster()
+		cluster.Spec.Replication.GroupReplication = &GroupReplicationConfiguration{
+			GroupName: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects a non-UUID group name", func() {
+		cluster := newGRCluster()
+		cluster.Spec.Replication.GroupReplication = &GroupReplicationConfiguration{
+			GroupName: "not-a-uuid",
+		}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects a groupReplication block on an async cluster", func() {
+		cluster := newGRCluster()
+		cluster.Spec.Replication.Mode = ReplicationModeAsync
+		cluster.Spec.Replication.GroupReplication = &GroupReplicationConfiguration{}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects group replication on a pre-8.0 image catalog", func() {
+		cluster := newGRCluster()
+		cluster.Spec.ImageName = ""
+		cluster.Spec.ImageCatalogRef = &ImageCatalogRef{Major: 5}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects changing replication.mode on update", func() {
+		oldCluster := newGRCluster()
+		newCluster := newGRCluster()
+		newCluster.Spec.Replication.Mode = ReplicationModeAsync
+		Expect(newCluster.ValidateUpdate(oldCluster)).NotTo(BeEmpty())
+	})
+
+	It("allows an unchanged mode on update", func() {
+		oldCluster := newGRCluster()
+		newCluster := newGRCluster()
+		Expect(newCluster.ValidateUpdate(oldCluster)).To(BeEmpty())
+	})
+
+	It("rejects changing a pinned group name on update", func() {
+		oldCluster := newGRCluster()
+		oldCluster.Spec.Replication.GroupReplication = &GroupReplicationConfiguration{
+			GroupName: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		}
+		newCluster := newGRCluster()
+		newCluster.Spec.Replication.GroupReplication = &GroupReplicationConfiguration{
+			GroupName: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		}
+		Expect(newCluster.ValidateUpdate(oldCluster)).NotTo(BeEmpty())
+	})
+})

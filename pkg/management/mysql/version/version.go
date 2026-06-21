@@ -125,6 +125,30 @@ func (v Version) UsesResetBinaryLogsAndGtids() bool {
 	return v.AtLeast(8, 4, 0)
 }
 
+// SupportsGroupReplication reports whether the server may run MySQL Group
+// Replication under this operator. Group Replication exists from 8.0.0, but the
+// operator requires a floor of 8.0.22 for stable single-primary auto-rejoin and
+// the consistency levels it relies on. 5.6/5.7 GR is unsupported.
+func (v Version) SupportsGroupReplication() bool {
+	return v.AtLeast(8, 0, 22)
+}
+
+// HasGroupReplicationClone reports whether distributed recovery may use the
+// Clone plugin to provision a joining member (MySQL 8.0.17+). Below this a join
+// can only recover by replaying binlogs from a donor, which fails when the
+// donor's logs have been purged past the joiner's position.
+func (v Version) HasGroupReplicationClone() bool {
+	return v.AtLeast(8, 0, 17)
+}
+
+// GroupReplicationRequiresNoBinlogChecksum reports whether Group Replication
+// requires binlog_checksum=NONE. Versions before 8.0.21 reject a non-NONE
+// checksum when starting the group; 8.0.21+ tolerate the default CRC32, so the
+// operator only forces NONE on the older servers.
+func (v Version) GroupReplicationRequiresNoBinlogChecksum() bool {
+	return !v.AtLeast(8, 0, 21)
+}
+
 // usesSourceSemiSyncNaming reports whether the server uses the source/replica
 // semi-sync plugin and variable naming (MySQL 8.0.26+) instead of master/slave.
 func (v Version) usesSourceSemiSyncNaming() bool {

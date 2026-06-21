@@ -37,6 +37,8 @@ func newRestartInPlaceCommand() *cobra.Command {
 			"climbing afterwards.",
 		Args:              cobra.ExactArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
+		Example: `  # Re-exec the instance manager on an instance without restarting mysqld
+  kubectl cnmysql restart-inplace cluster-sample cluster-sample-2`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRestartInPlace(cmd.Context(), args[0], args[1])
 		},

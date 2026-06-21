@@ -2,7 +2,7 @@
 
 Quick-reference index of every design document. Use this to find relevant plans instead of scanning all files.
 
-**Convention:** Documents are numbered sequentially (`NNN-title.md`). Status values: `done` (design finalized), `superseded` (replaced by a newer design).
+**Convention:** Documents are numbered sequentially (`NNN-title.md`). Status values: `proposed` (plan written, not yet approved/implemented), `done` (design finalized), `superseded` (replaced by a newer design).
 
 ## All Plans
 
@@ -29,12 +29,13 @@ Quick-reference index of every design document. Use this to find relevant plans 
 | 019 | [Operator Upgrades](019-operator-upgrade.md) | done | — | Rolling + in-place instance-manager upgrades. Spike-proven re-exec keeps mysqld alive. PID-based `DetachedSupervisor` + adopt mode. |
 | 020 | [Status Instance Webhook](020-status-instance-webhook.md) | done | — | Per-instance ServiceAccount identity + validating webhook to enforce least-privilege updates to `status.currentPrimary`. |
 | 021 | [Deployment Modes](021-deployment-modes.md) | done | — | Cluster-wide vs namespaced operator topologies. `WATCH_NAMESPACE`-scoped cache, namespaced RBAC overlay, and per-namespace webhook (unique name + namespaceSelector) so multiple operators cohabit one cluster. |
+| 022 | [Group Replication](022-group-replication.md) | proposed | M-GR | Second replication topology: quorum-based MySQL Group Replication behind an immutable `spec.replication.mode`. Operator observes group decisions (auto-failover handled by quorum); switchover via `set_as_primary`; GR-native fencing; quorum guards; phased M-GR.1–M-GR.7. |
 
 ## Quick Navigation by Topic
 
 **Cluster Lifecycle:** 003 (image) → 004 (single instance) → 005 (replicas) → 012 (services)
 
-**Replication & HA:** 006 (switchover/failover) → 007 (dynamic role) → 017 (primary lease)
+**Replication & HA:** 006 (switchover/failover) → 007 (dynamic role) → 017 (primary lease) → 022 (group replication, proposed)
 
 **Status Authorization & Security:** 020 (status authz webhook)
 

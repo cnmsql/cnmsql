@@ -36,6 +36,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/objectstore"
 )
 
@@ -307,9 +308,9 @@ func backupJob(
 							"--cluster-name=" + cluster.Name,
 							"--instance-name=" + sourceInstance,
 							"--sha256",
-							"--tls-cert=" + serverTLSPath + "/tls.crt",
-							"--tls-key=" + serverTLSPath + "/tls.key",
-							"--tls-ca=" + clientCAPath + "/ca.crt",
+							"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
+							"--tls-key=" + topology.ServerTLSPath + "/tls.key",
+							"--tls-ca=" + topology.ClientCAPath + "/ca.crt",
 						},
 						Env:          env,
 						VolumeMounts: backupWorkerVolumeMounts(),
@@ -363,8 +364,8 @@ func backupWorkerVolumes(clusterName string) []corev1.Volume {
 func backupWorkerVolumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
 		{Name: "scratch-data", MountPath: "/controller"},
-		{Name: "client-tls", MountPath: serverTLSPath, ReadOnly: true},
-		{Name: "client-ca", MountPath: clientCAPath, ReadOnly: true},
+		{Name: "client-tls", MountPath: topology.ServerTLSPath, ReadOnly: true},
+		{Name: "client-ca", MountPath: topology.ClientCAPath, ReadOnly: true},
 	}
 }
 

@@ -38,6 +38,7 @@ func NewCommand() *cobra.Command {
 		owner         string
 		replUser      string
 		requireTLS    bool
+		groupRepl     bool
 		charset       string
 		collation     string
 		controlUser   string
@@ -73,6 +74,15 @@ func NewCommand() *cobra.Command {
 				dynamicPrivileges = ver.AtLeast(8, 0, 0)
 			}
 
+			// The application account is only created together with its database.
+			// A Group Replication joining member initialises an empty server (no
+			// --database) and clones the schema and app account from a group donor,
+			// so it must not read an app password it would never use.
+			appPassword := ""
+			if database != "" {
+				appPassword = os.Getenv("MYSQL_APP_PASSWORD")
+			}
+
 			return instance.Initialize(cmd.Context(), instance.InitOptions{
 				MysqldPath: mysqldPath,
 				Version:    serverVersion,
@@ -83,7 +93,7 @@ func NewCommand() *cobra.Command {
 					RootPassword:              rootPassword,
 					Database:                  database,
 					AppUser:                   owner,
-					AppPassword:               os.Getenv("MYSQL_APP_PASSWORD"),
+					AppPassword:               appPassword,
 					CharacterSet:              charset,
 					Collation:                 collation,
 					ReplicationUser:           replUser,
@@ -95,6 +105,7 @@ func NewCommand() *cobra.Command {
 					ControlPassword:           os.Getenv("MYSQL_CONTROL_PASSWORD"),
 					MetricsUser:               metricsUser,
 					SupportsDynamicPrivileges: dynamicPrivileges,
+					GroupReplication:          groupRepl,
 				},
 			})
 		},
@@ -108,6 +119,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&owner, "owner", "", "Owner user of the application database")
 	cmd.Flags().StringVar(&replUser, "replication-user", "", "Replication user to create")
 	cmd.Flags().BoolVar(&requireTLS, "replication-require-x509", false, "Require a client certificate (mTLS) for the replication user")
+	cmd.Flags().BoolVar(&groupRepl, "group-replication", false, "Grant the replication user the privileges Group Replication distributed recovery needs")
 	cmd.Flags().StringVar(&charset, "character-set", "", "Character set for the application database")
 	cmd.Flags().StringVar(&collation, "collation", "", "Collation for the application database")
 	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from MYSQL_CONTROL_PASSWORD)")

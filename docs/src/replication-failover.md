@@ -12,6 +12,12 @@ owns local mysqld role changes. This split keeps primary changes declarative:
 the operator writes the intended primary in Cluster status, and the pods
 converge themselves toward that target.
 
+An alternative [Group Replication](./group-replication.md) topology is also
+available. When `spec.replication.mode: groupReplication`, the group itself owns
+membership, write certification, and primary election. The operator becomes an
+observer of the group's decisions. This page documents the default async
+replication mode.
+
 ```mermaid
 flowchart LR
     Operator["Operator\n(policy + status)"]

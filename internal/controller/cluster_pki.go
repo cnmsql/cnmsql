@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -34,12 +35,12 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 	needClientCertificate := certs == nil || certs.ReplicationTLSSecret == ""
 	needCAIssuer := needServerCertificates || needClientCertificate
 	if needCAIssuer && (certs == nil || certs.ServerCASecret == "") {
-		if err := r.ensureIssuer(ctx, cluster, plan.SelfSignedIssuer, map[string]any{
+		if err := r.ensureCertManagerResource(ctx, cluster, plan.SelfSignedIssuer, map[string]any{
 			"selfSigned": map[string]any{},
-		}); err != nil {
+		}, issuerGVK); err != nil {
 			return err
 		}
-		if err := r.ensureCertificate(ctx, cluster, plan.CAIssuer, map[string]any{
+		if err := r.ensureCertManagerResource(ctx, cluster, plan.CAIssuer, map[string]any{
 			"secretName": plan.ServerCASecretName,
 			"isCA":       true,
 			"commonName": cluster.Name + ".ca.cloudnative-mysql",
@@ -47,16 +48,16 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 				"name": plan.SelfSignedIssuer,
 				"kind": "Issuer",
 			},
-		}); err != nil {
+		}, certificateGVK); err != nil {
 			return err
 		}
 	}
 	if needCAIssuer {
-		if err := r.ensureIssuer(ctx, cluster, plan.CAIssuer, map[string]any{
+		if err := r.ensureCertManagerResource(ctx, cluster, plan.CAIssuer, map[string]any{
 			"ca": map[string]any{
 				"secretName": plan.ServerCASecretName,
 			},
-		}); err != nil {
+		}, issuerGVK); err != nil {
 			return err
 		}
 	}
@@ -67,7 +68,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 	if needServerCertificates {
 		for i := 1; i <= plan.Instances; i++ {
 			inst := plan.instanceFor(cluster, i)
-			if err := r.ensureCertificate(ctx, cluster, inst.ServerCertName, map[string]any{
+			if err := r.ensureCertManagerResource(ctx, cluster, inst.ServerCertName, map[string]any{
 				"secretName": inst.ServerTLSSecret,
 				"commonName": inst.ServiceName + "." + cluster.Namespace + ".svc",
 				"dnsNames":   serverDNSNames(cluster, plan, inst),
@@ -79,7 +80,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 					"name": plan.CAIssuer,
 					"kind": "Issuer",
 				},
-			}); err != nil {
+			}, certificateGVK); err != nil {
 				return err
 			}
 		}
@@ -88,7 +89,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 	if !needClientCertificate {
 		return nil
 	}
-	return r.ensureCertificate(ctx, cluster, cluster.Name+"-client", map[string]any{
+	return r.ensureCertManagerResource(ctx, cluster, cluster.Name+"-client", map[string]any{
 		"secretName": plan.ClientTLSSecret,
 		"commonName": "cloudnative-mysql-operator",
 		"usages": []any{
@@ -98,7 +99,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 			"name": plan.CAIssuer,
 			"kind": "Issuer",
 		},
-	})
+	}, certificateGVK)
 }
 
 // serverDNSNames are the SANs an instance certificate must carry: its own
@@ -125,32 +126,23 @@ func serverDNSNames(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst insta
 	return names
 }
 
-func (r *ClusterReconciler) ensureIssuer(ctx context.Context, cluster *mysqlv1alpha1.Cluster, name string, spec map[string]any) error {
-	issuer := &unstructured.Unstructured{}
-	issuer.SetGroupVersionKind(issuerGVK)
-	issuer.SetName(name)
-	issuer.SetNamespace(cluster.Namespace)
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
-		issuer.SetLabels(labelsFor(cluster, "", ""))
-		if err := unstructured.SetNestedMap(issuer.Object, spec, "spec"); err != nil {
+func (r *ClusterReconciler) ensureCertManagerResource(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	name string,
+	spec map[string]any,
+	gvk schema.GroupVersionKind,
+) error {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(gvk)
+	obj.SetName(name)
+	obj.SetNamespace(cluster.Namespace)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, func() error {
+		obj.SetLabels(labelsFor(cluster, "", ""))
+		if err := unstructured.SetNestedMap(obj.Object, spec, "spec"); err != nil {
 			return err
 		}
-		return controllerutil.SetControllerReference(cluster, issuer, r.Scheme)
-	})
-	return err
-}
-
-func (r *ClusterReconciler) ensureCertificate(ctx context.Context, cluster *mysqlv1alpha1.Cluster, name string, spec map[string]any) error {
-	cert := &unstructured.Unstructured{}
-	cert.SetGroupVersionKind(certificateGVK)
-	cert.SetName(name)
-	cert.SetNamespace(cluster.Namespace)
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cert, func() error {
-		cert.SetLabels(labelsFor(cluster, "", ""))
-		if err := unstructured.SetNestedMap(cert.Object, spec, "spec"); err != nil {
-			return err
-		}
-		return controllerutil.SetControllerReference(cluster, cert, r.Scheme)
+		return controllerutil.SetControllerReference(cluster, obj, r.Scheme)
 	})
 	return err
 }

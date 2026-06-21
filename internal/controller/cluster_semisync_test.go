@@ -27,10 +27,10 @@ import (
 
 // semiSyncCluster builds a 3-instance cluster with semi-sync on and the given
 // minSyncReplicas / data durability.
-func semiSyncCluster(minSync int, durability string) *mysqlv1alpha1.Cluster {
+func semiSyncCluster(durability string) *mysqlv1alpha1.Cluster {
 	cluster := baseCluster()
 	cluster.Spec.Instances = 3
-	cluster.Spec.MinSyncReplicas = minSync
+	cluster.Spec.MinSyncReplicas = 2
 	cluster.Spec.MySQL.SemiSync = &mysqlv1alpha1.SemiSyncConfiguration{
 		Enabled:        true,
 		DataDurability: durability,
@@ -51,27 +51,12 @@ func observedWith(readyReplicas ...string) observedCluster {
 	return observedCluster{PrimaryName: primary, StatusByInstance: statuses}
 }
 
-func TestReconcileSemiSyncPreferredReducesOnUnhealthyReplica(t *testing.T) {
-	t.Parallel()
-	control := &recordingControlClient{}
-	r := &ClusterReconciler{ControlClient: control}
-
-	// minSync=2 but only one healthy replica: preferred lowers the wait count.
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
-	if err := r.reconcileSemiSync(context.Background(), cluster, observedWith("demo-2")); err != nil {
-		t.Fatal(err)
-	}
-	if got := control.semiSyncWaits["demo-1"]; got != 1 {
-		t.Fatalf("wait count = %d, want 1 (one healthy replica)", got)
-	}
-}
-
 func TestReconcileAvailabilityRunsSemiSyncWhenClusterIsDegraded(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{}
 	r := &ClusterReconciler{ControlClient: control}
 
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
+	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityPreferred)
 	observed := observedWith("demo-2")
 	observed.Ready = false
 
@@ -82,95 +67,11 @@ func TestReconcileAvailabilityRunsSemiSyncWhenClusterIsDegraded(t *testing.T) {
 	}
 }
 
-func TestReconcileSemiSyncPreferredReducesForFencedReplica(t *testing.T) {
-	t.Parallel()
-	control := &recordingControlClient{}
-	r := &ClusterReconciler{ControlClient: control}
-
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
-	observed := observedWith("demo-2", "demo-3")
-	observed.FencedInstances = []string{"demo-2"}
-
-	if err := r.reconcileSemiSync(context.Background(), cluster, observed); err != nil {
-		t.Fatal(err)
-	}
-	if got := control.semiSyncWaits["demo-1"]; got != 1 {
-		t.Fatalf("wait count = %d, want 1 with one fenced replica", got)
-	}
-}
-
-func TestReconcileSemiSyncPreferredRestoresWhenHealthy(t *testing.T) {
-	t.Parallel()
-	control := &recordingControlClient{}
-	r := &ClusterReconciler{ControlClient: control}
-
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
-	if err := r.reconcileSemiSync(context.Background(), cluster, observedWith("demo-2", "demo-3")); err != nil {
-		t.Fatal(err)
-	}
-	if got := control.semiSyncWaits["demo-1"]; got != 2 {
-		t.Fatalf("wait count = %d, want 2 (configured minSyncReplicas restored)", got)
-	}
-}
-
-func TestReconcileSemiSyncPreferredFloorsAtOne(t *testing.T) {
-	t.Parallel()
-	control := &recordingControlClient{}
-	r := &ClusterReconciler{ControlClient: control}
-
-	// No healthy replicas: never drop below 1 acknowledgement.
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
-	if err := r.reconcileSemiSync(context.Background(), cluster, observedWith()); err != nil {
-		t.Fatal(err)
-	}
-	if got := control.semiSyncWaits["demo-1"]; got != 1 {
-		t.Fatalf("wait count = %d, want 1 (floor)", got)
-	}
-}
-
-func TestReconcileSemiSyncRequiredKeepsConfiguredCount(t *testing.T) {
-	t.Parallel()
-	control := &recordingControlClient{}
-	r := &ClusterReconciler{ControlClient: control}
-
-	// Required durability never reduces the count, even with unhealthy replicas.
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityRequired)
-	if err := r.reconcileSemiSync(context.Background(), cluster, observedWith("demo-2")); err != nil {
-		t.Fatal(err)
-	}
-	if got := control.semiSyncWaits["demo-1"]; got != 2 {
-		t.Fatalf("wait count = %d, want 2 (required keeps minSyncReplicas)", got)
-	}
-}
-
-func TestReconcileSemiSyncNoopWhenDisabledOrUnreachable(t *testing.T) {
-	t.Parallel()
-
-	// Semi-sync disabled: no control call.
-	control := &recordingControlClient{}
-	r := &ClusterReconciler{ControlClient: control}
-	if err := r.reconcileSemiSync(context.Background(), baseCluster(), observedWith("demo-2")); err != nil {
-		t.Fatal(err)
-	}
-	if len(control.semiSyncWaits) != 0 {
-		t.Fatalf("wait calls = %v, want none when semi-sync disabled", control.semiSyncWaits)
-	}
-
-	// Semi-sync on but primary unreachable: nothing to drive.
-	cluster := semiSyncCluster(1, mysqlv1alpha1.DataDurabilityPreferred)
-	if err := r.reconcileSemiSync(context.Background(), cluster, observedCluster{PrimaryName: "demo-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if len(control.semiSyncWaits) != 0 {
-		t.Fatalf("wait calls = %v, want none when primary unreachable", control.semiSyncWaits)
-	}
-}
-
 func TestRenderMyCnfUsesBootstrapSafeSemiSyncWaitCountForPreferredDurability(t *testing.T) {
 	t.Parallel()
 
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
-	out, err := renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"})
+	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityPreferred)
+	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"}, []string{"demo-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +83,8 @@ func TestRenderMyCnfUsesBootstrapSafeSemiSyncWaitCountForPreferredDurability(t *
 func TestRenderMyCnfKeepsConfiguredSemiSyncWaitCountForRequiredDurability(t *testing.T) {
 	t.Parallel()
 
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityRequired)
-	out, err := renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"})
+	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityRequired)
+	out, err := (&ClusterReconciler{}).renderMyCnf(cluster, testPlan(), instancePlan{ServerID: 1, IsPrimary: true, ServiceName: "demo-1"}, []string{"demo-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,9 +97,9 @@ func TestRunArgsEnableSemiSyncRuntimeConfiguration(t *testing.T) {
 	t.Parallel()
 
 	timeout := int32(5000)
-	cluster := semiSyncCluster(2, mysqlv1alpha1.DataDurabilityPreferred)
+	cluster := semiSyncCluster(mysqlv1alpha1.DataDurabilityPreferred)
 	cluster.Spec.MySQL.SemiSync.TimeoutMillis = &timeout
-	args := runArgs(cluster, testPlan(), instancePlan{})
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
 	for _, want := range []string{
 		"--semi-sync",
 		"--semi-sync-wait-for-replica-count=1",

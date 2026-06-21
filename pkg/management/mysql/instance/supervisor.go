@@ -90,14 +90,21 @@ func NewProcessSupervisor(binary string, args []string, opts ...Option) *Process
 	return s
 }
 
-// Start launches the process. It returns an error if it is already running or
-// fails to start.
+// Start launches the process. If a previous process has exited its leftover state
+// is cleared automatically so the supervisor can restart without an explicit
+// clear between Wait and Start.
 func (s *ProcessSupervisor) Start(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cmd != nil {
-		return errors.New("supervisor: process already running")
+		select {
+		case <-s.done:
+			// Previous process exited; clear stale state and proceed.
+		default:
+			return errors.New("supervisor: process already running")
+		}
 	}
+	s.cmd = nil
 
 	cmd := exec.Command(s.binary, s.args...)
 	cmd.Stdout = s.stdout

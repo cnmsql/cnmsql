@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	mysqlconfig "github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/config"
 )
 
@@ -118,7 +119,7 @@ func randomPassword() (string, error) {
 }
 
 func (r *ClusterReconciler) ensureConfigMap(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) error {
-	rendered, err := renderMyCnf(cluster, plan, inst)
+	rendered, err := r.renderMyCnf(cluster, plan, inst, plan.instanceNames(cluster))
 	if err != nil {
 		return err
 	}
@@ -134,20 +135,12 @@ func (r *ClusterReconciler) ensureConfigMap(ctx context.Context, cluster *mysqlv
 	return err
 }
 
-func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) (string, error) {
-	semiSync := mysqlconfig.SemiSync{}
-	if cluster.Spec.MySQL.SemiSync != nil {
-		semiSync.Enabled = cluster.Spec.MySQL.SemiSync.Enabled
-		semiSync.WaitForReplicaCount = initialSemiSyncWaitForReplicaCount(cluster)
-		if cluster.Spec.MySQL.SemiSync.TimeoutMillis != nil {
-			semiSync.TimeoutMillis = int(*cluster.Spec.MySQL.SemiSync.TimeoutMillis)
-		}
-	}
+func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, memberNames []string) (string, error) {
 	role := mysqlconfig.RolePrimary
 	if !inst.IsPrimary {
 		role = mysqlconfig.RoleReplica
 	}
-	return (&mysqlconfig.ServerConfig{
+	cfg := &mysqlconfig.ServerConfig{
 		ServerID:     inst.ServerID,
 		Version:      plan.ServerVersion,
 		Role:         role,
@@ -162,32 +155,25 @@ func renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instance
 		// TLS. Whether to require it is left to the user (require_secure_transport
 		// is no longer operator-managed).
 		TLS: mysqlconfig.TLSPaths{
-			CA:   clientCAPath + "/ca.crt",
-			Cert: serverTLSPath + "/tls.crt",
-			Key:  serverTLSPath + "/tls.key",
+			CA:   topology.ClientCAPath + "/ca.crt",
+			Cert: topology.ServerTLSPath + "/tls.crt",
+			Key:  topology.ServerTLSPath + "/tls.key",
 		},
 		UserParameters: cluster.Spec.MySQL.Parameters,
-		SemiSync:       semiSync,
 		Archiving:      archivingConfig(cluster),
-	}).Render()
-}
-
-func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {
-	count := cluster.Spec.MinSyncReplicas
-	if count <= 0 {
-		return 0
 	}
-	if semiSyncDurabilityPreferred(cluster) {
-		return 1
-	}
-	return count
+	r.topologyReconciler(cluster).ConfigureServer(cluster, topology.ServerConfigInput{
+		InstanceName: inst.Name,
+		MemberNames:  memberNames,
+	}, cfg)
+	return cfg.Render()
 }
 
 // archivingConfig resolves the my.cnf durability/RPO settings for continuous
 // binlog archiving, applying defaults when the API server has not (e.g. in unit
 // tests building the spec directly).
 func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
-	ca := continuousArchiving(cluster)
+	ca := cluster.ContinuousArchiving()
 	if ca == nil || !ca.Enabled {
 		return mysqlconfig.Archiving{}
 	}
@@ -206,33 +192,6 @@ func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
 		MaxBinlogSizeMB:     maxSize,
 		BinlogExpireSeconds: expire,
 	}
-}
-
-// continuousArchiving returns the cluster's continuous-archiving configuration,
-// or nil when it is not configured.
-func continuousArchiving(cluster *mysqlv1alpha1.Cluster) *mysqlv1alpha1.ContinuousArchivingConfiguration {
-	if cluster.Spec.Backup == nil {
-		return nil
-	}
-	return cluster.Spec.Backup.ContinuousArchiving
-}
-
-// archivingEnabled reports whether continuous binlog archiving is turned on and
-// has a destination object store to ship to.
-func archivingEnabled(cluster *mysqlv1alpha1.Cluster) bool {
-	ca := continuousArchiving(cluster)
-	return ca != nil && ca.Enabled &&
-		cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil
-}
-
-// archiveRPOSeconds returns the configured RPO bound in seconds, defaulting to
-// 300 (5 minutes).
-func archiveRPOSeconds(cluster *mysqlv1alpha1.Cluster) int {
-	ca := continuousArchiving(cluster)
-	if ca == nil || ca.TargetRPOSeconds <= 0 {
-		return 300
-	}
-	return int(ca.TargetRPOSeconds)
 }
 
 func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
@@ -326,12 +285,21 @@ func servicePorts() []corev1.ServicePort {
 	}
 }
 
-func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) error {
+// ensurePod reconciles the instance Pod. It returns rolled=true when it deleted
+// the Pod to apply a template change (config, seed, scale): that is the
+// destructive rolling action the caller must serialise, stopping the pass and
+// requeueing so the next ordinal is not rolled until this one is fully ready
+// again. Creates and metadata patches are non-destructive and report rolled=false.
+//
+// allowRoll gates the destructive delete: when false, a Pod that needs a template
+// change is left in place (rolled=false) so the caller can defer it — this is how
+// the elected primary is rolled last, after every replica.
+func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, allowRoll bool) (bool, error) {
 	labels := labelsFor(cluster, inst.Name, roleOf(inst))
 	spec := r.podSpec(cluster, plan, inst)
-	annotations, err := podAnnotations(cluster, plan, inst, labels, spec)
+	annotations, err := r.podAnnotations(cluster, plan, inst, labels, spec)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
@@ -340,18 +308,18 @@ func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha
 	}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return err
+			return false, err
 		}
 		pod.Labels = labels
 		pod.Annotations = annotations
 		pod.Spec = spec
 		if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
-			return err
+			return false, err
 		}
-		return r.Create(ctx, pod)
+		return false, r.Create(ctx, pod)
 	}
 	if pod.DeletionTimestamp != nil {
-		return nil
+		return false, nil
 	}
 	// The routable label is owned by the fencing reconcile, not the pod template;
 	// preserve the live value so this pass does not silently un-fence a Pod.
@@ -364,19 +332,27 @@ func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha
 		annotations[fencingAnnotation] = v
 	}
 	if pod.Annotations[podTemplateHashAnnotation] != annotations[podTemplateHashAnnotation] {
-		return r.Delete(ctx, pod)
+		if !allowRoll {
+			// The Pod needs a template change but rolling it is deferred (the primary
+			// is rolled last); leave it in place for a later pass.
+			return false, nil
+		}
+		if err := r.Delete(ctx, pod); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if !maps.Equal(pod.Labels, labels) || !maps.Equal(pod.Annotations, annotations) {
 		before := pod.DeepCopy()
 		pod.Labels = labels
 		pod.Annotations = annotations
-		return r.Patch(ctx, pod, client.MergeFrom(before))
+		return false, r.Patch(ctx, pod, client.MergeFrom(before))
 	}
-	return nil
+	return false, nil
 }
 
-func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, labels map[string]string, spec corev1.PodSpec) (map[string]string, error) {
-	config, err := renderMyCnf(cluster, plan, inst)
+func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, labels map[string]string, spec corev1.PodSpec) (map[string]string, error) {
+	config, err := r.renderMyCnf(cluster, plan, inst, plan.instanceNames(cluster))
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +369,13 @@ func podAnnotations(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst insta
 	stablePlan := plan
 	stablePlan.PrimaryName = instanceName(cluster, 1)
 	stableInst := stablePlan.instanceFor(cluster, inst.Ordinal)
-	stableConfig, err := renderMyCnf(cluster, stablePlan, stableInst)
+	// The group seed list is derived from the member set, so it changes on every
+	// scale. Seeds are only consulted by a member at join time (and are runtime
+	// settable), so rolling existing members just to rewrite them is needless
+	// churn. Render the stable hash with a canonical single-member seed list so a
+	// scale change does not move the template hash of the existing members; new
+	// members are still created with the full, current seed list via ensureConfigMap.
+	stableConfig, err := r.renderMyCnf(cluster, stablePlan, stableInst, []string{stableInst.Name})
 	if err != nil {
 		return nil, err
 	}

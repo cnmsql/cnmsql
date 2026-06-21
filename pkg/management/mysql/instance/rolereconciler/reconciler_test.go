@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/replication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -49,6 +50,20 @@ type fakeLocal struct {
 	shutdownCalled bool
 	fenceCalled    bool
 	unfenceCalled  bool
+
+	// Group Replication fakes.
+	groupView         groupreplication.GroupView
+	groupViewErr      error
+	grStarted         bool
+	grStartErr        error
+	grBootstrapped    bool
+	grBootstrapErr    error
+	grStopped         bool
+	grStopErr         error
+	grForceMembers    bool
+	grForceMembersErr error
+	grRecoveryUser    string
+	grRecoveryChanSet bool
 }
 
 func (f *fakeLocal) Status(context.Context) (*webserver.Status, error) { return f.status, f.statusErr }
@@ -65,6 +80,30 @@ func (f *fakeLocal) EnsureReplicaConfigured(_ context.Context, s replication.Sou
 func (f *fakeLocal) Shutdown(context.Context) error { f.shutdownCalled = true; return nil }
 func (f *fakeLocal) Fence(context.Context) error    { f.fenceCalled = true; return nil }
 func (f *fakeLocal) Unfence(context.Context) error  { f.unfenceCalled = true; return nil }
+func (f *fakeLocal) GroupView(context.Context) (groupreplication.GroupView, error) {
+	return f.groupView, f.groupViewErr
+}
+func (f *fakeLocal) PrepareGroupJoin(_ context.Context, user, _ string) error {
+	f.grRecoveryChanSet = true
+	f.grRecoveryUser = user
+	return nil
+}
+func (f *fakeLocal) StartGroupReplication(context.Context) error {
+	f.grStarted = true
+	return f.grStartErr
+}
+func (f *fakeLocal) BootstrapGroup(context.Context) error {
+	f.grBootstrapped = true
+	return f.grBootstrapErr
+}
+func (f *fakeLocal) StopGroupReplication(context.Context) error {
+	f.grStopped = true
+	return f.grStopErr
+}
+func (f *fakeLocal) ForceGroupMembers(_ context.Context, _ []string) error {
+	f.grForceMembers = true
+	return f.grForceMembersErr
+}
 
 func newReconciler(
 	t *testing.T,

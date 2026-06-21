@@ -40,6 +40,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'group-replication',
+      label: 'Group Replication',
+    },
+    {
+      type: 'doc',
       id: 'security-model',
       label: 'Security Model',
     },

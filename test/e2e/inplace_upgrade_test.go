@@ -32,7 +32,9 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 		ns = createTestNamespace("inplace")
 
 		By("creating a 3-instance cluster")
-		applyManifest(cluster, basicClusterManifest(cluster, instances))
+		manifest := basicClusterManifest(cluster, instances)
+		manifest = strings.Replace(manifest, "\n  storage:", "\n  failoverDelay: 60\n  storage:", 1)
+		applyManifest(cluster, manifest)
 		DeferCleanup(func() {
 			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)

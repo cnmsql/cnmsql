@@ -33,8 +33,15 @@ func newPromoteCommand() *cobra.Command {
 		Use:   "promote CLUSTER INSTANCE",
 		Short: "Promote a replica to primary (planned switchover)",
 		Long: "Request a planned switchover by setting status.targetPrimary on the " +
-			"Cluster. The operator coordinates demotion of the old primary, GTID " +
-			"catch-up and routing.",
+			"Cluster. The operator validates the target, demotes the old primary, " +
+			"waits for GTID catch-up, and promotes the new primary. Role Services " +
+			"move after the database role is safe.\n\n" +
+			"Under Group Replication, this invokes group_replication_set_as_primary " +
+			"on the group instead of the stop/promote/demote dance. The operator " +
+			"validates the target is an ONLINE SECONDARY, then observes the result.\n\n" +
+			"Refuses diverged, fenced, or already-primary instances.",
+		Example: `  # Promote a replica to primary
+  kubectl cnmysql promote cluster-sample cluster-sample-2`,
 		Args:              cobra.ExactArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -42,6 +42,8 @@ several).
 | Command | Tier | Description |
 | --- | --- | --- |
 | `status [CLUSTER]` | API | Topology, phase and per-instance health |
+| `group status [CLUSTER]` | API | Group Replication view: members, roles, quorum |
+| `group recover [CLUSTER]` | API | Request a guarded quorum recovery (last resort) |
 | `logs [CLUSTER] [INSTANCE]` | API | Stream pod logs (merged with a prefix) |
 | `promote CLUSTER INSTANCE` | API | Planned switchover |
 | `fence on\|off CLUSTER INSTANCE` | API | Isolate / restore an instance |
@@ -64,6 +66,40 @@ several).
 kubectl cnmysql status -w
 kubectl cnmysql metrics -w --watch-interval=5s --filter=mysql_global_status_threads
 ```
+
+### Group Replication
+
+`group` commands apply only to clusters with
+`spec.replication.mode: groupReplication`; they refuse to run against async
+clusters. `group status` shows the operator's cross-validated group view —
+group name, whether the group is bootstrapped, whether it currently holds
+quorum, the elected primary, and a per-member table of state/role/reachability:
+
+```sh
+kubectl cnmysql group status -w
+```
+
+`group recover` is the one destructive GR command and is gated accordingly:
+
+- **What it does:** stamps the `force-quorum-recovery` annotation on the
+  Cluster, asking the operator to force a new membership
+  (`group_replication_force_members`) from the most-advanced surviving member.
+- **Consequence:** this overrides Paxos consensus. If any member that was
+  partitioned away is still running, forcing a new membership can cause
+  **split-brain and permanent data loss**.
+- **Safety bar:** the plugin refuses unless the group is bootstrapped and has
+  *provably lost quorum*, and prints a consequence summary requiring an explicit
+  confirmation (`--yes`/`-y` to skip). The annotation is only a request — the
+  operator independently re-verifies quorum loss and proves a single safe
+  survivor (GTID-dominating every other reachable member) before acting, and
+  otherwise leaves the cluster `Blocked`.
+
+#### Command safety matrix
+
+| Command | Mutates | Consequence | Confirmation |
+| --- | --- | --- | --- |
+| `group status` | no | none (read-only) | — |
+| `group recover` | annotates Cluster | forces new membership; split-brain risk if a lost member is still live | prompt unless `--yes` |
 
 ### Passwords
 

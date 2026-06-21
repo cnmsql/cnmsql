@@ -617,7 +617,10 @@ type tokenRequest struct {
 	} `json:"status"`
 }
 
-var _ = Describe("Operator Upgrade", Ordered, func() {
+// Serial: `make deploy` rolls the shared cluster-wide operator, which watches
+// every namespace. While it rolls it stops reconciling Clusters in other specs'
+// namespaces, so this must not run alongside any other spec.
+var _ = Describe("Operator Upgrade", Ordered, Serial, func() {
 	const v2Image = "example.com/cloudnative-mysql:v0.0.2"
 
 	BeforeAll(func() {

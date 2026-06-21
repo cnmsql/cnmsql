@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -65,6 +66,22 @@ func SetInPlaceUpgrading() { inPlaceUpgrading.Store(true) }
 
 // IsInPlaceUpgrading reports whether an in-place upgrade is in flight.
 func IsInPlaceUpgrading() bool { return inPlaceUpgrading.Load() }
+
+// inPlaceUpgradeGrace is how long the in-place-upgrading flag stays set in the
+// re-exec'd manager after it adopts mysqld, giving the operator's failover
+// path a window to see it and extend the grace period.
+const inPlaceUpgradeGrace = 60 * time.Second
+
+// MarkRecentlyReExecd sets the in-place-upgrading flag in the re-exec'd
+// manager image and schedules it to be cleared after inPlaceUpgradeGrace.
+// Call this after adopting mysqld so any concurrent failover evaluation
+// sees the flag and extends its dead-man delay.
+func MarkRecentlyReExecd() {
+	inPlaceUpgrading.Store(true)
+	time.AfterFunc(inPlaceUpgradeGrace, func() {
+		inPlaceUpgrading.Store(false)
+	})
+}
 
 // ReExecForUpgrade replaces the running manager image with a fresh exec of itself,
 // passing mysqldPID via AdoptMysqldPIDEnv so the new image adopts the running
