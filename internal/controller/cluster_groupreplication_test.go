@@ -41,7 +41,7 @@ func grCluster(group *mysqlv1alpha1.GroupReplicationStatus) *mysqlv1alpha1.Clust
 }
 
 func observeGroupReplicationForTest(observed observedCluster) (*mysqlv1alpha1.GroupReplicationStatus, string) {
-	result := controllergr.NewReconciler(nil, nil).Observe(topologyObservationInput(observed, nil))
+	result := controllergr.NewReconciler(nil, nil, nil, nil).Observe(topologyObservationInput(observed, nil))
 	return result.GroupReplication, result.PrimaryName
 }
 
@@ -189,7 +189,7 @@ func TestMergeGroupReplicationSetsCurrentPrimaryAndBootstrapped(t *testing.T) {
 			HasQuorum:     true,
 		},
 	}
-	controllergr.NewReconciler(nil, nil).MergeStatus(cluster, topology.Observation{
+	controllergr.NewReconciler(nil, nil, nil, nil).MergeStatus(cluster, topology.Observation{
 		GroupReplication: observed.GroupReplication,
 	})
 	if cluster.Status.CurrentPrimary != testPrimary {
@@ -211,7 +211,7 @@ func TestMergeGroupReplicationKeepsBootstrappedSticky(t *testing.T) {
 		GroupName:    "group-uuid",
 		Bootstrapped: true,
 	})
-	controllergr.NewReconciler(nil, nil).MergeStatus(cluster, topology.Observation{})
+	controllergr.NewReconciler(nil, nil, nil, nil).MergeStatus(cluster, topology.Observation{})
 	if !cluster.Status.GroupReplication.Bootstrapped {
 		t.Fatal("bootstrapped is monotonic and must never be cleared")
 	}
@@ -233,7 +233,7 @@ func TestMergeGroupReplicationClampsObservedMaxOnScaleDown(t *testing.T) {
 	online := func(i string) mysqlv1alpha1.GroupMember {
 		return mysqlv1alpha1.GroupMember{Instance: i, State: groupreplication.MemberStateOnline, Role: groupreplication.MemberRoleSecondary}
 	}
-	controllergr.NewReconciler(nil, nil).MergeStatus(cluster, topology.Observation{
+	controllergr.NewReconciler(nil, nil, nil, nil).MergeStatus(cluster, topology.Observation{
 		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{
 			Members:           []mysqlv1alpha1.GroupMember{online("demo-1"), online("demo-2"), online("demo-3")},
 			ObservedViewMax:   3,

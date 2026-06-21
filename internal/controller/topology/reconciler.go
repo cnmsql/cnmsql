@@ -195,6 +195,15 @@ type SemiSyncControl interface {
 	) error
 }
 
+// GroupSwitchoverControl performs GR primary changes and reads instance status
+// from the mTLS control API. The operator drives switchover by calling
+// group_replication_set_as_primary; the in-Pod reconcilers never self-promote
+// under GR.
+type GroupSwitchoverControl interface {
+	Status(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error)
+	SetAsPrimary(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, memberUUID string) error
+}
+
 // QuorumResult reports whether a quorum-sensitive action is blocked.
 type QuorumResult struct {
 	Blocked     bool

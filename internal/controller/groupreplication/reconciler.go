@@ -18,6 +18,7 @@ package groupreplication
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
@@ -29,9 +30,22 @@ var _ topology.Reconciler = (*Reconciler)(nil)
 type Reconciler struct {
 	client client.Client
 	scheme *runtime.Scheme
+
+	switchoverControl topology.GroupSwitchoverControl
+	recorder          record.EventRecorder
 }
 
 // NewReconciler creates a Group Replication topology reconciler.
-func NewReconciler(kubeClient client.Client, scheme *runtime.Scheme) *Reconciler {
-	return &Reconciler{client: kubeClient, scheme: scheme}
+func NewReconciler(
+	kubeClient client.Client,
+	scheme *runtime.Scheme,
+	switchoverControl topology.GroupSwitchoverControl,
+	recorder record.EventRecorder,
+) *Reconciler {
+	return &Reconciler{
+		client:            kubeClient,
+		scheme:            scheme,
+		switchoverControl: switchoverControl,
+		recorder:          recorder,
+	}
 }

@@ -26,7 +26,7 @@ import (
 
 func (r *ClusterReconciler) topologyReconciler(cluster *mysqlv1alpha1.Cluster) topology.Reconciler {
 	if cluster.IsGroupReplication() {
-		return controllergr.NewReconciler(r.Client, r.Scheme)
+		return controllergr.NewReconciler(r.Client, r.Scheme, r.instanceControlClient(), r.Recorder)
 	}
 	return async.NewReconciler(
 		r.Client,

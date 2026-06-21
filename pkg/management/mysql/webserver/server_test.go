@@ -67,6 +67,9 @@ type fakeController struct {
 	createDBReq   *user.CreateDatabaseRequest
 	dropDBReq     *user.DropDatabaseRequest
 	listDatabases *user.ListDatabasesResponse
+
+	setAsPrimaryErr  error
+	setAsPrimaryUUID string
 }
 
 func (f *fakeController) CreateUser(_ context.Context, req user.CreateUserRequest) error {
@@ -133,6 +136,10 @@ func (f *fakeController) UpgradeInstanceManager(_ context.Context, r io.Reader, 
 func (f *fakeController) Reload(_ context.Context, req ReloadRequest) (*ReloadResponse, error) {
 	f.reloadReq = &req
 	return f.reloadResp, f.reloadErr
+}
+func (f *fakeController) SetAsPrimary(_ context.Context, memberUUID string) error {
+	f.setAsPrimaryUUID = memberUUID
+	return f.setAsPrimaryErr
 }
 
 // backupController is an InstanceController that also streams a backup.

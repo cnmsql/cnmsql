@@ -83,6 +83,9 @@ type InstanceController interface {
 	DropDatabase(ctx context.Context, req user.DropDatabaseRequest) error
 	// ListDatabases reports the user-managed MySQL schemas.
 	ListDatabases(ctx context.Context) (*user.ListDatabasesResponse, error)
+	// SetAsPrimary performs a planned Group Replication primary change to the
+	// member with the given server_uuid via group_replication_set_as_primary.
+	SetAsPrimary(ctx context.Context, memberUUID string) error
 }
 
 // BackupStreamer streams a consistent physical backup (xbstream archive) to the
@@ -117,6 +120,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /database/create", bodyActionHandler(controller.CreateDatabase))
 	mux.HandleFunc("POST /database/drop", bodyActionHandler(controller.DropDatabase))
 	mux.HandleFunc("GET /database/list", resultHandler(controller.ListDatabases))
+	mux.HandleFunc("POST /group/set-as-primary", groupSetAsPrimaryHandler(controller))
 	if streamer, ok := controller.(BackupStreamer); ok {
 		mux.HandleFunc("GET /cluster/backup", backupHandler(streamer))
 	}
@@ -173,6 +177,11 @@ type SemiSyncWaitRequest struct {
 	Count int `json:"count"`
 }
 
+// GroupSetAsPrimaryRequest is the JSON body accepted by POST /group/set-as-primary.
+type GroupSetAsPrimaryRequest struct {
+	MemberUUID string `json:"memberUUID"`
+}
+
 // ReloadRequest is the JSON body accepted by POST /reload. Parameters are the
 // user-supplied my.cnf [mysqld] settings the operator wants applied at runtime.
 type ReloadRequest struct {
@@ -214,6 +223,25 @@ func semiSyncWaitHandler(controller InstanceController) http.HandlerFunc {
 			return
 		}
 		if err := controller.SetSemiSyncWaitForReplicaCount(r.Context(), req.Count); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func groupSetAsPrimaryHandler(controller InstanceController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req GroupSetAsPrimaryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.MemberUUID == "" {
+			http.Error(w, "memberUUID is required", http.StatusBadRequest)
+			return
+		}
+		if err := controller.SetAsPrimary(r.Context(), req.MemberUUID); err != nil {
 			writeError(w, err)
 			return
 		}

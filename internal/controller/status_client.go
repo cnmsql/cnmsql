@@ -125,6 +125,12 @@ func (c *HTTPControlClient) SetSemiSyncWaitForReplicaCount(ctx context.Context, 
 	return c.action(ctx, cluster, instanceName, "/semisync/wait", webserver.SemiSyncWaitRequest{Count: count})
 }
 
+// SetAsPrimary performs a planned Group Replication primary change on the named
+// instance, designating the member with the given server_uuid.
+func (c *HTTPControlClient) SetAsPrimary(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, memberUUID string) error {
+	return c.action(ctx, cluster, instanceName, "/group/set-as-primary", webserver.GroupSetAsPrimaryRequest{MemberUUID: memberUUID})
+}
+
 // ListDatabases reads the user-managed MySQL schemas from the named instance.
 func (c *HTTPControlClient) ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error) {
 	var result user.ListDatabasesResponse

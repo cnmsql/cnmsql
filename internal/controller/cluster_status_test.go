@@ -611,7 +611,7 @@ func TestObservedGroupFailoverExcludesPlannedAndBootstrapChanges(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if from, to, ok := controllergr.NewReconciler(nil, nil).ObservedFailover(tt.before, tt.after); ok {
+			if from, to, ok := controllergr.NewReconciler(nil, nil, nil, nil).ObservedFailover(tt.before, tt.after); ok {
 				t.Fatalf("observedGroupFailover = (%q, %q, true), want no automatic failover", from, to)
 			}
 		})

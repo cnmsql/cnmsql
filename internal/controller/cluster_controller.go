@@ -174,6 +174,9 @@ type InstanceControlClient interface {
 	// instance's control API, tagged with expectedHash, so the manager validates
 	// and re-execs it in place without restarting mysqld.
 	UpgradeInstanceManager(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, binary io.Reader, expectedHash string) error
+	// SetAsPrimary performs a planned Group Replication primary change on the
+	// named instance, designating the member with the given server_uuid.
+	SetAsPrimary(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, memberUUID string) error
 }
 
 // ClusterReconciler reconciles a Cluster object.

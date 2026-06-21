@@ -146,6 +146,10 @@ func (readyStatusClient) UpgradeInstanceManager(context.Context, *mysqlv1alpha1.
 	return nil
 }
 
+func (readyStatusClient) SetAsPrimary(context.Context, *mysqlv1alpha1.Cluster, string, string) error {
+	return nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -167,6 +171,9 @@ type recordingControlClient struct {
 	upgraded     []string
 	upgradeHash  map[string]string
 	upgradeBytes map[string][]byte
+
+	setAsPrimaryInstances []string
+	setAsPrimaryUUIDs     []string
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
@@ -185,6 +192,12 @@ func (c *recordingControlClient) UpgradeInstanceManager(_ context.Context, _ *my
 		return err
 	}
 	c.upgradeBytes[instanceName] = body
+	return nil
+}
+
+func (c *recordingControlClient) SetAsPrimary(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName, memberUUID string) error {
+	c.setAsPrimaryInstances = append(c.setAsPrimaryInstances, instanceName)
+	c.setAsPrimaryUUIDs = append(c.setAsPrimaryUUIDs, memberUUID)
 	return nil
 }
 

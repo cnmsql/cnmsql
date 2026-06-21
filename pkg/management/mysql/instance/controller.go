@@ -482,6 +482,14 @@ func (c *Controller) ForceGroupMembers(ctx context.Context, addresses []string) 
 	return c.gr.ForceMembers(ctx, addresses)
 }
 
+// SetAsPrimary performs a planned primary change to the member with the given
+// server_uuid via group_replication_set_as_primary on this member.
+func (c *Controller) SetAsPrimary(ctx context.Context, memberUUID string) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Setting new primary",
+		"instance", c.name, "targetUUID", memberUUID)
+	return c.gr.SetAsPrimary(ctx, memberUUID)
+}
+
 // Promote transitions a replica to primary.
 func (c *Controller) Promote(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("instance-controller").WithValues("instance", c.name)
