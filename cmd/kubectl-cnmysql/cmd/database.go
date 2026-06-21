@@ -90,7 +90,8 @@ func newDatabaseDropCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "drop [CLUSTER] --name=DB",
 		Short: "Drop a MySQL database",
-		Long:  "Drop a MySQL database from the cluster's primary. MySQL system databases (mysql, information_schema, performance_schema, sys) cannot be dropped.",
+		Long: `Drop a MySQL database from the cluster's primary. MySQL system databases
+(mysql, information_schema, performance_schema, sys) cannot be dropped.`,
 		Example: `  # Drop a database
   kubectl cnmysql database drop cluster-sample --name=analytics`,
 		Args:              cobra.MaximumNArgs(1),
