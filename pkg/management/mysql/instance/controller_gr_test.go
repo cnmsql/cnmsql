@@ -147,11 +147,14 @@ func TestPrepareGroupJoinFreshMemberResetsAndForcesClone(t *testing.T) {
 	c, mock := newController(t, nil)
 	c.EnableGroupReplication()
 
-	// A fresh member: gtid_executed holds only its own server_uuid (from initdb).
+	// A fresh member: gtid_executed holds only its own server_uuid (from initdb)
+	// and no group view-change (group-name) GTIDs.
 	mock.ExpectQuery("SELECT @@global.server_uuid").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-self"))
 	mock.ExpectQuery("SELECT @@GLOBAL.gtid_executed").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-self:1-5"))
+	mock.ExpectQuery("SELECT @@global.group_replication_group_name").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("group-uuid"))
 	// Clear local GTIDs, force a clone, then set the recovery account.
 	mock.ExpectExec("RESET MASTER").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("group_replication_clone_threshold = 1").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -177,6 +180,32 @@ func TestPrepareGroupJoinClonedMemberOnlySetsChannel(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-self"))
 	mock.ExpectQuery("SELECT @@GLOBAL.gtid_executed").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-donor:1-100"))
+	mock.ExpectExec("CHANGE REPLICATION SOURCE TO SOURCE_USER='repl'.*group_replication_recovery").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := c.PrepareGroupJoin(context.Background(), "repl", ""); err != nil {
+		t.Fatalf("PrepareGroupJoin: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareGroupJoinFormerPrimaryRecoversIncrementally(t *testing.T) {
+	t.Parallel()
+	c, mock := newController(t, nil)
+	c.EnableGroupReplication()
+
+	// A restarted former primary: it authored the group's data under its own
+	// server_uuid, and its gtid_executed also carries the group's view-change
+	// (group-name) GTIDs. It must NOT be reset or re-cloned — only the recovery
+	// channel is set, leaving GR's distributed recovery to catch it up.
+	mock.ExpectQuery("SELECT @@global.server_uuid").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-self"))
+	mock.ExpectQuery("SELECT @@GLOBAL.gtid_executed").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-self:1-21,group-uuid:1-2"))
+	mock.ExpectQuery("SELECT @@global.group_replication_group_name").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("group-uuid"))
 	mock.ExpectExec("CHANGE REPLICATION SOURCE TO SOURCE_USER='repl'.*group_replication_recovery").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 

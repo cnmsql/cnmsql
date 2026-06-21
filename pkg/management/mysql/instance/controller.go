@@ -403,7 +403,7 @@ func (c *Controller) GroupView(ctx context.Context) (groupreplication.GroupView,
 // rejoining) is left to recover incrementally: its GTIDs are not self-authored,
 // so neither the reset nor the forced clone runs.
 func (c *Controller) PrepareGroupJoin(ctx context.Context, recoveryUser, password string) error {
-	fresh, err := c.hasSelfAuthoredGTIDs(ctx)
+	fresh, err := c.isFreshMember(ctx)
 	if err != nil {
 		return err
 	}
@@ -418,11 +418,20 @@ func (c *Controller) PrepareGroupJoin(ctx context.Context, recoveryUser, passwor
 	return c.gr.ConfigureRecoveryChannel(ctx, recoveryUser, password)
 }
 
-// hasSelfAuthoredGTIDs reports whether gtid_executed contains transactions this
-// server itself authored (its own server_uuid). A freshly initialised member
-// has only such GTIDs (from initdb); once it has cloned a donor, gtid_executed
-// holds the group's GTIDs (other server_uuids) and none of its own.
-func (c *Controller) hasSelfAuthoredGTIDs(ctx context.Context) (bool, error) {
+// isFreshMember reports whether this member has never been part of the group and
+// must therefore be provisioned wholesale (clear local initdb GTIDs + force a
+// clone) rather than recovered incrementally.
+//
+// A member is fresh only when it holds GTIDs it authored itself (its own
+// server_uuid, written by initdb) AND no group transactions. Group view-change
+// events are logged under the group-name UUID, so any member that was ever part
+// of the group — a rejoining replica or a restarted former primary — carries
+// group-name GTIDs and must not be reset/cloned. This is essential for a former
+// primary: it authored the group's data under its own server_uuid, so a
+// self-authored check alone would misclassify it as fresh and wipe it into a
+// clone loop. Members with group history are left to GR's distributed recovery,
+// which decides incremental catch-up vs. clone vs. reject on its own.
+func (c *Controller) isFreshMember(ctx context.Context) (bool, error) {
 	uuid, err := c.serverUUID(ctx)
 	if err != nil {
 		return false, err
@@ -431,7 +440,19 @@ func (c *Controller) hasSelfAuthoredGTIDs(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(gtids, uuid), nil
+	if !strings.Contains(gtids, uuid) {
+		// No self-authored GTIDs: empty (a brand-new server before any write) or
+		// only a donor's GTIDs (already cloned). Either way, leave it to distributed
+		// recovery rather than resetting and forcing another clone.
+		return false, nil
+	}
+	groupName, err := c.groupName(ctx)
+	if err != nil {
+		return false, err
+	}
+	// Self-authored GTIDs but no group view-change history ⇒ a fresh, never-joined
+	// member (initdb GTIDs only). With group history it is a returning member.
+	return groupName == "" || !strings.Contains(gtids, groupName), nil
 }
 
 // StartGroupReplication joins an existing group via distributed recovery. It
