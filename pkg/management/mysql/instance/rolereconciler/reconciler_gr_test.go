@@ -104,19 +104,65 @@ func TestGroupRoleBootstrapMemberBootstrapsFreshGroup(t *testing.T) {
 
 func TestGroupRoleBootstrappedGroupJoinsNotBootstraps(t *testing.T) {
 	t.Parallel()
-	// Same member, but the group is already bootstrapped → it joins (START), it must
-	// never bootstrap a second time (split-brain guard).
+	// Same member, but the group is already bootstrapped and the cluster is not
+	// Blocked (it is live and joinable) → it joins (START), it must never bootstrap
+	// a second time (split-brain guard). hasQuorum is intentionally left false to
+	// prove the join decision keys on the phase, not the transiently-stale quorum
+	// flag (which is false during ordinary restarts and upgrades).
 	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
 	r := newGRReconciler(t, "demo-1", mysqlv1alpha1.ClusterStatus{
+		Phase:            "Upgrading",
 		TargetPrimary:    "demo-1",
-		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true},
+		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, HasQuorum: false},
 	}, local)
 	reconcile(t, r)
 	if local.grBootstrapped {
 		t.Fatal("must not bootstrap an already-bootstrapped group")
 	}
 	if !local.grStarted {
-		t.Fatal("member should START GROUP_REPLICATION to join")
+		t.Fatal("member should START GROUP_REPLICATION to join a live group")
+	}
+}
+
+func TestGroupRoleBlockedClusterWaitsForGuidedRecovery(t *testing.T) {
+	t.Parallel()
+	// The operator has declared the cluster Blocked (a quorum crisis only guided
+	// recovery can resolve, e.g. a total outage). A plain join cannot re-form a
+	// dead group — it would block on unreachable seeds and starve the operator's
+	// guarded recovery. The member must stand down: neither bootstrap nor start,
+	// until the operator designates a safe survivor via a Pod annotation.
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	r := newGRReconciler(t, "demo-1", mysqlv1alpha1.ClusterStatus{
+		Phase:            "Blocked",
+		TargetPrimary:    "demo-1",
+		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, HasQuorum: false},
+	}, local)
+	reconcile(t, r)
+	if local.grBootstrapped {
+		t.Fatal("must not bootstrap while Blocked; recovery is operator-driven")
+	}
+	if local.grStarted {
+		t.Fatal("must not join while Blocked; that blocks on seeds and starves recovery")
+	}
+}
+
+func TestGroupRoleBlockedClusterWithQuorumStillJoins(t *testing.T) {
+	t.Parallel()
+	// Blocked is also used for guards unrelated to quorum recovery, such as a
+	// denied fence operation. If the established group still has quorum, an
+	// offline member must be allowed to join it.
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	r := newGRReconciler(t, "demo-2", mysqlv1alpha1.ClusterStatus{
+		Phase:            "Blocked",
+		TargetPrimary:    "demo-1",
+		GroupReplication: &mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, HasQuorum: true},
+	}, local)
+	reconcile(t, r)
+	if local.grBootstrapped {
+		t.Fatal("must not bootstrap an already-bootstrapped group")
+	}
+	if !local.grStarted {
+		t.Fatal("member should join a quorate group despite an unrelated Blocked phase")
 	}
 }
 
@@ -231,6 +277,9 @@ func TestGroupRoleRebootstrapAnnotationBootstrapsAndClears(t *testing.T) {
 
 	if !local.grBootstrapped {
 		t.Fatal("re-bootstrap survivor must bootstrap the group")
+	}
+	if !local.grStopped {
+		t.Fatal("re-bootstrap survivor must stop stale Group Replication state before bootstrapping")
 	}
 	if local.grStarted {
 		t.Fatal("re-bootstrap must not also START GROUP_REPLICATION")

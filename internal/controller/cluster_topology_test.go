@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/CloudNative-MySQL/cloudnative-mysql/api/v1alpha1"
+	"github.com/CloudNative-MySQL/cloudnative-mysql/internal/controller/topology"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/groupreplication"
 	"github.com/CloudNative-MySQL/cloudnative-mysql/pkg/management/mysql/webserver"
 )
@@ -380,6 +381,53 @@ func TestReconcileInstancesRecreatesAllMembersAfterTotalOutage(t *testing.T) {
 		if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &corev1.Pod{}); err != nil {
 			t.Fatalf("pod %s should be recreated after a total outage: %v", name, err)
 		}
+	}
+}
+
+// TestReconcileInstancesFinishesPartialTotalOutageRestart covers the real
+// multi-reconcile sequence: members 1 and 2 have already been recreated but
+// cannot become Ready before re-bootstrap, while member 3 is still missing.
+// The NotReady member 2 must not prevent member 3 from coming up and reporting
+// the final GTID required for safe survivor selection.
+func TestReconcileInstancesFinishesPartialTotalOutageRestart(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{
+		GroupName:    "group-uuid",
+		Bootstrapped: true,
+		HasQuorum:    false,
+	})
+	cluster.Status.Phase = topology.PhaseBlocked
+	scheme := testScheme(t)
+	plan := testPlan()
+	plan.Instances = 3
+	plan.PrimaryName = instanceName(cluster, 1)
+
+	objects := []client.Object{cluster}
+	for i := 1; i <= plan.Instances; i++ {
+		inst := plan.instanceFor(cluster, i)
+		objects = append(objects, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name:      inst.PVCName,
+			Namespace: cluster.Namespace,
+		}})
+	}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
+		Scheme: scheme,
+	}
+	for i := 1; i < plan.Instances; i++ {
+		if _, err := reconciler.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, i), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	observed := observedCluster{Plan: plan, PrimaryName: plan.PrimaryName}
+	if _, err := reconciler.reconcileInstances(ctx, cluster, plan, observed); err != nil {
+		t.Fatal(err)
+	}
+	member3 := types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 3)}
+	if err := reconciler.Get(ctx, member3, &corev1.Pod{}); err != nil {
+		t.Fatalf("third persistent member should be recreated during guided recovery: %v", err)
 	}
 }
 

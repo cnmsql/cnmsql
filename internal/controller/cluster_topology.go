@@ -119,7 +119,18 @@ func (r *ClusterReconciler) gateInstance(
 	if err != nil {
 		return false, err
 	}
-	if !podExists {
+	// During guided recovery from confirmed GR quorum loss, bring every persistent
+	// member up before applying the normal previous-member readiness gate. The
+	// operator needs each member's live GTID to prove which survivor may safely
+	// re-bootstrap the group; none of these Pods can become Ready until that
+	// re-bootstrap happens. Without this exception, the first restarted-but-NotReady
+	// Pod blocks reconciliation before the remaining missing Pods are recreated.
+	quorumRecoveryBlocked := cluster.IsGroupReplication() &&
+		cluster.Status.Phase == topology.PhaseBlocked &&
+		cluster.Status.GroupReplication != nil &&
+		cluster.Status.GroupReplication.Bootstrapped &&
+		!cluster.Status.GroupReplication.HasQuorum
+	if !podExists || quorumRecoveryBlocked {
 		hasData, err := r.instancePVCExists(ctx, cluster, inst)
 		if err != nil {
 			return false, err
