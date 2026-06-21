@@ -19,6 +19,7 @@ package instance
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -49,7 +50,24 @@ type FifoLog struct {
 // target.
 func NewFifoLog(fifoPath string, logger logr.Logger) (*FifoLog, error) {
 	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
-		return nil, fmt.Errorf("fifo_log: mkfifo %s: %w", fifoPath, err)
+		// A crashed prior process can leave its FIFO behind on a persistent
+		// volume. A stale named pipe carries no data — its reader and writer are
+		// both gone — so it is safe to remove and recreate. Anything else at the
+		// path is unexpected and left untouched so the caller still errors out.
+		if !errors.Is(err, syscall.EEXIST) {
+			return nil, fmt.Errorf("fifo_log: mkfifo %s: %w", fifoPath, err)
+		}
+		info, statErr := os.Stat(fifoPath)
+		if statErr != nil || info.Mode()&os.ModeNamedPipe == 0 {
+			return nil, fmt.Errorf("fifo_log: mkfifo %s: %w", fifoPath, err)
+		}
+		logger.Info("Removing a stale FIFO left by a previous run", "fifo", fifoPath)
+		if rmErr := os.Remove(fifoPath); rmErr != nil {
+			return nil, fmt.Errorf("fifo_log: removing stale fifo %s: %w", fifoPath, rmErr)
+		}
+		if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+			return nil, fmt.Errorf("fifo_log: mkfifo %s: %w", fifoPath, err)
+		}
 	}
 
 	rfd, err := syscall.Open(fifoPath, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
