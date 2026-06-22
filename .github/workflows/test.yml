@@ -67,3 +67,46 @@ jobs:
       run: |
         go mod tidy
         make test
+
+    - name: Build coverage report
+      if: matrix.k8s-version == needs.generate-jobs.outputs.latest
+      run: |
+        go tool cover -func=cover.out > coverage.txt
+        go tool cover -html=cover.out -o coverage.html
+        awk '/^total:/ { print $3 }' coverage.txt | tr -d '%' > coverage-total.txt
+
+        total=$(cat coverage-total.txt)
+        if [[ ! "$total" =~ ^(100(\.0)?|[0-9]{1,2}(\.[0-9])?)$ ]]; then
+          echo "::error::Could not extract a valid coverage percentage"
+          exit 1
+        fi
+
+        {
+          echo '## Code coverage'
+          echo
+          echo "**${total}%** of statements are covered."
+          echo
+          echo 'The full text and HTML reports are attached to this workflow run.'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload coverage report
+      if: matrix.k8s-version == needs.generate-jobs.outputs.latest
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: coverage-report
+        path: |
+          cover.out
+          coverage.txt
+          coverage.html
+          coverage-total.txt
+        if-no-files-found: error
+        retention-days: 14
+
+    - name: Upload coverage summary
+      if: matrix.k8s-version == needs.generate-jobs.outputs.latest
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: coverage-summary
+        path: coverage-total.txt
+        if-no-files-found: error
+        retention-days: 1

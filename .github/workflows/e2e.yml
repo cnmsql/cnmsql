@@ -1,6 +1,8 @@
 name: E2E Tests
 
 on:
+  schedule:
+  - cron: '0 1 * * *'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -16,7 +18,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: e2e-${{ github.event.inputs.pr_number || github.run_id }}
+  group: e2e-${{ github.event.inputs.pr_number || github.event_name }}
   cancel-in-progress: true
 
 env:

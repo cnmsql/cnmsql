@@ -1,0 +1,144 @@
+name: Publish coverage report
+
+on:
+  workflow_run:
+    workflows: [Unit Tests]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  report:
+    name: Report on pull request
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+    - name: Download and validate coverage result
+      id: coverage
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        artifact_id=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+          --jq '[.artifacts[] | select(.name == "coverage-summary" and .expired == false and .size_in_bytes < 4096)] | if length == 1 then .[0].id else empty end')
+
+        if [[ -z "$artifact_id" ]]; then
+          echo "::error::Expected exactly one small coverage-summary artifact"
+          exit 1
+        fi
+
+        gh api "repos/$REPOSITORY/actions/artifacts/$artifact_id/zip" > coverage-summary.zip
+        unzip -q coverage-summary.zip -d coverage-summary
+
+        total=$(< coverage-summary/coverage-total.txt)
+        if [[ ! "$total" =~ ^(100(\.0)?|[0-9]{1,2}(\.[0-9])?)$ ]]; then
+          echo "::error::Coverage total has an unexpected format"
+          exit 1
+        fi
+
+        echo "total=$total" >> "$GITHUB_OUTPUT"
+
+    - name: Create or update pull request comment
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        REPORTED_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
+        RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
+        TOTAL: ${{ steps.coverage.outputs.total }}
+      run: |
+        if [[ -z "$PR_NUMBER" ]]; then
+          echo "::notice::The workflow run is not associated with a pull request"
+          exit 0
+        fi
+
+        current_sha=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)
+        if [[ -z "$REPORTED_SHA" || "$REPORTED_SHA" != "$current_sha" ]]; then
+          echo "::notice::Skipping a stale coverage report for $REPORTED_SHA; the pull request is now at $current_sha"
+          exit 0
+        fi
+
+        marker='<!-- cnmsql-code-coverage -->'
+        body=$(printf '%s\n## Code coverage\n\n**%s%%** of statements are covered. [Full report and HTML artifact](%s).' \
+          "$marker" "$TOTAL" "$RUN_URL")
+        comment_id=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+          --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\"))) | .id" \
+          | head -n 1)
+
+        if [[ -n "$comment_id" ]]; then
+          gh api --method PATCH "repos/$REPOSITORY/issues/comments/$comment_id" -f body="$body" --silent
+        else
+          gh api --method POST "repos/$REPOSITORY/issues/$PR_NUMBER/comments" -f body="$body" --silent
+        fi
+
+  badge:
+    name: Update coverage badge
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+    - name: Download and validate coverage result
+      id: coverage
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        artifact_id=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+          --jq '[.artifacts[] | select(.name == "coverage-summary" and .expired == false and .size_in_bytes < 4096)] | if length == 1 then .[0].id else empty end')
+
+        if [[ -z "$artifact_id" ]]; then
+          echo "::error::Expected exactly one small coverage-summary artifact"
+          exit 1
+        fi
+
+        gh api "repos/$REPOSITORY/actions/artifacts/$artifact_id/zip" > coverage-summary.zip
+        unzip -q coverage-summary.zip -d coverage-summary
+
+        total=$(< coverage-summary/coverage-total.txt)
+        if [[ ! "$total" =~ ^(100(\.0)?|[0-9]{1,2}(\.[0-9])?)$ ]]; then
+          echo "::error::Coverage total has an unexpected format"
+          exit 1
+        fi
+
+        echo "total=$total" >> "$GITHUB_OUTPUT"
+
+    - name: Publish badge data
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        TOTAL: ${{ steps.coverage.outputs.total }}
+      run: |
+        color=$(awk -v coverage="$TOTAL" 'BEGIN {
+          if (coverage >= 80) print "brightgreen"
+          else if (coverage >= 60) print "green"
+          else if (coverage >= 40) print "yellowgreen"
+          else if (coverage >= 20) print "orange"
+          else print "red"
+        }')
+        badge=$(printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$TOTAL" "$color")
+
+        if ! gh api "repos/$REPOSITORY/git/ref/heads/badges" --silent 2>/dev/null; then
+          default_sha=$(gh api "repos/$REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)
+          gh api --method POST "repos/$REPOSITORY/git/refs" \
+            -f ref='refs/heads/badges' -f sha="$default_sha" --silent
+        fi
+
+        file_sha=$(gh api "repos/$REPOSITORY/contents/.github/badges/coverage.json?ref=badges" \
+          --jq .sha 2>/dev/null || true)
+        encoded=$(printf '%s' "$badge" | base64 -w 0)
+        args=(--method PUT "repos/$REPOSITORY/contents/.github/badges/coverage.json"
+          -f message='chore: update coverage badge'
+          -f content="$encoded"
+          -f branch=badges)
+        if [[ -n "$file_sha" ]]; then
+          args+=(-f sha="$file_sha")
+        fi
+        gh api "${args[@]}" --silent

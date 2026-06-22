@@ -4,8 +4,9 @@
 
 <p align="center">
   <a href="https://github.com/cnmsql/cnmsql/actions/workflows/test.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/test.yml/badge.svg" alt="Unit Tests" /></a>
+  <a href="https://github.com/cnmsql/cnmsql/actions/workflows/test.yml"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcnmsql%2Fcnmsql%2Fbadges%2F.github%2Fbadges%2Fcoverage.json" alt="Code Coverage" /></a>
   <a href="https://github.com/cnmsql/cnmsql/actions/workflows/lint.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/lint.yml/badge.svg" alt="Lint" /></a>
-  <a href="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml/badge.svg" alt="E2E Tests" /></a>
+  <a href="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml?query=event%3Aschedule"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml/badge.svg?branch=main&event=schedule" alt="Nightly E2E Tests" /></a>
   <a href="https://github.com/cnmsql/cnmsql/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
   <a href="https://goreportcard.com/report/github.com/cnmsql/cnmsql"><img src="https://goreportcard.com/badge/github.com/cnmsql/cnmsql" alt="Go Report Card" /></a>
   <a href="https://cnmsql.co"><img src="https://img.shields.io/badge/docs-cloudnative--mysql.io-blue" alt="Documentation" /></a>
