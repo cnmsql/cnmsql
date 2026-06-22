@@ -22,6 +22,8 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
+const firstInstance = "demo-1"
+
 func grTestCluster(gr *mysqlv1alpha1.GroupReplicationStatus) *mysqlv1alpha1.Cluster {
 	c := &mysqlv1alpha1.Cluster{}
 	c.Name = "demo"
@@ -36,7 +38,7 @@ func TestGroupMemberRowsAreSortedAndFormatted(t *testing.T) {
 	gr := &mysqlv1alpha1.GroupReplicationStatus{
 		Members: []mysqlv1alpha1.GroupMember{
 			{Instance: "demo-3", State: "RECOVERING", Role: "SECONDARY", Reachable: true},
-			{Instance: "demo-1", State: "ONLINE", Role: "PRIMARY", Reachable: true},
+			{Instance: firstInstance, State: "ONLINE", Role: "PRIMARY", Reachable: true},
 			{Instance: "demo-2", State: "UNREACHABLE", Role: "SECONDARY", Reachable: false},
 		},
 	}
@@ -44,7 +46,7 @@ func TestGroupMemberRowsAreSortedAndFormatted(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	if rows[0][0] != "demo-1" || rows[1][0] != "demo-2" || rows[2][0] != "demo-3" {
+	if rows[0][0] != firstInstance || rows[1][0] != "demo-2" || rows[2][0] != "demo-3" {
 		t.Errorf("rows not sorted by instance: %v", rows)
 	}
 	// REACHABLE column renders the bool as yes/no.
