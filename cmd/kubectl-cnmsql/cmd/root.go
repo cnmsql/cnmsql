@@ -75,7 +75,8 @@ func NewRootCommand() *cobra.Command {
 }
 
 // newEnv resolves the shared client environment from the persistent flags.
-func newEnv() (*plugin.Env, error) {
+// It is a variable so command behavior can be unit-tested with fake clients.
+var newEnv = func() (*plugin.Env, error) {
 	return plugin.NewEnv(configFlags)
 }
 

@@ -47,7 +47,7 @@ func init() {
 type Env struct {
 	Namespace   string
 	Client      client.Client
-	Clientset   *kubernetes.Clientset
+	Clientset   kubernetes.Interface
 	RESTConfig  *rest.Config
 	configFlags *genericclioptions.ConfigFlags
 }
