@@ -146,6 +146,9 @@ full field list.
 - **`managed.roles` is for cluster-level accounts** the platform owner controls
   inline on the `Cluster`: the application owner, a reporting account. Editing
   one means editing the shared `Cluster`, so it is not a self-service surface.
+- **[`DatabaseUser`](./database-users.md) is for standalone accounts** that span
+  several schemas (or none) and are managed by an application team without
+  touching the `Cluster`, including the safe "DBaaS admin" recipe.
 
 Mind the namespace constraint when planning delegation. Because a `Database`
 must live in its `Cluster`'s namespace, the two tenancy models delegate

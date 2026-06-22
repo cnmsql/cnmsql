@@ -1,6 +1,6 @@
 # 023 — DatabaseUser CR
 
-**Status:** proposed
+**Status:** done
 **Milestone:** M-DBU
 
 Add a standalone `DatabaseUser` CRD: a cluster-installation-wide MySQL user,

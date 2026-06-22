@@ -33,6 +33,8 @@ Package v1alpha1 contains API Schema definitions for the mysql v1alpha1 API grou
 - [ClusterList](#clusterlist)
 - [Database](#database)
 - [DatabaseList](#databaselist)
+- [DatabaseUser](#databaseuser)
+- [DatabaseUserList](#databaseuserlist)
 - [ImageCatalog](#imagecatalog)
 - [ImageCatalogList](#imagecataloglist)
 - [ScheduledBackup](#scheduledbackup)
@@ -945,7 +947,7 @@ DatabaseGrant describes a single MySQL GRANT statement.
 
 
 _Appears in:_
-- [DatabaseUser](#databaseuser)
+- [InlineUser](#inlineuser)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -991,7 +993,7 @@ _Appears in:_
 | `ensure` _[EnsureOption](#ensureoption)_ | Ensure controls whether the database is created or dropped. | present | Enum: [present absent] <br />Optional: \{\} <br /> |
 | `characterSet` _string_ | CharacterSet of the database (e.g. "utf8mb4"). |  | Optional: \{\} <br /> |
 | `collation` _string_ | Collation of the database (e.g. "utf8mb4_0900_ai_ci"). |  | Optional: \{\} <br /> |
-| `users` _[DatabaseUser](#databaseuser) array_ | Users is the list of users managed for this database. |  | Optional: \{\} <br /> |
+| `users` _[InlineUser](#inlineuser) array_ | Users is the list of users managed for this database. |  | Optional: \{\} <br /> |
 | `reclaimPolicy` _string_ | ReclaimPolicy controls what happens to the MySQL database when the<br />Database object is deleted. | retain | Enum: [delete retain] <br />Optional: \{\} <br /> |
 
 
@@ -1019,20 +1021,113 @@ _Appears in:_
 
 
 
-DatabaseUser describes a MySQL user managed declaratively.
+DatabaseUser is the Schema for the databaseusers API. It owns a single,
+installation-wide MySQL account (name@host) and its grants, not scoped to a
+single Database.
 
 
 
 _Appears in:_
-- [DatabaseSpec](#databasespec)
+- [DatabaseUserList](#databaseuserlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name of the user. |  | Required: \{\} <br /> |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
+| `kind` _string_ | `DatabaseUser` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `spec` _[DatabaseUserSpec](#databaseuserspec)_ | spec defines the desired state of DatabaseUser |  | Required: \{\} <br /> |
+| `status` _[DatabaseUserStatus](#databaseuserstatus)_ | status defines the observed state of DatabaseUser |  | Optional: \{\} <br /> |
+
+
+#### DatabaseUserGrant
+
+
+
+DatabaseUserGrant describes a single MySQL GRANT statement.
+
+
+
+_Appears in:_
+- [DatabaseUserSpec](#databaseuserspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `privileges` _string array_ | Privileges is the list of privileges (e.g. "SELECT", "INSERT", "ALL"). |  | MinItems: 1 <br /> |
+| `on` _string_ | On is the target of the grant (e.g. "*.*", "mydb.*", "mydb.mytable").<br />Defaults to "*.*". | *.* | Optional: \{\} <br /> |
+
+
+#### DatabaseUserList
+
+
+
+DatabaseUserList contains a list of DatabaseUser.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
+| `kind` _string_ | `DatabaseUserList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[DatabaseUser](#databaseuser) array_ |  |  |  |
+
+
+#### DatabaseUserSpec
+
+
+
+DatabaseUserSpec defines the desired state of DatabaseUser. A DatabaseUser owns
+a single installation-wide MySQL account (name@host); unlike the inline users of
+a Database, it is not scoped to a single schema and its grants may target
+anything in the instance.
+
+
+
+_Appears in:_
+- [DatabaseUser](#databaseuser)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `cluster` _[LocalObjectReference](#localobjectreference)_ | Cluster references the MySQL cluster this user belongs to. |  | Required: \{\} <br /> |
+| `name` _string_ | Name is the MySQL user name. Defaults to the resource name if empty. |  | MaxLength: 32 <br />Optional: \{\} <br /> |
 | `host` _string_ | Host the user connects from. Defaults to "%". | % | Optional: \{\} <br /> |
 | `ensure` _[EnsureOption](#ensureoption)_ | Ensure controls whether the user is created or dropped. | present | Enum: [present absent] <br />Optional: \{\} <br /> |
-| `passwordSecret` _[SecretKeySelector](#secretkeyselector)_ | PasswordSecret references the secret key holding the user's password. |  | Optional: \{\} <br /> |
-| `grants` _[DatabaseGrant](#databasegrant) array_ | Grants is the list of grants applied to the user. |  | Optional: \{\} <br /> |
+| `passwordSecret` _[SecretKeySelector](#secretkeyselector)_ | PasswordSecret references the secret key holding the user's password.<br />Required when Ensure=present. |  | Optional: \{\} <br /> |
+| `superuser` _boolean_ | Superuser grants ALL PRIVILEGES on *.* WITH GRANT OPTION. It is unsafe for<br />multi-tenant use and is mutually exclusive with Grants. For a constrained<br />"DBaaS admin", use a Grants entry with ALL on *.* instead, which omits<br />WITH GRANT OPTION. | false | Optional: \{\} <br /> |
+| `maxUserConnections` _integer_ | MaxUserConnections resource limit. 0 = no limit. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxQueriesPerHour` _integer_ | MaxQueriesPerHour resource limit. 0 = no limit. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxUpdatesPerHour` _integer_ | MaxUpdatesPerHour resource limit. 0 = no limit. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxConnectionsPerHour` _integer_ | MaxConnectionsPerHour resource limit. 0 = no limit. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `requireTLS` _string_ | RequireTLS sets REQUIRE X509, REQUIRE SSL, or none. | none | Enum: [x509 ssl none] <br />Optional: \{\} <br /> |
+| `comment` _string_ | Comment is an optional user comment. |  | Optional: \{\} <br /> |
+| `grants` _[DatabaseUserGrant](#databaseusergrant) array_ | Grants is the list of grants applied to the user. Targets are<br />installation-wide and have no default schema (unlike Database.spec.users). |  | Optional: \{\} <br /> |
+| `reclaimPolicy` _string_ | ReclaimPolicy controls what happens to the MySQL user when the<br />DatabaseUser object is deleted. | retain | Enum: [delete retain] <br />Optional: \{\} <br /> |
+
+
+#### DatabaseUserStatus
+
+
+
+DatabaseUserStatus defines the observed state of DatabaseUser.
+
+
+
+_Appears in:_
+- [DatabaseUser](#databaseuser)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `applied` _boolean_ | Applied is true once the desired state has been reconciled. |  | Optional: \{\} <br /> |
+| `message` _string_ | Message provides additional detail, typically an error. |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration is the generation observed by the controller. |  | Optional: \{\} <br /> |
+| `passwordSecretResourceVersion` _string_ | PasswordSecretResourceVersion records the source Secret resourceVersion<br />last applied to MySQL, so the password is re-applied only when it changes. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest observations of the user state. |  | Optional: \{\} <br /> |
 
 
 #### EmbeddedObjectMetadata
@@ -1065,7 +1160,8 @@ _Validation:_
 
 _Appears in:_
 - [DatabaseSpec](#databasespec)
-- [DatabaseUser](#databaseuser)
+- [DatabaseUserSpec](#databaseuserspec)
+- [InlineUser](#inlineuser)
 - [RoleConfiguration](#roleconfiguration)
 
 | Field | Description |
@@ -1194,6 +1290,28 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `images` _[CatalogImage](#catalogimage) array_ | Images is the list of major version to container image mappings. Each<br />major version must appear at most once. |  | MaxItems: 8 <br />MinItems: 1 <br /> |
+
+
+#### InlineUser
+
+
+
+InlineUser describes a MySQL user managed declaratively as part of a Database.
+For an installation-wide user not scoped to a single database, use the standalone
+DatabaseUser CRD instead.
+
+
+
+_Appears in:_
+- [DatabaseSpec](#databasespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name of the user. |  | Required: \{\} <br /> |
+| `host` _string_ | Host the user connects from. Defaults to "%". | % | Optional: \{\} <br /> |
+| `ensure` _[EnsureOption](#ensureoption)_ | Ensure controls whether the user is created or dropped. | present | Enum: [present absent] <br />Optional: \{\} <br /> |
+| `passwordSecret` _[SecretKeySelector](#secretkeyselector)_ | PasswordSecret references the secret key holding the user's password. |  | Optional: \{\} <br /> |
+| `grants` _[DatabaseGrant](#databasegrant) array_ | Grants is the list of grants applied to the user. |  | Optional: \{\} <br /> |
 
 
 #### LocalObjectReference
@@ -1745,8 +1863,9 @@ SecretKeySelector selects a key from a Secret in the same namespace.
 
 
 _Appears in:_
-- [DatabaseUser](#databaseuser)
+- [DatabaseUserSpec](#databaseuserspec)
 - [ExternalCluster](#externalcluster)
+- [InlineUser](#inlineuser)
 - [MonitoringConfiguration](#monitoringconfiguration)
 - [RoleConfiguration](#roleconfiguration)
 - [S3Credentials](#s3credentials)

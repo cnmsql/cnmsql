@@ -55,6 +55,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'database-users',
+      label: 'Database Users',
+    },
+    {
+      type: 'doc',
       id: 'deployment-modes',
       label: 'Deployment Modes',
     },
