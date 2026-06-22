@@ -219,15 +219,26 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
-	It("confines a DBaaS admin to data: no control plane, no touching operator accounts", func() {
+	It("confines a DBaaS admin: broad *.* grant carved out of the system schemas", func() {
 		const dbaasCR, dbaasPass, dbaasSec = "dbaas-admin", "dbaas-secret", "dbaas-admin-pw"
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+
+		By("enabling partial_revokes on the server (users set this via spec.mysql.parameters)")
+		_, err := mysqlExec(primary, "root", rootPass, "", "SET PERSIST partial_revokes = ON;")
+		Expect(err).NotTo(HaveOccurred())
+
 		applyManifest(dbaasSec, passwordSecretManifest(dbaasSec, dbaasPass))
 
-		By("creating a DBaaS admin with broad static data privileges (not ALL on *.*)")
+		By("creating a DBaaS admin: broad static privileges on *.*, system schemas revoked")
 		staticPrivs := `["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", ` +
 			`"INDEX", "CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE", "EVENT", "TRIGGER"]`
-		applyManifest(dbaasCR, databaseUserCustomManifest(dbaasCR, cluster, "", dbaasSec, "delete",
-			"    - privileges: "+staticPrivs+"\n      \"on\": \"*.*\""))
+		writes := `["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]`
+		spec := "    - privileges: " + staticPrivs + "\n      \"on\": \"*.*\"\n" +
+			"  revokes:\n" +
+			"    - privileges: " + writes + "\n      \"on\": \"mysql.*\"\n" +
+			"    - privileges: " + writes + "\n      \"on\": \"sys.*\""
+		applyManifest(dbaasCR, databaseUserCustomManifest(dbaasCR, cluster, "", dbaasSec, "delete", spec))
 		DeferCleanup(func() {
 			_, _ = kubectl("delete", "databaseuser", dbaasCR, "-n", testNamespace, "--ignore-not-found")
 		})
@@ -239,26 +250,19 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 			g.Expect(applied).To(Equal("true"))
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
-		primary := clusterPrimary(cluster)
+		By("verifying it can work an application schema")
+		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "app",
+			"CREATE TABLE IF NOT EXISTS confined (id INT PRIMARY KEY); REPLACE INTO confined VALUES (1);")
+		Expect(err).NotTo(HaveOccurred(), "DBaaS admin must have full data access to tenant schemas")
 
-		rootPass := secretPassword(cluster + "-root")
+		By("verifying the system-schema carve-out blocks writes to the grant tables")
+		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "",
+			"UPDATE mysql.user SET account_locked = 'Y' WHERE User = 'cnmsql_repl';")
+		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to write mysql.user")
 
-		By("verifying it cannot stop replication (no REPLICATION_SLAVE_ADMIN)")
-		_, err := mysqlExec(primary, dbaasCR, dbaasPass, "", "STOP REPLICA;")
-		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to control replication")
-
-		By("verifying it cannot change server configuration (no SYSTEM_VARIABLES_ADMIN)")
-		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "", "SET GLOBAL super_read_only = OFF;")
-		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to change global server variables")
-
-		By("attempting a self-escalation (its effect, if any, must not stick)")
-		// Whether MySQL rejects this GRANT outright is version-dependent; the
-		// security property we actually assert is that the admin holds no dynamic
-		// admin privileges afterwards (checked authoritatively as root below).
+		By("verifying it can no longer self-escalate a cluster-control privilege")
 		_, _ = mysqlExec(primary, dbaasCR, dbaasPass, "",
 			fmt.Sprintf("GRANT REPLICATION_SLAVE_ADMIN ON *.* TO '%s'@'%%';", dbaasCR))
-
-		By("verifying (as root) it holds no cluster-control privileges")
 		grants, err := mysqlExec(primary, "root", rootPass, "",
 			fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", dbaasCR))
 		Expect(err).NotTo(HaveOccurred())
@@ -270,11 +274,9 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 				"DBaaS admin must not hold the %s privilege", priv)
 		}
 
-		By("verifying it still cannot stop replication after the attempt")
+		By("verifying it cannot control replication or drop operator accounts")
 		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "", "STOP REPLICA;")
-		Expect(err).To(HaveOccurred(), "DBaaS admin gained replication control after self-grant")
-
-		By("verifying it cannot drop an operator account")
+		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to control replication")
 		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "", "DROP USER 'cnmsql_repl'@'%';")
 		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to drop operator accounts")
 

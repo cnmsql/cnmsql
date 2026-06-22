@@ -73,6 +73,23 @@ func TestDatabaseUserValidateAllowsSchemaScopedAll(t *testing.T) {
 	}
 }
 
+func TestDatabaseUserValidateRevokes(t *testing.T) {
+	ok := validUser(func(u *DatabaseUser) {
+		u.Spec.Grants = []DatabaseUserGrant{{Privileges: SafeDBaaSAdminPrivileges(), On: "*.*"}}
+		u.Spec.Revokes = SafeDBaaSAdminRevokes()
+	})
+	if errs := ok.Validate(); len(errs) != 0 {
+		t.Fatalf("safe-admin grants+revokes must validate, got %v", errs)
+	}
+
+	noTarget := validUser(func(u *DatabaseUser) {
+		u.Spec.Revokes = []DatabaseUserRevoke{{Privileges: []string{"INSERT"}}}
+	})
+	if errs := noTarget.Validate(); len(errs) == 0 {
+		t.Errorf("expected a revoke without a target to be rejected")
+	}
+}
+
 func TestDatabaseUserValidateRejectsReservedAndSuperuserGrants(t *testing.T) {
 	reserved := validUser(func(u *DatabaseUser) { u.Spec.Name = "cnmsql_repl" })
 	if errs := reserved.Validate(); len(errs) == 0 {

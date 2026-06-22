@@ -97,6 +97,14 @@ type DatabaseUserSpec struct {
 	// +optional
 	Grants []DatabaseUserGrant `json:"grants,omitempty"`
 
+	// Revokes lists privileges to revoke after Grants are applied, each scoped to
+	// an explicit target (typically a system schema such as "mysql.*"). Combined
+	// with partial_revokes=ON on the cluster, this carves the system schemas out
+	// of a broad "*.*" grant so a cross-database admin cannot modify the grant
+	// tables and self-escalate. Revokes are applied after Grants, in order.
+	// +optional
+	Revokes []DatabaseUserRevoke `json:"revokes,omitempty"`
+
 	// ReclaimPolicy controls what happens to the MySQL user when the
 	// DatabaseUser object is deleted.
 	// +kubebuilder:validation:Enum=delete;retain
@@ -116,6 +124,19 @@ type DatabaseUserGrant struct {
 	// +kubebuilder:default:=`*.*`
 	// +optional
 	On string `json:"on,omitempty"`
+}
+
+// DatabaseUserRevoke describes a single MySQL REVOKE statement, applied after
+// the grants. The target is required: a revoke must name the schema (or schema
+// object) it carves out, so it cannot accidentally strip a global grant.
+type DatabaseUserRevoke struct {
+	// Privileges is the list of privileges to revoke (e.g. "INSERT", "UPDATE").
+	// +kubebuilder:validation:MinItems=1
+	Privileges []string `json:"privileges"`
+
+	// On is the target to revoke from (e.g. "mysql.*", "sys.*").
+	// +kubebuilder:validation:Required
+	On string `json:"on"`
 }
 
 // DatabaseUserStatus defines the observed state of DatabaseUser.

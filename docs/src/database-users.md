@@ -115,49 +115,68 @@ A common DBaaS ask is "give the tenant a near-root account on their data, but
 make sure they can't break what the operator relies on" (replication, fencing,
 the operator's own `cnmsql_*` accounts).
 
-The trap is `GRANT ALL ON *.*`. In MySQL 8.0 a global `ALL` grant does not just
+There are two traps, and a real cross-database admin has to avoid both.
+
+**Trap 1: `GRANT ALL ON *.*`.** In MySQL 8.0 a global `ALL` grant does not just
 grant the static data privileges; it also grants **every dynamic admin
 privilege** registered on the server, including `REPLICATION_SLAVE_ADMIN`,
 `SYSTEM_VARIABLES_ADMIN`, `GROUP_REPLICATION_ADMIN`, and `SHUTDOWN`. That puts the
 tenant directly on the operator's control plane, with or without `WITH GRANT
-OPTION`. For that reason cnmsql **rejects** `ALL` (and `ALL PRIVILEGES`) when the
-target is `*.*`.
+OPTION`. So cnmsql **rejects** `ALL` (and `ALL PRIVILEGES`) when the target is
+`*.*`. Grant the broad **static** privileges by name instead.
 
-Build a DBaaS admin by granting the broad **static** privileges by name instead.
-These cover all data and schema objects across every database but never include a
-dynamic admin privilege:
+**Trap 2: any write on `*.*` reaches the `mysql` schema.** Global privileges
+apply to every database, and `*.*` includes `mysql`. So `INSERT`/`UPDATE`/`DELETE`
+on `*.*` gives the tenant write access to `mysql.user` and `mysql.global_grants`;
+with that plus `FLUSH PRIVILEGES` they can hand themselves any privilege. Writing
+the grant tables is root-equivalent, no `GRANT OPTION` required.
+
+The fix for trap 2 is to carve the system schemas out of the `*.*` grant using
+MySQL's `partial_revokes`. A `DatabaseUser` expresses the carve-out with
+`spec.revokes`, which the operator applies **after** the grants:
 
 ```yaml
+# Cluster: enable partial_revokes (required for the carve-out to take effect)
+# spec:
+#   mysql:
+#     parameters:
+#       partial_revokes: "ON"
+---
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: DatabaseUser
+metadata:
+  name: tenant-admin
+  namespace: shared
 spec:
   cluster: { name: shared }
   passwordSecret: { name: tenant-admin-pw, key: password }
   grants:
-    - privileges:
-        - SELECT
-        - INSERT
-        - UPDATE
-        - DELETE
-        - CREATE
-        - DROP
-        - ALTER
-        - INDEX
-        - REFERENCES
-        - CREATE TEMPORARY TABLES
-        - LOCK TABLES
-        - EXECUTE
-        - CREATE VIEW
-        - SHOW VIEW
-        - CREATE ROUTINE
-        - ALTER ROUTINE
-        - EVENT
-        - TRIGGER
+    - privileges: [SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX,
+        REFERENCES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW,
+        SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER]
       on: "*.*"
+  revokes:
+    - privileges: [INSERT, UPDATE, DELETE, CREATE, DROP, ALTER]
+      on: "mysql.*"
+    - privileges: [INSERT, UPDATE, DELETE, CREATE, DROP, ALTER]
+      on: "sys.*"
 ```
 
-`kubectl cnmsql databaseuser dbaas` scaffolds exactly this set, so you do not have
-to type it out. Scoping `ALL` to a single database (`on: "mydb.*"`) is also
-allowed and safe, because a database-level `ALL` grants no global dynamic
-privileges.
+`kubectl cnmsql databaseuser dbaas` scaffolds exactly this (grants + revokes), so
+you do not have to type it out. The admin keeps full read/write over every
+current and future tenant schema but can no longer touch the grant tables.
+
+Two important caveats:
+
+- **`partial_revokes` must be `ON`.** Set it on the cluster via
+  `spec.mysql.parameters`. If it is off, the `REVOKE … ON mysql.*` fails and the
+  `DatabaseUser` stays unapplied with an error, rather than silently leaving the
+  account root-equivalent.
+- **Without the revokes, a `*.*` write grant is still root-equivalent.** cnmsql
+  does not reject `*.*` writes (they are needed for this pattern), so it is on you
+  to include the system-schema carve-out. Scoping privileges to specific
+  databases (`on: "mydb.*"`) avoids the `mysql` schema entirely and needs no
+  `partial_revokes`.
 
 As a second layer, cnmsql rejects a `DatabaseUser` that asks for a named
 cluster-control privilege (the same idea as the dangerous-config-key denylist).
@@ -184,7 +203,8 @@ A `DatabaseUser` is rejected (`status.conditions[Ready].reason = Invalid`) when:
 - `superuser: true` is combined with explicit `grants`;
 - `requireTLS` is not one of `none`, `ssl`, `x509`;
 - any grant requests a denied cluster-control privilege (see above);
-- any grant requests `ALL` on the global `*.*` target.
+- any grant requests `ALL` on the global `*.*` target;
+- a `revokes` entry omits its `on` target or lists no privileges.
 
 ## Managing users with `kubectl cnmsql`
 

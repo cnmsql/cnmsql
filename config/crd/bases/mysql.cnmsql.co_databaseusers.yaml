@@ -159,6 +159,35 @@ spec:
                 - ssl
                 - none
                 type: string
+              revokes:
+                description: |-
+                  Revokes lists privileges to revoke after Grants are applied, each scoped to
+                  an explicit target (typically a system schema such as "mysql.*"). Combined
+                  with partial_revokes=ON on the cluster, this carves the system schemas out
+                  of a broad "*.*" grant so a cross-database admin cannot modify the grant
+                  tables and self-escalate. Revokes are applied after Grants, in order.
+                items:
+                  description: |-
+                    DatabaseUserRevoke describes a single MySQL REVOKE statement, applied after
+                    the grants. The target is required: a revoke must name the schema (or schema
+                    object) it carves out, so it cannot accidentally strip a global grant.
+                  properties:
+                    "on":
+                      description: On is the target to revoke from (e.g. "mysql.*",
+                        "sys.*").
+                      type: string
+                    privileges:
+                      description: Privileges is the list of privileges to revoke
+                        (e.g. "INSERT", "UPDATE").
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                  required:
+                  - "on"
+                  - privileges
+                  type: object
+                type: array
               superuser:
                 default: false
                 description: |-

@@ -124,6 +124,31 @@ func TestDatabaseUserCreates(t *testing.T) {
 	}
 }
 
+func TestDatabaseUserCreatesWithRevokes(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.Grants = []mysqlv1alpha1.DatabaseUserGrant{
+			{Privileges: mysqlv1alpha1.SafeDBaaSAdminPrivileges(), On: "*.*"},
+		}
+		d.Spec.Revokes = mysqlv1alpha1.SafeDBaaSAdminRevokes()
+	})
+	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
+
+	reconcileUserToApplied(t, r, du)
+
+	if len(control.created) != 1 {
+		t.Fatalf("created = %d, want 1", len(control.created))
+	}
+	cu := control.created[0]
+	if len(cu.Revokes) == 0 {
+		t.Fatalf("revokes not forwarded to control client: %+v", cu)
+	}
+	if cu.Revokes[0].On != "mysql.*" {
+		t.Errorf("first revoke target = %q, want mysql.*", cu.Revokes[0].On)
+	}
+}
+
 func TestDatabaseUserNoChangeWhenMatching(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{
@@ -151,6 +176,64 @@ func TestDatabaseUserNoChangeWhenMatching(t *testing.T) {
 	}
 	if len(control.created) != 0 {
 		t.Fatalf("created = %+v, want none (user already exists)", control.created)
+	}
+}
+
+func TestDatabaseUserRevokeOnlyChangeDetected(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{
+		users: []user.UserInfo{{
+			Name: testUserName,
+			Host: "%",
+			Grants: []string{
+				"GRANT SELECT, INSERT, UPDATE ON *.* TO `tenant`@`%`",
+				"REVOKE INSERT ON `mysql`.* FROM `tenant`@`%`",
+			},
+		}},
+	}
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.Grants = []mysqlv1alpha1.DatabaseUserGrant{
+			{Privileges: []string{"SELECT", "INSERT", "UPDATE"}, On: "*.*"},
+		}
+		d.Spec.Revokes = []mysqlv1alpha1.DatabaseUserRevoke{
+			{Privileges: []string{"INSERT"}, On: "mysql.*"},
+		}
+	})
+	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
+
+	// Adopt + first reconcile to get applied status.
+	du.Annotations = map[string]string{mysqlv1alpha1.DatabaseUserAdoptAnnotation: "true"}
+	if err := r.Update(context.Background(), du); err != nil {
+		t.Fatal(err)
+	}
+	reconcileUserToApplied(t, r, du)
+	control.altered = nil
+
+	// Re-fetch after the status patch bumped the resourceVersion.
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: du.Namespace, Name: du.Name}, du); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now change the revokes to add another system-schema carve-out (sys.*).
+	du.Spec.Revokes = append(du.Spec.Revokes, mysqlv1alpha1.DatabaseUserRevoke{
+		Privileges: []string{"INSERT", "UPDATE"}, On: "sys.*",
+	})
+	if err := r.Update(context.Background(), du); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(control.altered) == 0 {
+		t.Fatal("no alter produced when revokes changed")
+	}
+	alt := control.altered[0]
+	if alt.Revokes == nil {
+		t.Fatal("revokes not sent in alter")
+	}
+	if len(*alt.Revokes) < 2 {
+		t.Fatalf("revokes = %d entries, want at least 2", len(*alt.Revokes))
 	}
 }
 

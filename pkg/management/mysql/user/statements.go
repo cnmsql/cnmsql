@@ -84,6 +84,11 @@ type CreateUserRequest struct {
 	MaxConnectionsPerHour int32       `json:"maxConnectionsPerHour"`
 	RequireTLS            string      `json:"requireTLS"`
 	Privileges            []Privilege `json:"privileges,omitempty"`
+	// Revokes are applied after Privileges, in order. They carve specific targets
+	// (typically system schemas such as mysql.*) out of a broader grant so a
+	// cross-database admin cannot modify the grant tables. Schema-level revokes
+	// that exceed the account's database grants require partial_revokes=ON.
+	Revokes []Privilege `json:"revokes,omitempty"`
 }
 
 // AlterUserRequest describes a mutation of an existing user. Nil fields are left
@@ -99,6 +104,9 @@ type AlterUserRequest struct {
 	MaxConnectionsPerHour *int32       `json:"maxConnectionsPerHour,omitempty"`
 	RequireTLS            *string      `json:"requireTLS,omitempty"`
 	Privileges            *[]Privilege `json:"privileges,omitempty"`
+	// Revokes, when non-nil, are applied after Privileges (in order). A nil value
+	// leaves existing revocations untouched.
+	Revokes *[]Privilege `json:"revokes,omitempty"`
 }
 
 // DropUserRequest identifies a user to remove.
@@ -204,8 +212,35 @@ func grantStatements(name, host string, superuser bool, privileges []Privilege) 
 	return stmts, nil
 }
 
+// revokeStatements builds REVOKE IF EXISTS statements for a privilege list
+// against an account. They carve specific targets (typically system schemas such
+// as mysql.*) out of a broader grant. Schema-level revokes that exceed the
+// account's database grants require partial_revokes=ON on the server; IF EXISTS
+// (MySQL 8.0.16+, the same baseline as partial_revokes) keeps re-application
+// idempotent.
+func revokeStatements(name, host string, revokes []Privilege) ([]string, error) {
+	if len(revokes) == 0 {
+		return nil, nil
+	}
+	acct := account(name, host)
+	stmts := make([]string, 0, len(revokes))
+	for _, p := range revokes {
+		if len(p.Privileges) == 0 {
+			return nil, fmt.Errorf("revoke entry has no privileges")
+		}
+		on := p.On
+		if on == "" {
+			on = "*.*"
+		}
+		stmts = append(stmts, fmt.Sprintf("REVOKE IF EXISTS %s ON %s FROM %s",
+			strings.Join(p.Privileges, ", "), on, acct))
+	}
+	return stmts, nil
+}
+
 // CreateUserStatements builds the CREATE USER statement followed by any GRANT
-// statements needed to satisfy the request.
+// statements, then any REVOKE statements (applied after the grants so a
+// system-schema carve-out survives a broad grant).
 func CreateUserStatements(req CreateUserRequest) ([]string, error) {
 	require, err := requireClause(req.RequireTLS)
 	if err != nil {
@@ -219,9 +254,14 @@ func CreateUserStatements(req CreateUserRequest) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	stmts := make([]string, 0, 1+len(grants))
+	revokes, err := revokeStatements(req.Name, req.Host, req.Revokes)
+	if err != nil {
+		return nil, err
+	}
+	stmts := make([]string, 0, 1+len(grants)+len(revokes))
 	stmts = append(stmts, create)
-	return append(stmts, grants...), nil
+	stmts = append(stmts, grants...)
+	return append(stmts, revokes...), nil
 }
 
 // AlterUserStatements builds the ALTER USER statements (and GRANT statements for
@@ -272,6 +312,16 @@ func AlterUserStatements(req AlterUserRequest) ([]string, error) {
 		stmts = append(stmts, grants...)
 	} else if req.Superuser != nil && *req.Superuser {
 		stmts = append(stmts, fmt.Sprintf("GRANT ALL PRIVILEGES ON *.* TO %s WITH GRANT OPTION", acct))
+	}
+
+	// Revokes are applied after grants so a system-schema carve-out is not
+	// re-widened by a grant re-applied in the same request.
+	if req.Revokes != nil {
+		revokes, err := revokeStatements(req.Name, req.Host, *req.Revokes)
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, revokes...)
 	}
 
 	return stmts, nil

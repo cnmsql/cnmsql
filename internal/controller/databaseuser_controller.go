@@ -189,6 +189,7 @@ func (r *DatabaseUserReconciler) applyUser(
 			MaxConnectionsPerHour: du.Spec.MaxConnectionsPerHour,
 			RequireTLS:            normalizeRequireTLS(du.Spec.RequireTLS),
 			Privileges:            duPrivileges(du.Spec.Grants),
+			Revokes:               duRevokes(du.Spec.Revokes),
 		}); err != nil {
 			return "", err
 		}
@@ -247,11 +248,22 @@ func (r *DatabaseUserReconciler) diffDatabaseUser(
 		alter.RequireTLS = &v
 		changed = true
 	}
-	if !duGrantsSatisfied(current.Grants, du) {
+	grantsChanged := !duGrantsSatisfied(current.Grants, du)
+	revokesChanged := !duRevokesSatisfied(current.Grants, du)
+	if grantsChanged || revokesChanged {
 		su := du.Spec.Superuser
 		alter.Superuser = &su
 		privs := duPrivileges(du.Spec.Grants)
 		alter.Privileges = &privs
+		// Re-apply revokes whenever grants change (a GRANT on *.* re-widens any
+		// system-schema carve-out) or when the revoke spec itself differs from
+		// what is already in place in MySQL.
+		if revokes := duRevokes(du.Spec.Revokes); revokes != nil || revokesChanged {
+			if revokes == nil {
+				revokes = []user.Privilege{}
+			}
+			alter.Revokes = &revokes
+		}
 		changed = true
 	}
 	return alter, changed
@@ -325,6 +337,19 @@ func duPrivileges(grants []mysqlv1alpha1.DatabaseUserGrant) []user.Privilege {
 	return out
 }
 
+// duRevokes converts declared revokes into control-API privileges. Targets are
+// used verbatim (a revoke must name its target; validation rejects an empty one).
+func duRevokes(revokes []mysqlv1alpha1.DatabaseUserRevoke) []user.Privilege {
+	if len(revokes) == 0 {
+		return nil
+	}
+	out := make([]user.Privilege, 0, len(revokes))
+	for _, r := range revokes {
+		out = append(out, user.Privilege{Privileges: r.Privileges, On: r.On})
+	}
+	return out
+}
+
 // duGrantsSatisfied reports whether every declared grant is already present in
 // the observed SHOW GRANTS output (case- and quoting-insensitive).
 func duGrantsSatisfied(observed []string, du *mysqlv1alpha1.DatabaseUser) bool {
@@ -350,6 +375,56 @@ func duGrantsSatisfied(observed []string, du *mysqlv1alpha1.DatabaseUser) bool {
 		}
 	}
 	return true
+}
+
+// duRevokesSatisfied reports whether every declared revoke is already present
+// in the observed SHOW GRANTS output. REVOKE lines appear in SHOW GRANTS only
+// when partial_revokes is ON.
+func duRevokesSatisfied(observed []string, du *mysqlv1alpha1.DatabaseUser) bool {
+	if len(du.Spec.Revokes) == 0 {
+		return true
+	}
+	have := make(map[string]bool, len(observed))
+	for _, g := range observed {
+		for _, tok := range parseRevokeTokens(g) {
+			have[tok] = true
+		}
+	}
+	for _, r := range du.Spec.Revokes {
+		target := normalizeGrantTarget(r.On)
+		for _, priv := range r.Privileges {
+			if !have[strings.ToLower(strings.TrimSpace(priv))+"@"+target] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// parseRevokeTokens turns a SHOW GRANTS REVOKE line into "priv@target" tokens.
+// It handles REVOKE … ON … FROM …, matching MySQL 8.0 SHOW GRANTS output when
+// partial_revokes is ON. Non-REVOKE lines return nil.
+func parseRevokeTokens(line string) []string {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	if !strings.HasPrefix(upper, "REVOKE ") {
+		return nil
+	}
+	idx := strings.Index(strings.ToUpper(upper), " ON ")
+	if idx < 0 {
+		return nil
+	}
+	privPart := strings.TrimSpace(upper[len("REVOKE "):idx])
+	rest := strings.TrimSpace(upper[idx+len(" ON "):])
+	fromIdx := strings.Index(upper, " FROM ")
+	if fromIdx < 0 {
+		return nil
+	}
+	target := normalizeGrantTarget(strings.TrimSpace(rest[:fromIdx]))
+	var tokens []string
+	for p := range strings.SplitSeq(privPart, ",") {
+		tokens = append(tokens, strings.ToLower(strings.TrimSpace(p))+"@"+target)
+	}
+	return tokens
 }
 
 func (r *DatabaseUserReconciler) recordUserEvent(du *mysqlv1alpha1.DatabaseUser, eventType, reason, message string) {

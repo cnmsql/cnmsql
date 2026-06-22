@@ -67,6 +67,22 @@ func SafeDBaaSAdminPrivileges() []string {
 	}
 }
 
+// SafeDBaaSAdminRevokes is the set of write/DDL privileges to revoke from the
+// system schemas for a DBaaS admin built on a broad "*.*" grant. Carving these
+// out (with partial_revokes=ON) removes write access to the grant tables, which
+// is what otherwise makes a global write grant root-equivalent. It pairs with
+// SafeDBaaSAdminPrivileges.
+func SafeDBaaSAdminRevokes() []DatabaseUserRevoke {
+	writes := []string{
+		"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX",
+		"CREATE VIEW", "CREATE ROUTINE", "ALTER ROUTINE", "EVENT", "TRIGGER",
+	}
+	return []DatabaseUserRevoke{
+		{Privileges: writes, On: "mysql.*"},
+		{Privileges: writes, On: "sys.*"},
+	}
+}
+
 // UserName returns the resolved MySQL user name, defaulting to the resource name.
 func (u *DatabaseUser) UserName() string {
 	if u.Spec.Name != "" {
@@ -151,6 +167,18 @@ func (u *DatabaseUser) Validate() field.ErrorList {
 					"ALL on *.* is not allowed: it grants every dynamic admin privilege; "+
 						"enumerate data privileges, scope ALL to a database (db.*), or set superuser=true"))
 			}
+		}
+	}
+	for i := range u.Spec.Revokes {
+		if u.Spec.Revokes[i].On == "" {
+			allErrs = append(allErrs, field.Required(
+				spec.Child("revokes").Index(i).Child("on"),
+				"a revoke must name the target to carve out (e.g. mysql.*)"))
+		}
+		if len(u.Spec.Revokes[i].Privileges) == 0 {
+			allErrs = append(allErrs, field.Required(
+				spec.Child("revokes").Index(i).Child("privileges"),
+				"a revoke must list at least one privilege"))
 		}
 	}
 	return allErrs

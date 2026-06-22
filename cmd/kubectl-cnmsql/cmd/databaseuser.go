@@ -338,10 +338,10 @@ func newDBUserDBaaSCommand() *cobra.Command {
 		Use:   "dbaas NAME --cluster CLUSTER",
 		Short: "Create a constrained DBaaS admin (broad data privileges, no cluster control)",
 		Long: "Scaffold a DatabaseUser with full data and schema privileges across all " +
-			"databases, granted by name rather than ALL. GRANT ALL ON *.* would also " +
-			"grant every dynamic admin privilege (replication, server config, shutdown); " +
-			"enumerating static privileges keeps the tenant off the operator's control " +
-			"plane. This is the supported safe multi-tenant admin.",
+			"databases, granted by name rather than ALL, plus revokes that carve the " +
+			"system schemas (mysql.*, sys.*) out of the *.* grant. The revokes require " +
+			"partial_revokes=ON on the cluster (set it via spec.mysql.parameters); " +
+			"without it the tenant retains write access to mysql.* and can self-escalate.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -366,6 +366,9 @@ func newDBUserDBaaSCommand() *cobra.Command {
 					Grants: []mysqlv1alpha1.DatabaseUserGrant{
 						{Privileges: mysqlv1alpha1.SafeDBaaSAdminPrivileges(), On: "*.*"},
 					},
+					// Carve the system schemas out of the *.* grant so the tenant
+					// cannot write the grant tables. Needs partial_revokes=ON.
+					Revokes: mysqlv1alpha1.SafeDBaaSAdminRevokes(),
 				},
 			}
 			if generate {

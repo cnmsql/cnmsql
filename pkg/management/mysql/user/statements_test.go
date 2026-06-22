@@ -56,6 +56,53 @@ func TestCreateUserStatements(t *testing.T) {
 	}
 }
 
+func TestCreateUserRevokesFollowGrants(t *testing.T) {
+	stmts, err := CreateUserStatements(CreateUserRequest{
+		Name:     "admin",
+		Host:     "%",
+		Password: "p",
+		Privileges: []Privilege{
+			{Privileges: []string{"SELECT", "INSERT"}, On: "*.*"},
+		},
+		Revokes: []Privilege{
+			{Privileges: []string{"INSERT"}, On: "mysql.*"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stmts) != 3 {
+		t.Fatalf("got %d statements, want 3: %v", len(stmts), stmts)
+	}
+	if want := "GRANT SELECT, INSERT ON *.* TO 'admin'@'%'"; stmts[1] != want {
+		t.Errorf("grant = %q, want %q", stmts[1], want)
+	}
+	// Revoke must come after the grant so the carve-out is not re-widened.
+	if want := "REVOKE IF EXISTS INSERT ON mysql.* FROM 'admin'@'%'"; stmts[2] != want {
+		t.Errorf("revoke = %q, want %q", stmts[2], want)
+	}
+}
+
+func TestAlterUserRevokesFollowGrants(t *testing.T) {
+	privs := []Privilege{{Privileges: []string{"SELECT"}, On: "*.*"}}
+	revokes := []Privilege{{Privileges: []string{"UPDATE"}, On: "mysql.*"}}
+	stmts, err := AlterUserStatements(AlterUserRequest{
+		Name: "admin", Host: "%", Privileges: &privs, Revokes: &revokes,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stmts) != 2 {
+		t.Fatalf("got %d statements, want 2: %v", len(stmts), stmts)
+	}
+	if want := "GRANT SELECT ON *.* TO 'admin'@'%'"; stmts[0] != want {
+		t.Errorf("grant = %q, want %q", stmts[0], want)
+	}
+	if want := "REVOKE IF EXISTS UPDATE ON mysql.* FROM 'admin'@'%'"; stmts[1] != want {
+		t.Errorf("revoke = %q, want %q", stmts[1], want)
+	}
+}
+
 func TestCreateUserSuperuserSupersedesPrivileges(t *testing.T) {
 	stmts, err := CreateUserStatements(CreateUserRequest{
 		Name:      "admin",
