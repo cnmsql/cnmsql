@@ -350,26 +350,43 @@ Note this also resolves the managed-role overlap softly: if a managed role and a
 `DatabaseUser` both name the account, whichever created it owns it in status; the
 other will hit the conflict path and refuse until adopted.
 
-## Recipe: a safe DBaaS superuser
+## Recipe: a safe DBaaS admin
 
 A common ask for a DBaaS-style offering is "give the tenant a near-root account
 on their data, but make sure they can't break what the operator relies on."
-`DatabaseUser` can express this directly with `Grants` (do **not** use
-`Superuser: true` — that is literal `ALL PRIVILEGES ON *.* WITH GRANT OPTION` and
-defeats the point).
 
 What the operator depends on and must stay tenant-proof:
 
 - The reserved accounts `cnmsql_control`, `cnmsql_repl`, `cnmsql_backup`,
   `cnmsql_metrics` (already protected by `isReservedRoleName` /
-  `ListUsersQuery`'s filter — a tenant can't *name* one, but `ALL ON *.*` would
-  let them `DROP`/`ALTER` the existing ones).
+  `ListUsersQuery`'s filter for *naming*, but a tenant with the right privileges
+  could still `DROP`/`ALTER` the existing ones).
 - Replication topology: `CHANGE REPLICATION SOURCE`, `START/STOP REPLICA`,
   `super_read_only` fencing, GTID/server config.
 - Server config the operator manages (`SET GLOBAL ...`, plugins, the data dir).
 
-So a "safe superuser" is **broad on schema/data, withheld on cluster control**.
-Concretely, grant data/DDL power but deny the cluster-admin dynamic privileges:
+### `ALL ON *.*` is the trap (not a safe recipe)
+
+An earlier draft of this design proposed granting `ALL` (without the `Superuser`
+flag, so no `WITH GRANT OPTION`) and reasoned that the tenant could not then
+re-grant cluster-control privileges. **That is wrong**, and an e2e test caught it.
+
+In MySQL 8.0, `GRANT ALL [PRIVILEGES] ON *.*` grants all *static* global
+privileges **and every dynamic privilege registered on the server at grant time**
+— `REPLICATION_SLAVE_ADMIN`, `SYSTEM_VARIABLES_ADMIN`, `GROUP_REPLICATION_ADMIN`,
+`CONNECTION_ADMIN`, `SHUTDOWN`, and the rest. The tenant therefore *holds* those
+privileges directly; it does not need to grant them to itself, and `WITH GRANT
+OPTION` is irrelevant. A global `ALL` is as dangerous as `Superuser: true`, and it
+slips past a denylist of named privileges because none are named.
+
+The key distinction: this only applies to the **global** target. `GRANT ALL ON
+db.*` is schema-scoped and grants no global dynamic privileges, so it stays safe.
+
+### The supported recipe: enumerate static privileges
+
+Grant the broad **static** data/DDL privileges by name, on `*.*`. None of these
+is a dynamic admin privilege, so the tenant gets full power over data and schema
+objects across all databases and nothing on the control plane:
 
 ```yaml
 apiVersion: mysql.cnmsql.co/v1alpha1
@@ -380,36 +397,30 @@ spec:
   cluster: { name: my-cluster }
   passwordSecret: { name: tenant-admin-pw, key: password }
   grants:
-    # Full power over all application schemas and their data...
-    - privileges: [ALL]
-      on: "*.*"          # note: ALL on *.* via GRANT (not the Superuser flag)
-    # ...but WITHOUT GRANT OPTION (no WITH GRANT OPTION emitted), so the tenant
-    # cannot hand out or escalate privileges, including the dynamic ones below.
+    - privileges: [SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX,
+        REFERENCES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW,
+        SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER]
+      on: "*.*"
 ```
 
-The key lever is **`WITH GRANT OPTION` is only emitted for `Superuser: true`**
-(see `grantStatements`). A plain `ALL` grant gives the tenant everything on the
-data plane but *not* the ability to grant `REPLICATION_SLAVE_ADMIN`,
-`SYSTEM_VARIABLES_ADMIN`, `CONNECTION_ADMIN`, `GROUP_REPLICATION_ADMIN`, `SUPER`,
-etc. to themselves — those are the privileges that would let them touch
-replication, fencing, or operator accounts. MySQL grants `ALL PRIVILEGES` as the
-set the *grantor* holds; since `cnmsql_control` itself is scoped, the tenant
-inherits no more than that, and cannot re-grant regardless.
+This list is `SafeDBaaSAdminPrivileges()` in `databaseuser_funcs.go`; the kubectl
+plugin's `databaseuser dbaas` subcommand scaffolds exactly it.
 
-**Hardening to specify in the doc/validation (follow-up, flagged not built):**
+### Validation (built)
 
-- An explicit **denylist of dynamic privileges** that `validateDatabaseUser`
-  rejects even when spelled out individually: `REPLICATION_SLAVE_ADMIN`,
+`Validate()` is the safety net, mirroring the `spec.mysql.parameters` denylist
+from design 014 applied to grants:
+
+- **Named dynamic privileges** are rejected anywhere: `REPLICATION_SLAVE_ADMIN`,
   `REPLICATION_APPLIER`, `GROUP_REPLICATION_ADMIN`, `GROUP_REPLICATION_STREAM`,
   `SYSTEM_VARIABLES_ADMIN`, `CONNECTION_ADMIN`, `SERVICE_CONNECTION_ADMIN`,
-  `PERSIST_RO_VARIABLES_ADMIN`, `BINLOG_ADMIN`, `CLONE_ADMIN`, `SUPER`,
-  `SHUTDOWN`, `FILE`. This is the real safety net; `WITH GRANT OPTION` gating
-  alone is necessary but not sufficient if a future change widens the grantor.
-- Document the recommended recipe above as the supported "DBaaS admin" pattern,
-  and warn explicitly that `Superuser: true` is unsafe for multi-tenant use.
-
-The denylist is the same idea as the `spec.mysql.parameters` denylist from design
-014 — applied to grants instead of config keys.
+  `PERSIST_RO_VARIABLES_ADMIN`, `BINLOG_ADMIN`, `BINLOG_ENCRYPTION_ADMIN`,
+  `CLONE_ADMIN`, `SUPER`, `SHUTDOWN`, `FILE`,
+  `GROUP_REPLICATION_FLOW_CONTROL_ADMIN`.
+- **`ALL` / `ALL PRIVILEGES` on the global `*.*` target is rejected** (it pulls in
+  the dynamic privileges above). `ALL` scoped to a database is allowed.
+- `Superuser: true` remains available for trusted cluster-level accounts and is
+  documented as unsafe for multi-tenant use.
 
 ## CLI layer (kubectl cnmsql)
 

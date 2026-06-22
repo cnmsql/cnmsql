@@ -52,6 +52,21 @@ var deniedDynamicPrivileges = map[string]bool{
 	"group_replication_flow_control_admin": true,
 }
 
+// SafeDBaaSAdminPrivileges is the broad set of static, data-plane privileges for
+// a "DBaaS admin": full control over data and schema objects across all
+// databases, with none of the global dynamic admin privileges that GRANT ALL ON
+// *.* would pull in. Granting these by name (rather than ALL) keeps the tenant
+// off the operator's control plane (replication, fencing, server config).
+func SafeDBaaSAdminPrivileges() []string {
+	return []string{
+		"SELECT", "INSERT", "UPDATE", "DELETE",
+		"CREATE", "DROP", "ALTER", "INDEX", "REFERENCES",
+		"CREATE TEMPORARY TABLES", "LOCK TABLES", "EXECUTE",
+		"CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE",
+		"EVENT", "TRIGGER",
+	}
+}
+
 // UserName returns the resolved MySQL user name, defaulting to the resource name.
 func (u *DatabaseUser) UserName() string {
 	if u.Spec.Name != "" {
@@ -90,7 +105,9 @@ func (u *DatabaseUser) SetDefaults() {
 
 // Validate checks a DatabaseUser: the name must not be reserved, the host must
 // be set, superuser and explicit grants are mutually exclusive, RequireTLS must
-// be valid, and no grant may request a denied cluster-control privilege.
+// be valid, no grant may request a denied cluster-control privilege, and no grant
+// may request ALL on the global *.* target (which would pull in every dynamic
+// admin privilege).
 func (u *DatabaseUser) Validate() field.ErrorList {
 	var allErrs field.ErrorList
 	spec := field.NewPath("spec")
@@ -116,13 +133,32 @@ func (u *DatabaseUser) Validate() field.ErrorList {
 			"requireTLS must be one of none, ssl, x509"))
 	}
 	for i := range u.Spec.Grants {
+		global := isGlobalGrantTarget(u.Spec.Grants[i].On)
 		for _, priv := range u.Spec.Grants[i].Privileges {
-			if deniedDynamicPrivileges[strings.ToLower(strings.TrimSpace(priv))] {
+			p := strings.ToLower(strings.TrimSpace(priv))
+			if deniedDynamicPrivileges[p] {
 				allErrs = append(allErrs, field.Invalid(
 					spec.Child("grants").Index(i).Child("privileges"), priv,
 					"privilege is denied: it would let the user break replication, fencing, or operator accounts"))
 			}
+			// GRANT ALL ON *.* also grants every dynamic privilege (replication,
+			// system-variable, group-replication admin, shutdown, ...), so a global
+			// ALL is as dangerous as superuser and bypasses the denylist above.
+			// Allow ALL only when scoped to a database/table, not the whole instance.
+			if global && (p == "all" || p == "all privileges") {
+				allErrs = append(allErrs, field.Invalid(
+					spec.Child("grants").Index(i).Child("privileges"), priv,
+					"ALL on *.* is not allowed: it grants every dynamic admin privilege; "+
+						"enumerate data privileges, scope ALL to a database (db.*), or set superuser=true"))
+			}
 		}
 	}
 	return allErrs
+}
+
+// isGlobalGrantTarget reports whether a grant target refers to the whole
+// instance ("*.*"), ignoring identifier quoting and case.
+func isGlobalGrantTarget(on string) bool {
+	t := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(on), "`", ""))
+	return t == "" || t == "*.*"
 }

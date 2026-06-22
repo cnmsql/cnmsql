@@ -336,10 +336,12 @@ func newDBUserDBaaSCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "dbaas NAME --cluster CLUSTER",
-		Short: "Create a constrained DBaaS admin (ALL without cluster-control privileges)",
-		Long: "Scaffold a DatabaseUser that has ALL privileges on *.* but, because the " +
-			"grant omits WITH GRANT OPTION, cannot escalate to replication, fencing, or " +
-			"operator-account privileges. This is the supported safe multi-tenant admin.",
+		Short: "Create a constrained DBaaS admin (broad data privileges, no cluster control)",
+		Long: "Scaffold a DatabaseUser with full data and schema privileges across all " +
+			"databases, granted by name rather than ALL. GRANT ALL ON *.* would also " +
+			"grant every dynamic admin privilege (replication, server config, shutdown); " +
+			"enumerating static privileges keeps the tenant off the operator's control " +
+			"plane. This is the supported safe multi-tenant admin.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -358,9 +360,12 @@ func newDBUserDBaaSCommand() *cobra.Command {
 					Cluster:        mysqlv1alpha1.LocalObjectReference{Name: clusterName},
 					Name:           userName,
 					PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: secretName, Key: secretKey},
-					// ALL via a grant (not the Superuser flag) so WITH GRANT OPTION is
-					// not emitted and the tenant cannot escalate cluster-control privileges.
-					Grants: []mysqlv1alpha1.DatabaseUserGrant{{Privileges: []string{"ALL"}, On: "*.*"}},
+					// Broad static data privileges by name, never ALL on *.*: a global
+					// ALL also grants every dynamic admin privilege and would put the
+					// tenant on the operator's control plane.
+					Grants: []mysqlv1alpha1.DatabaseUserGrant{
+						{Privileges: mysqlv1alpha1.SafeDBaaSAdminPrivileges(), On: "*.*"},
+					},
 				},
 			}
 			if generate {

@@ -115,26 +115,53 @@ A common DBaaS ask is "give the tenant a near-root account on their data, but
 make sure they can't break what the operator relies on" (replication, fencing,
 the operator's own `cnmsql_*` accounts).
 
-Express this with a **grant of `ALL`**, *not* `spec.superuser: true`:
+The trap is `GRANT ALL ON *.*`. In MySQL 8.0 a global `ALL` grant does not just
+grant the static data privileges; it also grants **every dynamic admin
+privilege** registered on the server, including `REPLICATION_SLAVE_ADMIN`,
+`SYSTEM_VARIABLES_ADMIN`, `GROUP_REPLICATION_ADMIN`, and `SHUTDOWN`. That puts the
+tenant directly on the operator's control plane, with or without `WITH GRANT
+OPTION`. For that reason cnmsql **rejects** `ALL` (and `ALL PRIVILEGES`) when the
+target is `*.*`.
+
+Build a DBaaS admin by granting the broad **static** privileges by name instead.
+These cover all data and schema objects across every database but never include a
+dynamic admin privilege:
 
 ```yaml
 spec:
   cluster: { name: shared }
   passwordSecret: { name: tenant-admin-pw, key: password }
   grants:
-    - privileges: [ALL]
-      on: "*.*"          # full power over data and DDL...
+    - privileges:
+        - SELECT
+        - INSERT
+        - UPDATE
+        - DELETE
+        - CREATE
+        - DROP
+        - ALTER
+        - INDEX
+        - REFERENCES
+        - CREATE TEMPORARY TABLES
+        - LOCK TABLES
+        - EXECUTE
+        - CREATE VIEW
+        - SHOW VIEW
+        - CREATE ROUTINE
+        - ALTER ROUTINE
+        - EVENT
+        - TRIGGER
+      on: "*.*"
 ```
 
-The key is that `WITH GRANT OPTION` is emitted **only** for
-`spec.superuser: true`. A plain `ALL` grant gives the tenant everything on the
-data plane but **no ability to grant privileges to themselves**, so they cannot
-escalate to `REPLICATION_SLAVE_ADMIN`, `SYSTEM_VARIABLES_ADMIN`,
-`GROUP_REPLICATION_ADMIN`, `SUPER`, and the like.
+`kubectl cnmsql databaseuser dbaas` scaffolds exactly this set, so you do not have
+to type it out. Scoping `ALL` to a single database (`on: "mydb.*"`) is also
+allowed and safe, because a database-level `ALL` grants no global dynamic
+privileges.
 
-As a second layer, cnmsql **rejects** a `DatabaseUser` that asks for any
-cluster-control privilege directly (the same idea as the dangerous-config-key
-denylist). Such an object stays unapplied with reason `Invalid`:
+As a second layer, cnmsql rejects a `DatabaseUser` that asks for a named
+cluster-control privilege (the same idea as the dangerous-config-key denylist).
+Such an object stays unapplied with reason `Invalid`:
 
 ```
 REPLICATION_SLAVE_ADMIN, REPLICATION_APPLIER, GROUP_REPLICATION_ADMIN,
@@ -156,7 +183,8 @@ A `DatabaseUser` is rejected (`status.conditions[Ready].reason = Invalid`) when:
 - `host` is empty;
 - `superuser: true` is combined with explicit `grants`;
 - `requireTLS` is not one of `none`, `ssl`, `x509`;
-- any grant requests a denied cluster-control privilege (see above).
+- any grant requests a denied cluster-control privilege (see above);
+- any grant requests `ALL` on the global `*.*` target.
 
 ## Managing users with `kubectl cnmsql`
 

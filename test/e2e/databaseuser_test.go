@@ -198,13 +198,34 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
-	It("confines a DBaaS admin to data: no escalation, no touching operator accounts", func() {
+	It("rejects ALL on *.* as a grant (it would grant dynamic admin privileges)", func() {
+		const allCR, allSec = "allglobal", "allglobal-pw"
+		applyManifest(allSec, passwordSecretManifest(allSec, "allglobal-secret"))
+
+		By("declaring a user that asks for ALL on *.*")
+		applyManifest(allCR, databaseUserCustomManifest(allCR, cluster, "", allSec, "retain",
+			`    - privileges: ["ALL"]
+      "on": "*.*"`))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", allCR, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("expecting it to be rejected as Invalid, never applied")
+		Eventually(func(g Gomega) {
+			reason, err := kubectl("get", "databaseuser", allCR, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(reason).To(Equal("Invalid"))
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
+	It("confines a DBaaS admin to data: no control plane, no touching operator accounts", func() {
 		const dbaasCR, dbaasPass, dbaasSec = "dbaas-admin", "dbaas-secret", "dbaas-admin-pw"
 		applyManifest(dbaasSec, passwordSecretManifest(dbaasSec, dbaasPass))
 
-		By("creating a DBaaS admin: ALL on *.* via a grant (no WITH GRANT OPTION)")
+		By("creating a DBaaS admin with broad static data privileges (not ALL on *.*)")
 		applyManifest(dbaasCR, databaseUserCustomManifest(dbaasCR, cluster, "", dbaasSec, "delete",
-			`    - privileges: ["ALL"]
+			`    - privileges: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX", "CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE", "EVENT", "TRIGGER"]
       "on": "*.*"`))
 		DeferCleanup(func() {
 			_, _ = kubectl("delete", "databaseuser", dbaasCR, "-n", testNamespace, "--ignore-not-found")
@@ -219,8 +240,16 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 
 		primary := clusterPrimary(cluster)
 
+		By("verifying it cannot stop replication (no REPLICATION_SLAVE_ADMIN)")
+		_, err := mysqlExec(primary, dbaasCR, dbaasPass, "", "STOP REPLICA;")
+		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to control replication")
+
+		By("verifying it cannot change server configuration (no SYSTEM_VARIABLES_ADMIN)")
+		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "", "SET GLOBAL super_read_only = OFF;")
+		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to change global server variables")
+
 		By("verifying it cannot escalate by granting itself a cluster-control privilege")
-		_, err := mysqlExec(primary, dbaasCR, dbaasPass, "",
+		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "",
 			fmt.Sprintf("GRANT REPLICATION_SLAVE_ADMIN ON *.* TO '%s'@'%%';", dbaasCR))
 		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to grant cluster-control privileges")
 
