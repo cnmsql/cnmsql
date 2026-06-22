@@ -72,10 +72,10 @@ func TestRunFence(t *testing.T) {
 	if err := env.Client.Get(context.Background(), client.ObjectKeyFromObject(&pod), got); err != nil {
 		t.Fatalf("getting Pod: %v", err)
 	}
-	if got.Annotations[plugin.FencingAnnotation] != "true" {
+	if got.Annotations[plugin.FencingAnnotation] != plugin.FencingValue {
 		t.Errorf("fencing annotation = %q", got.Annotations[plugin.FencingAnnotation])
 	}
-	pod.Annotations = map[string]string{plugin.FencingAnnotation: "true"}
+	pod.Annotations = map[string]string{plugin.FencingAnnotation: plugin.FencingValue}
 	env = installFakeEnv(t, testCluster(), []corev1.Pod{pod})
 	if err := runFence(context.Background(), false, "demo", pod.Name); err != nil {
 		t.Fatalf("runFence(off) error = %v", err)

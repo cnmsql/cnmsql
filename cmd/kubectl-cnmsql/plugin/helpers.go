@@ -40,6 +40,7 @@ import (
 // controller).
 const (
 	FencingAnnotation = "cnmsql.cnmsql.co/fencing"
+	FencingValue      = "true"
 	RestartAnnotation = "cnmsql.cnmsql.co/restart"
 	ReloadAnnotation  = "cnmsql.cnmsql.co/reload"
 	ReinitAnnotation  = "cnmsql.cnmsql.co/reinit"

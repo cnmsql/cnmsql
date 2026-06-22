@@ -105,7 +105,7 @@ func runFence(ctx context.Context, fence bool, clusterName, instance string) err
 			pod.Annotations = map[string]string{}
 		}
 		if fence {
-			pod.Annotations[plugin.FencingAnnotation] = "true"
+			pod.Annotations[plugin.FencingAnnotation] = plugin.FencingValue
 		} else {
 			delete(pod.Annotations, plugin.FencingAnnotation)
 		}
