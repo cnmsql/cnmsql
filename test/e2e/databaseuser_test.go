@@ -142,12 +142,137 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
+	// --- Defensive specs: the safety nets must hold even on hostile input. ---
+
+	It("rejects a grant that would break the cluster control plane", func() {
+		const denyCR, denySec = "evil", "evil-pw"
+		applyManifest(denySec, passwordSecretManifest(denySec, "evil-secret"))
+
+		By("declaring a user that asks for REPLICATION_SLAVE_ADMIN")
+		applyManifest(denyCR, databaseUserCustomManifest(denyCR, cluster, "", denySec, "retain",
+			`    - privileges: ["REPLICATION_SLAVE_ADMIN"]
+      "on": "*.*"`))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", denyCR, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("expecting the user to be rejected as Invalid, never applied")
+		Eventually(func(g Gomega) {
+			reason, err := kubectl("get", "databaseuser", denyCR, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(reason).To(Equal("Invalid"))
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+
+		applied, err := kubectl("get", "databaseuser", denyCR, "-n", testNamespace, "-o", "jsonpath={.status.applied}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(applied).NotTo(Equal("true"), "a denied-privilege user must never be applied")
+
+		By("verifying the account was never created on the primary")
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+		out, err := mysqlExec(primary, "root", rootPass, "",
+			fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", denyCR))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(BeEmpty(), "rejected user must not exist in MySQL")
+	})
+
+	It("rejects a reserved operator account name", func() {
+		const resCR, resSec = "sneaky", "sneaky-pw"
+		applyManifest(resSec, passwordSecretManifest(resSec, "sneaky-secret"))
+
+		By("declaring a user whose MySQL name shadows cnmsql_repl")
+		applyManifest(resCR, databaseUserCustomManifest(resCR, cluster, "cnmsql_repl", resSec, "retain",
+			`    - privileges: ["SELECT"]
+      "on": "*.*"`))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", resCR, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("expecting the user to be rejected as Invalid")
+		Eventually(func(g Gomega) {
+			reason, err := kubectl("get", "databaseuser", resCR, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(reason).To(Equal("Invalid"))
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
+	It("confines a DBaaS admin to data: no escalation, no touching operator accounts", func() {
+		const dbaasCR, dbaasPass, dbaasSec = "dbaas-admin", "dbaas-secret", "dbaas-admin-pw"
+		applyManifest(dbaasSec, passwordSecretManifest(dbaasSec, dbaasPass))
+
+		By("creating a DBaaS admin: ALL on *.* via a grant (no WITH GRANT OPTION)")
+		applyManifest(dbaasCR, databaseUserCustomManifest(dbaasCR, cluster, "", dbaasSec, "delete",
+			`    - privileges: ["ALL"]
+      "on": "*.*"`))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", dbaasCR, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("waiting for it to be applied")
+		Eventually(func(g Gomega) {
+			applied, err := kubectl("get", "databaseuser", dbaasCR, "-n", testNamespace, "-o", "jsonpath={.status.applied}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(applied).To(Equal("true"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		primary := clusterPrimary(cluster)
+
+		By("verifying it cannot escalate by granting itself a cluster-control privilege")
+		_, err := mysqlExec(primary, dbaasCR, dbaasPass, "",
+			fmt.Sprintf("GRANT REPLICATION_SLAVE_ADMIN ON *.* TO '%s'@'%%';", dbaasCR))
+		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to grant cluster-control privileges")
+
+		By("verifying it cannot drop an operator account")
+		_, err = mysqlExec(primary, dbaasCR, dbaasPass, "", "DROP USER 'cnmsql_repl'@'%';")
+		Expect(err).To(HaveOccurred(), "DBaaS admin must not be able to drop operator accounts")
+
+		By("verifying the operator account is still intact")
+		rootPass := secretPassword(cluster + "-root")
+		out, err := mysqlExec(primary, "root", rootPass, "",
+			"SELECT User FROM mysql.user WHERE User = 'cnmsql_repl';")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring("cnmsql_repl"), "operator account must survive a hostile tenant")
+	})
+
+	It("retains the account on deletion under reclaimPolicy retain", func() {
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+
+		By("deleting the adopted (retain) DatabaseUser CR")
+		_, err := kubectl("delete", "databaseuser", adoptCR, "-n", testNamespace, "--wait=true", "--timeout=2m")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the MySQL account survives the deletion")
+		Consistently(func(g Gomega) {
+			out, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", adoptUser))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(adoptUser), "retain policy must keep the account")
+		}, 20*time.Second, 5*time.Second).Should(Succeed())
+	})
+
 	AfterAll(func() {
 		deleteTestNamespace(ns, prevNS)
 	})
 })
 
 func databaseUserManifest(name, cluster, userSecret, reclaim string) string {
+	return databaseUserCustomManifest(name, cluster, "", userSecret, reclaim,
+		`    - privileges: ["SELECT"]
+      "on": "app.*"
+    - privileges: ["SELECT"]
+      "on": "*.*"`)
+}
+
+// databaseUserCustomManifest builds a DatabaseUser with an optional MySQL user
+// name override and a caller-supplied (already-indented) grants block.
+func databaseUserCustomManifest(name, cluster, userName, userSecret, reclaim, grantsYAML string) string {
+	nameLine := ""
+	if userName != "" {
+		nameLine = fmt.Sprintf("  name: %s\n", userName)
+	}
 	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: DatabaseUser
 metadata:
@@ -156,14 +281,11 @@ metadata:
 spec:
   cluster:
     name: %s
-  reclaimPolicy: %s
+%s  reclaimPolicy: %s
   passwordSecret:
     name: %s
     key: password
   grants:
-    - privileges: ["SELECT"]
-      "on": "app.*"
-    - privileges: ["SELECT"]
-      "on": "*.*"
-`, name, testNamespace, cluster, reclaim, userSecret)
+%s
+`, name, testNamespace, cluster, nameLine, reclaim, userSecret, grantsYAML)
 }
