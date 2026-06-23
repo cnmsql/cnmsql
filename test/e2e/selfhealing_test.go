@@ -138,6 +138,19 @@ func podRestartCount(pod string) int {
 	return count
 }
 
+// waitForPodReady blocks until the named Pod exists and its Ready condition is
+// True, or the timeout elapses. Use it after a force-delete to wait for the
+// StatefulSet to recreate and ready the Pod before exec'ing into it.
+func waitForPodReady(pod string, timeout time.Duration) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		out, err := kubectl("get", "pod", pod, "-n", testNamespace,
+			"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+		g.Expect(err).NotTo(HaveOccurred(), "Pod %s not found yet", pod)
+		g.Expect(strings.TrimSpace(out)).To(Equal("True"), "Pod %s not Ready yet", pod)
+	}, e2eTimeout(timeout), 5*time.Second).Should(Succeed())
+}
+
 // otherInstance returns an instance Pod name that is not the primary.
 func otherInstance(cluster string, instances int, primary string) string {
 	for i := 1; i <= instances; i++ {
