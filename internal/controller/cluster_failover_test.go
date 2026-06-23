@@ -236,7 +236,7 @@ func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 			testReplica3: "a:1-15,b:1-3",
 		},
 	}
-	diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil)).DivergedInstances
+	diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil, nil)).DivergedInstances
 	if len(diverged) != 1 || diverged[0] != testReplica3 {
 		t.Fatalf("diverged = %v, want [%s]", diverged, testReplica3)
 	}
@@ -249,8 +249,60 @@ func TestDetectDivergedReplicasIgnoresUnknownGTID(t *testing.T) {
 		InstanceNames:  []string{testPrimary, testReplica2},
 		GTIDByInstance: map[string]string{testReplica2: "a:1-5"},
 	}
-	if diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil)).DivergedInstances; diverged != nil {
+	if diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil, nil)).DivergedInstances; diverged != nil {
 		t.Fatalf("diverged = %v, want nil when primary GTID is unknown", diverged)
+	}
+}
+
+func TestDetectDivergedReplicasStaysStickyWhenPrimaryGTIDUnavailable(t *testing.T) {
+	t.Parallel()
+	// The primary that the replica diverged from is gone, so its GTID is no longer
+	// reported. Divergence must survive: clearing it here would let the diverged
+	// replica be elected primary at the worst possible moment.
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "a:1-15,b:1-3"},
+	}
+	diverged := (&controllerasync.Reconciler{}).
+		Observe(topologyObservationInput(observed, nil, []string{testReplica2})).DivergedInstances
+	if len(diverged) != 1 || diverged[0] != testReplica2 {
+		t.Fatalf("diverged = %v, want sticky [%s] when primary GTID is unavailable", diverged, testReplica2)
+	}
+}
+
+func TestDetectDivergedReplicasClearsStickyFlagWhenReconverged(t *testing.T) {
+	t.Parallel()
+	// A previously diverged replica is now fully contained by a live primary, so
+	// the sticky flag is positively proven stale and dropped.
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{
+			testPrimary:  "a:1-20",
+			testReplica2: "a:1-18",
+		},
+	}
+	diverged := (&controllerasync.Reconciler{}).
+		Observe(topologyObservationInput(observed, nil, []string{testReplica2})).DivergedInstances
+	if diverged != nil {
+		t.Fatalf("diverged = %v, want nil once re-convergence is proven against a live primary", diverged)
+	}
+}
+
+func TestDetectDivergedReplicasDropsStickyFlagForRemovedInstance(t *testing.T) {
+	t.Parallel()
+	// A prior flag for an instance that is no longer part of the cluster (e.g.
+	// scaled down) must not be carried forever once the primary is unavailable.
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{},
+	}
+	diverged := (&controllerasync.Reconciler{}).
+		Observe(topologyObservationInput(observed, nil, []string{testReplica3})).DivergedInstances
+	if diverged != nil {
+		t.Fatalf("diverged = %v, want nil for an instance no longer in the cluster", diverged)
 	}
 }
 

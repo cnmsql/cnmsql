@@ -157,7 +157,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
-	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster.Status.GroupReplication))
+	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster.Status.GroupReplication, cluster.Status.DivergedInstances))
 	if topologyObservation.PrimaryAuthoritative {
 		observed.PrimaryName = topologyObservation.PrimaryName
 	}

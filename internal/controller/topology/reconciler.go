@@ -159,6 +159,11 @@ type ObservationInput struct {
 	GTIDByInstance    map[string]string
 	ConfiguredMembers int
 	ObservedViewMax   int
+	// PriorDivergedInstances carries the divergence flags recorded in the last
+	// observed Cluster status. Divergence is sticky: a flagged instance is only
+	// cleared once positively proven re-converged against a live primary, so this
+	// preserves the flags when the primary's GTID is unavailable for comparison.
+	PriorDivergedInstances []string
 }
 
 // Observation is the topology-specific portion of the operator's observed

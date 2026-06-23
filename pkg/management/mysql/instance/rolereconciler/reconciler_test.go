@@ -435,6 +435,32 @@ func TestDivergedInstanceStaysReadOnly(t *testing.T) {
 	}
 }
 
+func TestDivergedTargetPrimaryRefusesToPromote(t *testing.T) {
+	t.Parallel()
+	// The operator named this instance the target primary, but it is flagged as
+	// diverged. It must refuse to promote rather than resurrect errant
+	// transactions and drop committed primary writes.
+	behind := int64(0)
+	local := &fakeLocal{status: &webserver.Status{
+		Role:         webserver.RoleReplica,
+		GTIDExecuted: "a:1-10",
+		Replication: &webserver.ReplicationStatus{
+			SQLRunning:          true,
+			RetrievedGTIDSet:    "a:1-10",
+			SecondsBehindSource: &behind,
+		},
+	}}
+	r := newReconciler(t, "demo-2", &mysqlv1alpha1.ClusterStatus{
+		TargetPrimary:     "demo-2",
+		CurrentPrimary:    instDemo1,
+		DivergedInstances: []string{"demo-2"},
+	}, local)
+	reconcile(t, r)
+	if local.promoted {
+		t.Fatal("diverged target primary must not promote")
+	}
+}
+
 func TestFencedInstanceStopsMysqldAndDoesNotPromote(t *testing.T) {
 	t.Parallel()
 	// Even though demo-1 is the target primary, being fenced stops mysqld: the

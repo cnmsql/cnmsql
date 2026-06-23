@@ -40,10 +40,26 @@ func (r *Reconciler) ObservedFailover(*v1alpha1.Cluster, *v1alpha1.Cluster) (str
 	return "", "", false
 }
 
+// detectDivergedReplicas compares each reachable replica's executed GTID set
+// against the primary's and flags any that the primary does not fully contain
+// (errant transactions).
+//
+// Divergence is sticky: a previously flagged instance is only cleared once we
+// can positively prove against a live primary that it has re-converged. When the
+// primary's GTID is unavailable (e.g. the primary just died) we cannot compare,
+// so we preserve the prior flags rather than assume everyone is clean — clearing
+// here would let a diverged replica be elected primary at exactly the moment the
+// guard matters most.
 func detectDivergedReplicas(input topology.ObservationInput) []string {
 	primaryGTID := input.GTIDByInstance[input.PrimaryName]
 	if primaryGTID == "" {
-		return nil
+		// Cannot compare without the primary's GTID; keep whatever was flagged
+		// before so divergence survives the loss of the primary.
+		return stillPresent(input.PriorDivergedInstances, input.InstanceNames)
+	}
+	prior := map[string]bool{}
+	for _, name := range input.PriorDivergedInstances {
+		prior[name] = true
 	}
 	var diverged []string
 	for _, name := range input.InstanceNames {
@@ -52,14 +68,44 @@ func detectDivergedReplicas(input topology.ObservationInput) []string {
 		}
 		gtid := input.GTIDByInstance[name]
 		if gtid == "" {
+			// Unreachable replica: cannot re-prove convergence, so keep a prior flag.
+			if prior[name] {
+				diverged = append(diverged, name)
+			}
 			continue
 		}
 		contained, err := replication.GTIDContains(primaryGTID, gtid)
-		if err == nil && !contained {
+		if err != nil {
+			// Inconclusive comparison: do not clear a prior flag.
+			if prior[name] {
+				diverged = append(diverged, name)
+			}
+			continue
+		}
+		if !contained {
 			diverged = append(diverged, name)
 		}
 	}
 	return diverged
+}
+
+// stillPresent filters names down to those that are still part of the cluster,
+// so divergence flags for removed instances are not carried forever.
+func stillPresent(names, instanceNames []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	present := map[string]bool{}
+	for _, name := range instanceNames {
+		present[name] = true
+	}
+	var kept []string
+	for _, name := range names {
+		if present[name] {
+			kept = append(kept, name)
+		}
+	}
+	return kept
 }
 
 func detectReplicationBroken(input topology.ObservationInput, divergedInstances []string) []string {

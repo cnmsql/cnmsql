@@ -198,6 +198,21 @@ func (r *Reconciler) reconcileAsyncRole(
 	current := cluster.Status.CurrentPrimary
 	amPrimary := status.Role == webserver.RolePrimary
 
+	// A diverged instance must never promote, even if the operator named it the
+	// target. Divergence means it holds errant transactions and/or is missing
+	// committed primary writes; promoting it would resurrect the errant data and
+	// silently drop the missing writes. This guards the promotion path the same
+	// way the follow path below is guarded, as defense in depth against the
+	// operator ever selecting a diverged candidate.
+	if isDiverged(cluster, me) {
+		if amPrimary {
+			_ = r.releaseLease(ctx)
+			_ = r.Local.Demote(ctx)
+		}
+		log.Info("Instance is diverged; refusing to promote or follow, staying read-only", "instance", me)
+		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+	}
+
 	// I am the designated primary.
 	if target == me {
 		// Already a writable primary: just keep currentPrimary in step.
@@ -232,15 +247,7 @@ func (r *Reconciler) reconcileAsyncRole(
 	}
 
 	// I am not the designated primary: I must be a replica of the current
-	// primary. A diverged former primary stays read-only and does not follow.
-	if isDiverged(cluster, me) {
-		if amPrimary {
-			_ = r.releaseLease(ctx)
-			_ = r.Local.Demote(ctx)
-		}
-		log.Info("Instance is diverged; staying read-only, not following", "instance", me)
-		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
-	}
+	// primary. (Diverged instances are already handled above and never reach here.)
 
 	// The new primary is not known yet, or I am still the current primary waiting
 	// to be superseded: stop accepting writes and wait.
