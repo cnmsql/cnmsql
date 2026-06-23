@@ -1,0 +1,30 @@
+name: Release Announce
+
+# Comments on every PR (and issue) included in a published release to let
+# contributors know their work shipped, and labels them accordingly.
+on:
+  release:
+    types:
+    - published
+
+permissions: {}
+
+jobs:
+  comment:
+    name: Announce release on PRs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+    - name: Comment on shipped PRs
+      uses: apexskier/github-release-commenter@e7813a9625eabd79a875b4bc4046cfcae377ab34 # v1.4.1
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        comment-template: |
+          🚀 This shipped in **{release_tag}** — thanks for contributing!
+
+          {release_link}
+        label-template: |
+          released
