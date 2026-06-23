@@ -132,6 +132,12 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	}
 	log.Info("Created data directory")
 
+	// ext4-backed PVCs ship a lost+found directory at the mount root; mysqld
+	// --initialize aborts on a non-empty data dir, so clear it first.
+	if err := removeLostFound(opts.DataDir); err != nil {
+		return err
+	}
+
 	if err := opts.runInitialize(ctx); err != nil {
 		// A failed --initialize leaves a half-written data directory (auto.cnf,
 		// the mysql/ system-schema dir, tablespaces). Without cleanup a retry
@@ -160,6 +166,19 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 		return fmt.Errorf("marking data directory as bootstrapped: %w", err)
 	}
 	log.Info("Completed data directory initialization")
+	return nil
+}
+
+// removeLostFound deletes the lost+found directory that ext4 (and other
+// fsck-able filesystems) create at the root of a freshly-provisioned mount
+// point. Both `mysqld --initialize` and `xtrabackup --copy-back` refuse to run
+// against a data directory that is not empty, so the stray lost+found makes
+// them fail on ext4-backed PVCs. It is a no-op when the directory is absent.
+func removeLostFound(dataDir string) error {
+	lostFound := filepath.Join(dataDir, "lost+found")
+	if err := os.RemoveAll(lostFound); err != nil {
+		return fmt.Errorf("removing lost+found: %w", err)
+	}
 	return nil
 }
 

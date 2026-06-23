@@ -232,9 +232,14 @@ func (opts RestoreOptions) restoreBase(ctx context.Context) error {
 		return fmt.Errorf("xtrabackup prepare: %w", err)
 	}
 
-	// 4. Restore into the (empty) data directory.
+	// 4. Restore into the (empty) data directory. ext4-backed PVCs ship a
+	// lost+found directory at the mount root; copy-back aborts on a non-empty
+	// data dir, so clear it first.
 	if err := os.MkdirAll(opts.DataDir, 0o750); err != nil {
 		return fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := removeLostFound(opts.DataDir); err != nil {
+		return err
 	}
 	copyBackArgs, err := xtrabackup.CopyBackArgs(opts.BackupDir, opts.DataDir)
 	if err != nil {
