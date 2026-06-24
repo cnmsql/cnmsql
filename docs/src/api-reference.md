@@ -445,7 +445,7 @@ spec:
 
 **Denied and deprecated parameters:** `spec.mysql.parameters` is validated before provisioning. Keys are compared case-insensitively with dashes and underscores treated as equivalent (`log-bin` equals `log_bin`).
 
-Denied keys set the cluster `phase: Blocked` with a reason naming the offending key. These are keys the operator manages directly (replication identity, topology, TLS material, binlog durability) or keys that would relocate on-disk paths or expose the administrative interface: `server_id`, `gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`, `socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`, `admin_address`, `admin_ssl_cert`, `tls_ciphersuites`, `skip_replica_start`, `auto_generate_certs`. `require_secure_transport` is not denied — requiring TLS for client connections is the user's choice.
+Denied keys set the cluster `phase: Blocked` with a reason naming the offending key. These are keys the operator manages directly (replication identity, topology, TLS material, binlog durability) or keys that would relocate on-disk paths or expose the administrative interface: `server_id`, `gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`, `socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`, `admin_address`, `admin_ssl_cert`, `tls_ciphersuites`, `skip_replica_start`, `auto_generate_certs`. `require_secure_transport` is not denied. Requiring TLS for client connections is the user's choice.
 
 Deprecated keys are accepted but emit a `DeprecatedParameter` warning event pointing at the current spelling, e.g. `slave_parallel_workers` (use `replica_parallel_workers`), `master_info_repository` (removed on 8.0.23+).
 
@@ -526,7 +526,7 @@ spec:
             key: secretKey
 ```
 
-`recovery.backup` and `recovery.source` are mutually exclusive. `backupID` is only meaningful with `source` — when empty, the operator selects the latest completed backup.
+`recovery.backup` and `recovery.source` are mutually exclusive. `backupID` is only meaningful with `source`. When empty, the operator selects the latest completed backup.
 
 `recoveryTarget` accepts exactly one of `targetTime` (RFC3339 timestamp), `targetGTID` (inclusive GTID set), or `targetImmediate` (stop as soon as the base backup is consistent). An empty `recoveryTarget: {}` replays to the latest archived point. No `recoveryTarget` restores the base backup only.
 

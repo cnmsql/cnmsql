@@ -1,6 +1,6 @@
 # MySQL Version Upgrades
 
-This page covers upgrading the **MySQL server** version of a running cluster —
+This page covers upgrading the **MySQL server** version of a running cluster,
 distinct from upgrading the operator itself (see
 [Operator Upgrades](operator-upgrades.md)).
 
@@ -23,9 +23,9 @@ downgrade in place. cnmsql enforces the same chain:
 The supported chain lives in `UpgradeSeriesChain`
 (`pkg/management/mysql/version/version.go`) and is enforced in two places:
 
-1. **Admission** — `Cluster.ValidateUpdate` rejects a downgrade, a skipped
+1. **Admission**: `Cluster.ValidateUpdate` rejects a downgrade, a skipped
    series, or a series change expressed through `imageName` instead of a catalog.
-2. **The instance manager** — before starting mysqld, it compares the series
+2. **The instance manager**: before starting mysqld, it compares the series
    recorded in the data directory against the image version and refuses to start
    on an unsupported transition, even if admission was bypassed.
 
@@ -33,7 +33,7 @@ The supported chain lives in `UpgradeSeriesChain`
 
 Major upgrades must be driven through an `ImageCatalog` (or
 `ClusterImageCatalog`), so the target series is explicit. The catalog is keyed by
-**series** (`8.0`, `8.4`, `9.0`), not by integer major — 8.0 and 8.4 are distinct
+**series** (`8.0`, `8.4`, `9.0`), not by integer major. 8.0 and 8.4 are distinct
 upgrade targets.
 
 1. Ensure the catalog lists the target series:
@@ -66,8 +66,8 @@ upgrade targets.
    rolls instances **one at a time, replicas first and the primary last** (the
    primary via switchover where a healthy replica exists), so only one instance is
    down at a time and a newer replica never replicates from an older primary. Each
-   instance must become Ready — which, with the default `--upgrade=AUTO`, means its
-   data-dictionary upgrade has finished — before the next one rolls.
+   instance must become Ready, which, with the default `--upgrade=AUTO`, means its
+   data-dictionary upgrade has finished, before the next one rolls.
 
 ### Pre-upgrade backup gate
 
@@ -83,7 +83,7 @@ spec:
 
 If it is enabled but no `spec.backup.objectStore` is configured, the upgrade is
 **blocked** (status phase `Blocked`, event `BackupRequired`) rather than rolling
-unprotected — configure a backup destination or set `backupBeforeUpgrade: false`
+unprotected. Configure a backup destination or set `backupBeforeUpgrade: false`
 (e.g. when an external backup process is in place).
 
 ### Group Replication
