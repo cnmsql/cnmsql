@@ -74,6 +74,8 @@ func expectStatusQueries(mock sqlmock.Sqlmock, asReplica, ioRunning, sqlRunning 
 }
 
 func expectBestEffortQueries(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT @@GLOBAL.version").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("8.0.36"))
 	mock.ExpectQuery("SELECT @@GLOBAL.gtid_executed").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid:1-10"))
 	mock.ExpectQuery("SELECT @@GLOBAL.gtid_purged").
@@ -162,6 +164,40 @@ func TestStatusReplica(t *testing.T) {
 	}
 	if !status.IsReady {
 		t.Errorf("healthy replica should be ready")
+	}
+}
+
+func TestStatusReportsLiveVersionAndUpgradeComplete(t *testing.T) {
+	c, mock := newController(t, nil)
+
+	expectStatusQueries(mock, false, false, false)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host"}))
+	// Live server version differs from the configured image version (8.0.36): the
+	// instance has been upgraded, and Status must report the live value.
+	mock.ExpectQuery("SELECT @@GLOBAL.version").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("8.4.3"))
+	mock.ExpectQuery("SELECT @@GLOBAL.gtid_executed").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid:1-10"))
+	mock.ExpectQuery("SELECT @@GLOBAL.gtid_purged").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(""))
+	mock.ExpectQuery("SELECT @@GLOBAL.rpl_semi_sync_source_enabled").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0"))
+	mock.ExpectQuery("SELECT @@GLOBAL.rpl_semi_sync_replica_enabled").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0"))
+	mock.ExpectQuery("SHOW GLOBAL STATUS LIKE 'Uptime'").
+		WillReturnRows(sqlmock.NewRows([]string{"Variable_name", "Value"}).AddRow("Uptime", "1"))
+
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Version != "8.4.3" {
+		t.Errorf("version = %q, want live 8.4.3", status.Version)
+	}
+	if !status.UpgradeComplete {
+		t.Errorf("expected UpgradeComplete on a ready instance with a readable live version")
 	}
 }
 

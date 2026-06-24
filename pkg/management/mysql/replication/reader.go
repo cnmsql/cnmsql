@@ -63,6 +63,15 @@ func (m *Manager) ServerUUID(ctx context.Context) (string, error) {
 	return m.scalarString(ctx, "SELECT @@GLOBAL.server_uuid")
 }
 
+// ServerVersion returns the live mysqld version (@@GLOBAL.version, e.g.
+// "8.4.0"). With the default --upgrade=AUTO the server does not accept
+// connections until the data-dictionary upgrade has finished, so a readable
+// live version on a ready instance means the server upgrade is complete. The
+// operator compares this against the target series to drive a major upgrade.
+func (m *Manager) ServerVersion(ctx context.Context) (string, error) {
+	return m.scalarString(ctx, "SELECT @@GLOBAL.version")
+}
+
 // ReadOnly returns the read_only / super_read_only flags. super_read_only is
 // reported false on servers that do not support it.
 func (m *Manager) ReadOnly(ctx context.Context) (ReadOnlyState, error) {

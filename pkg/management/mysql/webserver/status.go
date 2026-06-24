@@ -35,8 +35,16 @@ type Status struct {
 	InstanceName string `json:"instanceName"`
 	// Role is the current replication role.
 	Role Role `json:"role"`
-	// Version is the mysqld server version.
+	// Version is the live mysqld server version (@@GLOBAL.version), falling back
+	// to the configured image version when the live value cannot be read. The
+	// operator compares its series against the target to drive a major upgrade.
 	Version string `json:"version,omitempty"`
+	// UpgradeComplete reports that the server upgrade has finished: the instance
+	// is ready and its live version is readable. With the default --upgrade=AUTO,
+	// mysqld refuses connections until the data-dictionary upgrade completes, so a
+	// ready instance reporting a live version has finished upgrading. The operator
+	// waits for this before advancing to the next instance in a major upgrade.
+	UpgradeComplete bool `json:"upgradeComplete,omitempty"`
 	// IsReady reflects whether the instance is ready to serve traffic.
 	IsReady bool `json:"isReady"`
 	// ReadOnly and SuperReadOnly mirror the server variables.

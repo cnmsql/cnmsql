@@ -259,13 +259,25 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 		return nil, err
 	}
 
+	ready := c.Readyz(ctx) == nil
+
+	// Prefer the live server version (@@GLOBAL.version) so the operator observes
+	// the actual running series during a major upgrade, not the configured image
+	// version. Fall back to the configured version when the query fails.
+	reportedVersion := c.versionStr
+	liveVersion, liveErr := c.repl.ServerVersion(ctx)
+	if liveErr == nil && liveVersion != "" {
+		reportedVersion = liveVersion
+	}
+
 	status := &webserver.Status{
 		InstanceName:     c.name,
-		Version:          c.versionStr,
+		Version:          reportedVersion,
 		Role:             c.role(replicaState),
 		ReadOnly:         roState.ReadOnly,
 		SuperReadOnly:    roState.SuperReadOnly,
-		IsReady:          c.Readyz(ctx) == nil,
+		IsReady:          ready,
+		UpgradeComplete:  ready && liveErr == nil && liveVersion != "",
 		InPlaceUpgrading: IsInPlaceUpgrading(),
 	}
 
