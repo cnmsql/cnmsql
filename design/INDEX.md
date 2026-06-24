@@ -31,6 +31,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 | 021 | [Deployment Modes](021-deployment-modes.md) | done | — | Cluster-wide vs namespaced operator topologies. `WATCH_NAMESPACE`-scoped cache, namespaced RBAC overlay, and per-namespace webhook (unique name + namespaceSelector) so multiple operators cohabit one cluster. |
 | 023 | [DatabaseUser CR](023-database-user-cr.md) | done | M-DBU | Standalone `DatabaseUser` CRD: installation-wide MySQL account (not scoped to a Database) with grants, password rotation, reclaim policy, and conflict/adoption of pre-existing accounts. Inline `Database` user struct renamed to `InlineUser`. Grant denylist + safe-DBaaS-superuser recipe + declarative `kubectl cnmsql databaseuser` commands. |
 | 022 | [Group Replication](022-group-replication.md) | proposed | M-GR | Second replication topology: quorum-based MySQL Group Replication behind an immutable `spec.replication.mode`. Operator observes group decisions (auto-failover handled by quorum); switchover via `set_as_primary`; GR-native fencing; quorum guards; phased M-GR.1–M-GR.7. |
+| 024 | [MySQL Major Version Upgrade](024-major-version-upgrade.md) | proposed | — | Safe orchestrated server upgrades along `8.0 → 8.4 → 9.x`. Catalog keyed by **series** not integer major (8.0≠8.4), admission guard (no downgrade/skip), config gating for removed sysvars/auth defaults, per-instance upgrade-complete signal, backup-gated replica-first rollout, GR comm-protocol finalization. |
 
 ## Quick Navigation by Topic
 
@@ -44,7 +45,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 
 **Data Management:** 008 (backup/recovery) → 009 (binlog/PITR) → 010 (scheduled backup) → 011 (raw S3 recovery)
 
-**Operator Internals:** 018 (binary injection) → 019 (upgrades) → 015 (monitoring/guards)
+**Operator Internals:** 018 (binary injection) → 019 (operator upgrades) → 024 (MySQL major upgrade, proposed) → 015 (monitoring/guards)
 
 **User-Facing APIs:** 001 (CRD types) → 013 (TLS) → 014 (users/databases) → 023 (databaseuser) → 016 (kubectl plugin)
 
