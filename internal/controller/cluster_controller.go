@@ -370,11 +370,6 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if switched {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
-	// Finish operator upgrades before finalizing the Group Replication
-	// communication protocol for a completed MySQL major-version upgrade.
-	if result, err, handled := r.reconcileUpgradeSteps(ctx, cluster, plan, observed); handled {
-		return result, err
-	}
 	// Keep rw/ro/r routing in step with the current primary (set by whichever
 	// instance promoted itself).
 	if err := r.reconcileRoleLabels(ctx, cluster, observed); err != nil {
@@ -390,6 +385,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	if !provisioned {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
+	}
+	// Finish operator upgrades before finalizing the Group Replication
+	// communication protocol for a completed MySQL major-version upgrade.
+	// Run only after the cluster is fully provisioned so the observation
+	// (especially instance-manager hashes) reflects the current state.
+	if result, err, handled := r.reconcileUpgradeSteps(ctx, cluster, plan, observed); handled {
+		return result, err
 	}
 	r.reconcileAvailability(ctx, cluster, observed)
 	if !observed.Ready {
