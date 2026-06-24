@@ -120,7 +120,9 @@ func TestCheckUpgrade(t *testing.T) {
 		{"8.0.36", "8.0.40", false}, // patch bump within a series
 		{"8.0.36", "8.4.3", false},  // single hop forward
 		{"8.4.3", "9.0.1", false},   // single hop forward
+		{"8.4.3", "9.6.0", false},   // 9.x runtime maps to catalog series 9.0
 		{"8.0.36", "9.0.1", true},   // skips 8.4
+		{"8.0.36", "9.6.0", true},   // cannot skip 8.4 for a later 9.x runtime
 		{"9.0.1", "8.4.3", true},    // downgrade
 		{"8.4.3", "8.0.36", true},   // downgrade
 		{"5.7.44", "8.0.36", true},  // source series outside chain

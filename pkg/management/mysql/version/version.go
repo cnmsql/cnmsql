@@ -72,6 +72,12 @@ func Parse(v string) (Version, error) {
 // component zeroed. MySQL upgrades are reasoned about per series (8.0, 8.4,
 // 9.0), not per patch.
 func (v Version) Series() Version {
+	// The public catalog/API names the rolling MySQL innovation line "9.0"
+	// while published server images advance through 9.1, 9.2, ... 9.x. Treat
+	// every runtime 9.x version as that one supported upgrade series.
+	if v.Major == 9 {
+		return Version{Major: 9, Minor: 0}
+	}
 	return Version{Major: v.Major, Minor: v.Minor}
 }
 

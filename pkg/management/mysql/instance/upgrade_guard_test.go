@@ -40,6 +40,7 @@ func TestGuardDataDirUpgrade(t *testing.T) {
 		{"same series patch bump", "8.0.36", "8.0.40", false},
 		{"single hop forward", "8.0.36", "8.4.3", false},
 		{"second hop forward", "8.4.3", "9.0.1", false},
+		{"second hop to current 9.x", "8.4.3", "9.6.0", false},
 		{"skips a series", "8.0.36", "9.0.1", true},
 		{"downgrade", "8.4.3", "8.0.36", true},
 	}
