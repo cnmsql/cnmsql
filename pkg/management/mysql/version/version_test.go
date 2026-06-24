@@ -104,3 +104,35 @@ func TestFeatureGates(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckUpgrade(t *testing.T) {
+	mustParse := func(s string) Version {
+		v, err := Parse(s)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", s, err)
+		}
+		return v
+	}
+	cases := []struct {
+		from, to string
+		wantErr  bool
+	}{
+		{"8.0.36", "8.0.40", false}, // patch bump within a series
+		{"8.0.36", "8.4.3", false},  // single hop forward
+		{"8.4.3", "9.0.1", false},   // single hop forward
+		{"8.0.36", "9.0.1", true},   // skips 8.4
+		{"9.0.1", "8.4.3", true},    // downgrade
+		{"8.4.3", "8.0.36", true},   // downgrade
+		{"5.7.44", "8.0.36", true},  // source series outside chain
+		{"8.4.3", "10.0.0", true},   // target series outside chain
+	}
+	for _, tc := range cases {
+		err := CheckUpgrade(mustParse(tc.from), mustParse(tc.to))
+		if tc.wantErr && err == nil {
+			t.Errorf("CheckUpgrade(%s -> %s): expected error", tc.from, tc.to)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("CheckUpgrade(%s -> %s): unexpected error: %v", tc.from, tc.to, err)
+		}
+	}
+}
