@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -146,6 +147,54 @@ func TestDatabaseUserCreatesWithRevokes(t *testing.T) {
 	}
 	if cu.Revokes[0].On != "mysql.*" {
 		t.Errorf("first revoke target = %q, want mysql.*", cu.Revokes[0].On)
+	}
+}
+
+func TestDatabaseUserDriftDetectionDisabledStopsReapply(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.DriftDetection = ptr.To(false)
+	})
+	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
+
+	reconcileUserToApplied(t, r, du) // created: 1
+
+	// Nothing changed: the reconcile must be a no-op and must not self-requeue.
+	result, err := r.Reconcile(context.Background(), userRequest(du))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(control.created) != 1 {
+		t.Fatalf("created = %d, want 1 (no re-apply)", len(control.created))
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %s, want 0 (no timed requeue)", result.RequeueAfter)
+	}
+}
+
+func TestDatabaseUserDriftDetectionDisabledReappliesOnSecretChange(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	secret := userPasswordSecret()
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.DriftDetection = ptr.To(false)
+	})
+	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, secret)
+
+	reconcileUserToApplied(t, r, du) // created: 1
+
+	// Rotate the password Secret: the recorded resourceVersion no longer matches,
+	// so the user must be re-applied even with drift detection disabled.
+	secret.Data["password"] = []byte("rotated")
+	if err := r.Update(context.Background(), secret); err != nil {
+		t.Fatalf("update secret: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(control.created) != 2 {
+		t.Fatalf("created = %d, want 2 (re-applied on secret change)", len(control.created))
 	}
 }
 

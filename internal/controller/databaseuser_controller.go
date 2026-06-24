@@ -31,7 +31,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
@@ -59,6 +61,7 @@ type DatabaseUserReconciler struct {
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databaseusers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databaseusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=databaseusers/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile drives a DatabaseUser towards its desired state.
 func (r *DatabaseUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -106,6 +109,15 @@ func (r *DatabaseUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			"PrimaryNotReady", "Waiting for the cluster primary to be available")
 	}
 
+	// With drift detection disabled, reconcile only on real changes (spec or the
+	// referenced password Secret). When nothing changed there is nothing to do
+	// and we do not self-requeue, so the account is no longer re-applied on a
+	// timer.
+	driftDetection := driftDetectionEnabled(du.Spec.DriftDetection)
+	if !driftDetection && !r.userChanged(ctx, du) {
+		return ctrl.Result{}, nil
+	}
+
 	secretRV, err := r.applyUser(ctx, du, cluster, primary)
 	if err != nil {
 		if conflict, ok := err.(userConflictError); ok {
@@ -117,7 +129,34 @@ func (r *DatabaseUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markUserNotApplied(ctx, du, "ReconcileError", err.Error())
 	}
 
-	return ctrl.Result{RequeueAfter: readyResync}, r.markUserApplied(ctx, du, secretRV)
+	result := ctrl.Result{}
+	if driftDetection {
+		result.RequeueAfter = readyResync
+	}
+	return result, r.markUserApplied(ctx, du, secretRV)
+}
+
+// userChanged reports whether the DatabaseUser needs an apply because its spec
+// generation moved or the referenced password Secret was rotated since the last
+// recorded apply. It is consulted only when drift detection is disabled; with
+// drift detection on the controller always re-applies. A Secret that cannot be
+// read is treated as changed so the apply path surfaces the error.
+func (r *DatabaseUserReconciler) userChanged(ctx context.Context, du *mysqlv1alpha1.DatabaseUser) bool {
+	// Never applied: provision it regardless of generation tracking.
+	if du.Status.Applied == nil {
+		return true
+	}
+	if du.Status.ObservedGeneration != du.Generation {
+		return true
+	}
+	if du.Spec.Ensure == mysqlv1alpha1.EnsureAbsent || du.Spec.PasswordSecret == nil {
+		return false
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: du.Namespace, Name: du.Spec.PasswordSecret.Name}, secret); err != nil {
+		return true
+	}
+	return secret.ResourceVersion != du.Status.PasswordSecretResourceVersion
 }
 
 // userConflictError signals that the MySQL account already exists but was not
@@ -482,12 +521,53 @@ func setUserCondition(status *mysqlv1alpha1.DatabaseUserStatus, conditionType st
 	})
 }
 
+// databaseUserPasswordSecretIndex indexes DatabaseUsers by the name of the
+// password Secret they reference, so a Secret change can be mapped back to the
+// DatabaseUsers that must reconcile.
+const databaseUserPasswordSecretIndex = ".spec.passwordSecret.name"
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DatabaseUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.ControlClient == nil {
 		r.ControlClient = &HTTPControlClient{Client: r.Client}
 	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mysqlv1alpha1.DatabaseUser{},
+		databaseUserPasswordSecretIndex,
+		func(rawObj client.Object) []string {
+			du := rawObj.(*mysqlv1alpha1.DatabaseUser)
+			if s := du.Spec.PasswordSecret; s != nil && s.Name != "" {
+				return []string{s.Name}
+			}
+			return nil
+		},
+	); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mysqlv1alpha1.DatabaseUser{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.databaseUsersForSecret)).
 		Complete(r)
+}
+
+// databaseUsersForSecret maps a password Secret to the DatabaseUsers that
+// reference it, so rotating a Secret re-applies the affected users even when
+// drift detection is disabled.
+func (r *DatabaseUserReconciler) databaseUsersForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list mysqlv1alpha1.DatabaseUserList
+	if err := r.List(ctx, &list,
+		client.InNamespace(obj.GetNamespace()),
+		client.MatchingFields{databaseUserPasswordSecretIndex: obj.GetName()}); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: list.Items[i].Namespace,
+			Name:      list.Items[i].Name,
+		}})
+	}
+	return reqs
 }

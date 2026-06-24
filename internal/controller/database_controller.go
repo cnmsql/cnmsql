@@ -31,7 +31,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
@@ -104,6 +106,15 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			"PrimaryNotReady", "Waiting for the cluster primary to be available")
 	}
 
+	// With drift detection disabled, reconcile only on real changes (spec or a
+	// referenced password Secret). When nothing changed there is nothing to do
+	// and we do not self-requeue, so the schema is no longer re-applied on a
+	// timer.
+	driftDetection := driftDetectionEnabled(db.Spec.DriftDetection)
+	if !driftDetection && !r.databaseChanged(ctx, db) {
+		return ctrl.Result{}, nil
+	}
+
 	passwords, err := r.applyDatabase(ctx, db, cluster, primary)
 	if err != nil {
 		log.Info("Database reconciliation failed, will retry", "database", db.Name, "error", err.Error())
@@ -113,7 +124,46 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markNotApplied(ctx, db, "ReconcileError", err.Error())
 	}
 
-	return ctrl.Result{RequeueAfter: readyResync}, r.markApplied(ctx, db, passwords)
+	result := ctrl.Result{}
+	if driftDetection {
+		result.RequeueAfter = readyResync
+	}
+	return result, r.markApplied(ctx, db, passwords)
+}
+
+// driftDetectionEnabled reports whether periodic re-apply is on. An unset flag
+// preserves the historical default of re-asserting desired state every resync.
+func driftDetectionEnabled(v *bool) bool {
+	return v == nil || *v
+}
+
+// databaseChanged reports whether the Database needs an apply because its spec
+// generation moved or a referenced password Secret was rotated since the last
+// recorded apply. It is consulted only when drift detection is disabled; with
+// drift detection on the controller always re-applies. A Secret that cannot be
+// read is treated as changed so the apply path surfaces the error.
+func (r *DatabaseReconciler) databaseChanged(ctx context.Context, db *mysqlv1alpha1.Database) bool {
+	// Never applied: provision it regardless of generation tracking.
+	if db.Status.Applied == nil {
+		return true
+	}
+	if db.Status.ObservedGeneration != db.Generation {
+		return true
+	}
+	for i := range db.Spec.Users {
+		du := &db.Spec.Users[i]
+		if du.Ensure == mysqlv1alpha1.EnsureAbsent || du.PasswordSecret == nil {
+			continue
+		}
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: db.Namespace, Name: du.PasswordSecret.Name}, secret); err != nil {
+			return true
+		}
+		if secret.ResourceVersion != prevPassword(db, roleKey(du.Name, du.Host)) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyDatabase reconciles the schema and its declared users, returning the
@@ -422,12 +472,56 @@ func setDatabaseCondition(status *mysqlv1alpha1.DatabaseStatus, conditionType st
 	})
 }
 
+// databasePasswordSecretIndex indexes Databases by the names of the password
+// Secrets their declared users reference, so a Secret change can be mapped back
+// to the Databases that must reconcile.
+const databasePasswordSecretIndex = ".spec.users.passwordSecret.name"
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DatabaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.ControlClient == nil {
 		r.ControlClient = &HTTPControlClient{Client: r.Client}
 	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mysqlv1alpha1.Database{},
+		databasePasswordSecretIndex,
+		func(rawObj client.Object) []string {
+			db := rawObj.(*mysqlv1alpha1.Database)
+			var names []string
+			for i := range db.Spec.Users {
+				if s := db.Spec.Users[i].PasswordSecret; s != nil && s.Name != "" {
+					names = append(names, s.Name)
+				}
+			}
+			return names
+		},
+	); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mysqlv1alpha1.Database{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.databasesForSecret)).
 		Complete(r)
+}
+
+// databasesForSecret maps a password Secret to the Databases that reference it,
+// so rotating a Secret re-applies the affected databases even when drift
+// detection is disabled.
+func (r *DatabaseReconciler) databasesForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list mysqlv1alpha1.DatabaseList
+	if err := r.List(ctx, &list,
+		client.InNamespace(obj.GetNamespace()),
+		client.MatchingFields{databasePasswordSecretIndex: obj.GetName()}); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: list.Items[i].Namespace,
+			Name:      list.Items[i].Name,
+		}})
+	}
+	return reqs
 }

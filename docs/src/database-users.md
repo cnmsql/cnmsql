@@ -78,6 +78,27 @@ The operator records the password Secret's `resourceVersion` in
 BY` only when that Secret changes. Rotate by updating the Secret; you do not need
 to edit the `DatabaseUser`.
 
+## Drift detection
+
+By default the operator periodically re-applies the user to MySQL, so an account
+that is manually altered or dropped out of band is restored within the resync
+interval. This re-assertion runs on a timer even when nothing changed, which
+shows up as steady `Altering user` log lines.
+
+Set `spec.driftDetection: false` to opt out. The operator then reconciles the
+user only when its spec changes or its password Secret is rotated — it no longer
+re-applies on a timer, and out-of-band drift is not corrected until the next such
+change. Password rotation still works: the controller watches the referenced
+Secret, so updating it triggers a reconcile regardless of this setting.
+
+```yaml
+spec:
+  driftDetection: false
+```
+
+The same flag is available on the `Database` CRD, where it governs the schema and
+its inline users.
+
 ## Reclaim policy
 
 `spec.reclaimPolicy` controls the MySQL account when the `DatabaseUser` object is

@@ -1045,6 +1045,7 @@ _Appears in:_
 | `collation` _string_ | Collation of the database (e.g. "utf8mb4_0900_ai_ci"). |  | Optional: \{\} <br /> |
 | `users` _[InlineUser](#inlineuser) array_ | Users is the list of users managed for this database. |  | Optional: \{\} <br /> |
 | `reclaimPolicy` _string_ | ReclaimPolicy controls what happens to the MySQL database when the<br />Database object is deleted. | retain | Enum: [delete retain] <br />Optional: \{\} <br /> |
+| `driftDetection` _boolean_ | DriftDetection controls whether the operator periodically re-applies this<br />database and its declared users to correct out-of-band drift. When true<br />(the default) the controller re-asserts the desired state on every resync,<br />so a manually dropped schema or altered user is restored within<br />readyResync. When false the controller reconciles only on changes to the<br />spec or to a referenced password Secret, and does not periodically<br />re-apply; drift introduced out of band is not corrected until the next<br />such change. | true | Optional: \{\} <br /> |
 
 
 #### DatabaseStatus
@@ -1158,6 +1159,7 @@ _Appears in:_
 | `comment` _string_ | Comment is an optional user comment. |  | Optional: \{\} <br /> |
 | `grants` _[DatabaseUserGrant](#databaseusergrant) array_ | Grants is the list of grants applied to the user. Targets are<br />installation-wide and have no default schema (unlike Database.spec.users). |  | Optional: \{\} <br /> |
 | `reclaimPolicy` _string_ | ReclaimPolicy controls what happens to the MySQL user when the<br />DatabaseUser object is deleted. | retain | Enum: [delete retain] <br />Optional: \{\} <br /> |
+| `driftDetection` _boolean_ | DriftDetection controls whether the operator periodically re-applies this<br />user to correct out-of-band drift. When true (the default) the controller<br />re-asserts the desired state on every resync, so a manually altered or<br />dropped account is restored within readyResync. When false the controller<br />reconciles only on changes to the spec or to the referenced password<br />Secret, and does not periodically re-apply; drift introduced out of band<br />is not corrected until the next such change. | true | Optional: \{\} <br /> |
 
 
 #### DatabaseUserStatus

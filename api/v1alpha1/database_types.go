@@ -65,6 +65,18 @@ type DatabaseSpec struct {
 	// +kubebuilder:default:=retain
 	// +optional
 	ReclaimPolicy string `json:"reclaimPolicy,omitempty"`
+
+	// DriftDetection controls whether the operator periodically re-applies this
+	// database and its declared users to correct out-of-band drift. When true
+	// (the default) the controller re-asserts the desired state on every resync,
+	// so a manually dropped schema or altered user is restored within
+	// readyResync. When false the controller reconciles only on changes to the
+	// spec or to a referenced password Secret, and does not periodically
+	// re-apply; drift introduced out of band is not corrected until the next
+	// such change.
+	// +kubebuilder:default:=true
+	// +optional
+	DriftDetection *bool `json:"driftDetection,omitempty"`
 }
 
 // InlineUser describes a MySQL user managed declaratively as part of a Database.

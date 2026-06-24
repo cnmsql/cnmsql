@@ -108,6 +108,54 @@ var _ = Describe("Managed roles and databases", Ordered, func() {
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
+	It("does not correct out-of-band drift when driftDetection is disabled", func() {
+		const driftCR, driftSchema, driftUser, driftPass, driftSec = "driftdb", "driftschema", "driftuser", "drift-secret", "driftdb-user"
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+
+		By("creating a Database with driftDetection disabled")
+		applyManifest(driftSec, passwordSecretManifest(driftSec, driftPass))
+		applyManifest(driftCR, databaseDriftManifest(driftCR, cluster, driftSchema, driftUser, driftSec, false))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "database", driftCR, "-n", testNamespace, "--ignore-not-found", "--wait=false")
+			_, _ = kubectl("delete", "secret", driftSec, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("waiting for the Database to be applied")
+		Eventually(func(g Gomega) {
+			applied, err := kubectl("get", "database", driftCR, "-n", testNamespace,
+				"-o", "jsonpath={.status.applied}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(applied).To(Equal("true"), "drift-disabled database is not applied yet")
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("dropping the schema-scoped user out of band")
+		_, err := mysqlExec(primary, "root", rootPass, "",
+			fmt.Sprintf("DROP USER '%s'@'%%';", driftUser))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the operator does not re-create it on a timer (drift correction is off)")
+		Consistently(func(g Gomega) {
+			out, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", driftUser))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(BeEmpty(), "drift-disabled user must not be re-applied without a change")
+		}, 45*time.Second, 5*time.Second).Should(Succeed())
+
+		By("editing the spec to trigger a reconcile")
+		_, err = kubectl("patch", "database", driftCR, "-n", testNamespace,
+			"--type=merge", "-p", `{"spec":{"characterSet":"utf8mb4"}}`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the user is re-applied on the spec change")
+		Eventually(func(g Gomega) {
+			out, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", driftUser))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(driftUser), "a spec change must re-apply the database users")
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
 	It("drops the schema when the Database is deleted under reclaimPolicy delete", func() {
 		primary := clusterPrimary(cluster)
 		rootPass := secretPassword(cluster + "-root")
@@ -166,6 +214,31 @@ spec:
       database: app
       owner: app
 `, name, testNamespace, instanceImage, e2eInstanceResources, e2eMySQLParameters, role)
+}
+
+// databaseDriftManifest builds a Database carrying an explicit driftDetection
+// setting, used to verify the opt-out of periodic re-apply. Its schema is
+// retained on deletion so namespace teardown does not need a live primary.
+func databaseDriftManifest(name, cluster, schema, dbUser, userSecret string, drift bool) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Database
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster:
+    name: %s
+  name: %s
+  reclaimPolicy: retain
+  driftDetection: %t
+  users:
+    - name: %s
+      passwordSecret:
+        name: %s
+        key: password
+      grants:
+        - privileges: ["ALL"]
+`, name, testNamespace, cluster, schema, drift, dbUser, userSecret)
 }
 
 func passwordSecretManifest(name, password string) string {
