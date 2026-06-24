@@ -175,8 +175,17 @@ pod-hash roll:
 1. **Backup gate.** If `upgrade.backupBeforeUpgrade` (default true), ensure a
    fresh successful backup exists / trigger one (design [008](008-physical-backup-recovery.md)
    machinery) and wait. Refuse to proceed otherwise.
-2. **Replicas first.** Roll one replica at a time; each must become Ready *and*
-   report upgrade-complete (signal E) before the next.
+2. **Replicas first.** Roll one replica at a time; each must become Ready before
+   the next. Readiness already implies upgrade-complete: with the default
+   `--upgrade=AUTO`, mysqld does not accept connections (so the instance manager's
+   `Readyz` does not pass) until the data-dictionary upgrade has finished. The
+   existing readiness gate in `gateInstance`/`reconcileInstances` therefore
+   serializes the upgrade roll unchanged — no separate per-instance gate is added.
+   Signal E (the live version + `UpgradeComplete`) drives the operator-side
+   *detection* of a pending upgrade (`majorUpgradePending`), not a second gate; an
+   explicit "previous reached target series" gate was considered and rejected
+   because it deadlocks the primary-last ordering (the primary, rolled last, stays
+   Ready on the old series while replicas roll).
 3. **Primary last**, via switchover where possible — reuse
    `upgradePrimaryViaSwitchover` (`internal/controller/cluster_upgrade.go:214`)
    and the existing `allowRoll`/primary-last ordering in `ensurePod`.
