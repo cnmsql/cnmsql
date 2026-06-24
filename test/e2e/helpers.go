@@ -158,6 +158,36 @@ func kubectl(args ...string) (string, error) {
 	return utils.Run(exec.Command("kubectl", args...))
 }
 
+// waitForWebhookReady blocks until the Cluster admission webhook accepts
+// dry-run requests in the given namespace. When ns is empty, the probe
+// manifest uses the current testNamespace (for namespaced operators).
+// Use after deploying or restoring an operator to guarantee the webhook
+// endpoint is actually reachable before tests proceed.
+func waitForWebhookReady(ns string) {
+	GinkgoHelper()
+	if ns == "" {
+		ns = testNamespace
+	}
+	probePath := "/tmp/cnmsql-e2e-webhook-readiness.yaml"
+	probe := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: webhook-readiness
+  namespace: %s
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 1Gi
+`, ns, instanceImage)
+	Expect(os.WriteFile(probePath, []byte(probe), 0o644)).To(Succeed())
+	Eventually(func() error {
+		_, err := kubectl("apply", "--dry-run=server", "-f", probePath)
+		return err
+	}, e2eTimeout(2*time.Minute), 2*time.Second).Should(Succeed(),
+		"Cluster admission webhook did not become ready")
+}
+
 // applyManifest writes the given manifest to a temporary file and applies it,
 // returning the file path so callers can delete it later with deleteManifest.
 func applyManifest(name, manifest string) {
