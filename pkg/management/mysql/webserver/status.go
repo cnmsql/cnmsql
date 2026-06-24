@@ -105,6 +105,11 @@ type GroupReplicationMemberStatus struct {
 	ViewID string `json:"viewId,omitempty"`
 	// PrimaryMemberID is the server_uuid the group currently considers PRIMARY.
 	PrimaryMemberID string `json:"primaryMemberId,omitempty"`
+	// CommunicationProtocol is the group's active communication protocol version
+	// (group_replication_get_communication_protocol). After a rolling major
+	// upgrade it lags the members until the operator raises it; the operator
+	// compares it against the target version to drive the finalization step.
+	CommunicationProtocol string `json:"communicationProtocol,omitempty"`
 	// Members is this member's view of the whole group.
 	Members []GroupReplicationMember `json:"members,omitempty"`
 }

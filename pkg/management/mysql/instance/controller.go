@@ -371,6 +371,12 @@ func (c *Controller) groupReplicationStatus(ctx context.Context) *webserver.Grou
 	if name, err := c.groupName(ctx); err == nil {
 		gr.GroupName = name
 	}
+	// Best-effort: the group communication protocol is the same on every ONLINE
+	// member, so reading it here lets the operator detect a post-upgrade protocol
+	// that still lags the members.
+	if protocol, err := c.gr.CommunicationProtocol(ctx); err == nil {
+		gr.CommunicationProtocol = protocol
+	}
 	return gr
 }
 
