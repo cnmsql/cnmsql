@@ -1,0 +1,50 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search existing issues first to avoid duplicates.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that triggers the problem. Include the manifest that reproduces it, with secrets removed.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and status
+      description: Relevant operator logs and, where useful, `kubectl cnmsql status` output.
+      render: shell
+  - type: input
+    id: cnmsql-version
+    attributes:
+      label: CNMSQL version
+    validations:
+      required: true
+  - type: input
+    id: k8s-version
+    attributes:
+      label: Kubernetes version
+    validations:
+      required: true
+  - type: input
+    id: mysql-version
+    attributes:
+      label: MySQL major version
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Other context that might help.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://cnmsql.co
+    about: Guides, API reference, and runbooks.
+  - name: Security issue
+    url: https://github.com/cnmsql/cnmsql/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue.
