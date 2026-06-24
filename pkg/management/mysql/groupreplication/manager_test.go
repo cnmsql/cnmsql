@@ -86,3 +86,42 @@ func TestReadGroupViewReportsStartedMember(t *testing.T) {
 		t.Errorf("unexpected member: %+v", got)
 	}
 }
+
+func TestCommunicationProtocolReadsScalar(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("opening sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("group_replication_get_communication_protocol").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("8.0.27"))
+
+	m := NewManager(db, version.Version{})
+	got, err := m.CommunicationProtocol(context.Background())
+	if err != nil {
+		t.Fatalf("CommunicationProtocol: %v", err)
+	}
+	if got != "8.0.27" {
+		t.Errorf("protocol = %q, want 8.0.27", got)
+	}
+}
+
+func TestSetCommunicationProtocolExecutesUDF(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("opening sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec("group_replication_set_communication_protocol\\('8.4.0'\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	m := NewManager(db, version.Version{})
+	if err := m.SetCommunicationProtocol(context.Background(), version.Version{Major: 8, Minor: 4, Patch: 0}); err != nil {
+		t.Fatalf("SetCommunicationProtocol: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

@@ -121,6 +121,24 @@ func SetGroupSeedsStatement(seeds []string) string {
 	return fmt.Sprintf("SET GLOBAL group_replication_group_seeds = %s", quote(strings.Join(seeds, ",")))
 }
 
+// GetCommunicationProtocolStatement reads the group's active communication
+// protocol version (group_replication_get_communication_protocol), which is the
+// version of the oldest member the group is pinned to. It only changes when
+// group_replication_set_communication_protocol is called, so after a rolling
+// major upgrade it lags the members until the operator raises it.
+func GetCommunicationProtocolStatement() string {
+	return "SELECT group_replication_get_communication_protocol()"
+}
+
+// SetCommunicationProtocolStatement raises (or lowers) the group's communication
+// protocol to the given server version. It must be run on an ONLINE member after
+// every member is on the target version; the call is group-wide. The argument is
+// a major.minor.patch version string.
+func SetCommunicationProtocolStatement(v version.Version) string {
+	return fmt.Sprintf("SELECT group_replication_set_communication_protocol(%s)",
+		quote(fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)))
+}
+
 // quote renders a single-quoted SQL string literal, escaping embedded quotes and
 // backslashes. The inputs here (UUIDs, host:port addresses) are operator-computed
 // and never user free-text, but quoting keeps the builders safe by construction.
