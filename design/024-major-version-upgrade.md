@@ -204,7 +204,8 @@ upgrade. No equivalent exists today. Sequence with design
 6. The backup-gated, replica-first MySQL-version reconcile path (Section F).
 7. GR communication-protocol finalization (Section G).
 8. Instance-manager-side adjacency/downgrade guard (defense in depth, Section C
-   resolved decisions) with the refusal reason in `/status`.
+   resolved decisions). Hard refusal + data-dir version marker land in Phase 1;
+   the refusal reason in `/status` lands with the Phase 2 readiness signal.
 9. Upgrade/rollback/troubleshoot documentation (Documentation section).
 10. E2E coverage for every case (E2E testing section).
 
@@ -231,8 +232,14 @@ a trailing phase.
   gate) **and** in the instance manager before it starts mysqld on a new binary.
   Admission can be bypassed (disabled webhook, direct edits, restored objects), so
   the instance manager independently refuses to boot a server whose data-dictionary
-  series is more than one hop below the image series, or above it (downgrade),
-  surfacing the reason in `/status` rather than silently upgrading.
+  series is more than one hop below the image series, or above it (downgrade). The
+  manager records the running series in a marker file in the data directory and
+  compares it to the image version on the next start; an unsupported transition is
+  a hard refusal (the manager exits with the reason logged, before mysqld touches
+  the irreversibly-upgraded data dictionary). **Phase split:** the hard refusal +
+  marker ship in Phase 1. Surfacing the reason in `/status` requires serving the
+  control API while mysqld is intentionally not started, which is built with the
+  Phase 2 readiness signal (Section E) and folded in there.
 - **Backup-gate with no object store:** **hard-fail.** When
   `backupBeforeUpgrade` is true (its default) and no usable object store is
   configured, the operator does not start the upgrade and sets a clear status

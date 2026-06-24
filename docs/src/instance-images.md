@@ -119,8 +119,8 @@ as the Cluster. This keeps XtraBackup version-aligned with the server version
 and avoids moving backup payloads through the controller-manager process.
 
 When restoring, choose an image compatible with the source backup. Cross-major
-restore and in-place major upgrade are not supported by the current milestone
-set.
+restore is not supported. In-place **major** upgrades follow the supported series
+chain (`8.0 → 8.4 → 9.0`); see [MySQL Version Upgrades](major-version-upgrade.md).
 
 ## Known limits
 

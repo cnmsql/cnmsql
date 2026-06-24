@@ -69,6 +69,11 @@ const sidebars = {
       label: 'Operator Upgrades',
     },
     {
+      type: 'doc',
+      id: 'major-version-upgrade',
+      label: 'MySQL Version Upgrades',
+    },
+    {
       type: 'html',
       value: '<small class="sidebar-section-label">Backup and Recovery</small>',
       defaultStyle: true,
