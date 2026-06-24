@@ -82,7 +82,18 @@ func (r *Reconciler) ReconcileFailover(
 			return topology.FailoverResult{}, nil
 		}
 		blockReason := fmt.Sprintf("Cannot fail over from %s: %s", observed.PrimaryName, reason)
-		return phaseResult(request.RetryInterval, topology.PhaseBlocked, blockReason), nil
+		// Failover is blocked, but must not prevent the reconciler from
+		// recreating the former primary Pod. Setting phase to Blocked
+		// surfaces the reason while returning Handled=false lets the
+		// reconciler fall through to instance provisioning.
+		return topology.FailoverResult{
+			Handled: false,
+			Phase: &topology.OperationPhase{
+				Phase:       topology.PhaseBlocked,
+				Reason:      blockReason,
+				Progressing: true,
+			},
+		}, nil
 	}
 
 	lease, err := r.PrimaryLeaseStatus(ctx, cluster, observed.PrimaryName)

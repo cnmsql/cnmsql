@@ -535,8 +535,8 @@ func TestReconcileFailoverBlocksWithoutSafeCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !handled {
-		t.Fatal("failover was not handled")
+	if handled {
+		t.Fatal("blocked failover must not own the reconcile pass (Handled=false) so the former primary Pod can be recreated by reconcileInstances")
 	}
 	if len(control.promoted) != 0 {
 		t.Fatalf("must not promote when no safe candidate exists, promoted=%v", control.promoted)
