@@ -86,6 +86,15 @@ If it is enabled but no `spec.backup.objectStore` is configured, the upgrade is
 unprotected — configure a backup destination or set `backupBeforeUpgrade: false`
 (e.g. when an external backup process is in place).
 
+### Group Replication
+
+During a Group Replication upgrade, the group continues using its old
+communication protocol while members roll. Once every member reports the target
+series and is `ONLINE`, the operator automatically calls
+`group_replication_set_communication_protocol` on the primary with the full
+target version. The action is idempotent and the cluster briefly reports phase
+`Upgrading` while the protocol is finalized.
+
 ## Rollback
 
 There is **no in-place downgrade**. To return to the previous series:
@@ -122,3 +131,9 @@ old series.
 - **The rollout stalls part-way.** The operator serializes the roll and waits for
   each instance to become Ready before the next. Inspect the cluster status phase
   and the per-instance logs to find the instance that is not becoming Ready.
+- **All GR members upgraded but the protocol did not advance.** Confirm every
+  member is `ONLINE` and reports the target server series, then inspect the
+  primary instance-manager log for `Finalizing group communication protocol` or
+  a failed `/group/set-communication-protocol` action. From MySQL, compare
+  `group_replication_get_communication_protocol()` with the target version. The
+  operator retries on later reconciles once status is complete and healthy.

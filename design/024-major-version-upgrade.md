@@ -1,6 +1,6 @@
 # 024 — MySQL Major Version Upgrade
 
-**Status:** proposed
+**Status:** done
 
 Safe, orchestrated MySQL **server** major-version upgrades along the supported
 hop chain `8.0 → 8.4 → 9.x`, distinct from the operator/instance-manager upgrade
@@ -201,6 +201,12 @@ In the GR path, after every member reports the new version (signal E), issue
 upgrade. No equivalent exists today. Sequence with design
 [022](022-group-replication.md).
 
+> **Status:** Phase 3 is complete. The GR manager exposes the protocol get/set
+> UDFs, each instance reports the live protocol in `/status`, and the operator
+> uses a dedicated control endpoint to raise it on the primary only after every
+> expected member reports the target series and `ONLINE`. Comparing the primary's
+> observed protocol with the target makes reconciliation idempotent.
+
 ## What we already have
 
 - Primary-last serialized rolling restart on template-hash change
@@ -214,30 +220,33 @@ upgrade. No equivalent exists today. Sequence with design
 - Backup machinery (design 008) for the pre-upgrade gate.
 - `topology.PhaseUpgrading` progress-status helper pattern.
 
-## What is missing
+## Implementation status and tracked gaps
 
-1. Catalog/ref API that distinguishes 8.0 from 8.4 (Section A). **Blocker.**
-2. `spec.upgrade.backupBeforeUpgrade` API (Section B).
-3. Downgrade / skip-level / imageName-major admission guard (Section C).
-4. Config gating for options removed/changed in 8.4/9.x (Section D).
-5. Per-instance upgrade-complete readiness signal (Section E).
-6. The backup-gated, replica-first MySQL-version reconcile path (Section F).
-7. GR communication-protocol finalization (Section G).
-8. Instance-manager-side adjacency/downgrade guard (defense in depth, Section C
-   resolved decisions). Hard refusal + data-dir version marker land in Phase 1;
-   the refusal reason in `/status` lands with the Phase 2 readiness signal.
-9. Upgrade/rollback/troubleshoot documentation (Documentation section).
-10. E2E coverage for every case (E2E testing section).
+Sections A–G are implemented: series-keyed catalogs, admission and instance
+guards, target-version config filtering, live version and upgrade-complete
+status, the pre-upgrade backup gate, serialized replica-first rollout, and GR
+communication-protocol finalization. The upgrade and rollback guide is also
+published.
+
+The remaining tracked gaps are deliberately not hidden:
+
+1. The instance-manager refusal reason is logged but is not available through
+   `/status`, because the manager exits before starting the control server.
+2. Multi-version E2E coverage for a real roll, GR finalization, the backup gate,
+   config gating, and rollback-via-restore still requires two server images in
+   one test run. The current matrix pins one server version; unit/integration
+   coverage remains the interim safety net.
 
 ## Phasing
 
-- **Phase 1 (brick-prevention, small):** A (catalog series) + C (admission guard
+- **Phase 1 (done — brick-prevention):** A (catalog series) + C (admission guard
   + instance-manager guard) + D (config gating). Prevents the two unrecoverable
   failure modes — illegal transitions and mysqld failing to boot on the new image
   — and unblocks expressing the hop chain at all.
-- **Phase 2 (orchestration):** B (`spec.upgrade`) + E (readiness signal) +
+- **Phase 2 (done — orchestration):** B (`spec.upgrade`) + E (readiness signal) +
   F (reconcile path with backup gate).
-- **Phase 3 (GR):** G, sequenced after design 022 lands.
+- **Phase 3 (done — GR):** G finalizes the communication protocol after all
+  members have reached the target series and are `ONLINE`.
 
 Documentation and E2E coverage land **with each phase** (the corresponding guide
 sections and E2E cases ship in the same PR as the behavior they describe), not as
