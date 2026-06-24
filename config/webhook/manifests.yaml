@@ -23,3 +23,23 @@ webhooks:
     resources:
     - clusters
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-mysql-cnmsql-io-v1alpha1-cluster-spec
+  failurePolicy: Fail
+  name: vclustervalidation-v1alpha1.cnmsql.co
+  rules:
+  - apiGroups:
+    - mysql.cnmsql.co
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - clusters
+  sideEffects: None

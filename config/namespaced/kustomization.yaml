@@ -150,3 +150,4 @@ replacements:
       kind: ValidatingWebhookConfiguration
     fieldPaths:
     - .webhooks.0.namespaceSelector.matchExpressions.0.values.0
+    - .webhooks.1.namespaceSelector.matchExpressions.0.values.0
