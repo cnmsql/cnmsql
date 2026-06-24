@@ -94,6 +94,17 @@ var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
 		By("waiting for each operator's webhook CA bundle to be injected")
 		waitWebhookCAInjected(webhookConfigName(nsModeAPfx))
 		waitWebhookCAInjected(webhookConfigName(nsModeBPfx))
+
+		By("waiting for each namespaced webhook to accept requests")
+		// The CA bundle may be injected before the webhook Pod's TLS
+		// listener is ready. Poll the admission endpoint directly so
+		// applyManifest does not fail with "connection refused".
+		//
+		// The probe manifest must live in the operator's own namespace
+		// because a namespaced webhook's namespaceSelector gates only
+		// its own namespace.
+		waitForWebhookReady(nsModeA)
+		waitForWebhookReady(nsModeB)
 	})
 
 	AfterAll(func() {
@@ -125,6 +136,8 @@ var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
 				"-n", namespace, "-o", "jsonpath={.items[*].status.phase}")
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(ContainSubstring("Running"),
 			"cluster-wide operator did not come back")
+		By("waiting for the restored cluster-wide webhook to accept requests")
+		waitForWebhookReady("default")
 	})
 
 	It("brings up a 2-instance cluster in each namespace, each reconciled by its own operator", func() {
