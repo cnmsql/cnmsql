@@ -190,19 +190,17 @@ var _ = Describe("MySQL major-version upgrade admission", Ordered, func() {
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
-	It("blocks a cluster whose ImageCatalog series name is empty at reconcile time", func() {
+	It("rejects a cluster whose ImageCatalog series name is empty at admission time", func() {
 		manifest := strings.ReplaceAll(
 			catalogClusterManifest("upgrade-empty", testNamespace, "8.0"),
 			"series: \"8.0\"", "series: \"\"")
-		applyManifest("upgrade-empty", manifest)
-		DeferCleanup(func() { deleteCluster("upgrade-empty") })
+		path := writeManifest("upgrade-empty", manifest)
 
-		Eventually(func(g Gomega) {
-			phase, err := clusterField("upgrade-empty", "{.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).To(Equal("Blocked"),
-				"cluster with empty series must be Blocked by the reconciler")
-		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+		out, err := kubectl("apply", "-f", path)
+		Expect(err).To(HaveOccurred(),
+			"empty series must be rejected by the CRD pattern at admission, not admitted")
+		Expect(out).To(ContainSubstring("series"),
+			"rejection message should name the offending series field")
 	})
 
 	It("rejects switching from imageCatalogRef to imageName on an existing cluster", func() {
@@ -387,8 +385,11 @@ var _ = Describe("MySQL major-version upgrade defensive scenarios", Ordered, Lab
 		password := appPassword(cluster)
 
 		By("mutating the catalog by adding a bogus extra series entry")
+		image9x := instanceImageFor("9.x")
 		updatedCatalog := majorUpgradeCatalogManifest(catalog, ns)
-		updatedCatalog = strings.Replace(updatedCatalog, "- series: \"9.0\"", "- series: \"9.0\"\n    - series: \"9.9\"", 1)
+		updatedCatalog = strings.Replace(updatedCatalog,
+			"- series: \"9.0\"\n      image: "+image9x,
+			"- series: \"9.0\"\n      image: "+image9x+"\n    - series: \"9.9\"\n      image: "+image9x, 1)
 		applyManifest(catalog, updatedCatalog)
 
 		By("verifying the cluster stays Ready and on its pinned series despite the catalog change")
