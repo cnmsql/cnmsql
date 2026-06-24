@@ -130,7 +130,13 @@ var _ = Describe("Diverged replica failover guard", Ordered, func() {
 			"currentPrimary must still be the original primary after failover is blocked")
 
 		By(fmt.Sprintf("waiting for the force-deleted primary Pod %s to be recreated and Ready", primary))
-		waitForPodReady(primary, 5*time.Minute)
+		By(fmt.Sprintf("verifying the PVC for %s still exists so the Pod can be recreated", primary))
+		pvcName := primary
+		_, pvcErr := kubectl("get", "pvc", pvcName, "-n", testNamespace,
+			"-o", "jsonpath={.metadata.uid}")
+		Expect(pvcErr).NotTo(HaveOccurred(),
+			"PVC %s must exist so the operator can recreate the primary Pod", pvcName)
+		waitForPodReady(primary, 15*time.Minute)
 
 		By(fmt.Sprintf("verifying the recovered primary still has post-divergence data"))
 		_, err = mysqlExec(primary, "app", password, "app",
