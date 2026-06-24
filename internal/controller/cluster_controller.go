@@ -177,6 +177,9 @@ type InstanceControlClient interface {
 	// SetAsPrimary performs a planned Group Replication primary change on the
 	// named instance, designating the member with the given server_uuid.
 	SetAsPrimary(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, memberUUID string) error
+	// SetGroupCommunicationProtocol raises the GR communication protocol after a
+	// completed major-version upgrade.
+	SetGroupCommunicationProtocol(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, targetVersion string) error
 }
 
 // ClusterReconciler reconciles a Cluster object.

@@ -150,6 +150,10 @@ func (readyStatusClient) SetAsPrimary(context.Context, *mysqlv1alpha1.Cluster, s
 	return nil
 }
 
+func (readyStatusClient) SetGroupCommunicationProtocol(context.Context, *mysqlv1alpha1.Cluster, string, string) error {
+	return nil
+}
+
 type recordingControlClient struct {
 	statuses   map[string]*webserver.Status
 	demoted    []string
@@ -174,6 +178,9 @@ type recordingControlClient struct {
 
 	setAsPrimaryInstances []string
 	setAsPrimaryUUIDs     []string
+
+	setCommunicationProtocolInstances []string
+	setCommunicationProtocolVersions  []string
 }
 
 func (c *recordingControlClient) Status(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string) (*webserver.Status, error) {
@@ -198,6 +205,12 @@ func (c *recordingControlClient) UpgradeInstanceManager(_ context.Context, _ *my
 func (c *recordingControlClient) SetAsPrimary(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName, memberUUID string) error {
 	c.setAsPrimaryInstances = append(c.setAsPrimaryInstances, instanceName)
 	c.setAsPrimaryUUIDs = append(c.setAsPrimaryUUIDs, memberUUID)
+	return nil
+}
+
+func (c *recordingControlClient) SetGroupCommunicationProtocol(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName, targetVersion string) error {
+	c.setCommunicationProtocolInstances = append(c.setCommunicationProtocolInstances, instanceName)
+	c.setCommunicationProtocolVersions = append(c.setCommunicationProtocolVersions, targetVersion)
 	return nil
 }
 

@@ -508,6 +508,21 @@ func (c *Controller) SetAsPrimary(ctx context.Context, memberUUID string) error 
 	return c.gr.SetAsPrimary(ctx, memberUUID)
 }
 
+// SetCommunicationProtocol raises the Group Replication communication protocol
+// to target after every member has completed a major-version upgrade.
+func (c *Controller) SetCommunicationProtocol(ctx context.Context, target string) error {
+	if !c.groupReplication {
+		return errors.New("group replication is not enabled")
+	}
+	targetVersion, err := version.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid communication protocol version: %w", err)
+	}
+	logf.FromContext(ctx).WithName("instance-controller").Info("Setting group communication protocol",
+		"instance", c.name, "targetVersion", target)
+	return c.gr.SetCommunicationProtocol(ctx, targetVersion)
+}
+
 // Promote transitions a replica to primary.
 func (c *Controller) Promote(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("instance-controller").WithValues("instance", c.name)
