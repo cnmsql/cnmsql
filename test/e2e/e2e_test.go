@@ -905,7 +905,7 @@ spec:
 			"webhook must remain available during operator redeploy")
 
 		By("verifying the webhook still rejects known-invalid requests during redeploy")
-		invalidProbe := strings.Replace(probeManifest, "imageName:", "imageName: invalid-image\n  imageCatalogRef:\n    name: bogus\n    series: \"5.7\"\n  imageName:", 1)
+		invalidProbe := strings.Replace(probeManifest, "imageName:", "imageName: invalid-image\n  imageCatalogRef:\n    apiGroup: mysql.cnmsql.co\n    kind: ImageCatalog\n    name: bogus\n    series: \"5.7\"\n  imageName:", 1)
 		invalidPath := filepath.Join("/tmp", fmt.Sprintf("cnmsql-e2e-webhook-continuity-invalid-%d.yaml", GinkgoParallelProcess()))
 		Expect(os.WriteFile(invalidPath, []byte(invalidProbe), 0o644)).To(Succeed())
 		DeferCleanup(func() { os.Remove(invalidPath) })
