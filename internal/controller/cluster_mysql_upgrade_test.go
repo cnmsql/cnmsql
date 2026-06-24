@@ -112,6 +112,14 @@ func TestGroupCommunicationProtocolFinalization(t *testing.T) {
 		control.setCommunicationProtocolVersions[0] != plan.ServerVersion {
 		t.Fatalf("protocol calls = instances %v versions %v", control.setCommunicationProtocolInstances, control.setCommunicationProtocolVersions)
 	}
+	persisted := &mysqlv1alpha1.Cluster{}
+	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, persisted); err != nil {
+		t.Fatalf("get cluster status: %v", err)
+	}
+	if persisted.Status.GroupReplication == nil ||
+		persisted.Status.GroupReplication.CommunicationProtocolTarget != plan.ServerVersion {
+		t.Fatalf("persisted protocol target = %#v, want %q", persisted.Status.GroupReplication, plan.ServerVersion)
+	}
 }
 
 func TestGroupCommunicationProtocolFinalizationWaits(t *testing.T) {
@@ -127,15 +135,22 @@ func TestGroupCommunicationProtocolFinalizationWaits(t *testing.T) {
 		replicaVersion  string
 		replicaState    string
 		primaryProtocol string
+		finalizedTarget string
 	}{
 		{name: "member still upgrading", replicaVersion: "8.0.36", replicaState: groupreplication.MemberStateOnline, primaryProtocol: "8.0.36"},
 		{name: "member not online", replicaVersion: "8.4.3", replicaState: groupreplication.MemberStateRecovering, primaryProtocol: "8.0.36"},
-		{name: "protocol current", replicaVersion: "8.4.3", replicaState: groupreplication.MemberStateOnline, primaryProtocol: "8.4.0"},
+		{name: "target already finalized", replicaVersion: "8.4.3", replicaState: groupreplication.MemberStateOnline, primaryProtocol: "8.0.27", finalizedTarget: "8.4.3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			control := &recordingControlClient{}
+			testCluster := cluster.DeepCopy()
+			if tt.finalizedTarget != "" {
+				testCluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
+					CommunicationProtocolTarget: tt.finalizedTarget,
+				}
+			}
 			r := &ClusterReconciler{ControlClient: control}
 			observed := observedCluster{
 				InstanceNames: []string{primary, replica}, PrimaryName: primary,
@@ -152,7 +167,7 @@ func TestGroupCommunicationProtocolFinalizationWaits(t *testing.T) {
 					},
 				},
 			}
-			_, err, handled := r.reconcileGroupCommunicationProtocol(context.Background(), cluster, plan, observed)
+			_, err, handled := r.reconcileGroupCommunicationProtocol(context.Background(), testCluster, plan, observed)
 			if err != nil {
 				t.Fatalf("finalize protocol: %v", err)
 			}

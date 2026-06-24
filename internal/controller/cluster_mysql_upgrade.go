@@ -100,9 +100,11 @@ func (r *ClusterReconciler) reconcileGroupCommunicationProtocol(
 	if primaryStatus == nil || primaryStatus.GroupReplication == nil {
 		return ctrl.Result{}, nil, false
 	}
-	current, err := version.Parse(primaryStatus.GroupReplication.CommunicationProtocol)
-	if err != nil || current.AtLeast(target.Major, target.Minor, 0) {
-		return ctrl.Result{}, nil, false
+	if cluster.Status.GroupReplication != nil {
+		finalized, err := version.Parse(cluster.Status.GroupReplication.CommunicationProtocolTarget)
+		if err == nil && finalized.Series() == target.Series() {
+			return ctrl.Result{}, nil, false
+		}
 	}
 
 	logf.FromContext(ctx).Info("Finalizing group communication protocol",
@@ -114,6 +116,10 @@ func (r *ClusterReconciler) reconcileGroupCommunicationProtocol(
 	); err != nil {
 		return ctrl.Result{}, fmt.Errorf("set group communication protocol: %w", err), true
 	}
+	if observed.GroupReplication == nil {
+		observed.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{}
+	}
+	observed.GroupReplication.CommunicationProtocolTarget = plan.ServerVersion
 
 	reason := fmt.Sprintf("Finalizing Group Replication communication protocol at %s", plan.ServerVersion)
 	return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster,

@@ -3837,6 +3837,18 @@ spec:
                       exactly-once across restarts and re-elections; re-arming it is the path to a
                       split-brain second group.
                     type: boolean
+                  communicationProtocol:
+                    description: |-
+                      CommunicationProtocol is the effective minimum-compatible protocol
+                      reported by group_replication_get_communication_protocol(). It can differ
+                      from the server version passed to the setter (MySQL 8.4 reports 8.0.27).
+                    type: string
+                  communicationProtocolTarget:
+                    description: |-
+                      CommunicationProtocolTarget is the MySQL server version most recently
+                      passed successfully to group_replication_set_communication_protocol(). It
+                      is the idempotency marker for post-upgrade protocol finalization.
+                    type: string
                   groupName:
                     description: |-
                       GroupName is the pinned group_replication_group_name (a UUID). Sticky and

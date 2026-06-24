@@ -103,12 +103,13 @@ func observeGroup(input topology.ObservationInput) (*mysqlv1alpha1.GroupReplicat
 		}
 	}
 	return &mysqlv1alpha1.GroupReplicationStatus{
-		PrimaryMember:     primaryInstance,
-		Members:           members,
-		ViewID:            view.ViewID,
-		HasQuorum:         onlineCount*2 > quorumDenominator(input.ConfiguredMembers, input.ObservedViewMax, maxViewMembers),
-		ObservedViewMax:   maxViewMembers,
-		ObservedOnlineMax: onlineCount,
+		PrimaryMember:         primaryInstance,
+		Members:               members,
+		ViewID:                view.ViewID,
+		CommunicationProtocol: view.CommunicationProtocol,
+		HasQuorum:             onlineCount*2 > quorumDenominator(input.ConfiguredMembers, input.ObservedViewMax, maxViewMembers),
+		ObservedViewMax:       maxViewMembers,
+		ObservedOnlineMax:     onlineCount,
 	}, primaryInstance
 }
 
@@ -133,11 +134,16 @@ func (r *Reconciler) MergeStatus(cluster *mysqlv1alpha1.Cluster, observed topolo
 		merged.Bootstrapped = existing.Bootstrapped
 		merged.ObservedViewMax = existing.ObservedViewMax
 		merged.ObservedOnlineMax = existing.ObservedOnlineMax
+		merged.CommunicationProtocolTarget = existing.CommunicationProtocolTarget
 	}
 	if status := observed.GroupReplication; status != nil {
 		merged.PrimaryMember = status.PrimaryMember
 		merged.Members = status.Members
 		merged.ViewID = status.ViewID
+		merged.CommunicationProtocol = status.CommunicationProtocol
+		if status.CommunicationProtocolTarget != "" {
+			merged.CommunicationProtocolTarget = status.CommunicationProtocolTarget
+		}
 		merged.ObservedViewMax = max(merged.ObservedViewMax, status.ObservedViewMax)
 		merged.ObservedOnlineMax = max(merged.ObservedOnlineMax, status.ObservedOnlineMax)
 		if status.PrimaryMember != "" {

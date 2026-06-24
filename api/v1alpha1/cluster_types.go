@@ -1134,6 +1134,18 @@ type GroupReplicationStatus struct {
 	// change and is one of the signals the operator reconciles on.
 	// +optional
 	ViewID string `json:"viewId,omitempty"`
+
+	// CommunicationProtocol is the effective minimum-compatible protocol
+	// reported by group_replication_get_communication_protocol(). It can differ
+	// from the server version passed to the setter (MySQL 8.4 reports 8.0.27).
+	// +optional
+	CommunicationProtocol string `json:"communicationProtocol,omitempty"`
+
+	// CommunicationProtocolTarget is the MySQL server version most recently
+	// passed successfully to group_replication_set_communication_protocol(). It
+	// is the idempotency marker for post-upgrade protocol finalization.
+	// +optional
+	CommunicationProtocolTarget string `json:"communicationProtocolTarget,omitempty"`
 }
 
 // GroupMember is one member's state within the group.
