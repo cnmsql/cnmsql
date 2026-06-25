@@ -85,11 +85,30 @@ class E2EJob(dict):
                 "id": f"{k8s_version}-MySQL-{mysql_version}",
                 "k8s_version": k8s_version,
                 "mysql_version": mysql_version,
+                "major_upgrade": False,
             }
         )
 
     def __hash__(self):
         return hash(self["id"])
+
+
+class MajorUpgradeE2EJob(E2EJob):
+    """Latest-Kubernetes job that co-loads every MySQL upgrade-series image.
+
+    The job carries major_upgrade=true, which makes the e2e suite load all
+    instance images (8.0, 8.4, 9.x) and run only the heavy multi-image
+    upgrade specs (selected by the "major-upgrade" Ginkgo label): the full
+    multi-hop Group Replication rollout plus the defensive and backup-gate
+    scenarios. Those specs pin their own 8.0/8.4/9.x images, so a single job
+    exercises every adjacent-series hop regardless of the suite's pinned
+    MySQL version; running it once (at MYSQL.latest) is sufficient.
+    """
+
+    def __init__(self):
+        super().__init__(KIND_K8S.latest, MYSQL.latest)
+        self["id"] = f"{KIND_K8S.latest}-MySQL-major-upgrade"
+        self["major_upgrade"] = True
 
 
 def build_push():
@@ -101,12 +120,17 @@ def build_push():
 
 
 def build_pull_request():
-    """Corners + full k8s axis at newest MySQL + full MySQL axis at newest k8s."""
+    """Corners + full k8s axis at newest MySQL + full MySQL axis at newest k8s +
+    a single dedicated major-upgrade job that exercises every adjacent-series
+    hop."""
     result = build_push()
     for k8s_version in KIND_K8S:
         result.add(E2EJob(k8s_version, MYSQL.latest))
     for mysql_version in MYSQL:
         result.add(E2EJob(KIND_K8S.latest, mysql_version))
+    # One dedicated major-upgrade job: its specs pin their own series images, so
+    # a second MySQL version would re-run identical upgrade scenarios.
+    result.add(MajorUpgradeE2EJob())
     return result
 
 

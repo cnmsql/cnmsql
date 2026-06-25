@@ -86,6 +86,9 @@ type InstanceController interface {
 	// SetAsPrimary performs a planned Group Replication primary change to the
 	// member with the given server_uuid via group_replication_set_as_primary.
 	SetAsPrimary(ctx context.Context, memberUUID string) error
+	// SetCommunicationProtocol raises the Group Replication communication
+	// protocol after every member has completed a major-version upgrade.
+	SetCommunicationProtocol(ctx context.Context, target string) error
 }
 
 // BackupStreamer streams a consistent physical backup (xbstream archive) to the
@@ -121,6 +124,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /database/drop", bodyActionHandler(controller.DropDatabase))
 	mux.HandleFunc("GET /database/list", resultHandler(controller.ListDatabases))
 	mux.HandleFunc("POST /group/set-as-primary", groupSetAsPrimaryHandler(controller))
+	mux.HandleFunc("POST /group/set-communication-protocol", groupSetCommunicationProtocolHandler(controller))
 	if streamer, ok := controller.(BackupStreamer); ok {
 		mux.HandleFunc("GET /cluster/backup", backupHandler(streamer))
 	}
@@ -180,6 +184,12 @@ type SemiSyncWaitRequest struct {
 // GroupSetAsPrimaryRequest is the JSON body accepted by POST /group/set-as-primary.
 type GroupSetAsPrimaryRequest struct {
 	MemberUUID string `json:"memberUUID"`
+}
+
+// GroupSetCommunicationProtocolRequest is the JSON body accepted by POST
+// /group/set-communication-protocol.
+type GroupSetCommunicationProtocolRequest struct {
+	Version string `json:"version"`
 }
 
 // ReloadRequest is the JSON body accepted by POST /reload. Parameters are the
@@ -242,6 +252,25 @@ func groupSetAsPrimaryHandler(controller InstanceController) http.HandlerFunc {
 			return
 		}
 		if err := controller.SetAsPrimary(r.Context(), req.MemberUUID); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func groupSetCommunicationProtocolHandler(controller InstanceController) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req GroupSetCommunicationProtocolRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Version == "" {
+			http.Error(w, "version is required", http.StatusBadRequest)
+			return
+		}
+		if err := controller.SetCommunicationProtocol(r.Context(), req.Version); err != nil {
 			writeError(w, err)
 			return
 		}

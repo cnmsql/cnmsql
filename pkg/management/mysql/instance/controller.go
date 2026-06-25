@@ -259,13 +259,25 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 		return nil, err
 	}
 
+	ready := c.Readyz(ctx) == nil
+
+	// Prefer the live server version (@@GLOBAL.version) so the operator observes
+	// the actual running series during a major upgrade, not the configured image
+	// version. Fall back to the configured version when the query fails.
+	reportedVersion := c.versionStr
+	liveVersion, liveErr := c.repl.ServerVersion(ctx)
+	if liveErr == nil && liveVersion != "" {
+		reportedVersion = liveVersion
+	}
+
 	status := &webserver.Status{
 		InstanceName:     c.name,
-		Version:          c.versionStr,
+		Version:          reportedVersion,
 		Role:             c.role(replicaState),
 		ReadOnly:         roState.ReadOnly,
 		SuperReadOnly:    roState.SuperReadOnly,
-		IsReady:          c.Readyz(ctx) == nil,
+		IsReady:          ready,
+		UpgradeComplete:  ready && liveErr == nil && liveVersion != "",
 		InPlaceUpgrading: IsInPlaceUpgrading(),
 	}
 
@@ -358,6 +370,12 @@ func (c *Controller) groupReplicationStatus(ctx context.Context) *webserver.Grou
 	}
 	if name, err := c.groupName(ctx); err == nil {
 		gr.GroupName = name
+	}
+	// Best-effort: the group communication protocol is the same on every ONLINE
+	// member, so reading it here lets the operator detect a post-upgrade protocol
+	// that still lags the members.
+	if protocol, err := c.gr.CommunicationProtocol(ctx); err == nil {
+		gr.CommunicationProtocol = protocol
 	}
 	return gr
 }
@@ -488,6 +506,21 @@ func (c *Controller) SetAsPrimary(ctx context.Context, memberUUID string) error 
 	logf.FromContext(ctx).WithName("instance-controller").Info("Setting new primary",
 		"instance", c.name, "targetUUID", memberUUID)
 	return c.gr.SetAsPrimary(ctx, memberUUID)
+}
+
+// SetCommunicationProtocol raises the Group Replication communication protocol
+// to target after every member has completed a major-version upgrade.
+func (c *Controller) SetCommunicationProtocol(ctx context.Context, target string) error {
+	if !c.groupReplication {
+		return errors.New("group replication is not enabled")
+	}
+	targetVersion, err := version.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid communication protocol version: %w", err)
+	}
+	logf.FromContext(ctx).WithName("instance-controller").Info("Setting group communication protocol",
+		"instance", c.name, "targetVersion", target)
+	return c.gr.SetCommunicationProtocol(ctx, targetVersion)
 }
 
 // Promote transitions a replica to primary.

@@ -98,7 +98,7 @@ var _ = Describe("Cluster validation", func() {
 
 	It("rejects setting both imageName and imageCatalogRef", func() {
 		cluster := newValidCluster()
-		cluster.Spec.ImageCatalogRef = &ImageCatalogRef{Major: 8}
+		cluster.Spec.ImageCatalogRef = &ImageCatalogRef{Series: "8.0"}
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
 
@@ -448,7 +448,7 @@ var _ = Describe("Group Replication validation", func() {
 	It("rejects group replication on a pre-8.0 image catalog", func() {
 		cluster := newGRCluster()
 		cluster.Spec.ImageName = ""
-		cluster.Spec.ImageCatalogRef = &ImageCatalogRef{Major: 5}
+		cluster.Spec.ImageCatalogRef = &ImageCatalogRef{Series: "5.7"}
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
 
@@ -475,5 +475,82 @@ var _ = Describe("Group Replication validation", func() {
 			GroupName: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
 		}
 		Expect(newCluster.ValidateUpdate(oldCluster)).NotTo(BeEmpty())
+	})
+})
+
+var _ = Describe("Series upgrade validation", func() {
+	catalogCluster := func(series string) *Cluster {
+		cluster := &Cluster{
+			Spec: ClusterSpec{
+				ImageCatalogRef: &ImageCatalogRef{Series: series},
+				Instances:       3,
+				Storage:         StorageConfiguration{Size: "10Gi"},
+			},
+		}
+		cluster.SetDefaults()
+		return cluster
+	}
+	imageCluster := func(image string) *Cluster {
+		cluster := &Cluster{
+			Spec: ClusterSpec{
+				ImageName: image,
+				Instances: 3,
+				Storage:   StorageConfiguration{Size: "10Gi"},
+			},
+		}
+		cluster.SetDefaults()
+		return cluster
+	}
+
+	It("allows a single supported hop via catalog", func() {
+		Expect(catalogCluster("8.4").ValidateUpdate(catalogCluster("8.0"))).To(BeEmpty())
+	})
+
+	It("rejects skipping a series via catalog", func() {
+		Expect(catalogCluster("9.0").ValidateUpdate(catalogCluster("8.0"))).NotTo(BeEmpty())
+	})
+
+	It("rejects a downgrade via catalog", func() {
+		Expect(catalogCluster("8.0").ValidateUpdate(catalogCluster("8.4"))).NotTo(BeEmpty())
+	})
+
+	It("allows an unchanged series via catalog", func() {
+		Expect(catalogCluster("8.0").ValidateUpdate(catalogCluster("8.0"))).To(BeEmpty())
+	})
+
+	It("rejects a series change expressed through imageName", func() {
+		old := imageCluster("percona/percona-server:8.0")
+		updated := imageCluster("percona/percona-server:8.4")
+		Expect(updated.ValidateUpdate(old)).NotTo(BeEmpty())
+	})
+
+	It("allows a patch bump within a series via imageName", func() {
+		old := imageCluster("percona/percona-server:8.0.36")
+		updated := imageCluster("percona/percona-server:8.0.40")
+		Expect(updated.ValidateUpdate(old)).To(BeEmpty())
+	})
+
+	It("does not guard when a series cannot be determined", func() {
+		old := imageCluster("percona/percona-server@sha256:deadbeef")
+		updated := imageCluster("percona/percona-server:8.4")
+		Expect(updated.ValidateUpdate(old)).To(BeEmpty())
+	})
+})
+
+var _ = Describe("BackupBeforeUpgrade defaulting", func() {
+	It("defaults to true when upgrade config is absent", func() {
+		Expect((&Cluster{}).BackupBeforeUpgradeEnabled()).To(BeTrue())
+	})
+
+	It("defaults to true when the flag is unset", func() {
+		cluster := &Cluster{Spec: ClusterSpec{Upgrade: &UpgradeConfiguration{}}}
+		Expect(cluster.BackupBeforeUpgradeEnabled()).To(BeTrue())
+	})
+
+	It("honours an explicit false", func() {
+		cluster := &Cluster{Spec: ClusterSpec{Upgrade: &UpgradeConfiguration{
+			BackupBeforeUpgrade: ptr.To(false),
+		}}}
+		Expect(cluster.BackupBeforeUpgradeEnabled()).To(BeFalse())
 	})
 })

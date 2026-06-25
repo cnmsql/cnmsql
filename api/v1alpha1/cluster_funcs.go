@@ -27,6 +27,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // retentionPolicyRe matches a retention-policy duration string: a positive
@@ -228,7 +230,70 @@ func (cluster *Cluster) ValidateUpdate(old *Cluster) field.ErrorList {
 			"groupReplication.groupName is immutable once set"))
 	}
 
+	allErrs = append(allErrs, cluster.validateSeriesUpgrade(old)...)
+
 	return allErrs
+}
+
+// validateSeriesUpgrade guards MySQL server major-version transitions: a series
+// change must be expressed through imageCatalogRef (not imageName), and must be
+// a single supported hop forward along the upgrade chain — no skips, no
+// downgrades. It is best-effort at admission: a series that cannot be determined
+// from the spec (e.g. a digest-pinned imageName) is left to the instance-manager
+// guard, which knows the actual running server version.
+func (cluster *Cluster) validateSeriesUpgrade(old *Cluster) field.ErrorList {
+	var allErrs field.ErrorList
+
+	oldSeries, oldOK := old.Spec.targetSeries()
+	newSeries, newOK := cluster.Spec.targetSeries()
+	if !oldOK || !newOK || oldSeries == newSeries {
+		return allErrs
+	}
+
+	specPath := field.NewPath("spec")
+	if cluster.Spec.ImageCatalogRef == nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("imageName"), cluster.Spec.ImageName,
+			fmt.Sprintf("changing the MySQL series (from %d.%d to %d.%d) must be done through imageCatalogRef, not imageName",
+				oldSeries.Major, oldSeries.Minor, newSeries.Major, newSeries.Minor)))
+		return allErrs
+	}
+	if err := version.CheckUpgrade(oldSeries, newSeries); err != nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("imageCatalogRef", "series"), cluster.Spec.ImageCatalogRef.Series, err.Error()))
+	}
+	return allErrs
+}
+
+// targetSeries returns the MySQL series the spec targets and whether it could be
+// determined. imageCatalogRef.series is authoritative; an imageName is parsed
+// best-effort from its tag, so a digest-pinned or non-version tag yields false.
+func (spec *ClusterSpec) targetSeries() (version.Version, bool) {
+	if spec.ImageCatalogRef != nil {
+		if v, err := version.Parse(spec.ImageCatalogRef.Series); err == nil {
+			return v.Series(), true
+		}
+		return version.Version{}, false
+	}
+	if spec.ImageName != "" {
+		if v, err := version.Parse(imageTag(spec.ImageName)); err == nil {
+			return v.Series(), true
+		}
+	}
+	return version.Version{}, false
+}
+
+// imageTag extracts the tag from a container image reference, dropping any
+// digest and registry/repository path. It mirrors the resolver in the
+// controller so admission can read a series from imageName without a lookup.
+func imageTag(image string) string {
+	imageWithoutDigest := strings.SplitN(image, "@", 2)[0]
+	lastSlash := strings.LastIndexByte(imageWithoutDigest, '/')
+	lastColon := strings.LastIndexByte(imageWithoutDigest, ':')
+	if lastColon < 0 || lastColon < lastSlash {
+		return ""
+	}
+	return imageWithoutDigest[lastColon+1:]
 }
 
 // ReplicationMode returns the effective replication mode, defaulting to async.
@@ -356,11 +421,13 @@ func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 	// catalogs at admission. The authoritative version floor (8.0.22) is enforced
 	// by the instance manager before it starts the group, where the full server
 	// version is known.
-	if spec.ImageCatalogRef != nil && spec.ImageCatalogRef.Major < 8 {
-		allErrs = append(allErrs, field.Invalid(
-			path.Child("mode"), mode,
-			fmt.Sprintf("group replication requires MySQL 8.0+, but the image catalog targets major version %d",
-				spec.ImageCatalogRef.Major)))
+	if spec.ImageCatalogRef != nil {
+		if v, err := version.Parse(spec.ImageCatalogRef.Series); err == nil && v.Major < 8 {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("mode"), mode,
+				fmt.Sprintf("group replication requires MySQL 8.0+, but the image catalog targets series %s",
+					spec.ImageCatalogRef.Series)))
+		}
 	}
 
 	return allErrs

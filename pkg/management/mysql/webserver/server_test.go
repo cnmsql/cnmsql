@@ -70,6 +70,9 @@ type fakeController struct {
 
 	setAsPrimaryErr  error
 	setAsPrimaryUUID string
+
+	setCommunicationProtocolErr     error
+	setCommunicationProtocolVersion string
 }
 
 func (f *fakeController) CreateUser(_ context.Context, req user.CreateUserRequest) error {
@@ -140,6 +143,10 @@ func (f *fakeController) Reload(_ context.Context, req ReloadRequest) (*ReloadRe
 func (f *fakeController) SetAsPrimary(_ context.Context, memberUUID string) error {
 	f.setAsPrimaryUUID = memberUUID
 	return f.setAsPrimaryErr
+}
+func (f *fakeController) SetCommunicationProtocol(_ context.Context, target string) error {
+	f.setCommunicationProtocolVersion = target
+	return f.setCommunicationProtocolErr
 }
 
 // backupController is an InstanceController that also streams a backup.
@@ -451,6 +458,25 @@ func TestListDatabasesRoute(t *testing.T) {
 	}
 	if len(got.Databases) != 2 {
 		t.Errorf("list databases body = %+v", got)
+	}
+}
+
+func TestGroupSetCommunicationProtocolRoute(t *testing.T) {
+	t.Parallel()
+	fc := &fakeController{}
+	h := Handler(fc)
+
+	rec := doWithBody(t, h, "/group/set-communication-protocol", `{"version":"8.4.3"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set communication protocol = %d, want 200", rec.Code)
+	}
+	if fc.setCommunicationProtocolVersion != "8.4.3" {
+		t.Errorf("version = %q, want 8.4.3", fc.setCommunicationProtocolVersion)
+	}
+
+	rec = doWithBody(t, h, "/group/set-communication-protocol", `{"version":""}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty version = %d, want 400", rec.Code)
 	}
 }
 

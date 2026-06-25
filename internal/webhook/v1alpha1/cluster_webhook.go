@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"strings"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -31,9 +32,14 @@ import (
 
 var clusterlog = logf.Log.WithName("cluster-status-validator")
 
-// +kubebuilder:webhook:path=/validate-mysql-cnmsql-io-v1alpha1-cluster-status,mutating=false,failurePolicy=fail,sideEffects=None,admissionReviewVersions=v1,groups=mysql.cnmsql.co,resources=clusters,verbs=update,versions=v1alpha1,name=vclusterstatus-v1alpha1.cnmsql.co
+var clusterspeclog = logf.Log.WithName("cluster-spec-validator")
 
-// SetupClusterWebhookWithManager registers the validating webhook for Cluster status updates.
+// +kubebuilder:webhook:path=/validate-mysql-cnmsql-io-v1alpha1-cluster-status,mutating=false,failurePolicy=fail,sideEffects=None,admissionReviewVersions=v1,groups=mysql.cnmsql.co,resources=clusters,verbs=update,versions=v1alpha1,name=vclusterstatus-v1alpha1.cnmsql.co
+// +kubebuilder:webhook:path=/validate-mysql-cnmsql-io-v1alpha1-cluster-spec,mutating=false,failurePolicy=fail,sideEffects=None,admissionReviewVersions=v1,groups=mysql.cnmsql.co,resources=clusters,verbs=create;update,versions=v1alpha1,name=vclustervalidation-v1alpha1.cnmsql.co
+
+// SetupClusterWebhookWithManager registers the validating webhooks for Cluster
+// status updates (least-privilege per-instance authz) and for Cluster spec
+// create/update (field and upgrade-transition validation).
 func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
 	mgr.GetWebhookServer().Register(
 		"/validate-mysql-cnmsql-io-v1alpha1-cluster-status",
@@ -41,7 +47,49 @@ func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
 			Handler: &ClusterStatusValidator{Decoder: admission.NewDecoder(mgr.GetScheme())},
 		},
 	)
+	mgr.GetWebhookServer().Register(
+		"/validate-mysql-cnmsql-io-v1alpha1-cluster-spec",
+		&admission.Webhook{
+			Handler: &ClusterSpecValidator{Decoder: admission.NewDecoder(mgr.GetScheme())},
+		},
+	)
 	return nil
+}
+
+// ClusterSpecValidator validates Cluster spec on create and update: the
+// field-level checks in Cluster.Validate plus, on update, the immutability and
+// MySQL series-transition guards in Cluster.ValidateUpdate (no downgrade, no
+// skipped series, major changes only through imageCatalogRef).
+type ClusterSpecValidator struct {
+	Decoder admission.Decoder
+}
+
+// Handle implements admission.Handler.
+func (v *ClusterSpecValidator) Handle(_ context.Context, req admission.Request) admission.Response {
+	// Status subresource updates are governed by ClusterStatusValidator; the spec
+	// is unchanged there, so there is nothing for this webhook to validate.
+	if req.SubResource == "status" {
+		return admission.Allowed("")
+	}
+
+	newCluster := &mysqlv1alpha1.Cluster{}
+	if err := v.Decoder.Decode(req, newCluster); err != nil {
+		return admission.Errored(400, fmt.Errorf("could not decode Cluster object: %w", err))
+	}
+
+	allErrs := newCluster.Validate()
+	if req.Operation == admissionv1.Update && len(req.OldObject.Raw) > 0 {
+		oldCluster := &mysqlv1alpha1.Cluster{}
+		if err := v.Decoder.DecodeRaw(req.OldObject, oldCluster); err != nil {
+			return admission.Errored(400, fmt.Errorf("could not decode old Cluster object: %w", err))
+		}
+		allErrs = append(allErrs, newCluster.ValidateUpdate(oldCluster)...)
+	}
+	if len(allErrs) > 0 {
+		clusterspeclog.V(1).Info("Rejecting Cluster spec", "cluster", req.Name, "errors", allErrs.ToAggregate().Error())
+		return admission.Denied(allErrs.ToAggregate().Error())
+	}
+	return admission.Allowed("")
 }
 
 // ClusterStatusValidator validates Cluster status updates from instance

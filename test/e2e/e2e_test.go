@@ -819,3 +819,180 @@ func restoreE2EMarker() {
 	}
 	mainGoSnapshot = nil
 }
+
+// Serial: tests that verify operator upgrade resilience — webhook availability,
+// metrics continuity, rapid re-deploy survival, and downgrade safety.
+var _ = Describe("Operator Upgrade defensive scenarios", Ordered, Serial, func() {
+	const v2Image = "example.com/cnmsql:v0.0.2"
+	const v1Image = "example.com/cnmsql:v0.0.1"
+
+	var ns string
+
+	BeforeAll(func() {
+		By("building v2 manager image with a different binary hash")
+		insertE2EMarker()
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v2Image))
+		_, err := utils.Run(cmd)
+		restoreE2EMarker()
+		Expect(err).NotTo(HaveOccurred(), "Failed to build v2 manager image")
+
+		By("loading v2 manager image on Kind")
+		err = utils.LoadImageToKindClusterWithName(v2Image)
+		Expect(err).NotTo(HaveOccurred(), "Failed to load v2 manager image into Kind")
+	})
+
+	AfterAll(func() {
+		restoreE2EMarker()
+	})
+
+	BeforeEach(func() {
+		ns = createTestNamespace("op-upgrade-def")
+	})
+
+	AfterEach(func() {
+		deleteTestNamespace(ns, defaultTestNamespace)
+	})
+
+	It("preserves webhook admission during operator redeploy", func() {
+		By("applying a single-instance Cluster")
+		manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: upgrade-webhook
+  namespace: %s
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 1Gi
+  mysql:
+%s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+%s
+`, ns, instanceImage, e2eMySQLParameters, e2eInstanceResources)
+		applyManifest("upgrade-webhook", manifest)
+		DeferCleanup(func() { deleteCluster("upgrade-webhook") })
+		expectClusterReady("upgrade-webhook", 1, 12*time.Minute)
+
+		By("deploying v2 operator and immediately probing the webhook's dry-run path")
+		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v2Image))
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy v2 operator")
+
+		probeManifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: webhook-continuity
+  namespace: %s
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 1Gi
+`, ns, instanceImage)
+		probePath := filepath.Join("/tmp", fmt.Sprintf("cnmsql-e2e-webhook-continuity-%d.yaml", GinkgoParallelProcess()))
+		Expect(os.WriteFile(probePath, []byte(probeManifest), 0o644)).To(Succeed())
+		DeferCleanup(func() { os.Remove(probePath) })
+
+		By("verifying the webhook accepts a valid dry-run while the operator is rolling")
+		Eventually(func(g Gomega) {
+			_, err := utils.Run(exec.Command("kubectl", "apply", "--dry-run=server", "-f", probePath))
+			g.Expect(err).NotTo(HaveOccurred())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed(),
+			"webhook must remain available during operator redeploy")
+
+		By("verifying the webhook still rejects known-invalid requests during redeploy")
+		invalidProbe := strings.Replace(probeManifest, "imageName:", "imageName: invalid-image\n  imageCatalogRef:\n    apiGroup: mysql.cnmsql.co\n    kind: ImageCatalog\n    name: bogus\n    series: \"5.7\"\n  imageName:", 1)
+		invalidPath := filepath.Join("/tmp", fmt.Sprintf("cnmsql-e2e-webhook-continuity-invalid-%d.yaml", GinkgoParallelProcess()))
+		Expect(os.WriteFile(invalidPath, []byte(invalidProbe), 0o644)).To(Succeed())
+		DeferCleanup(func() { os.Remove(invalidPath) })
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "apply", "--dry-run=server", "-f", invalidPath))
+			g.Expect(err).To(HaveOccurred(), "webhook must reject invalid requests during redeploy")
+			g.Expect(strings.ToLower(out)).To(ContainSubstring("mutually exclusive"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("waiting for the v2 operator to become ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		expectClusterReady("upgrade-webhook", 1, 10*time.Minute)
+
+		By("redeploying v1 operator to restore original state")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v1Image))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to restore v1 operator")
+
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
+	It("survives rapid operator re-deploy and cluster converges", func() {
+		By("applying a single-instance Cluster")
+		manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: upgrade-rapid
+  namespace: %s
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 1Gi
+  mysql:
+%s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+%s
+`, ns, instanceImage, e2eMySQLParameters, e2eInstanceResources)
+		applyManifest("upgrade-rapid", manifest)
+		DeferCleanup(func() { deleteCluster("upgrade-rapid") })
+		expectClusterReady("upgrade-rapid", 1, 12*time.Minute)
+
+		By("rapidly deploying v2 then v1 before the first deployment stabilizes")
+		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v2Image))
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		time.Sleep(5 * time.Second)
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v1Image))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the operator to stabilize on v1")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("verifying the cluster converges after rapid re-deploy")
+		expectClusterReady("upgrade-rapid", 1, 10*time.Minute)
+
+		By("verifying the primary accepts writes after the turbulence")
+		primary := clusterPrimary("upgrade-rapid")
+		password := appPassword("upgrade-rapid")
+		writeSQL := "CREATE TABLE IF NOT EXISTS e2e_rapid (id INT PRIMARY KEY); " +
+			"REPLACE INTO e2e_rapid VALUES (1);"
+		cmd = exec.Command("kubectl", "exec", primary, "-n", testNamespace, "-c", "mysql", "--",
+			"env", "MYSQL_PWD="+password, "mysql", "-uapp", "app", "-e", writeSQL)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "primary must accept writes after rapid operator re-deploy")
+	})
+})

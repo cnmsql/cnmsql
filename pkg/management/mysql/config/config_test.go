@@ -21,10 +21,13 @@ import (
 	"testing"
 )
 
+// version80 is the baseline 8.0 server version used across these tests.
+const version80 = "8.0.36"
+
 func baseConfig() *ServerConfig {
 	return &ServerConfig{
 		ServerID:     1,
-		Version:      "8.0.36",
+		Version:      version80,
 		Role:         RolePrimary,
 		DataDir:      "/var/lib/mysql",
 		Socket:       "/var/run/mysqld/mysqld.sock",
@@ -179,7 +182,7 @@ func TestRenderReplicaIsReadOnly(t *testing.T) {
 
 func TestRenderVersionAwareLogUpdates(t *testing.T) {
 	c := baseConfig()
-	c.Version = "8.0.36"
+	c.Version = version80
 	assertContains(t, mustRender(t, c), "log_replica_updates = ON")
 	assertNotContains(t, mustRender(t, c), "log_slave_updates")
 
@@ -233,7 +236,7 @@ func TestRenderSemiSync(t *testing.T) {
 
 func TestRenderAdminInterfaceModern(t *testing.T) {
 	c := baseConfig()
-	c.Version = "8.0.36"
+	c.Version = version80
 	out := mustRender(t, c)
 
 	assertContains(t, out, "admin_address = 127.0.0.1")
@@ -468,5 +471,45 @@ func TestGroupReplicationKeysAreManaged(t *testing.T) {
 		if !IsDeniedKey(key) {
 			t.Errorf("expected %q to be reported as a denied key", key)
 		}
+	}
+}
+
+func TestRenderDropsRemovedUserParameterOnNewSeries(t *testing.T) {
+	c := baseConfig()
+	c.Version = "8.4.3"
+	c.UserParameters = map[string]string{
+		"default_authentication_plugin": "mysql_native_password",
+		"max_connections":               "200",
+	}
+	out := mustRender(t, c)
+	// The variable removed in 8.4 must not be rendered (it would abort mysqld),
+	// while a still-valid user parameter survives.
+	assertNotContains(t, out, "default_authentication_plugin")
+	assertContains(t, out, "max_connections = 200")
+}
+
+func TestRenderKeepsRemovedUserParameterOnOlderSeries(t *testing.T) {
+	c := baseConfig()
+	c.Version = version80
+	c.UserParameters = map[string]string{"default_authentication_plugin": "mysql_native_password"}
+	out := mustRender(t, c)
+	// On 8.0 the variable is still valid and must be preserved.
+	assertContains(t, out, "default_authentication_plugin = mysql_native_password")
+}
+
+func TestRemovedUserParametersWarns(t *testing.T) {
+	params := map[string]string{
+		"default_authentication_plugin": "mysql_native_password",
+		"max_connections":               "200",
+	}
+	if got := RemovedUserParameters(version80, params); len(got) != 0 {
+		t.Errorf("expected no warnings on 8.0, got %v", got)
+	}
+	warnings := RemovedUserParameters("8.4.3", params)
+	if len(warnings) != 1 {
+		t.Fatalf("expected one warning on 8.4, got %v", warnings)
+	}
+	if !strings.Contains(warnings[0], "default_authentication_plugin") {
+		t.Errorf("warning does not mention the removed key: %q", warnings[0])
 	}
 }

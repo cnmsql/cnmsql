@@ -131,6 +131,12 @@ func (c *HTTPControlClient) SetAsPrimary(ctx context.Context, cluster *mysqlv1al
 	return c.action(ctx, cluster, instanceName, "/group/set-as-primary", webserver.GroupSetAsPrimaryRequest{MemberUUID: memberUUID})
 }
 
+// SetGroupCommunicationProtocol raises the Group Replication communication
+// protocol through the named instance's control API.
+func (c *HTTPControlClient) SetGroupCommunicationProtocol(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, targetVersion string) error {
+	return c.action(ctx, cluster, instanceName, "/group/set-communication-protocol", webserver.GroupSetCommunicationProtocolRequest{Version: targetVersion})
+}
+
 // ListDatabases reads the user-managed MySQL schemas from the named instance.
 func (c *HTTPControlClient) ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error) {
 	var result user.ListDatabasesResponse

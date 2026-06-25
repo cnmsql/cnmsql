@@ -7,7 +7,9 @@ metadata:
   name: imagecatalog-sample
 spec:
   images:
-  - major: 8
+  - series: "8.0"
     image: percona/percona-server:8.0
-  - major: 9
+  - series: "8.4"
+    image: percona/percona-server:8.4
+  - series: "9.0"
     image: percona/percona-server:9.0

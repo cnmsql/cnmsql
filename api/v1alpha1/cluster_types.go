@@ -95,7 +95,7 @@ type ClusterSpec struct {
 	ImageName string `json:"imageName,omitempty"`
 
 	// ImageCatalogRef resolves the image from an ImageCatalog or
-	// ClusterImageCatalog based on the MySQL major version. Mutually exclusive
+	// ClusterImageCatalog based on the MySQL series. Mutually exclusive
 	// with ImageName.
 	// +optional
 	ImageCatalogRef *ImageCatalogRef `json:"imageCatalogRef,omitempty"`
@@ -208,6 +208,10 @@ type ClusterSpec struct {
 	// time (replicas first, primary last via switchover).
 	// +optional
 	InPlaceInstanceManagerUpdates bool `json:"inPlaceInstanceManagerUpdates,omitempty"`
+
+	// Upgrade tunes MySQL server major-version upgrades.
+	// +optional
+	Upgrade *UpgradeConfiguration `json:"upgrade,omitempty"`
 
 	// MaxStartDelay is the time in seconds allowed for an instance to start.
 	// +kubebuilder:default:=3600
@@ -431,14 +435,36 @@ type GroupReplicationConfiguration struct {
 }
 
 // ImageCatalogRef references an ImageCatalog or ClusterImageCatalog entry to
-// resolve a container image for a given major version.
+// resolve a container image for a given MySQL series.
 type ImageCatalogRef struct {
 	// TypedLocalObjectReference points to the (Cluster)ImageCatalog.
 	corev1.TypedLocalObjectReference `json:",inline"`
 
-	// Major is the MySQL major version to resolve in the catalog.
+	// Series is the MySQL release series to resolve in the catalog, in
+	// "major.minor" form (e.g. "8.0", "8.4", "9.0").
+	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
 	// +kubebuilder:validation:Required
-	Major int `json:"major"`
+	Series string `json:"series"`
+}
+
+// UpgradeConfiguration tunes MySQL server major-version upgrades.
+type UpgradeConfiguration struct {
+	// BackupBeforeUpgrade controls whether the operator takes a fresh backup
+	// before starting a major-version upgrade and waits for it to succeed before
+	// rolling any instance. Defaults to true. Set false to skip (e.g. when an
+	// external backup process is in place). The data-dictionary upgrade is
+	// irreversible, so the backup is the only rollback path.
+	// +optional
+	BackupBeforeUpgrade *bool `json:"backupBeforeUpgrade,omitempty"`
+}
+
+// BackupBeforeUpgradeEnabled reports the effective BackupBeforeUpgrade setting,
+// defaulting to true when unset.
+func (cluster *Cluster) BackupBeforeUpgradeEnabled() bool {
+	if cluster.Spec.Upgrade == nil || cluster.Spec.Upgrade.BackupBeforeUpgrade == nil {
+		return true
+	}
+	return *cluster.Spec.Upgrade.BackupBeforeUpgrade
 }
 
 // BootstrapConfiguration describes how the cluster is initialised.
@@ -1108,6 +1134,18 @@ type GroupReplicationStatus struct {
 	// change and is one of the signals the operator reconciles on.
 	// +optional
 	ViewID string `json:"viewId,omitempty"`
+
+	// CommunicationProtocol is the effective minimum-compatible protocol
+	// reported by group_replication_get_communication_protocol(). It can differ
+	// from the server version passed to the setter (MySQL 8.4 reports 8.0.27).
+	// +optional
+	CommunicationProtocol string `json:"communicationProtocol,omitempty"`
+
+	// CommunicationProtocolTarget is the MySQL server version most recently
+	// passed successfully to group_replication_set_communication_protocol(). It
+	// is the idempotency marker for post-upgrade protocol finalization.
+	// +optional
+	CommunicationProtocolTarget string `json:"communicationProtocolTarget,omitempty"`
 }
 
 // GroupMember is one member's state within the group.

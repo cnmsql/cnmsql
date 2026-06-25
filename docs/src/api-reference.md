@@ -320,7 +320,10 @@ _Appears in:_
 
 
 
-CatalogImage maps a MySQL major version to a container image.
+CatalogImage maps a MySQL series to a container image. The series, not the
+integer major, is the upgrade unit: MySQL 8.0 and 8.4 are distinct upgrade
+targets that both live under integer major 8, so a catalog keyed by integer
+major could not express the 8.0 -> 8.4 hop.
 
 
 
@@ -329,7 +332,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `major` _integer_ | Major is the MySQL major version (e.g. 8 for 8.0/8.4 lines uses the full<br />version where needed; values map to the image's server version). |  | Minimum: 5 <br />Required: \{\} <br /> |
+| `series` _string_ | Series is the MySQL release series in "major.minor" form (e.g. "8.0",<br />"8.4", "9.0"). It must match the image's server version line. |  | Pattern: `^[0-9]+\.[0-9]+$` <br />Required: \{\} <br /> |
 | `image` _string_ | Image is the fully qualified Percona Server for MySQL image reference. |  | Required: \{\} <br /> |
 
 
@@ -418,7 +421,7 @@ spec:
     apiGroup: mysql.cnmsql.co
     kind: ImageCatalog
     name: percona-images
-    major: 8
+    series: "8.4"
 ```
 
 ### MySQL configuration
@@ -442,7 +445,7 @@ spec:
 
 **Denied and deprecated parameters:** `spec.mysql.parameters` is validated before provisioning. Keys are compared case-insensitively with dashes and underscores treated as equivalent (`log-bin` equals `log_bin`).
 
-Denied keys set the cluster `phase: Blocked` with a reason naming the offending key. These are keys the operator manages directly (replication identity, topology, TLS material, binlog durability) or keys that would relocate on-disk paths or expose the administrative interface: `server_id`, `gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`, `socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`, `admin_address`, `admin_ssl_cert`, `tls_ciphersuites`, `skip_replica_start`, `auto_generate_certs`. `require_secure_transport` is not denied — requiring TLS for client connections is the user's choice.
+Denied keys set the cluster `phase: Blocked` with a reason naming the offending key. These are keys the operator manages directly (replication identity, topology, TLS material, binlog durability) or keys that would relocate on-disk paths or expose the administrative interface: `server_id`, `gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`, `socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`, `admin_address`, `admin_ssl_cert`, `tls_ciphersuites`, `skip_replica_start`, `auto_generate_certs`. `require_secure_transport` is not denied. Requiring TLS for client connections is the user's choice.
 
 Deprecated keys are accepted but emit a `DeprecatedParameter` warning event pointing at the current spelling, e.g. `slave_parallel_workers` (use `replica_parallel_workers`), `master_info_repository` (removed on 8.0.23+).
 
@@ -523,7 +526,7 @@ spec:
             key: secretKey
 ```
 
-`recovery.backup` and `recovery.source` are mutually exclusive. `backupID` is only meaningful with `source` — when empty, the operator selects the latest completed backup.
+`recovery.backup` and `recovery.source` are mutually exclusive. `backupID` is only meaningful with `source`. When empty, the operator selects the latest completed backup.
 
 `recoveryTarget` accepts exactly one of `targetTime` (RFC3339 timestamp), `targetGTID` (inclusive GTID set), or `targetImmediate` (stop as soon as the base backup is consistent). An empty `recoveryTarget: {}` replays to the latest archived point. No `recoveryTarget` restores the base backup only.
 
@@ -642,9 +645,9 @@ metadata:
   name: global-percona-images
 spec:
   images:
-    - major: 8
+    - series: "8.4"
       image: ghcr.io/cnmsql/cnmsql-instance:8.4
-    - major: 9
+    - series: "9.0"
       image: ghcr.io/cnmsql/cnmsql-instance:9.x
 ```
 
@@ -740,7 +743,7 @@ _Appears in:_
 | `description` _string_ | Description of this MySQL cluster. |  | Optional: \{\} <br /> |
 | `inheritedMetadata` _[EmbeddedObjectMetadata](#embeddedobjectmetadata)_ | Metadata that will be inherited by all objects related to the Cluster. |  | Optional: \{\} <br /> |
 | `imageName` _string_ | ImageName is the name of the Percona Server for MySQL container image to<br />use. Mutually exclusive with ImageCatalogRef. |  | Optional: \{\} <br /> |
-| `imageCatalogRef` _[ImageCatalogRef](#imagecatalogref)_ | ImageCatalogRef resolves the image from an ImageCatalog or<br />ClusterImageCatalog based on the MySQL major version. Mutually exclusive<br />with ImageName. |  | Optional: \{\} <br /> |
+| `imageCatalogRef` _[ImageCatalogRef](#imagecatalogref)_ | ImageCatalogRef resolves the image from an ImageCatalog or<br />ClusterImageCatalog based on the MySQL series. Mutually exclusive<br />with ImageName. |  | Optional: \{\} <br /> |
 | `imagePullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#pullpolicy-v1-core)_ | ImagePullPolicy is the policy used to pull the container image. |  | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](#localobjectreference) array_ | ImagePullSecrets is the list of pull secrets used to pull the image. |  | Optional: \{\} <br /> |
 | `instances` _integer_ | Instances is the number of MySQL instances (one primary + replicas). | 1 | Minimum: 1 <br />Optional: \{\} <br /> |
@@ -761,6 +764,7 @@ _Appears in:_
 | `primaryUpdateStrategy` _[PrimaryUpdateStrategy](#primaryupdatestrategy)_ | PrimaryUpdateStrategy controls whether the operator performs the primary<br />update automatically (unsupervised) or waits for the user (supervised). | unsupervised | Enum: [unsupervised supervised] <br />Optional: \{\} <br /> |
 | `primaryUpdateMethod` _[PrimaryUpdateMethod](#primaryupdatemethod)_ | PrimaryUpdateMethod controls how the primary is updated: by switchover<br />(promoting a replica first) or by in-place restart. | switchover | Enum: [switchover restart] <br />Optional: \{\} <br /> |
 | `inPlaceInstanceManagerUpdates` _boolean_ | InPlaceInstanceManagerUpdates, when true, rolls an operator upgrade out to<br />this cluster's instances by streaming the new instance-manager binary to each<br />Pod, which re-execs in place — no Pod restart and no switchover. When false<br />(the default) the operator instead deletes and recreates each Pod one at a<br />time (replicas first, primary last via switchover). |  | Optional: \{\} <br /> |
+| `upgrade` _[UpgradeConfiguration](#upgradeconfiguration)_ | Upgrade tunes MySQL server major-version upgrades. |  | Optional: \{\} <br /> |
 | `maxStartDelay` _integer_ | MaxStartDelay is the time in seconds allowed for an instance to start. | 3600 | Optional: \{\} <br /> |
 | `maxStopDelay` _integer_ | MaxStopDelay is the time in seconds allowed for an instance to gracefully<br />shut down. | 1800 | Optional: \{\} <br /> |
 | `smartShutdownTimeout` _integer_ | SmartShutdownTimeout is the time in seconds reserved for a "smart"<br />(graceful) shutdown attempt before falling back to a "fast" shutdown.<br />Must be lower than maxStopDelay; the remaining time is used for the<br />fast/immediate fallback. Defaults to 180. |  | Minimum: 0 <br />Optional: \{\} <br /> |
@@ -822,6 +826,52 @@ _Appears in:_
 | `observedGeneration` _integer_ | ObservedGeneration is the generation observed by the controller. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest available observations of the cluster's<br />state. |  | Optional: \{\} <br /> |
 | `managedRolesStatus` _[ManagedRolesStatus](#managedrolesstatus)_ | ManagedRolesStatus reports the reconciliation state of the declarative<br />managed roles. |  | Optional: \{\} <br /> |
+| `groupReplication` _[GroupReplicationStatus](#groupreplicationstatus)_ | GroupReplication reflects the live group membership, quorum, effective<br />communication protocol, and the last finalized protocol target. Nil for<br />async clusters. |  | Optional: \{\} <br /> |
+
+
+#### GroupReplicationStatus
+
+
+
+GroupReplicationStatus is the operator's cross-validated view of a Group
+Replication group.
+
+
+
+_Appears in:_
+- [ClusterStatus](#clusterstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `groupName` _string_ | Pinned `group_replication_group_name`. |  | Optional: \{\} <br /> |
+| `bootstrapped` _boolean_ | Records that the group has been created at least once. |  | Optional: \{\} <br /> |
+| `primaryMember` _string_ | Pod name of the member elected PRIMARY. |  | Optional: \{\} <br /> |
+| `members` _[GroupMember](#groupmember) array_ | Cross-validated per-member group view. |  | Optional: \{\} <br /> |
+| `hasQuorum` _boolean_ | Whether a majority of configured members is ONLINE and reachable. |  |  |
+| `observedViewMax` _integer_ | Largest group view size observed, used for quorum calculations. |  | Optional: \{\} <br /> |
+| `observedOnlineMax` _integer_ | Largest number of ONLINE members observed. |  | Optional: \{\} <br /> |
+| `viewId` _string_ | Current Group Replication view identifier. |  | Optional: \{\} <br /> |
+| `communicationProtocol` _string_ | Effective minimum-compatible protocol reported by<br />`group_replication_get_communication_protocol()`. This can differ from the<br />server version passed to the setter; MySQL 8.4 reports 8.0.27. |  | Optional: \{\} <br /> |
+| `communicationProtocolTarget` _string_ | MySQL server version most recently passed successfully to<br />`group_replication_set_communication_protocol()`. Used as the idempotency<br />marker for post-upgrade finalization. |  | Optional: \{\} <br /> |
+
+
+#### GroupMember
+
+
+
+GroupMember is one member's state within the Group Replication group.
+
+
+
+_Appears in:_
+- [GroupReplicationStatus](#groupreplicationstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `instance` _string_ | Pod name of the member. |  | Required: \{\} <br /> |
+| `state` _string_ | Group state: ONLINE, RECOVERING, OFFLINE, ERROR, or UNREACHABLE. |  | Required: \{\} <br /> |
+| `role` _string_ | Group role: PRIMARY or SECONDARY. |  | Required: \{\} <br /> |
+| `reachable` _boolean_ | Whether the group currently considers the member reachable. |  | Required: \{\} <br /> |
 
 
 #### ConfigMapKeySelector
@@ -1199,7 +1249,7 @@ _Appears in:_
 
 
 
-`ImageCatalog` is a namespaced mapping from MySQL major version to instance image. **Short name:** `myimagecatalog`
+`ImageCatalog` is a namespaced mapping from MySQL series to instance image. **Short name:** `myimagecatalog`
 
 **Example:**
 
@@ -1210,13 +1260,13 @@ metadata:
   name: percona-images
 spec:
   images:
-    - major: 8
+    - series: "8.4"
       image: ghcr.io/cnmsql/cnmsql-instance:8.4
-    - major: 9
+    - series: "9.0"
       image: ghcr.io/cnmsql/cnmsql-instance:9.x
 ```
 
-Each `major` value can appear at most once in the images list (minimum one, maximum eight).
+Each `series` value can appear at most once in the images list (minimum one, maximum eight).
 
 ImageCatalog is the Schema for the imagecatalogs API (namespaced).
 
@@ -1260,7 +1310,7 @@ ImageCatalogList contains a list of ImageCatalog.
 
 
 ImageCatalogRef references an ImageCatalog or ClusterImageCatalog entry to
-resolve a container image for a given major version.
+resolve a container image for a given MySQL series.
 
 
 
@@ -1272,7 +1322,7 @@ _Appears in:_
 | `apiGroup` _string_ | APIGroup is the group for the resource being referenced.<br />If APIGroup is not specified, the specified Kind must be in the core API group.<br />For any other third-party types, APIGroup is required. |  | Optional: \{\} <br /> |
 | `kind` _string_ | Kind is the type of resource being referenced |  |  |
 | `name` _string_ | Name is the name of resource being referenced |  |  |
-| `major` _integer_ | Major is the MySQL major version to resolve in the catalog. |  | Required: \{\} <br /> |
+| `series` _string_ | Series is the MySQL release series to resolve in the catalog, in<br />"major.minor" form (e.g. "8.0", "8.4", "9.0"). |  | Pattern: `^[0-9]+\.[0-9]+$` <br />Required: \{\} <br /> |
 
 
 #### ImageCatalogSpec
@@ -1289,7 +1339,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `images` _[CatalogImage](#catalogimage) array_ | Images is the list of major version to container image mappings. Each<br />major version must appear at most once. |  | MaxItems: 8 <br />MinItems: 1 <br /> |
+| `images` _[CatalogImage](#catalogimage) array_ | Images is the list of MySQL series to container image mappings. Each<br />series must appear at most once. |  | MaxItems: 8 <br />MinItems: 1 <br /> |
 
 
 #### InlineUser
@@ -2013,6 +2063,22 @@ _Appears in:_
 | `resizeInUseVolumes` _boolean_ | Resize existing PVCs, defaults to true | true | Optional: \{\} <br /> |
 | `pvcTemplate` _[PersistentVolumeClaimSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#persistentvolumeclaimspec-v1-core)_ | Template to be used to generate the Persistent Volume Claim |  | Optional: \{\} <br /> |
 
+
+#### UpgradeConfiguration
+
+
+
+UpgradeConfiguration tunes MySQL server major-version upgrades.
+
+
+
+_Appears in:_
+- [ClusterSpec](#clusterspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `backupBeforeUpgrade` _boolean_ | BackupBeforeUpgrade controls whether the operator takes a fresh backup<br />before starting a major-version upgrade and waits for it to succeed before<br />rolling any instance. Defaults to true. Set false to skip (e.g. when an<br />external backup process is in place). The data-dictionary upgrade is<br />irreversible, so the backup is the only rollback path. |  | Optional: \{\} <br /> |
+
 ## Shared Types
 
 ### S3ObjectStore
@@ -2028,6 +2094,5 @@ CNMSQL - CloudNative for MySQL resources use Kubernetes `metav1.Condition` entri
 | `Ready` | Resource is fully functional. |
 | `Progressing` | Resource is being created, updated, backed up, restored, or changed. |
 | `Degraded` | Resource failed to reach or maintain the desired state. |
-
 
 

@@ -46,6 +46,8 @@ func TestGroupReplicationStatusReportsOnlinePrimary(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("uuid-1"))
 	mock.ExpectQuery("SELECT @@global.group_replication_group_name").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("group-uuid"))
+	mock.ExpectQuery("group_replication_get_communication_protocol").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("8.0.27"))
 
 	gr := c.groupReplicationStatus(context.Background())
 	if gr == nil {
@@ -62,6 +64,9 @@ func TestGroupReplicationStatusReportsOnlinePrimary(t *testing.T) {
 	}
 	if gr.GroupName != "group-uuid" {
 		t.Fatalf("groupName = %q, want group-uuid", gr.GroupName)
+	}
+	if gr.CommunicationProtocol != "8.0.27" {
+		t.Fatalf("communicationProtocol = %q, want 8.0.27", gr.CommunicationProtocol)
 	}
 	if len(gr.Members) != 1 {
 		t.Fatalf("members = %d, want 1", len(gr.Members))

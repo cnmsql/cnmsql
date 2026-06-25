@@ -70,7 +70,7 @@ spec:
 ```
 
 `spec.imageName` selects the exact instance image. Alternatively, an
-`imageCatalogRef` can resolve an image by MySQL major version. cnmsql is built
+`imageCatalogRef` can resolve an image by MySQL series. cnmsql is built
 for Percona Server for MySQL; the instance image includes mysqld, XtraBackup,
 the manager binary, and the small tool set needed for backup and recovery.
 

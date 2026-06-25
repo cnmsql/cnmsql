@@ -24,19 +24,20 @@ import (
 var _ = Describe("ImageCatalog lookup", func() {
 	spec := ImageCatalogSpec{
 		Images: []CatalogImage{
-			{Major: 8, Image: "percona/percona-server:8.0"},
-			{Major: 9, Image: "percona/percona-server:9.0"},
+			{Series: "8.0", Image: "percona/percona-server:8.0"},
+			{Series: "8.4", Image: "percona/percona-server:8.4"},
+			{Series: "9.0", Image: "percona/percona-server:9.0"},
 		},
 	}
 
-	It("finds an image for a known major version", func() {
-		image, found := spec.FindImageForMajor(8)
+	It("finds an image for a known series", func() {
+		image, found := spec.FindImageForSeries("8.4")
 		Expect(found).To(BeTrue())
-		Expect(image).To(Equal("percona/percona-server:8.0"))
+		Expect(image).To(Equal("percona/percona-server:8.4"))
 	})
 
-	It("reports a missing major version", func() {
-		_, found := spec.FindImageForMajor(5)
+	It("reports a missing series", func() {
+		_, found := spec.FindImageForSeries("5.7")
 		Expect(found).To(BeFalse())
 	})
 
@@ -46,7 +47,7 @@ var _ = Describe("ImageCatalog lookup", func() {
 			&ClusterImageCatalog{Spec: spec},
 		}
 		for _, catalog := range catalogs {
-			image, found := catalog.GetSpec().FindImageForMajor(9)
+			image, found := catalog.GetSpec().FindImageForSeries("9.0")
 			Expect(found).To(BeTrue())
 			Expect(image).To(Equal("percona/percona-server:9.0"))
 		}

@@ -2030,7 +2030,7 @@ spec:
               imageCatalogRef:
                 description: |-
                   ImageCatalogRef resolves the image from an ImageCatalog or
-                  ClusterImageCatalog based on the MySQL major version. Mutually exclusive
+                  ClusterImageCatalog based on the MySQL series. Mutually exclusive
                   with ImageName.
                 properties:
                   apiGroup:
@@ -2042,17 +2042,19 @@ spec:
                   kind:
                     description: Kind is the type of resource being referenced
                     type: string
-                  major:
-                    description: Major is the MySQL major version to resolve in the
-                      catalog.
-                    type: integer
                   name:
                     description: Name is the name of resource being referenced
                     type: string
+                  series:
+                    description: |-
+                      Series is the MySQL release series to resolve in the catalog, in
+                      "major.minor" form (e.g. "8.0", "8.4", "9.0").
+                    pattern: ^[0-9]+\.[0-9]+$
+                    type: string
                 required:
                 - kind
-                - major
                 - name
+                - series
                 type: object
                 x-kubernetes-map-type: atomic
               imageName:
@@ -3609,6 +3611,18 @@ spec:
                   - whenUnsatisfiable
                   type: object
                 type: array
+              upgrade:
+                description: Upgrade tunes MySQL server major-version upgrades.
+                properties:
+                  backupBeforeUpgrade:
+                    description: |-
+                      BackupBeforeUpgrade controls whether the operator takes a fresh backup
+                      before starting a major-version upgrade and waits for it to succeed before
+                      rolling any instance. Defaults to true. Set false to skip (e.g. when an
+                      external backup process is in place). The data-dictionary upgrade is
+                      irreversible, so the backup is the only rollback path.
+                    type: boolean
+                type: object
             required:
             - storage
             type: object
@@ -3823,6 +3837,18 @@ spec:
                       exactly-once across restarts and re-elections; re-arming it is the path to a
                       split-brain second group.
                     type: boolean
+                  communicationProtocol:
+                    description: |-
+                      CommunicationProtocol is the effective minimum-compatible protocol
+                      reported by group_replication_get_communication_protocol(). It can differ
+                      from the server version passed to the setter (MySQL 8.4 reports 8.0.27).
+                    type: string
+                  communicationProtocolTarget:
+                    description: |-
+                      CommunicationProtocolTarget is the MySQL server version most recently
+                      passed successfully to group_replication_set_communication_protocol(). It
+                      is the idempotency marker for post-upgrade protocol finalization.
+                    type: string
                   groupName:
                     description: |-
                       GroupName is the pinned group_replication_group_name (a UUID). Sticky and

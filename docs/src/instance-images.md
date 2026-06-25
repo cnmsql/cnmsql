@@ -63,7 +63,9 @@ metadata:
   name: percona-images
 spec:
   images:
-    - major: 8
+    - series: "8.0"
+      image: ghcr.io/cnmsql/cnmsql-instance:8.0
+    - series: "8.4"
       image: ghcr.io/cnmsql/cnmsql-instance:8.4
 ---
 apiVersion: mysql.cnmsql.co/v1alpha1
@@ -75,7 +77,7 @@ spec:
     apiGroup: mysql.cnmsql.co
     kind: ImageCatalog
     name: percona-images
-    major: 8
+    series: "8.4"
 ```
 
 Use an explicit image or catalog in production. The development fallback image
@@ -117,8 +119,8 @@ as the Cluster. This keeps XtraBackup version-aligned with the server version
 and avoids moving backup payloads through the controller-manager process.
 
 When restoring, choose an image compatible with the source backup. Cross-major
-restore and in-place major upgrade are not supported by the current milestone
-set.
+restore is not supported. In-place **major** upgrades follow the supported series
+chain (`8.0 → 8.4 → 9.0`); see [MySQL Version Upgrades](major-version-upgrade.md).
 
 ## Known limits
 

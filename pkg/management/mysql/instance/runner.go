@@ -305,6 +305,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 		}
 		MarkRecentlyReExecd()
 	} else {
+		// Defense in depth against an unsupported major-version transition that
+		// bypassed the admission guard: refuse to start before mysqld touches the
+		// (irreversibly upgraded) data dictionary. Skipped when adopting, where the
+		// version is unchanged.
+		if err := guardDataDirUpgrade(opts.DataDir, opts.Version); err != nil {
+			log.Error(err, "Refusing to start mysqld: unsupported MySQL version transition")
+			return err
+		}
 		log.Info("Starting mysqld", "binary", opts.MysqldPath, "pidFile", opts.PIDFile, "fifo", fifoPath)
 		if err := sup.Start(ctx); err != nil {
 			return err
@@ -326,6 +334,13 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	log.Info("Connected to mysqld control interface")
 	defer func() { _ = db.Close() }()
+
+	// Record the version now serving this data directory so the next start can
+	// validate its transition (guardDataDirUpgrade). Non-fatal: a missing marker
+	// only means the next start cannot apply the guard and defers to admission.
+	if err := writeVersionMarker(opts.DataDir, opts.Version); err != nil {
+		log.Error(err, "Could not record MySQL version marker")
+	}
 
 	controller, err := NewController(opts.InstanceName, db, opts.Version, opts.Role, sup)
 	if err != nil {

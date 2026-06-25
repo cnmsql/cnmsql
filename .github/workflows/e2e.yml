@@ -81,9 +81,14 @@ jobs:
     env:
       K8S_VERSION: ${{ matrix.k8s_version }}
       E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
+      E2E_MAJOR_UPGRADE: ${{ matrix.major_upgrade }}
+      # The dedicated major-upgrade job runs only the heavy multi-image upgrade
+      # specs; every other job runs the rest of the suite and excludes them.
+      GINKGO_LABEL_FILTER: ${{ matrix.major_upgrade && 'major-upgrade' || '!major-upgrade' }}
       CERT_MANAGER_INSTALL_SKIP: "false"
       GINKGO_TIMEOUT: ${{ github.repository_owner == 'cnmsql' && '240m' || '120m' }}
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
+      GINKGO_PROCS: 3
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -83,6 +83,20 @@ func TestSetAsPrimaryStatementQuotesUUID(t *testing.T) {
 	}
 }
 
+func TestSetCommunicationProtocolStatement(t *testing.T) {
+	got := SetCommunicationProtocolStatement(version.Version{Major: 8, Minor: 4, Patch: 0})
+	want := "SELECT group_replication_set_communication_protocol('8.4.0')"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestGetCommunicationProtocolStatement(t *testing.T) {
+	if got := GetCommunicationProtocolStatement(); got != "SELECT group_replication_get_communication_protocol()" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestForceMembersStatementJoinsAddresses(t *testing.T) {
 	got := ForceMembersStatement([]string{"a:33061", "b:33061"})
 	want := "SET GLOBAL group_replication_force_members = 'a:33061,b:33061'"

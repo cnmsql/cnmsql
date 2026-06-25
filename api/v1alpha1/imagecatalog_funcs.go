@@ -43,11 +43,11 @@ func (c *ClusterImageCatalog) GetSpec() *ImageCatalogSpec {
 	return &c.Spec
 }
 
-// FindImageForMajor returns the image mapped to the given major version and
-// whether it was found.
-func (spec *ImageCatalogSpec) FindImageForMajor(major int) (string, bool) {
+// FindImageForSeries returns the image mapped to the given MySQL series (e.g.
+// "8.4") and whether it was found.
+func (spec *ImageCatalogSpec) FindImageForSeries(series string) (string, bool) {
 	for _, entry := range spec.Images {
-		if entry.Major == major {
+		if entry.Series == series {
 			return entry.Image, true
 		}
 	}

@@ -22,22 +22,25 @@ import (
 
 // ImageCatalogSpec is the shared spec for ImageCatalog and ClusterImageCatalog.
 type ImageCatalogSpec struct {
-	// Images is the list of major version to container image mappings. Each
-	// major version must appear at most once.
+	// Images is the list of MySQL series to container image mappings. Each
+	// series must appear at most once.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=8
 	// +listType=map
-	// +listMapKey=major
+	// +listMapKey=series
 	Images []CatalogImage `json:"images"`
 }
 
-// CatalogImage maps a MySQL major version to a container image.
+// CatalogImage maps a MySQL series to a container image. The series, not the
+// integer major, is the upgrade unit: MySQL 8.0 and 8.4 are distinct upgrade
+// targets that both live under integer major 8, so a catalog keyed by integer
+// major could not express the 8.0 -> 8.4 hop.
 type CatalogImage struct {
-	// Major is the MySQL major version (e.g. 8 for 8.0/8.4 lines uses the full
-	// version where needed; values map to the image's server version).
-	// +kubebuilder:validation:Minimum=5
+	// Series is the MySQL release series in "major.minor" form (e.g. "8.0",
+	// "8.4", "9.0"). It must match the image's server version line.
+	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
 	// +kubebuilder:validation:Required
-	Major int `json:"major"`
+	Series string `json:"series"`
 
 	// Image is the fully qualified Percona Server for MySQL image reference.
 	// +kubebuilder:validation:Required

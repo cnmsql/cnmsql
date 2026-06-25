@@ -242,6 +242,59 @@ var deprecatedKeys = map[string]string{
 	"slave_parallel_type":       "renamed to replica_parallel_type on 8.0+",
 }
 
+// removedKey records a [mysqld] system variable that a MySQL series stops
+// accepting. Carrying such a variable across a major upgrade aborts mysqld
+// startup ("unknown variable"), so the renderer drops it for servers at or above
+// the removal series and the operator surfaces a warning.
+type removedKey struct {
+	major, minor int    // series at which the variable is removed
+	hint         string // human-readable guidance
+}
+
+// removedKeys maps a normalized variable name to the series that removed it.
+// Conservative, high-confidence entries only; extend as further removals are
+// qualified.
+var removedKeys = map[string]removedKey{
+	"default_authentication_plugin": {8, 4, "removed in 8.4; use authentication_policy"},
+	"master_info_repository":        {8, 4, "removed in 8.4; replication metadata is stored in tables"},
+	"relay_log_info_repository":     {8, 4, "removed in 8.4; replication metadata is stored in tables"},
+	"expire_logs_days":              {8, 4, "removed in 8.4; use binlog_expire_logs_seconds"},
+	"log_bin_use_v1_row_events":     {8, 4, "removed in 8.4"},
+	"slave_rows_search_algorithms":  {8, 4, "removed in 8.4"},
+}
+
+// removedAt reports whether the (normalized) key is removed at or before ver and,
+// if so, the guidance for the user.
+func removedAt(normalized string, ver version.Version) (string, bool) {
+	r, ok := removedKeys[normalized]
+	if !ok {
+		return "", false
+	}
+	if ver.AtLeast(r.major, r.minor, 0) {
+		return r.hint, true
+	}
+	return "", false
+}
+
+// RemovedUserParameters returns human-readable warnings for any user parameters
+// that the target server version no longer accepts and that the renderer will
+// therefore drop, sorted by key. The operator surfaces these so a silently
+// dropped setting is visible across a major upgrade.
+func RemovedUserParameters(versionStr string, params map[string]string) []string {
+	ver, err := version.Parse(versionStr)
+	if err != nil {
+		return nil
+	}
+	var warnings []string
+	for key := range params {
+		if hint, ok := removedAt(normalizeKey(key), ver); ok {
+			warnings = append(warnings, fmt.Sprintf("%s: %s", key, hint))
+		}
+	}
+	sort.Strings(warnings)
+	return warnings
+}
+
 // normalizeKey lowercases and converts dashes to underscores so that the
 // dash/underscore variants of a key compare equal.
 func normalizeKey(key string) string {
@@ -369,11 +422,28 @@ func (c *ServerConfig) Render() (string, error) {
 
 	writeSection(&b, "# --- operator-managed ---", managed)
 
-	if len(c.UserParameters) > 0 {
-		writeSection(&b, "# --- user-provided ---", mapToOrderedPairs(c.UserParameters))
+	// Drop user parameters the target server no longer accepts: rendering a
+	// removed variable aborts mysqld startup, which would strand a major upgrade
+	// mid-roll. The operator surfaces the drops via RemovedUserParameters.
+	userParams := filterRemovedParams(c.UserParameters, ver)
+	if len(userParams) > 0 {
+		writeSection(&b, "# --- user-provided ---", mapToOrderedPairs(userParams))
 	}
 
 	return b.String(), nil
+}
+
+// filterRemovedParams returns a copy of params without the keys the server
+// version no longer accepts.
+func filterRemovedParams(params map[string]string, ver version.Version) map[string]string {
+	out := make(map[string]string, len(params))
+	for key, value := range params {
+		if _, removed := removedAt(normalizeKey(key), ver); removed {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 // managedSettings returns the ordered operator-managed key/value pairs for the

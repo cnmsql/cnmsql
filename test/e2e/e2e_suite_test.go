@@ -16,6 +16,8 @@ import (
 	"github.com/cnmsql/cnmsql/test/utils"
 )
 
+const trueEnvValue = "true"
+
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "example.com/cnmsql:v0.0.1"
@@ -47,15 +49,29 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	return nil
 }, func([]byte) {
 	By("waiting for the operator to be ready")
-	Eventually(func() string {
-		out, err := kubectl("get", "pods", "-l", "control-plane=controller-manager",
-			"-n", namespace, "-o", "jsonpath={.items[*].status.phase}")
-		if err != nil {
-			return ""
-		}
-		return out
-	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(ContainSubstring("Running"),
-		"controller-manager did not become ready")
+	_, err := kubectl("wait", "deployment", "-l", "control-plane=controller-manager",
+		"-n", namespace, "--for=condition=Available", "--timeout="+e2eTimeout(5*time.Minute).String())
+	Expect(err).NotTo(HaveOccurred(), "controller-manager did not become available")
+
+	By("waiting for the Cluster admission webhook to accept requests")
+	probePath := "/tmp/cnmsql-e2e-webhook-readiness.yaml"
+	probe := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: webhook-readiness
+  namespace: default
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 1Gi
+`, instanceImage)
+	Expect(os.WriteFile(probePath, []byte(probe), 0o644)).To(Succeed())
+	Eventually(func() error {
+		_, err := kubectl("apply", "--dry-run=server", "-f", probePath)
+		return err
+	}, e2eTimeout(2*time.Minute), 2*time.Second).Should(Succeed(),
+		"Cluster admission webhook did not become ready")
 })
 
 // SynchronizedAfterSuite tears down the operator and cert-manager on process 1
@@ -106,13 +122,17 @@ func pullAndLoadInstanceImage(version string) {
 }
 
 // neededInstanceVersions is the deduplicated set of instance versions the suite
-// builds: the sample Cluster version plus every archiving-matrix version. Under
-// E2E_MYSQL_VERSION both collapse to a single version, so the suite builds and
-// loads exactly one instance image.
+// loads: the sample Cluster version plus every archiving-matrix version. The
+// dedicated major-upgrade job additionally co-loads every supported series so a
+// single Kind cluster can perform real adjacent-series rolls.
 func neededInstanceVersions() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, v := range append([]string{sampleVersion()}, archiveVersions()...) {
+	versions := append([]string{sampleVersion()}, archiveVersions()...)
+	if os.Getenv("E2E_MAJOR_UPGRADE") == trueEnvValue {
+		versions = append(versions, "8.0", "8.4", "9.x")
+	}
+	for _, v := range versions {
 		if !seen[v] {
 			seen[v] = true
 			out = append(out, v)
@@ -165,7 +185,7 @@ func undeployOperator() {
 // This prevents local kubectl configurations from affecting test behavior.
 // To enable kuberc, set: KUBECTL_KUBERC=true
 func configureKubectlKubeRC() {
-	if os.Getenv("KUBECTL_KUBERC") != "true" {
+	if os.Getenv("KUBECTL_KUBERC") != trueEnvValue {
 		By("disabling kubectl kuberc for test isolation")
 		err := os.Setenv("KUBECTL_KUBERC", "false")
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to disable kubectl kuberc")
@@ -179,7 +199,7 @@ func configureKubectlKubeRC() {
 // setupCertManager installs CertManager if needed for webhook tests.
 // Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
 func setupCertManager() {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
+	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == trueEnvValue {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
 		return
 	}

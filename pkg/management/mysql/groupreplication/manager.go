@@ -103,6 +103,24 @@ func (m *Manager) ForceMembers(ctx context.Context, addresses []string) error {
 	return m.exec(ctx, ForceMembersStatement(addresses))
 }
 
+// CommunicationProtocol reads the group's active communication protocol version,
+// the version the group is pinned to until set_communication_protocol raises it.
+func (m *Manager) CommunicationProtocol(ctx context.Context) (string, error) {
+	var protocol string
+	row := m.conn.QueryRowContext(ctx, GetCommunicationProtocolStatement())
+	if err := row.Scan(&protocol); err != nil {
+		return "", fmt.Errorf("reading group communication protocol: %w", err)
+	}
+	return protocol, nil
+}
+
+// SetCommunicationProtocol raises the group's communication protocol to v. It is
+// the final step of a Group Replication major upgrade and must only be called on
+// an ONLINE member once every member is on the target version.
+func (m *Manager) SetCommunicationProtocol(ctx context.Context, v version.Version) error {
+	return m.exec(ctx, SetCommunicationProtocolStatement(v))
+}
+
 // GroupView is one member's parsed view of the group, read from
 // performance_schema.replication_group_members.
 type GroupView struct {

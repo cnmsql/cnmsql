@@ -68,6 +68,73 @@ func Parse(v string) (Version, error) {
 	return out, nil
 }
 
+// Series returns the major.minor release series of the version, with the patch
+// component zeroed. MySQL upgrades are reasoned about per series (8.0, 8.4,
+// 9.0), not per patch.
+func (v Version) Series() Version {
+	// The public catalog/API names the rolling MySQL innovation line "9.0"
+	// while published server images advance through 9.1, 9.2, ... 9.x. Treat
+	// every runtime 9.x version as that one supported upgrade series.
+	if v.Major == 9 {
+		return Version{Major: 9, Minor: 0}
+	}
+	return Version{Major: v.Major, Minor: v.Minor}
+}
+
+// UpgradeSeriesChain is the ordered set of MySQL series this operator supports
+// upgrading across. Each adjacent pair is exactly one supported hop: an upgrade
+// may move at most one entry forward, may not skip an entry (e.g. 8.0 -> 9.0
+// must pass through 8.4), and may not move backward (in-place downgrade is
+// unsupported). Extend this slice as further series are qualified.
+var UpgradeSeriesChain = []Version{
+	{Major: 8, Minor: 0},
+	{Major: 8, Minor: 4},
+	{Major: 9, Minor: 0},
+}
+
+// seriesIndex returns the position of v's series in UpgradeSeriesChain, or -1
+// when the series is not a known upgrade hop.
+func seriesIndex(v Version) int {
+	s := v.Series()
+	for i, entry := range UpgradeSeriesChain {
+		if entry == s {
+			return i
+		}
+	}
+	return -1
+}
+
+// CheckUpgrade validates a server-version transition from one version to
+// another along UpgradeSeriesChain. It returns nil when the transition is a
+// no-op (same series, e.g. a patch bump) or a single supported hop forward, and
+// a descriptive error otherwise: an in-place downgrade, a skipped series, or a
+// series outside the supported chain. Both the admission webhook and the
+// instance manager call this so the rule is enforced identically in both
+// places.
+func CheckUpgrade(from, to Version) error {
+	if from.Series() == to.Series() {
+		return nil
+	}
+	fromIdx := seriesIndex(from)
+	toIdx := seriesIndex(to)
+	if fromIdx == -1 {
+		return fmt.Errorf("unsupported source MySQL series %d.%d", from.Major, from.Minor)
+	}
+	if toIdx == -1 {
+		return fmt.Errorf("unsupported target MySQL series %d.%d", to.Major, to.Minor)
+	}
+	if toIdx < fromIdx {
+		return fmt.Errorf("downgrade from MySQL %d.%d to %d.%d is not supported",
+			from.Major, from.Minor, to.Major, to.Minor)
+	}
+	if toIdx > fromIdx+1 {
+		next := UpgradeSeriesChain[fromIdx+1]
+		return fmt.Errorf("cannot upgrade from MySQL %d.%d directly to %d.%d: upgrade to %d.%d first",
+			from.Major, from.Minor, to.Major, to.Minor, next.Major, next.Minor)
+	}
+	return nil
+}
+
 // AtLeast reports whether the version is greater than or equal to
 // major.minor.patch.
 func (v Version) AtLeast(major, minor, patch int) bool {

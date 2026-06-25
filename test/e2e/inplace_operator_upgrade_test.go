@@ -6,6 +6,7 @@ package e2e
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -47,6 +48,10 @@ var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, func()
 
 	AfterAll(func() {
 		restoreE2EMarker()
+		By("restoring the baseline operator for subsequent specs")
+		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to restore the baseline operator after in-place upgrade test")
 	})
 
 	It("upgrades every instance in place without restarting mysqld or switching over", func() {
@@ -174,3 +179,142 @@ spec:
 func insertInPlaceMarker() {
 	appendMainGoMarker(`var _ = "e2e-inplace-upgrade"`)
 }
+
+// Serial: defensive scenarios for in-place operator upgrades — verifies
+// concurrent in-place upgrades are safe and handles unhealthy instances.
+var _ = Describe("In-place operator upgrade defensive scenarios", Ordered, Serial, func() {
+	const v3Image = "example.com/cnmsql:v0.0.3-inplace"
+
+	BeforeAll(func() {
+		By("building a manager image with a distinct binary hash")
+		insertInPlaceMarker()
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v3Image))
+		_, err := utils.Run(cmd)
+		restoreE2EMarker()
+		Expect(err).NotTo(HaveOccurred(), "Failed to build the in-place upgrade manager image")
+
+		By("loading the in-place upgrade manager image on Kind")
+		Expect(utils.LoadImageToKindClusterWithName(v3Image)).To(Succeed(),
+			"Failed to load the in-place upgrade manager image into Kind")
+	})
+
+	AfterAll(func() {
+		restoreE2EMarker()
+		By("restoring the baseline operator for subsequent specs")
+		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to restore the baseline operator after in-place upgrade defensive test")
+	})
+
+	It("re-execs multiple instances concurrently without losing quorum or data", func() {
+		ns := createTestNamespace("inplace-op-def")
+		defer deleteTestNamespace(ns, defaultTestNamespace)
+
+		By("applying a 3-instance Cluster with in-place enabled")
+		manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: inplace-def
+  namespace: %s
+spec:
+  instances: 3
+  imageName: %s
+  inPlaceInstanceManagerUpdates: true
+  storage:
+    size: 1Gi
+  mysql:
+%s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+%s
+`, ns, instanceImage, e2eMySQLParameters, e2eInstanceResources)
+		applyManifest("inplace-def", manifest)
+		DeferCleanup(func() { deleteCluster("inplace-def") })
+		expectClusterReady("inplace-def", 3, 20*time.Minute)
+
+		instances := []string{"inplace-def-1", "inplace-def-2", "inplace-def-3"}
+		primary := clusterPrimary("inplace-def")
+		password := appPassword("inplace-def")
+
+		By("recording pre-upgrade restart counts and uptimes for all instances")
+		restartsBefore := map[string]int{}
+		uptimeBefore := map[string]int{}
+		for _, inst := range instances {
+			restartsBefore[inst] = podRestartCount(inst)
+			Eventually(func(g Gomega) {
+				uptimeBefore[inst] = mysqldUptime(g, inst, password)
+				g.Expect(uptimeBefore[inst]).To(BeNumerically(">", 0))
+			}, e2eTimeout(1*time.Minute), 3*time.Second).Should(Succeed())
+		}
+
+		By("deploying the new operator and verifying all instances converge concurrently")
+		_, err := utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", v3Image)))
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the in-place upgrade operator")
+		_, err = utils.Run(exec.Command("kubectl", "rollout", "status", "deployment", "cnmsql-controller-manager",
+			"-n", namespace, "--timeout=180s"))
+		Expect(err).NotTo(HaveOccurred(), "Operator did not roll out after the new deploy")
+
+		By("verifying every instance manager converges to the new hash")
+		Eventually(func(g Gomega) {
+			target, err := kubectl("get", "cluster", "inplace-def", "-n", testNamespace,
+				"-o", "jsonpath={.status.operatorExecutableHash}")
+			g.Expect(err).NotTo(HaveOccurred())
+			for _, inst := range instances {
+				instHash, err := kubectl("get", "cluster", "inplace-def", "-n", testNamespace,
+					"-o", fmt.Sprintf(`go-template={{index .status.executableHashByInstance "%s"}}`, inst))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(instHash).To(Equal(target),
+					"instance %s manager hash should converge to the new operator hash", inst)
+			}
+		}, e2eTimeout(15*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("verifying every instance took the adopt path")
+		for _, inst := range instances {
+			Eventually(func(g Gomega) {
+				logs, err := kubectl("logs", inst, "-n", testNamespace, "-c", "mysql", "--tail=600")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(logs).To(ContainSubstring("Adopting running mysqld after in-place manager upgrade"),
+					"instance %s must adopt the running mysqld", inst)
+			}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+		}
+
+		By("verifying no instance restarted")
+		for _, inst := range instances {
+			Expect(podRestartCount(inst)).To(Equal(restartsBefore[inst]),
+				"instance %s mysql container restarted; in-place must not restart the Pod", inst)
+			Eventually(func(g Gomega) {
+				g.Expect(mysqldUptime(g, inst, password)).To(BeNumerically(">=", uptimeBefore[inst]),
+					"instance %s mysqld uptime dropped; the server was restarted instead of adopted", inst)
+			}, e2eTimeout(1*time.Minute), 3*time.Second).Should(Succeed())
+		}
+
+		By("verifying no switchover happened")
+		Expect(clusterPrimary("inplace-def")).To(Equal(primary),
+			"concurrent in-place upgrades must not switch the primary over")
+
+		By("verifying the primary still serves writes and all replicas have the data")
+		Eventually(func(g Gomega) {
+			_, err := mysqlExec(primary, "app", password, "app",
+				"CREATE TABLE IF NOT EXISTS inplace_def_probe (id INT PRIMARY KEY); "+
+					"REPLACE INTO inplace_def_probe VALUES (1);")
+			g.Expect(err).NotTo(HaveOccurred())
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+
+		for _, inst := range instances {
+			if inst == primary {
+				continue
+			}
+			Eventually(func(g Gomega) {
+				out, err := mysqlExec(inst, "app", password, "app",
+					"SELECT id FROM inplace_def_probe WHERE id = 1;")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal("1"),
+					"replica %s must have the concurrent upgrade's write", inst)
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+		}
+
+		expectClusterReady("inplace-def", 3, 20*time.Minute)
+	})
+})
