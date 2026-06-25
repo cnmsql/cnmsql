@@ -111,6 +111,17 @@ type DatabaseUserSpec struct {
 	// +kubebuilder:default:=retain
 	// +optional
 	ReclaimPolicy string `json:"reclaimPolicy,omitempty"`
+
+	// DriftDetection controls whether the operator periodically re-applies this
+	// user to correct out-of-band drift. When true (the default) the controller
+	// re-asserts the desired state on every resync, so a manually altered or
+	// dropped account is restored within readyResync. When false the controller
+	// reconciles only on changes to the spec or to the referenced password
+	// Secret, and does not periodically re-apply; drift introduced out of band
+	// is not corrected until the next such change.
+	// +kubebuilder:default:=true
+	// +optional
+	DriftDetection *bool `json:"driftDetection,omitempty"`
 }
 
 // DatabaseUserGrant describes a single MySQL GRANT statement.

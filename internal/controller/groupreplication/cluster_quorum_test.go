@@ -34,6 +34,8 @@ const (
 	gtidShort     = "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-10"
 	gtidLong      = "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-20"
 	gtidDivergent = "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5,AAAAAAAA-71CA-11E1-9E33-C80AA9429562:1-3"
+	clusterName   = "demo"
+	namespaceName = "prod"
 )
 
 func TestSelectQuorumSurvivor(t *testing.T) {
@@ -121,8 +123,8 @@ func TestSelectQuorumSurvivor(t *testing.T) {
 func TestComputeForceQuorumRecoveryAddressIsFQDN(t *testing.T) {
 	r := &Reconciler{}
 	cluster := &mysqlv1alpha1.Cluster{}
-	cluster.Name = "demo"
-	cluster.Namespace = "prod"
+	cluster.Name = clusterName
+	cluster.Namespace = namespaceName
 	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
 		HasQuorum: false,
 		Members: []mysqlv1alpha1.GroupMember{
@@ -213,8 +215,8 @@ func TestSelectRebootstrapSurvivor(t *testing.T) {
 func TestComputeForceQuorumRecoveryRebootstrapsOnTotalOutage(t *testing.T) {
 	r := &Reconciler{}
 	cluster := &mysqlv1alpha1.Cluster{}
-	cluster.Name = "demo"
-	cluster.Namespace = "prod"
+	cluster.Name = clusterName
+	cluster.Namespace = namespaceName
 	cluster.Spec.Instances = 3
 	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
 		Bootstrapped: true,
@@ -235,6 +237,37 @@ func TestComputeForceQuorumRecoveryRebootstrapsOnTotalOutage(t *testing.T) {
 	}
 	if recovery.ForceMembers != "" {
 		t.Fatalf("ForceMembers = %q, want empty for re-bootstrap", recovery.ForceMembers)
+	}
+}
+
+// On a total outage the last-seen primary is authoritative (single-primary GR),
+// so recovery re-bootstraps from it directly without waiting to compare every
+// member's GTID. This is what lets the operator bring only the primary up first.
+func TestComputeForceQuorumRecoveryRebootstrapsFromLastSeenPrimary(t *testing.T) {
+	r := &Reconciler{}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Name = clusterName
+	cluster.Namespace = namespaceName
+	cluster.Spec.Instances = 3
+	cluster.Status.CurrentPrimary = "demo-2"
+	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
+		Bootstrapped: true,
+		HasQuorum:    false,
+		Members:      nil, // no ONLINE view survived
+	}
+
+	// Only the primary's GTID is known: with no recorded primary this would be
+	// rejected (a member could hold transactions the survivor lacks), but the
+	// last-seen primary is trusted.
+	recovery := r.ComputeForceQuorumRecovery(cluster, map[string]string{"demo-2": gtidShort})
+	if recovery == nil {
+		t.Fatal("expected a re-bootstrap recovery plan from the last-seen primary, got nil")
+	}
+	if recovery.Action != topology.QuorumRecoveryRebootstrap {
+		t.Fatalf("action = %q, want %q", recovery.Action, topology.QuorumRecoveryRebootstrap)
+	}
+	if recovery.Survivor != "demo-2" {
+		t.Fatalf("survivor = %q, want demo-2 (the last-seen primary)", recovery.Survivor)
 	}
 }
 

@@ -38,9 +38,15 @@ const groupObservationAnnotation = "mysql.cnmsql.co/gr-observed"
 const forceQuorumMembersAnnotation = "cnmsql.cnmsql.co/force-quorum-members"
 const forceGroupRebootstrapAnnotation = "cnmsql.cnmsql.co/force-group-rebootstrap"
 
-// clusterPhaseBlocked mirrors topology.PhaseBlocked. The in-Pod agent must not
-// pull in the controller's internal packages, so the literal is duplicated here.
-const clusterPhaseBlocked = "Blocked"
+// clusterPhaseBlocked and clusterPhaseFullOutage mirror topology.PhaseBlocked and
+// topology.PhaseFullOutage. The in-Pod agent must not pull in the controller's
+// internal packages, so the literals are duplicated here. Both are operator-
+// declared crisis phases in which a plain join cannot re-form the group and the
+// member must stand down for guided recovery.
+const (
+	clusterPhaseBlocked    = "Blocked"
+	clusterPhaseFullOutage = "FullOutage"
+)
 
 // reconcileGroupRole is the Group Replication topology role strategy. It embodies
 // "the group decides, the operator reflects": this in-Pod side only ensures the
@@ -97,6 +103,21 @@ func (r *Reconciler) reconcileGroupRole(
 		// every committed transaction and there is no surviving group view to
 		// reset. Re-create the group from scratch by bootstrapping here; the other
 		// members rejoin via normal distributed recovery once this group exists.
+		//
+		// Idempotency: the operator may keep the doorbell set (or briefly re-stamp
+		// it while its observation still lags) after this member is already ONLINE.
+		// Re-bootstrapping a live group would needlessly STOP and re-create it, so
+		// once we are ONLINE the re-bootstrap is already done — clear the doorbell
+		// and leave the group untouched.
+		if status.GroupReplication != nil && status.GroupReplication.State == groupreplication.MemberStateOnline {
+			log.Info("Re-bootstrap already satisfied; member is ONLINE", "instance", me)
+			before := pod.DeepCopy()
+			delete(pod.Annotations, forceGroupRebootstrapAnnotation)
+			if err := doorbellClient.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+				log.Error(err, "Could not clear force-group-rebootstrap annotation", "instance", me)
+			}
+			return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+		}
 		log.Info("Executing guarded total-outage re-bootstrap", "instance", me)
 		// Clear any half-started or OFFLINE-leftover member state first. A bootstrap
 		// fails with "Another instance of START/STOP GROUP_REPLICATION command is
@@ -171,9 +192,10 @@ func (r *Reconciler) reconcileGroupRole(
 	// the transient false quorum observation seen during restarts and other Blocked
 	// states such as a denied fence operation, where an offline member should still join.
 	groupStatus := cluster.Status.GroupReplication
-	if cluster.Status.Phase == clusterPhaseBlocked &&
-		groupStatus != nil && groupStatus.Bootstrapped && !groupStatus.HasQuorum {
-		log.Info("Cluster is Blocked; awaiting operator-guided recovery instead of joining", "instance", me)
+	inCrisis := cluster.Status.Phase == clusterPhaseBlocked || cluster.Status.Phase == clusterPhaseFullOutage
+	if inCrisis && groupStatus != nil && groupStatus.Bootstrapped && !groupStatus.HasQuorum {
+		log.Info("Cluster is in guided recovery; awaiting the operator instead of joining",
+			"instance", me, "phase", cluster.Status.Phase)
 		return ctrl.Result{RequeueAfter: waitRequeue}, nil
 	}
 

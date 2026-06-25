@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -201,6 +202,85 @@ func TestDatabaseReconcileNoUserChangeWhenMatching(t *testing.T) {
 	}
 	if len(control.created) != 0 {
 		t.Fatalf("created = %+v, want none (user already exists)", control.created)
+	}
+}
+
+func TestDatabaseDriftDetectionDefaultReapplies(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	db := newDatabase(nil) // DriftDetection unset == enabled
+	r := databaseReconciler(t, control, readyClusterForDB(), db)
+
+	reconcileToApplied(t, r, db) // createdDatabase: 1
+
+	// A subsequent reconcile with drift detection on re-asserts the schema and
+	// keeps self-requeuing on the resync timer.
+	result, err := r.Reconcile(context.Background(), dbRequest(db))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(control.createdDatabase) != 2 {
+		t.Fatalf("createdDatabase = %d, want 2 (re-applied)", len(control.createdDatabase))
+	}
+	if result.RequeueAfter != readyResync {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, readyResync)
+	}
+}
+
+func TestDatabaseDriftDetectionDisabledStopsReapply(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	db := newDatabase(func(d *mysqlv1alpha1.Database) {
+		d.Spec.DriftDetection = ptr.To(false)
+	})
+	r := databaseReconciler(t, control, readyClusterForDB(), db)
+
+	reconcileToApplied(t, r, db) // createdDatabase: 1
+
+	// Nothing changed: the reconcile must be a no-op and must not self-requeue.
+	result, err := r.Reconcile(context.Background(), dbRequest(db))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(control.createdDatabase) != 1 {
+		t.Fatalf("createdDatabase = %d, want 1 (no re-apply)", len(control.createdDatabase))
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %s, want 0 (no timed requeue)", result.RequeueAfter)
+	}
+}
+
+func TestDatabaseDriftDetectionDisabledReappliesOnSecretChange(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-pw", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("s3cret")},
+	}
+	db := newDatabase(func(d *mysqlv1alpha1.Database) {
+		d.Spec.DriftDetection = ptr.To(false)
+		d.Spec.Users = []mysqlv1alpha1.InlineUser{{
+			Name:           appName,
+			Host:           "%",
+			Ensure:         mysqlv1alpha1.EnsurePresent,
+			PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: "app-pw", Key: "password"},
+		}}
+	})
+	r := databaseReconciler(t, control, readyClusterForDB(), db, secret)
+
+	reconcileToApplied(t, r, db) // createdDatabase: 1
+
+	// Rotate the password Secret: the recorded resourceVersion no longer matches,
+	// so the database must be re-applied even with drift detection disabled.
+	secret.Data["password"] = []byte("rotated")
+	if err := r.Update(context.Background(), secret); err != nil {
+		t.Fatalf("update secret: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), dbRequest(db)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(control.createdDatabase) != 2 {
+		t.Fatalf("createdDatabase = %d, want 2 (re-applied on secret change)", len(control.createdDatabase))
 	}
 }
 

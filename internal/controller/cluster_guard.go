@@ -295,9 +295,12 @@ func removeString(ss []string, s string) []string {
 	return ss
 }
 
-// handleQuorumRecovery is the opt-in, guarded quorum recovery path for Group
-// Replication clusters. It triggers only when the Cluster carries the
-// force-quorum-recovery annotation and quorum is provably lost. The operator
+// handleQuorumRecovery is the guarded quorum recovery path for Group Replication
+// clusters. It triggers either when the Cluster carries the force-quorum-recovery
+// annotation (an operator opting in to force_members recovery from a partial
+// quorum loss) or automatically on a total outage (the FullOutage phase), where
+// the last-seen primary is authoritative and no human needs to pick a survivor.
+// It only acts when quorum is provably lost. The operator
 // computes a safe survivor via ComputeForceQuorumRecovery, stamps the survivor
 // Pod with the force_members addresses so its in-Pod reconciler executes
 // group_replication_force_members, and clears the Cluster annotation. When
@@ -318,14 +321,22 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 	if err := r.Get(ctx, key, latestCluster); err != nil {
 		return ctrl.Result{}, err, true
 	}
-	if latestCluster.Annotations[forceQuorumRecoveryAnnotation] != "yes" {
+	// Two ways in: an operator opts in to force_members recovery from a partial
+	// quorum loss via the annotation, or a total outage (FullOutage) recovers
+	// automatically — there no human is needed to pick a survivor because the
+	// last-seen primary is authoritative.
+	annotated := latestCluster.Annotations[forceQuorumRecoveryAnnotation] == "yes"
+	autoFullOutage := observed.Phase == topology.PhaseFullOutage
+	if !annotated && !autoFullOutage {
 		return ctrl.Result{}, nil, false
 	}
 	gr := latestCluster.Status.GroupReplication
 	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
 		logf.FromContext(ctx).Info("Cannot perform quorum recovery: group is not in a recoverable state",
 			"hasQuorum", gr != nil && gr.HasQuorum, "bootstrapped", gr != nil && gr.Bootstrapped)
-		r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+		if annotated {
+			r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+		}
 		return ctrl.Result{}, nil, false
 	}
 
@@ -337,33 +348,50 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 		return ctrl.Result{RequeueAfter: readyResync}, nil, false
 	}
 
-	logf.FromContext(ctx).Info("Executing guarded quorum recovery",
-		"survivor", recovery.Survivor, "action", recovery.Action, "forceMembers", recovery.ForceMembers)
-	r.Recorder.Eventf(latestCluster, corev1.EventTypeNormal, "QuorumRecovery",
-		"Designating %s as the quorum recovery member (%s)", recovery.Survivor, recovery.Action)
-
 	survivorPod := &corev1.Pod{}
 	survivorKey := types.NamespacedName{Namespace: latestCluster.Namespace, Name: recovery.Survivor}
 	if err := r.Get(ctx, survivorKey, survivorPod); err != nil {
 		if apierrors.IsNotFound(err) {
-			logf.FromContext(ctx).Info("Survivor Pod not found; cannot proceed with quorum recovery", "survivor", recovery.Survivor)
+			// The survivor Pod is not up yet. On a full outage this is expected:
+			// provisioning brings the last-seen primary up first (handled=false lets
+			// reconcileInstances run), and we arm the re-bootstrap once it is running.
+			logf.FromContext(ctx).Info("Survivor Pod not found yet; waiting for it to come up before recovery", "survivor", recovery.Survivor)
 			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, false
 		}
 		return ctrl.Result{}, err, true
 	}
+	// Only arm recovery once the survivor's mysqld is actually up — stamping the
+	// doorbell on a Pod that has not started yet would have the in-Pod reconciler
+	// act before it can read its own state. Let provisioning finish bringing it up.
+	if !podRunning(survivorPod) {
+		logf.FromContext(ctx).Info("Survivor Pod is not running yet; waiting before arming recovery", "survivor", recovery.Survivor)
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, false
+	}
+
+	// The action-specific doorbell. force_members resets a surviving (but
+	// sub-quorum) view; rebootstrap re-creates the group from scratch after a
+	// total outage where no view survived.
+	doorbellKey, doorbellVal := forceQuorumMembersAnnotation, recovery.ForceMembers
+	if recovery.Action == topology.QuorumRecoveryRebootstrap {
+		doorbellKey, doorbellVal = forceGroupRebootstrapAnnotation, "yes"
+	}
+	// Idempotent: when recovery runs automatically (FullOutage), this reconciles
+	// every pass until quorum returns. If the doorbell is already armed there is
+	// nothing to do but wait, so avoid re-patching and re-emitting events.
+	if survivorPod.Annotations[doorbellKey] == doorbellVal {
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
+	}
+
+	logf.FromContext(ctx).Info("Executing guarded quorum recovery",
+		"survivor", recovery.Survivor, "action", recovery.Action, "forceMembers", recovery.ForceMembers, "auto", autoFullOutage)
+	r.Recorder.Eventf(latestCluster, corev1.EventTypeNormal, "QuorumRecovery",
+		"Designating %s as the quorum recovery member (%s)", recovery.Survivor, recovery.Action)
+
 	podBefore := survivorPod.DeepCopy()
 	if survivorPod.Annotations == nil {
 		survivorPod.Annotations = map[string]string{}
 	}
-	// Stamp the survivor with the action-specific doorbell. force_members resets a
-	// surviving (but sub-quorum) view; rebootstrap re-creates the group from
-	// scratch after a total outage where no view survived.
-	switch recovery.Action {
-	case topology.QuorumRecoveryRebootstrap:
-		survivorPod.Annotations[forceGroupRebootstrapAnnotation] = "yes"
-	default:
-		survivorPod.Annotations[forceQuorumMembersAnnotation] = recovery.ForceMembers
-	}
+	survivorPod.Annotations[doorbellKey] = doorbellVal
 	if err := r.Patch(ctx, survivorPod, client.MergeFrom(podBefore)); err != nil {
 		return ctrl.Result{}, err, true
 	}
@@ -381,7 +409,9 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 		logf.FromContext(ctx).Error(err, "Could not reset ObservedViewMax after quorum recovery")
 	}
 
-	r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+	if annotated {
+		r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+	}
 	return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
 }
 

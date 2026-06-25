@@ -137,6 +137,18 @@ func (r *Reconciler) ComputeForceQuorumRecovery(
 	// most-advanced reachable member instead. See computeRebootstrap for the
 	// stricter safety bar this requires.
 	if len(online) == 0 {
+		// Total outage: no live view to reset. In single-primary GR the last-seen
+		// primary holds every committed transaction, so re-form the group from it.
+		// Trusting it is what lets the operator bring that one member up first
+		// instead of racing every member up to compare GTIDs (see the FullOutage
+		// phase). Fall back to the strict all-GTIDs dominance bar only when no
+		// primary was ever recorded.
+		if primary := cluster.Status.CurrentPrimary; primary != "" {
+			return &topology.ForceQuorumRecovery{
+				Action:   topology.QuorumRecoveryRebootstrap,
+				Survivor: primary,
+			}
+		}
 		return r.computeRebootstrap(cluster, gtidByInstance)
 	}
 

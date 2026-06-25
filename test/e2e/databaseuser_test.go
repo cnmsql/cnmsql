@@ -90,6 +90,54 @@ var _ = Describe("DatabaseUser", Ordered, func() {
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
+	It("does not correct out-of-band drift when driftDetection is disabled", func() {
+		const driftCR, driftPass, driftSec = "drifter", "drifter-secret", "drifter-pw"
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+
+		By("creating a DatabaseUser with driftDetection disabled")
+		applyManifest(driftSec, passwordSecretManifest(driftSec, driftPass))
+		applyManifest(driftCR, databaseUserDriftManifest(driftCR, cluster, driftSec, false))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", driftCR, "-n", testNamespace, "--ignore-not-found")
+			_, _ = kubectl("delete", "secret", driftSec, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("waiting for the user to be applied")
+		Eventually(func(g Gomega) {
+			applied, err := kubectl("get", "databaseuser", driftCR, "-n", testNamespace,
+				"-o", "jsonpath={.status.applied}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(applied).To(Equal("true"), "drift-disabled user is not applied yet")
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("dropping the account out of band")
+		_, err := mysqlExec(primary, "root", rootPass, "",
+			fmt.Sprintf("DROP USER '%s'@'%%';", driftCR))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the operator does not re-create it on a timer (drift correction is off)")
+		Consistently(func(g Gomega) {
+			out, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", driftCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(BeEmpty(), "drift-disabled user must not be re-applied without a change")
+		}, 45*time.Second, 5*time.Second).Should(Succeed())
+
+		By("editing the spec to trigger a reconcile")
+		_, err = kubectl("patch", "databaseuser", driftCR, "-n", testNamespace,
+			"--type=merge", "-p", `{"spec":{"comment":"trigger reconcile"}}`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the account is re-applied on the spec change")
+		Eventually(func(g Gomega) {
+			out, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SELECT User FROM mysql.user WHERE User = '%s';", driftCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(driftCR), "a spec change must re-apply the user")
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
 	It("refuses a pre-existing account until adopted", func() {
 		primary := clusterPrimary(cluster)
 		rootPass := secretPassword(cluster + "-root")
@@ -315,6 +363,28 @@ func databaseUserManifest(name, cluster, userSecret, reclaim string) string {
       "on": "app.*"
     - privileges: ["SELECT"]
       "on": "*.*"`)
+}
+
+// databaseUserDriftManifest builds a DatabaseUser carrying an explicit
+// driftDetection setting, used to verify the opt-out of periodic re-apply.
+func databaseUserDriftManifest(name, cluster, userSecret string, drift bool) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: DatabaseUser
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster:
+    name: %s
+  reclaimPolicy: delete
+  driftDetection: %t
+  passwordSecret:
+    name: %s
+    key: password
+  grants:
+    - privileges: ["SELECT"]
+      "on": "app.*"
+`, name, testNamespace, cluster, drift, userSecret)
 }
 
 // databaseUserCustomManifest builds a DatabaseUser with an optional MySQL user

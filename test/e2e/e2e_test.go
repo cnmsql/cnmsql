@@ -746,27 +746,44 @@ spec:
 		By("waiting for the upgrade to complete and the cluster to return to Ready")
 		expectClusterReady("upgrade", 3, 15*time.Minute)
 
-		By("verifying the primary changed after switchover-based upgrade")
-		finalPrimary := clusterPrimary("upgrade")
-		Expect(finalPrimary).NotTo(Equal(initialPrimary),
-			"primary should change after switchover-based upgrade with 3 instances")
-
-		By("verifying all instance hashes match the new operator hash after upgrade")
+		// A serialized rollout flaps Ready→Degraded→Ready as each member rolls, so
+		// "Ready" alone does not mean the rollout finished — the primary is rolled
+		// last (via switchover) and may still be pending. The unambiguous
+		// completion signal is every instance's executable hash matching the new
+		// operator hash; gate on that before reading the primary, otherwise a
+		// single early sample races the primary-last roll.
+		By("waiting for every instance to roll to the new operator hash")
 		var newHash string
-		cmd = exec.Command("kubectl", "get", "cluster", "upgrade",
-			"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
-		newHash, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
+				"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			newHash = strings.TrimSpace(out)
+			g.Expect(newHash).NotTo(BeEmpty())
+			g.Expect(newHash).NotTo(Equal(initialHash), "operator hash should change after v2 deploy")
+			for _, inst := range []string{"upgrade-1", "upgrade-2", "upgrade-3"} {
+				cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
+					"-n", testNamespace, "-o", fmt.Sprintf(`go-template={{index .status.executableHashByInstance "%s"}}`, inst))
+				instHash, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(instHash)).To(Equal(newHash),
+					"instance %s should be rolled to the new operator hash", inst)
+			}
+		}, e2eTimeout(15*time.Minute), 5*time.Second).Should(Succeed())
 		GinkgoWriter.Printf("New operator hash: %s\n", newHash)
 
-		for _, inst := range []string{"upgrade-1", "upgrade-2", "upgrade-3"} {
-			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
-				"-n", testNamespace, "-o", fmt.Sprintf(`go-template={{index .status.executableHashByInstance "%s"}}`, inst))
-			instHash, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(instHash).To(Equal(newHash),
-				"upgrade instance %s hash should match new operator hash", inst)
-		}
+		// The initial primary (upgrade-1) is rolled last and only after a
+		// switchover hands the primary role to a replica, so once the rollout is
+		// complete the primary must have moved off upgrade-1. Poll rather than
+		// sample once: currentPrimary settles immediately after the final roll.
+		By("verifying the primary changed after switchover-based upgrade")
+		var finalPrimary string
+		Eventually(func(g Gomega) {
+			finalPrimary = clusterPrimary("upgrade")
+			g.Expect(finalPrimary).NotTo(Equal(initialPrimary),
+				"primary should change after switchover-based upgrade with 3 instances")
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the final primary is reachable and writable")
 		password := appPassword("upgrade")

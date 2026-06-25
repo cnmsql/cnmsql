@@ -175,48 +175,46 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
 
-	if isQuorumLost(cluster, observed) {
-		observed.Phase = topology.PhaseBlocked
-		observed.PhaseReason = "group has lost quorum; manual recovery required"
-		observed.Ready = false
-		observed.Progressing = false
+	observed.computeClusterPhase(cluster, plan)
+	return observed, nil
+}
+
+// computeClusterPhase sets the Phase, PhaseReason, Ready, and Progressing
+// fields based on the aggregated observation.
+func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) {
+	if isFullOutage(cluster, *o) {
+		o.Phase = topology.PhaseFullOutage
+		o.PhaseReason = "all members are down; re-bootstrapping the group from the last-seen primary"
+		o.Ready = false
+		o.Progressing = false
+	} else if isQuorumLost(cluster, *o) {
+		o.Phase = topology.PhaseBlocked
+		o.PhaseReason = "group has lost quorum; manual recovery required"
+		o.Ready = false
+		o.Progressing = false
 	} else {
 		switch {
-		case len(observed.DivergedInstances) > 0:
-			observed.Phase = topology.PhaseDegraded
-			observed.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
-				observed.PrimaryName, strings.Join(observed.DivergedInstances, ", "))
-		case observed.Ready:
-			observed.Phase = topology.PhaseReady
-			observed.PhaseReason = "All instances are ready"
-		case len(observed.FailedInstances) > 0 || len(observed.ReplicationBrokenInstances) > 0:
-			// Positive evidence of a problem, not setup still in progress: a Pod that
-			// cannot even start (crashlooping or Failed), or a replica whose replication
-			// has aborted with an error (e.g. a duplicate-key conflict that stops the SQL
-			// thread). Surface it as Degraded regardless of whether the cluster ever
-			// finished provisioning, so a cluster that wedges during initial bring-up
-			// does not sit silently in "Provisioning" forever.
-			observed.Phase = topology.PhaseDegraded
-			observed.PhaseReason = degradedReason(observed, plan)
+		case len(o.DivergedInstances) > 0:
+			o.Phase = topology.PhaseDegraded
+			o.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
+				o.PrimaryName, strings.Join(o.DivergedInstances, ", "))
+		case o.Ready:
+			o.Phase = topology.PhaseReady
+			o.PhaseReason = "All instances are ready"
+		case len(o.FailedInstances) > 0 || len(o.ReplicationBrokenInstances) > 0:
+			o.Phase = topology.PhaseDegraded
+			o.PhaseReason = degradedReason(*o, plan)
 		case cluster.IsEstablished():
-			// The cluster has already completed initial provisioning (it reached a
-			// Ready/operational phase before) but is no longer fully ready. A drop
-			// below full readiness, whether some instances are missing or every one
-			// is gone, is a degradation, not setup, so surface it as Degraded and
-			// name the lagging instances so an operator can see what is wrong (e.g. a
-			// partitioned or crashed node) instead of it silently sitting in
-			// "Provisioning" or "Pending".
-			observed.Phase = topology.PhaseDegraded
-			observed.PhaseReason = degradedReason(observed, plan)
-		case observed.ReadyInstances == 0:
-			observed.Phase = topology.PhasePending
-			observed.PhaseReason = "Waiting for the primary instance"
+			o.Phase = topology.PhaseDegraded
+			o.PhaseReason = degradedReason(*o, plan)
+		case o.ReadyInstances == 0:
+			o.Phase = topology.PhasePending
+			o.PhaseReason = "Waiting for the primary instance"
 		default:
-			observed.Phase = topology.PhaseProvisioning
-			observed.PhaseReason = fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
+			o.Phase = topology.PhaseProvisioning
+			o.PhaseReason = fmt.Sprintf("%d/%d instances ready", o.ReadyInstances, plan.Instances)
 		}
 	}
-	return observed, nil
 }
 
 // establishedPhase reports whether a persisted phase implies the cluster had
@@ -461,6 +459,12 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 				"Group has lost quorum; manual recovery required")
 		}
 	}
+	if observed.Phase == topology.PhaseFullOutage && before.Status.Phase != topology.PhaseFullOutage {
+		if r.Recorder != nil {
+			r.Recorder.Event(latest, corev1.EventTypeWarning, "FullOutage",
+				"All members are down; re-bootstrapping the group from the last-seen primary")
+		}
+	}
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
@@ -547,7 +551,8 @@ func (r *ClusterReconciler) recordPhaseTransition(cluster *mysqlv1alpha1.Cluster
 		return
 	}
 	eventType := corev1.EventTypeNormal
-	if observed.Phase == topology.PhaseBlocked || observed.Phase == topology.PhaseDegraded {
+	if observed.Phase == topology.PhaseBlocked || observed.Phase == topology.PhaseDegraded ||
+		observed.Phase == topology.PhaseFullOutage {
 		eventType = corev1.EventTypeWarning
 	}
 	r.Recorder.Event(cluster, eventType, observed.Phase, observed.PhaseReason)
@@ -593,4 +598,38 @@ func isQuorumLost(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool
 		}
 	}
 	return online*2 <= denominator
+}
+
+// isFullOutage reports whether a Group Replication cluster has lost quorum with
+// no ONLINE member anywhere: a total outage where the group view is gone. This
+// is the subset of quorum loss that force_members cannot fix (there is no live
+// view to reset), so the group must be re-bootstrapped from the last-seen
+// primary. A partial quorum loss — some members still ONLINE — stays Blocked and
+// recovers via force_members instead.
+func isFullOutage(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool {
+	if !cluster.IsGroupReplication() {
+		return false
+	}
+	gr := cluster.Status.GroupReplication
+	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
+		return false
+	}
+	// A surviving ONLINE member means a partial quorum loss (force_members can
+	// reset the live view), not a total outage.
+	if observed.GroupReplication != nil {
+		for _, m := range observed.GroupReplication.Members {
+			if m.State == groupreplication.MemberStateOnline {
+				return false
+			}
+		}
+	}
+	// No ONLINE member anywhere. Treat as a total outage only once the cluster was
+	// established — during initial bootstrap the group legitimately has not formed
+	// yet. This is keyed on establishment rather than the sticky ObservedViewMax so
+	// the cluster stays in FullOutage for the whole recovery, including the window
+	// after handleQuorumRecovery resets ObservedViewMax to 0 (which it does so the
+	// re-formed, initially single-member group reads as quorate). Otherwise the
+	// phase would flip out of FullOutage before the survivor re-forms the group,
+	// abandoning the auto-recovery retry loop and the in-Pod stand-down.
+	return cluster.IsEstablished()
 }
