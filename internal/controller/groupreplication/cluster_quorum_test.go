@@ -34,6 +34,8 @@ const (
 	gtidShort     = "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-10"
 	gtidLong      = "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-20"
 	gtidDivergent = "3E11FA47-71CA-11E1-9E33-C80AA9429562:1-5,AAAAAAAA-71CA-11E1-9E33-C80AA9429562:1-3"
+	clusterName   = "demo"
+	namespaceName = "prod"
 )
 
 func TestSelectQuorumSurvivor(t *testing.T) {
@@ -121,8 +123,8 @@ func TestSelectQuorumSurvivor(t *testing.T) {
 func TestComputeForceQuorumRecoveryAddressIsFQDN(t *testing.T) {
 	r := &Reconciler{}
 	cluster := &mysqlv1alpha1.Cluster{}
-	cluster.Name = "demo"
-	cluster.Namespace = "prod"
+	cluster.Name = clusterName
+	cluster.Namespace = namespaceName
 	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
 		HasQuorum: false,
 		Members: []mysqlv1alpha1.GroupMember{
@@ -213,8 +215,8 @@ func TestSelectRebootstrapSurvivor(t *testing.T) {
 func TestComputeForceQuorumRecoveryRebootstrapsOnTotalOutage(t *testing.T) {
 	r := &Reconciler{}
 	cluster := &mysqlv1alpha1.Cluster{}
-	cluster.Name = "demo"
-	cluster.Namespace = "prod"
+	cluster.Name = clusterName
+	cluster.Namespace = namespaceName
 	cluster.Spec.Instances = 3
 	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
 		Bootstrapped: true,
@@ -244,8 +246,8 @@ func TestComputeForceQuorumRecoveryRebootstrapsOnTotalOutage(t *testing.T) {
 func TestComputeForceQuorumRecoveryRebootstrapsFromLastSeenPrimary(t *testing.T) {
 	r := &Reconciler{}
 	cluster := &mysqlv1alpha1.Cluster{}
-	cluster.Name = "demo"
-	cluster.Namespace = "prod"
+	cluster.Name = clusterName
+	cluster.Namespace = namespaceName
 	cluster.Spec.Instances = 3
 	cluster.Status.CurrentPrimary = "demo-2"
 	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{

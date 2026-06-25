@@ -14,6 +14,7 @@ on:
         required: false
         type: string
 
+
 permissions: {}
 
 concurrency:
@@ -87,7 +88,7 @@ jobs:
       CERT_MANAGER_INSTALL_SKIP: "false"
       GINKGO_TIMEOUT: ${{ github.repository_owner == 'cnmsql' && '240m' || '120m' }}
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
-      GINKGO_PROCS: 5
+      GINKGO_PROCS: 3
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
