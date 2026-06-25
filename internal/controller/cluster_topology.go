@@ -42,6 +42,24 @@ import (
 // (Kube- and MySQL-wise). The elected primary is always rolled last, after every
 // replica is back online.
 func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed observedCluster) (bool, error) {
+	// A total outage (every member down, group view gone) recovers by re-forming
+	// the group from the last-seen primary alone — not by racing every member up at
+	// once and hoping. Bring only that primary up first; once it re-bootstraps and
+	// regains quorum the phase leaves FullOutage and the remaining members rejoin
+	// through normal, donor-gated provisioning below. With no recorded primary we
+	// fall through to ordinal-order provisioning (the all-GTIDs re-bootstrap bar
+	// still guards safety).
+	if observed.Phase == topology.PhaseFullOutage && cluster.Status.CurrentPrimary != "" {
+		if ordinal, ok := instanceOrdinal(cluster, cluster.Status.CurrentPrimary); ok {
+			if _, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), false); err != nil {
+				return false, err
+			}
+			// Provisioning is intentionally incomplete: hold here until the primary
+			// re-forms the group and quorum returns, then a later pass provisions the rest.
+			return false, nil
+		}
+	}
+
 	// The elected primary is rolled last: a cluster-wide change (config, seed,
 	// scale) rolls every replica first, one at a time, and only takes the primary
 	// down once the replicas are back online. Fall back to the planned primary when

@@ -38,6 +38,7 @@ const (
 	PhaseProvisioning   = "Provisioning"
 	PhaseReady          = "Ready"
 	PhaseBlocked        = "Blocked"
+	PhaseFullOutage     = "FullOutage"
 	PhaseSwitchover     = "Switchover"
 	PhaseDegraded       = "Degraded"
 	PhaseFailingOver    = "FailingOver"

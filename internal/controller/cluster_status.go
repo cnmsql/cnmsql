@@ -175,7 +175,17 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
 
-	if isQuorumLost(cluster, observed) {
+	if isFullOutage(cluster, observed) {
+		// Every member is down and the group view is gone: force_members cannot
+		// help because there is no live view to reset. The operator re-forms the
+		// group from the last-seen primary (see handleQuorumRecovery), so surface a
+		// distinct phase that drives primary-first bring-up rather than racing every
+		// member up at once.
+		observed.Phase = topology.PhaseFullOutage
+		observed.PhaseReason = "all members are down; re-bootstrapping the group from the last-seen primary"
+		observed.Ready = false
+		observed.Progressing = false
+	} else if isQuorumLost(cluster, observed) {
 		observed.Phase = topology.PhaseBlocked
 		observed.PhaseReason = "group has lost quorum; manual recovery required"
 		observed.Ready = false
@@ -461,6 +471,12 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 				"Group has lost quorum; manual recovery required")
 		}
 	}
+	if observed.Phase == topology.PhaseFullOutage && before.Status.Phase != topology.PhaseFullOutage {
+		if r.Recorder != nil {
+			r.Recorder.Event(latest, corev1.EventTypeWarning, "FullOutage",
+				"All members are down; re-bootstrapping the group from the last-seen primary")
+		}
+	}
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
@@ -547,7 +563,8 @@ func (r *ClusterReconciler) recordPhaseTransition(cluster *mysqlv1alpha1.Cluster
 		return
 	}
 	eventType := corev1.EventTypeNormal
-	if observed.Phase == topology.PhaseBlocked || observed.Phase == topology.PhaseDegraded {
+	if observed.Phase == topology.PhaseBlocked || observed.Phase == topology.PhaseDegraded ||
+		observed.Phase == topology.PhaseFullOutage {
 		eventType = corev1.EventTypeWarning
 	}
 	r.Recorder.Event(cluster, eventType, observed.Phase, observed.PhaseReason)
@@ -593,4 +610,38 @@ func isQuorumLost(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool
 		}
 	}
 	return online*2 <= denominator
+}
+
+// isFullOutage reports whether a Group Replication cluster has lost quorum with
+// no ONLINE member anywhere: a total outage where the group view is gone. This
+// is the subset of quorum loss that force_members cannot fix (there is no live
+// view to reset), so the group must be re-bootstrapped from the last-seen
+// primary. A partial quorum loss — some members still ONLINE — stays Blocked and
+// recovers via force_members instead.
+func isFullOutage(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool {
+	if !cluster.IsGroupReplication() {
+		return false
+	}
+	gr := cluster.Status.GroupReplication
+	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
+		return false
+	}
+	// A surviving ONLINE member means a partial quorum loss (force_members can
+	// reset the live view), not a total outage.
+	if observed.GroupReplication != nil {
+		for _, m := range observed.GroupReplication.Members {
+			if m.State == groupreplication.MemberStateOnline {
+				return false
+			}
+		}
+	}
+	// No ONLINE member anywhere. Treat as a total outage only once the cluster was
+	// established — during initial bootstrap the group legitimately has not formed
+	// yet. This is keyed on establishment rather than the sticky ObservedViewMax so
+	// the cluster stays in FullOutage for the whole recovery, including the window
+	// after handleQuorumRecovery resets ObservedViewMax to 0 (which it does so the
+	// re-formed, initially single-member group reads as quorate). Otherwise the
+	// phase would flip out of FullOutage before the survivor re-forms the group,
+	// abandoning the auto-recovery retry loop and the in-Pod stand-down.
+	return cluster.IsEstablished()
 }
