@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Deploy CNMSQL - CloudNative for MySQL on a local Kind cluster, create a three-instance MySQL cluster, connect, scale, and take a backup."
+description: "Deploy CNMSQL - CloudNative for MySQL, create a three-instance MySQL cluster, connect, scale, and take a backup."
 sidebar_position: 2
 ---
 
@@ -12,11 +12,9 @@ This guide walks through deploying CNMSQL - CloudNative for MySQL and a three-in
 
 | Tool | Purpose |
 |------|---------|
-| `go` | Build the operator binary |
-| `docker` | Build and load container images |
+| `helm` | Install the operator |
 | `kubectl` | Interact with the Kubernetes cluster |
 | `kind` | Local Kubernetes cluster |
-| `make` | Run build targets |
 | `cert-manager` | Issue TLS certificates for mTLS and MySQL TLS |
 
 [Install cert-manager](https://cert-manager.io/docs/installation/) in your cluster if it isn't already present:
@@ -26,36 +24,19 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/do
 kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-manager --timeout=5m
 ```
 
-## 1. Build and Load Images
+## 1. Install the Operator
 
-Build the operator image from source:
-
-```bash
-make docker-build IMG=cnmsql-controller:dev
-```
-
-Pull the pre-built instance image. Instance images are published from the
-[containers](https://github.com/cnmsql/containers) repository:
+Helm is the recommended way to install. The chart is published from the [charts](https://github.com/cnmsql/charts) repository:
 
 ```bash
-docker pull ghcr.io/cnmsql/cnmsql-instance:8.4
+helm repo add cnmsql https://cnmsql.github.io/charts
+helm repo update
+helm install cnmsql cnmsql/cnmsql \
+  --namespace cnmsql-system \
+  --create-namespace
 ```
 
-Load both images into your Kind cluster:
-
-```bash
-kind load docker-image cnmsql-controller:dev --name cnmsql-test-e2e
-kind load docker-image ghcr.io/cnmsql/cnmsql-instance:8.4 --name cnmsql-test-e2e
-```
-
-## 2. Deploy the Operator
-
-Install the CRDs and deploy the controller manager:
-
-```bash
-make install
-make deploy IMG=cnmsql-controller:dev
-```
+The operator image defaults to `ghcr.io/cnmsql/cnmsql` pinned to the chart's `appVersion`, so no `--set` overrides are needed for a standard install.
 
 Verify the controller is running:
 
@@ -65,23 +46,31 @@ kubectl get pods -n cnmsql-system
 
 You should see a single `cnmsql-controller-manager` Pod in `Running` state.
 
-## 3. Install the CLI Plugin
+## 2. Pull the Instance Image
 
-**From a release (no source checkout needed):**
+Instance images are published from the [containers](https://github.com/cnmsql/containers) repository. Pull the pre-built image and load it into Kind:
+
+```bash
+docker pull ghcr.io/cnmsql/cnmsql-instance:8.4
+kind load docker-image ghcr.io/cnmsql/cnmsql-instance:8.4 --name cnmsql-test-e2e
+```
+
+:::note Kind users
+The operator image must also be loaded into Kind if your Kind cluster can't reach the registry. The image is `ghcr.io/cnmsql/cnmsql` tagged with the chart version:
+
+```bash
+docker pull ghcr.io/cnmsql/cnmsql:0.3.2
+kind load docker-image ghcr.io/cnmsql/cnmsql:0.3.2 --name cnmsql-test-e2e
+```
+:::
+
+## 3. Install the CLI Plugin
 
 ```bash
 curl -sSfL https://github.com/cnmsql/cnmsql/raw/main/hack/install-cnmsql-plugin.sh | sh -s -- -b ~/.local/bin
 ```
 
-The script downloads the latest release binary for your platform, verifies its checksum,
-and installs the plugin plus a tab-completion shim. Replace `~/.local/bin` with any
-directory on your `PATH` (e.g. `/usr/local/bin`).
-
-**From the repo (development):**
-
-```bash
-make install-plugin
-```
+The script downloads the latest release binary for your platform, verifies its checksum, and installs the plugin plus a tab-completion shim. Replace `~/.local/bin` with any directory on your `PATH` (e.g. `/usr/local/bin`).
 
 Verify the plugin is registered:
 
@@ -141,7 +130,7 @@ CNMSQL - CloudNative for MySQL creates three role-routed Services automatically:
 | `cluster-sample-ro` | Read-only | Ready replicas |
 | `cluster-sample-r`  | Read      | Any ready instance |
 
-Service routing follows the `mysql.cnmsql.co/role` label and updates automatically after failover — no manual reconfiguration needed.
+Service routing follows the `mysql.cnmsql.co/role` label and updates automatically after failover with no manual reconfiguration needed.
 
 Application credentials are generated and stored in a Secret. List all Secrets for the cluster:
 
@@ -171,7 +160,7 @@ Scale down to one instance:
 kubectl patch cluster cluster-sample --type merge -p '{"spec":{"instances":1}}'
 ```
 
-Scale-down removes replica Pods (highest ordinal first) but retains their PVCs. Delete retained PVCs only after you're certain the data is no longer needed.
+Scale-down removes replica Pods (highest ordinal first) but retains their PVCs. Delete retained PVCs only after confirming the data is no longer needed.
 
 ## 7. Take a Backup
 

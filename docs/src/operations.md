@@ -9,20 +9,12 @@ sidebar_position: 8
 cnmsql ships a kubectl plugin, `kubectl-cnmsql`, that wraps common day-two
 operations. Install it once:
 
-**From a release:**
-
 ```bash
 curl -sSfL https://github.com/cnmsql/cnmsql/raw/main/hack/install-cnmsql-plugin.sh | sh -s -- -b ~/.local/bin
 ```
 
 The script downloads the latest release, verifies its checksum, and installs the
 plugin along with a `kubectl_complete-cnmsql` shim for shell tab completion.
-
-**From the repo (development):**
-
-```bash
-make install-plugin
-```
 
 Most commands accept an optional `CLUSTER` argument. When you omit it, the
 plugin picks the only cluster in the current namespace and warns if there are
@@ -112,13 +104,6 @@ kubectl cnmsql status -w
 The operator validates the target, waits for GTID containment, bounds the
 operation by `spec.maxSwitchoverDelay`, and lets the selected instance promote
 itself. Role Services move after the database role is safe.
-
-You can also trigger a switchover manually through the subresource:
-
-```bash
-kubectl patch cluster cluster-sample --subresource=status --type merge \
-  -p '{"status":{"targetPrimary":"cluster-sample-2"}}'
-```
 
 ## Fence an instance
 
@@ -264,19 +249,7 @@ The current primary cannot be re-initialised this way. It is the replication
 source, so the command refuses it. To replace a primary, switch over first, then
 re-initialise the former primary as a replica.
 
-Under the hood the command appends the instance to the Cluster's
-`cnmsql.cnmsql.co/reinit` annotation, a comma-separated
-list the operator consumes. Re-initialisation is always human-triggered; the
-operator never re-clones an instance over its retained PVC on its own. You can set
-the annotation directly if you prefer:
-
-```bash
-kubectl annotate cluster cluster-sample \
-  cnmsql.cnmsql.co/reinit=cluster-sample-2
-```
-
-The operator clears the entry once the teardown completes and the instance has
-been recreated.
+Under the hood the command appends the instance to the Cluster's `cnmsql.cnmsql.co/reinit` annotation, a comma-separated list the operator consumes. Re-initialisation is always human-triggered; the operator never re-clones an instance over its retained PVC on its own. The operator clears the entry once the teardown completes and the instance has been recreated.
 
 ## Reload MySQL parameters
 

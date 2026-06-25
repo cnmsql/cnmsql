@@ -22,7 +22,7 @@ The current version matrix is:
 |-------|------------|---------------------|-----------------|-------|
 | 8.0 | `debian:bookworm-slim` | `ps-80` | `pxb-80` | Main modern line. |
 | 8.4 | `debian:bookworm-slim` | `ps-84-lts` | `pxb-84-lts` | LTS line. |
-| 9.x | `debian:bookworm-slim` | `ps-9x-innovation` | `pxb-9x-innovation` | Currently built from Percona testing packages. |
+| 9.x | `debian:bookworm-slim` | `ps-9x-innovation` | `pxb-9x-innovation` | Currently tracks Percona Server for MySQL 9.6. Built from Percona testing packages. |
 
 ## Where the images come from
 

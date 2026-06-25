@@ -81,7 +81,7 @@ All resources live under the `mysql.cnmsql.co/v1alpha1` API group. See the [API 
 
 ## Getting Started
 
-1. **[Quickstart](./quickstart.md)**: build images, deploy the operator, create your first cluster, connect, scale, and take a backup.
+1. **[Quickstart](./quickstart.md)**: install the operator via Helm, pull pre-built images, create your first cluster, connect, scale, and take a backup.
 2. **[Cluster Lifecycle](./cluster-lifecycle.md)**: understand how a `Cluster` CR becomes running MySQL instances.
 3. **[Instance Images](./instance-images.md)**: choose MySQL versions and understand the slim image layout.
 

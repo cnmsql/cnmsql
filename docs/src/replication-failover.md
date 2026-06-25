@@ -417,18 +417,13 @@ ordinal, so it keeps its `server_id`; only its data is discarded.
 
 This is always human-triggered. The operator never re-clones an instance over its
 retained PVC on its own, so errant data is preserved for diagnosis until you
-decide to discard it. Trigger it with the plugin or the annotation:
+decide to discard it. Trigger it with the plugin:
 
 ```bash
 kubectl cnmsql reinit <cluster> <cluster>-2
-# or, equivalently:
-kubectl annotate cluster <cluster> \
-  cnmsql.cnmsql.co/reinit=<cluster>-2
 ```
 
-The annotation is a comma-separated list of instance names the operator consumes,
-tearing each down and recreating it before clearing the entry. The current
-primary is refused, because it is the replication source, so switch over first if
+The current primary is refused, because it is the replication source, so switch over first if
 you need to rebuild a former primary. See the
 [operations runbook](./operations.md#re-initialise-an-instance-from-scratch) for
 the full procedure.
