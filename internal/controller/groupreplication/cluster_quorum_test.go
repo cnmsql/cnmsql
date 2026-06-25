@@ -238,6 +238,37 @@ func TestComputeForceQuorumRecoveryRebootstrapsOnTotalOutage(t *testing.T) {
 	}
 }
 
+// On a total outage the last-seen primary is authoritative (single-primary GR),
+// so recovery re-bootstraps from it directly without waiting to compare every
+// member's GTID. This is what lets the operator bring only the primary up first.
+func TestComputeForceQuorumRecoveryRebootstrapsFromLastSeenPrimary(t *testing.T) {
+	r := &Reconciler{}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Name = "demo"
+	cluster.Namespace = "prod"
+	cluster.Spec.Instances = 3
+	cluster.Status.CurrentPrimary = "demo-2"
+	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
+		Bootstrapped: true,
+		HasQuorum:    false,
+		Members:      nil, // no ONLINE view survived
+	}
+
+	// Only the primary's GTID is known: with no recorded primary this would be
+	// rejected (a member could hold transactions the survivor lacks), but the
+	// last-seen primary is trusted.
+	recovery := r.ComputeForceQuorumRecovery(cluster, map[string]string{"demo-2": gtidShort})
+	if recovery == nil {
+		t.Fatal("expected a re-bootstrap recovery plan from the last-seen primary, got nil")
+	}
+	if recovery.Action != topology.QuorumRecoveryRebootstrap {
+		t.Fatalf("action = %q, want %q", recovery.Action, topology.QuorumRecoveryRebootstrap)
+	}
+	if recovery.Survivor != "demo-2" {
+		t.Fatalf("survivor = %q, want demo-2 (the last-seen primary)", recovery.Survivor)
+	}
+}
+
 // A total outage where one member is unreachable cannot be proven safe; the
 // cluster stays Blocked rather than re-bootstrapping from a possibly-behind member.
 func TestComputeForceQuorumRecoveryRebootstrapBlockedWhenMemberMissing(t *testing.T) {

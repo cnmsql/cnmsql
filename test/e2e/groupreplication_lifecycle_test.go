@@ -208,33 +208,28 @@ var _ = Describe("Group Replication lifecycle", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "failed to delete %s", member)
 		}
 
-		By("verifying the operator detects the lost group and surfaces Blocked")
+		// Detection and recovery are watched in a single loop so the brief FullOutage
+		// window cannot slip through a gap between two separate Eventually blocks.
+		// A --wait=false delete terminates gracefully, so the group keeps quorum for
+		// the termination grace period; only once every member is gone does the
+		// operator surface FullOutage, and it then auto re-bootstraps from the
+		// last-seen primary (no annotation required). phase==FullOutage already
+		// implies hasQuorum=false, so the phase is the unambiguous detection signal —
+		// polling it directly (and fast) avoids racing two separate status reads.
+		By("verifying the operator surfaces FullOutage then auto re-forms the group from the last-seen primary")
+		sawFullOutage := false
 		Eventually(func(g Gomega) {
-			quorum, err := clusterField(cluster, `{.status.groupReplication.hasQuorum}`)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(quorum).To(Equal("false"), "a total outage must report hasQuorum=false")
-
 			phase, err := clusterField(cluster, "{.status.phase}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).To(Equal("Blocked"), "cluster must be Blocked after a total outage")
-		}, e2eTimeout(12*time.Minute), 10*time.Second).Should(Succeed())
-
-		By("requesting a guarded re-bootstrap via the force-quorum-recovery annotation")
-		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			forceQuorumRecoveryAnnotation+"=yes", "--overwrite")
-		Expect(err).NotTo(HaveOccurred())
-
-		By("verifying the operator re-forms the same group and restores quorum")
-		Eventually(func(g Gomega) {
-			ann, err := clusterField(cluster, `{.metadata.annotations.cnmsql\.cnmsql\.io/force-quorum-recovery}`)
-			g.Expect(err).NotTo(HaveOccurred())
-			if ann == "yes" {
-				return // still pending; the operator has not processed it yet
+			if phase == "FullOutage" {
+				sawFullOutage = true
 			}
+			g.Expect(sawFullOutage).To(BeTrue(), "a total outage must surface the FullOutage phase")
+
 			quorum, err := clusterField(cluster, `{.status.groupReplication.hasQuorum}`)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(quorum).To(Equal("true"), "the group must re-form and regain quorum after re-bootstrap")
-		}, e2eTimeout(15*time.Minute), 10*time.Second).Should(Succeed())
+			g.Expect(quorum).To(Equal("true"), "the group must auto re-form and regain quorum after re-bootstrap")
+		}, e2eTimeout(15*time.Minute), 2*time.Second).Should(Succeed())
 
 		By("verifying the seeded row survived the re-bootstrap (no data loss)")
 		Eventually(func(g Gomega) {

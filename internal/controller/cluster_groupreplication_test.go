@@ -20,7 +20,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -177,6 +179,87 @@ func TestObserveGroupReplicationRejectsSplitPrimaryVerdict(t *testing.T) {
 	}
 	if status == nil || status.PrimaryMember != "" {
 		t.Fatalf("status = %+v, want group view without an authoritative primary", status)
+	}
+}
+
+func TestIsFullOutageDistinguishesTotalFromPartialQuorumLoss(t *testing.T) {
+	t.Parallel()
+	online := func(name string) mysqlv1alpha1.GroupMember {
+		return mysqlv1alpha1.GroupMember{Instance: name, State: groupreplication.MemberStateOnline}
+	}
+	offline := func(name string) mysqlv1alpha1.GroupMember {
+		return mysqlv1alpha1.GroupMember{Instance: name, State: groupreplication.MemberStateOffline}
+	}
+	cases := []struct {
+		name           string
+		view           *mysqlv1alpha1.GroupReplicationStatus
+		wantQuorumLost bool
+		wantFullOutage bool
+	}{
+		{
+			name:           "total outage, no view survives",
+			view:           nil,
+			wantQuorumLost: true,
+			wantFullOutage: true,
+		},
+		{
+			name:           "total outage, view present but no ONLINE member",
+			view:           &mysqlv1alpha1.GroupReplicationStatus{Members: []mysqlv1alpha1.GroupMember{offline("demo-1"), offline("demo-2"), offline("demo-3")}},
+			wantQuorumLost: true,
+			wantFullOutage: true,
+		},
+		{
+			name:           "partial quorum loss, a survivor stays ONLINE",
+			view:           &mysqlv1alpha1.GroupReplicationStatus{Members: []mysqlv1alpha1.GroupMember{online("demo-1"), offline("demo-2"), offline("demo-3")}},
+			wantQuorumLost: true,
+			wantFullOutage: false,
+		},
+		{
+			name:           "healthy quorum",
+			view:           &mysqlv1alpha1.GroupReplicationStatus{Members: []mysqlv1alpha1.GroupMember{online("demo-1"), online("demo-2"), online("demo-3")}},
+			wantQuorumLost: false,
+			wantFullOutage: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, ObservedViewMax: 3})
+			cluster.Spec.Instances = 3
+			cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+			observed := observedCluster{GroupReplication: tc.view}
+			if got := isQuorumLost(cluster, observed); got != tc.wantQuorumLost {
+				t.Errorf("isQuorumLost = %v, want %v", got, tc.wantQuorumLost)
+			}
+			if got := isFullOutage(cluster, observed); got != tc.wantFullOutage {
+				t.Errorf("isFullOutage = %v, want %v", got, tc.wantFullOutage)
+			}
+		})
+	}
+}
+
+// FullOutage is only declared for an established cluster: during initial
+// bootstrap the group has legitimately not formed yet, so a missing view must
+// not be mistaken for a total outage.
+func TestIsFullOutageRequiresEstablishedCluster(t *testing.T) {
+	t.Parallel()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, ObservedViewMax: 3})
+	cluster.Spec.Instances = 3
+	cluster.Status.EstablishedAt = nil // never reached full readiness
+	if isFullOutage(cluster, observedCluster{GroupReplication: nil}) {
+		t.Fatal("isFullOutage must be false for a never-established cluster")
+	}
+}
+
+// Once handleQuorumRecovery resets ObservedViewMax to 0, the cluster must stay in
+// FullOutage until the survivor re-forms the group — otherwise the auto-recovery
+// retry loop and the in-Pod stand-down are abandoned mid-recovery.
+func TestIsFullOutageStaysTrueAfterObservedViewMaxReset(t *testing.T) {
+	t.Parallel()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, ObservedViewMax: 0})
+	cluster.Spec.Instances = 3
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	if !isFullOutage(cluster, observedCluster{GroupReplication: nil}) {
+		t.Fatal("isFullOutage must remain true after the ObservedViewMax reset, before the group re-forms")
 	}
 }
 
