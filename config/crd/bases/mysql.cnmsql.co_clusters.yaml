@@ -1603,6 +1603,15 @@ spec:
                   EnableSuperuserAccess, when true, makes the root user reachable through the
                   generated/provided secret. Defaults to false.
                 type: boolean
+              enableSwitchoverOnDrain:
+                default: true
+                description: |-
+                  EnableSwitchoverOnDrain, when true (default), makes the operator promote a
+                  healthy replica via a planned switchover when the primary Pod is gracefully
+                  terminated (e.g. a node drain or eviction), instead of waiting for the
+                  primary to become unreachable and failing over. Falls back to failover when
+                  no safe candidate exists or the handoff cannot complete in time.
+                type: boolean
               env:
                 description: |-
                   Env is a list of additional environment variables added to the instance

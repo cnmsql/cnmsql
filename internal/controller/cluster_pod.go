@@ -31,6 +31,30 @@ import (
 func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) corev1.PodSpec {
 	gracePeriod := int64(cluster.GetMaxStopDelay())
 
+	// With switchover-on-drain, a draining primary blocks in its preStop hook
+	// until the operator has switched the role away. preStop runs before SIGTERM
+	// and shares the Pod's termination grace period with mysqld's own shutdown, so
+	// extend the grace period by the handoff budget to keep mysqld's stop window
+	// intact. Replicas return from preStop immediately, so the extension only ever
+	// matters for the primary.
+	var mysqlLifecycle *corev1.Lifecycle
+	if cluster.IsSwitchoverOnDrainEnabled() {
+		handoff := int64(cluster.GetMaxStopDelay())
+		gracePeriod += handoff
+		mysqlLifecycle = &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{
+						"/controller/manager", "instance", "prestop",
+						"--socket=" + socketPath,
+						"--control-user=" + controlUser,
+						fmt.Sprintf("--timeout=%ds", handoff),
+					},
+				},
+			},
+		}
+	}
+
 	operatorImage := plan.OperatorImage
 	if operatorImage == "" {
 		operatorImage = plan.Image
@@ -78,6 +102,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 			Command:         []string{"/controller/manager"},
 			Args:            r.runArgs(cluster, plan, inst),
+			Lifecycle:       mysqlLifecycle,
 			Env:             runEnv(cluster, plan),
 			EnvFrom:         cluster.Spec.EnvFrom,
 			Ports: []corev1.ContainerPort{

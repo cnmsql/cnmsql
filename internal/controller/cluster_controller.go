@@ -344,6 +344,14 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if result, err, handled := r.handleQuorumRecovery(ctx, cluster, observed); handled {
 		return result, err
 	}
+	// When the primary Pod is gracefully terminating (e.g. a node drain or
+	// eviction) and the cluster is otherwise healthy, prefer a planned switchover
+	// to a GTID-safe replica over waiting for the primary to vanish and failing
+	// over. Best-effort: when no safe candidate exists this is a no-op and the
+	// failover path below handles the primary once it becomes unreachable.
+	if result, err, handled := r.reconcileDrainSwitchover(ctx, cluster, observed); handled {
+		return result, err
+	}
 	// An unreachable primary takes precedence over a manual switchover: drive
 	// automatic failover (bounded by spec.failoverDelay) before anything else.
 	failoverHandled, failoverResult, err := r.reconcileFailover(ctx, cluster, plan, observed)

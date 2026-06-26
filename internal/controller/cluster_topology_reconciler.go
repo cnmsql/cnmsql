@@ -63,6 +63,7 @@ func topologyFailoverState(observed observedCluster) topology.FailoverState {
 		Instances:     instances,
 		Fenced:        observed.FencedInstances,
 		Diverged:      observed.DivergedInstances,
+		Terminating:   observed.TerminatingInstances,
 	}
 }
 

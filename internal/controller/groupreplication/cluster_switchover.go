@@ -97,6 +97,17 @@ func (r *Reconciler) ReconcileSwitchover(
 	}, nil
 }
 
+// ReconcileDrainSwitchover is a no-op under Group Replication: when a primary
+// member's Pod is drained, the group itself elects a new primary via its
+// membership protocol, so the operator does not drive a planned switchover.
+func (r *Reconciler) ReconcileDrainSwitchover(
+	_ context.Context,
+	_ *mysqlv1alpha1.Cluster,
+	_ topology.FailoverState,
+) (topology.FailoverResult, error) {
+	return topology.FailoverResult{}, nil
+}
+
 // memberUUIDForInstance queries the group view from queryInstance and returns the
 // server_uuid of targetInstance.
 func (r *Reconciler) memberUUIDForInstance(

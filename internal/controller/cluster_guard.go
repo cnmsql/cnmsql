@@ -59,9 +59,13 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	pdbEnabled := cluster.Spec.EnablePDB == nil || *cluster.Spec.EnablePDB
 
 	// During a node maintenance window we must let nodes drain, so the PDBs that
-	// would block eviction are removed for the duration of the window. The
-	// replica PDB always goes; the primary PDB only goes for a single-instance
-	// cluster, where the lone pod must be allowed to move with its (reused) PVC.
+	// would block eviction are removed for the duration of the window — both the
+	// replica and the primary PDB. The primary PDB must go even for a multi-instance
+	// cluster: it selects only the role=primary Pod (one) while the owning
+	// StatefulSet's scale is N, so Kubernetes computes desiredHealthy = N - 1 and
+	// allows zero voluntary disruptions, which would block the drain outright.
+	// Switchover-on-drain (or, when disabled, reactive failover) provides the
+	// safety here, not the PDB.
 	maintenance := inNodeMaintenance(cluster)
 	singleInstance := plan.Instances <= 1
 
@@ -80,7 +84,7 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 		})
 	}
 
-	wantPrimary := pdbEnabled && (!maintenance || !singleInstance)
+	wantPrimary := pdbEnabled && !maintenance
 	wantReplica := pdbEnabled && !singleInstance && !maintenance
 
 	if err := r.reconcileOnePDB(ctx, cluster, primaryPDBName(cluster), wantPrimary, func() *policyv1.PodDisruptionBudget {

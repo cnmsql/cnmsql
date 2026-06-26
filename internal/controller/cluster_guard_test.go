@@ -159,8 +159,10 @@ func TestReconcilePDBNodeMaintenanceWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Open a maintenance window: the replica PDB is removed so nodes can drain,
-	// the primary PDB stays (multi-instance cluster).
+	// Open a maintenance window: both the replica and the primary PDB are removed
+	// so nodes can drain. The primary PDB must go even for a multi-instance cluster
+	// because its narrow role=primary selector makes Kubernetes allow zero
+	// voluntary disruptions, which would otherwise block the drain outright.
 	cluster.Spec.NodeMaintenanceWindow = &mysqlv1alpha1.NodeMaintenanceWindow{InProgress: true}
 	if err := r.reconcilePDB(ctx, cluster, clusterPlan{Instances: 3}); err != nil {
 		t.Fatal(err)
@@ -168,17 +170,20 @@ func TestReconcilePDBNodeMaintenanceWindow(t *testing.T) {
 	if _, err := getPDB(t, r, cluster, replicaPDBName(cluster)); !apierrors.IsNotFound(err) {
 		t.Fatalf("replica PDB get = %v, want not found during maintenance", err)
 	}
-	if _, err := getPDB(t, r, cluster, primaryPDBName(cluster)); err != nil {
-		t.Fatalf("primary PDB get = %v, want still present during maintenance", err)
+	if _, err := getPDB(t, r, cluster, primaryPDBName(cluster)); !apierrors.IsNotFound(err) {
+		t.Fatalf("primary PDB get = %v, want not found during maintenance", err)
 	}
 
-	// Close the window: the replica PDB is restored.
+	// Close the window: both PDBs are restored.
 	cluster.Spec.NodeMaintenanceWindow.InProgress = false
 	if err := r.reconcilePDB(ctx, cluster, clusterPlan{Instances: 3}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := getPDB(t, r, cluster, replicaPDBName(cluster)); err != nil {
 		t.Fatalf("replica PDB get = %v, want restored after maintenance", err)
+	}
+	if _, err := getPDB(t, r, cluster, primaryPDBName(cluster)); err != nil {
+		t.Fatalf("primary PDB get = %v, want restored after maintenance", err)
 	}
 }
 

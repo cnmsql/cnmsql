@@ -124,6 +124,9 @@ type FailoverState struct {
 	Instances     map[string]FailoverInstance
 	Fenced        []string
 	Diverged      []string
+	// Terminating are instances whose Pod is gracefully terminating (a
+	// DeletionTimestamp is set) but is still reachable, e.g. during a node drain.
+	Terminating []string
 }
 
 // OperationPhase requests a common observed-status phase patch from the root
@@ -276,6 +279,15 @@ type Reconciler interface {
 		request FailoverRequest,
 	) (FailoverResult, error)
 	ReconcileSwitchover(
+		ctx context.Context,
+		cluster *mysqlv1alpha1.Cluster,
+		observed FailoverState,
+	) (FailoverResult, error)
+	// ReconcileDrainSwitchover promotes a safe replica via a planned switchover
+	// when the current primary's Pod is gracefully terminating (e.g. a node
+	// drain). It is best-effort: when no safe candidate exists it does nothing
+	// and lets the reactive failover path handle the primary once it is gone.
+	ReconcileDrainSwitchover(
 		ctx context.Context,
 		cluster *mysqlv1alpha1.Cluster,
 		observed FailoverState,

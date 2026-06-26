@@ -87,9 +87,14 @@ KIND_CLUSTER ?= cnmsql-test-e2e
 # matrix can exercise a specific Kubernetes version. Empty uses Kind's default.
 K8S_VERSION ?=
 KIND_IMAGE_ARG = $(if $(K8S_VERSION),--image kindest/node:$(K8S_VERSION),)
+# KIND_CONFIG optionally points at a Kind topology file. Leave empty for the
+# default single-node cluster; set KIND_CONFIG=test/e2e/kind-multinode.yaml to
+# bring up worker nodes for the node-failure specs (label-filter node-failure).
+KIND_CONFIG ?=
+KIND_CONFIG_ARG = $(if $(KIND_CONFIG),--config $(KIND_CONFIG),)
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Optional: K8S_VERSION=v1.34.0.
+setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Optional: K8S_VERSION=v1.34.0, KIND_CONFIG=test/e2e/kind-multinode.yaml.
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
@@ -98,8 +103,8 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Opt
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)' $(if $(K8S_VERSION),(kindest/node:$(K8S_VERSION)),(default node image))..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) $(KIND_IMAGE_ARG) ;; \
+			echo "Creating Kind cluster '$(KIND_CLUSTER)' $(if $(K8S_VERSION),(kindest/node:$(K8S_VERSION)),(default node image))$(if $(KIND_CONFIG), with config $(KIND_CONFIG),)..."; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) $(KIND_IMAGE_ARG) $(KIND_CONFIG_ARG) ;; \
 	esac
 
 GINKGO_VERSION ?= v2.27.2

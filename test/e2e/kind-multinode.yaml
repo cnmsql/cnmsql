@@ -1,0 +1,20 @@
+# Multi-node Kind topology for the node-failure e2e specs.
+#
+# The default e2e cluster is single-node, which cannot exercise node drain /
+# eviction: every Pod shares the one node, so there is no "other node" to fail.
+# This config adds three worker nodes so a 3-instance Cluster can spread one
+# instance per node (via topologySpreadConstraints) and a single worker can be
+# drained to simulate a node going down.
+#
+# It is opt-in: only the node-failure CI job (and a developer running
+# `make test-e2e ... KIND_CONFIG=test/e2e/kind-multinode.yaml`) selects it, so
+# the rest of the suite keeps its faster single-node topology. The node images
+# are intentionally left unset so the `--image kindest/node:<K8S_VERSION>` flag
+# from the Makefile applies uniformly to every node.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+- role: worker

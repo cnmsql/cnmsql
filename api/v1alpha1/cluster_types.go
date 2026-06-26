@@ -284,6 +284,15 @@ type ClusterSpec struct {
 	// +optional
 	EnablePDB *bool `json:"enablePDB,omitempty"`
 
+	// EnableSwitchoverOnDrain, when true (default), makes the operator promote a
+	// healthy replica via a planned switchover when the primary Pod is gracefully
+	// terminated (e.g. a node drain or eviction), instead of waiting for the
+	// primary to become unreachable and failing over. Falls back to failover when
+	// no safe candidate exists or the handoff cannot complete in time.
+	// +kubebuilder:default:=true
+	// +optional
+	EnableSwitchoverOnDrain *bool `json:"enableSwitchoverOnDrain,omitempty"`
+
 	// ServiceAccountTemplate to use for the generated service account.
 	// +optional
 	ServiceAccountTemplate *ServiceAccountTemplate `json:"serviceAccountTemplate,omitempty"`

@@ -697,6 +697,13 @@ func (cluster *Cluster) IsReplica() bool {
 		(cluster.Spec.Replica.Enabled == nil || *cluster.Spec.Replica.Enabled)
 }
 
+// IsSwitchoverOnDrainEnabled reports whether the operator should perform a
+// planned switchover when the primary Pod is gracefully terminated. It defaults
+// to true when unset.
+func (cluster *Cluster) IsSwitchoverOnDrainEnabled() bool {
+	return cluster.Spec.EnableSwitchoverOnDrain == nil || *cluster.Spec.EnableSwitchoverOnDrain
+}
+
 // GetMaxStopDelay returns the amount of time in seconds MySQL has to stop.
 func (cluster *Cluster) GetMaxStopDelay() int32 {
 	if cluster.Spec.MaxStopDelay > 0 {

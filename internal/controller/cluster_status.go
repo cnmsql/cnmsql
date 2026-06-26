@@ -64,6 +64,10 @@ type observedCluster struct {
 	// They are excluded from routing and from failover candidacy and are kept
 	// read-only by their in-Pod reconciler.
 	FencedInstances []string
+	// TerminatingInstances are instances whose Pod carries a DeletionTimestamp
+	// (graceful termination, e.g. a node drain/eviction or manual delete) but is
+	// still reachable. A terminating primary is the trigger for switchover-on-drain.
+	TerminatingInstances []string
 	// FailedInstances are instances whose Pod shows positive evidence of being
 	// unable to run (Failed phase or a container stuck in CrashLoopBackOff after
 	// repeated restarts). They mark a degradation independent of whether the
@@ -112,6 +116,9 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 		if isPodFenced(pod) {
 			observed.FencedInstances = append(observed.FencedInstances, inst.Name)
+		}
+		if pod.DeletionTimestamp != nil {
+			observed.TerminatingInstances = append(observed.TerminatingInstances, inst.Name)
 		}
 		if podFailed(pod) {
 			observed.FailedInstances = append(observed.FailedInstances, inst.Name)

@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 
+	ctrl "sigs.k8s.io/controller-runtime"
+
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
@@ -35,4 +37,28 @@ func (r *ClusterReconciler) reconcileSwitchover(
 		err = r.patchOperationPhase(ctx, cluster, observed, *result.Phase)
 	}
 	return result.Handled, err
+}
+
+// reconcileDrainSwitchover initiates a planned switchover when the primary Pod is
+// gracefully terminating (e.g. a node drain). It returns handled=true (with a
+// requeue) once it has committed a new TargetPrimary or hit an error, so the
+// caller can short-circuit and let the switchover path drive the promotion.
+func (r *ClusterReconciler) reconcileDrainSwitchover(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	observed observedCluster,
+) (ctrl.Result, error, bool) {
+	result, err := r.topologyReconciler(cluster).ReconcileDrainSwitchover(ctx, cluster, topologyFailoverState(observed))
+	if err != nil {
+		return ctrl.Result{}, err, true
+	}
+	if result.Phase != nil {
+		if perr := r.patchOperationPhase(ctx, cluster, observed, *result.Phase); perr != nil {
+			return ctrl.Result{}, perr, true
+		}
+	}
+	if result.Handled {
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil, true
+	}
+	return ctrl.Result{}, nil, false
 }

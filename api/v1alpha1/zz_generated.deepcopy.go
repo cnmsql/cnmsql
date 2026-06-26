@@ -580,6 +580,11 @@ func (in *ClusterSpec) DeepCopyInto(out *ClusterSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.EnableSwitchoverOnDrain != nil {
+		in, out := &in.EnableSwitchoverOnDrain, &out.EnableSwitchoverOnDrain
+		*out = new(bool)
+		**out = **in
+	}
 	if in.ServiceAccountTemplate != nil {
 		in, out := &in.ServiceAccountTemplate, &out.ServiceAccountTemplate
 		*out = new(ServiceAccountTemplate)
