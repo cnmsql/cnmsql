@@ -86,6 +86,7 @@ class E2EJob(dict):
                 "k8s_version": k8s_version,
                 "mysql_version": mysql_version,
                 "major_upgrade": False,
+                "node_failure": False,
             }
         )
 
@@ -111,6 +112,23 @@ class MajorUpgradeE2EJob(E2EJob):
         self["major_upgrade"] = True
 
 
+class NodeFailureE2EJob(E2EJob):
+    """Latest-Kubernetes job that runs only the node-failure spec.
+
+    The job carries node_failure=true, which makes the e2e suite run only the
+    Serial node-failure spec (Ginkgo label "node-failure"). That spec
+    provisions its OWN multi-node Kind cluster to exercise a node drain, so the
+    shared single-node suite cluster is never made multi-node or disrupted. The
+    spec is version-agnostic, so running it once (at the latest Kubernetes and
+    MySQL) is sufficient.
+    """
+
+    def __init__(self):
+        super().__init__(KIND_K8S.latest, MYSQL.latest)
+        self["id"] = f"{KIND_K8S.latest}-node-failure"
+        self["node_failure"] = True
+
+
 def build_push():
     """Smoke set: just the two diagonal corners."""
     return {
@@ -131,6 +149,9 @@ def build_pull_request():
     # One dedicated major-upgrade job: its specs pin their own series images, so
     # a second MySQL version would re-run identical upgrade scenarios.
     result.add(MajorUpgradeE2EJob())
+    # One dedicated node-failure job: it provisions its own multi-node cluster
+    # and is version-agnostic, so a single run is sufficient.
+    result.add(NodeFailureE2EJob())
     return result
 
 
