@@ -1,15 +1,15 @@
-# Multi-node Kind topology for the e2e suite (the Makefile default).
+# Multi-node Kind topology used by the Serial node-failure e2e spec.
 #
 # A single-node cluster cannot exercise node drain / eviction: every Pod shares
-# the one node, so there is no "other node" to fail. Three worker nodes let the
-# Serial node-failure spec spread a 3-instance Cluster one instance per node (via
-# topologySpreadConstraints) and drain a single worker to simulate a node going
-# down. The rest of the suite runs here too; the node-failure spec runs Serial,
-# after the parallel specs finish, so its drain never disrupts them.
+# the one node, so there is no "other node" to fail. The node-failure spec
+# provisions its OWN cluster from this config (kind create cluster --config), so
+# the shared suite cluster stays single-node and is never disrupted by a drain.
+# Three worker nodes let a 3-instance Cluster spread one instance per node (via
+# topologySpreadConstraints) so draining a single worker isolates one instance.
 #
-# The node images are intentionally left unset so the
-# `--image kindest/node:<K8S_VERSION>` flag from the Makefile applies uniformly
-# to every node.
+# The node images are intentionally left unset so the spec's
+# `--image kindest/node:<K8S_VERSION>` flag (when K8S_VERSION is set) applies
+# uniformly to every node.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
