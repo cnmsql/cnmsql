@@ -87,10 +87,11 @@ KIND_CLUSTER ?= cnmsql-test-e2e
 # matrix can exercise a specific Kubernetes version. Empty uses Kind's default.
 K8S_VERSION ?=
 KIND_IMAGE_ARG = $(if $(K8S_VERSION),--image kindest/node:$(K8S_VERSION),)
-# KIND_CONFIG optionally points at a Kind topology file. Leave empty for the
-# default single-node cluster; set KIND_CONFIG=test/e2e/kind-multinode.yaml to
-# bring up worker nodes for the node-failure specs (label-filter node-failure).
-KIND_CONFIG ?=
+# KIND_CONFIG points at the Kind topology file. It defaults to the multi-node
+# topology so the whole suite runs on worker nodes and the Serial node-failure
+# spec can drain one. Set KIND_CONFIG= (empty) for a single-node cluster, in
+# which case the node-failure spec auto-skips.
+KIND_CONFIG ?= test/e2e/kind-multinode.yaml
 KIND_CONFIG_ARG = $(if $(KIND_CONFIG),--config $(KIND_CONFIG),)
 
 .PHONY: setup-test-e2e

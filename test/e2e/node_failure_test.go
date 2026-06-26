@@ -19,8 +19,8 @@ import (
 //
 // They require a multi-node Kind cluster so the three instances spread one per
 // node (a single-node cluster has no "other node" to fail). The suite's default
-// cluster is single-node, so these specs auto-skip there; the dedicated
-// node-failure CI job brings up workers via KIND_CONFIG=test/e2e/kind-multinode.yaml.
+// Kind topology (test/e2e/kind-multinode.yaml) provides workers; on a single-node
+// cluster these specs auto-skip.
 //
 // Serial: draining a node evicts every Pod scheduled on it. Run alone, after the
 // parallel specs finish, so no other spec's instances are disrupted by the drain.
@@ -37,7 +37,7 @@ var _ = Describe("Node failure", Ordered, Serial, Label("node-failure"), func() 
 		if len(workers) < instances {
 			Skip(fmt.Sprintf(
 				"node-failure specs need at least %d worker nodes to spread one instance per node, found %d; "+
-					"run with a multi-node cluster (KIND_CONFIG=test/e2e/kind-multinode.yaml)",
+					"the default Kind topology provides them (override only with KIND_CONFIG= for single-node)",
 				instances, len(workers)))
 		}
 

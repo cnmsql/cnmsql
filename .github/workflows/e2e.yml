@@ -83,11 +83,10 @@ jobs:
       E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
       E2E_MAJOR_UPGRADE: ${{ matrix.major_upgrade }}
       # The dedicated major-upgrade job runs only the heavy multi-image upgrade
-      # specs; every other job runs the rest of the suite and excludes them.
-      # node-failure specs need a multi-node cluster and run in their own job
-      # below; exclude them here so the single-node matrix jobs don't carry a
-      # Serial spec that only ever skips.
-      GINKGO_LABEL_FILTER: ${{ matrix.major_upgrade && 'major-upgrade' || '!major-upgrade && !node-failure' }}
+      # specs; every other job runs the rest of the suite and excludes them. The
+      # node-failure spec runs as part of the suite here (Serial, on the default
+      # multi-node Kind cluster), so it needs no separate job or label exclusion.
+      GINKGO_LABEL_FILTER: ${{ matrix.major_upgrade && 'major-upgrade' || '!major-upgrade' }}
       CERT_MANAGER_INSTALL_SKIP: "false"
       GINKGO_TIMEOUT: ${{ github.repository_owner == 'cnmsql' && '240m' || '120m' }}
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
@@ -140,83 +139,6 @@ jobs:
         gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \
           -f state="$STATE" \
           -f context="E2E / ${{ matrix.id }}" \
-          -f description="$DESC" \
-          -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      env:
-        GH_TOKEN: ${{ github.token }}
-
-    - name: Cleanup after e2e
-      if: always()
-      run: |
-        make cleanup-test-e2e || true
-
-  node-failure:
-    name: node-failure
-    needs: generate-jobs
-    if: needs.generate-jobs.outputs.kindEnabled == 'true'
-    runs-on: ${{ github.repository_owner == 'cnmsql' && 'self-hosted' || 'ubuntu-latest' }}
-    permissions:
-      contents: read
-      statuses: write
-    env:
-      # Multi-node topology so the 3-instance cluster spreads one instance per
-      # node and a single worker can be drained.
-      KIND_CONFIG: test/e2e/kind-multinode.yaml
-      GINKGO_LABEL_FILTER: node-failure
-      # Draining a node evicts every Pod on it; run the specs serially against a
-      # cluster nothing else is using.
-      GINKGO_PROCS: 1
-      CERT_MANAGER_INSTALL_SKIP: "false"
-      GINKGO_TIMEOUT: ${{ github.repository_owner == 'cnmsql' && '240m' || '120m' }}
-      E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
-    steps:
-    - name: Clone the code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.pr_sha || github.ref }}
-
-    - name: Create pending status
-      if: github.event.inputs.pr_sha != ''
-      run: |
-        gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \
-          -f state="pending" \
-          -f context="E2E / node-failure" \
-          -f description="E2E node-failure tests running" \
-          -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      env:
-        GH_TOKEN: ${{ github.token }}
-
-    - name: Setup Go
-      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-      with:
-        go-version-file: go.mod
-
-    - name: Install kind
-      run: |
-        curl -fsSL -o ./kind \
-          "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
-        chmod +x ./kind
-        sudo mv ./kind /usr/local/bin/kind
-        kind version
-
-    - name: Run node-failure e2e suite
-      run: |
-        make test-e2e
-
-    - name: Update status
-      if: always() && github.event.inputs.pr_sha != ''
-      run: |
-        if [[ "${{ job.status }}" == "success" ]]; then
-          STATE="success"
-          DESC="E2E node-failure tests passed"
-        else
-          STATE="failure"
-          DESC="E2E node-failure tests failed"
-        fi
-        gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \
-          -f state="$STATE" \
-          -f context="E2E / node-failure" \
           -f description="$DESC" \
           -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
       env:
