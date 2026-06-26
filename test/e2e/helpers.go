@@ -190,10 +190,54 @@ spec:
 
 // applyManifest writes the given manifest to a temporary file and applies it,
 // returning the file path so callers can delete it later with deleteManifest.
+//
+// The apply is retried while it fails with a transient admission-webhook
+// connectivity error. The operator's validating webhook can briefly become
+// unreachable mid-spec (e.g. the operator Pod is rescheduled or rolled), which
+// surfaces as "failed calling webhook ... connection refused" from the API
+// server rather than a real validation rejection. A genuine validation error
+// (a bad spec) is not transient and fails fast.
 func applyManifest(name, manifest string) {
+	GinkgoHelper()
 	path := writeManifest(name, manifest)
-	_, err := kubectl("apply", "-f", path)
-	Expect(err).NotTo(HaveOccurred(), "Failed to apply manifest %s", name)
+	Eventually(func() error {
+		out, err := kubectl("apply", "-f", path)
+		if err != nil && isTransientWebhookError(out, err) {
+			return err
+		}
+		// Wrap non-transient errors in StopTrying so a real validation
+		// failure aborts immediately instead of retrying until timeout.
+		if err != nil {
+			StopTrying("apply rejected").Wrap(err).Now()
+		}
+		return nil
+	}, e2eTimeout(2*time.Minute), 2*time.Second).Should(Succeed(),
+		"Failed to apply manifest %s", name)
+}
+
+// isTransientWebhookError reports whether a failed kubectl apply was rejected
+// because the admission webhook endpoint was momentarily unreachable, as
+// opposed to a genuine validation rejection. These are safe to retry.
+func isTransientWebhookError(out string, err error) bool {
+	msg := out + err.Error()
+	if !strings.Contains(msg, "failed calling webhook") &&
+		!strings.Contains(msg, "failed to call webhook") {
+		return false
+	}
+	for _, s := range []string{
+		"connection refused",
+		"no endpoints available",
+		"EOF",
+		"i/o timeout",
+		"context deadline exceeded",
+		"Timeout: request did not complete",
+		"connect: connection reset by peer",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // deleteManifest deletes the resources described by the named manifest, ignoring
