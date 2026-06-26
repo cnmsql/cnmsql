@@ -5,11 +5,15 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cnmsql/cnmsql/test/utils"
 )
 
 // These specs exercise Kubernetes node failure end to end: a worker node hosting
@@ -17,44 +21,42 @@ import (
 // clean switchover, lose no committed data, and rejoin the evicted instance from
 // its retained PVC once the node comes back.
 //
-// They require a multi-node Kind cluster so the three instances spread one per
-// node (a single-node cluster has no "other node" to fail). The suite's default
-// Kind topology (test/e2e/kind-multinode.yaml) provides workers; on a single-node
-// cluster these specs auto-skip.
+// Node drain needs more than one node, but the shared suite cluster is
+// single-node. So this spec provisions its OWN multi-node Kind cluster (from
+// test/e2e/kind-multinode.yaml), deploys the operator there, and tears it down
+// afterwards — the shared cluster is never made multi-node and never sees a
+// drain. It auto-skips when the kind binary is unavailable.
 //
-// Serial: draining a node evicts every Pod scheduled on it. Run alone, after the
-// parallel specs finish, so no other spec's instances are disrupted by the drain.
+// Serial: it switches the active kube-context to its dedicated cluster for the
+// duration of the spec, so it must run alone, never interleaved with specs
+// targeting the shared cluster.
 var _ = Describe("Node failure", Ordered, Serial, Label("node-failure"), func() {
 	const (
 		cluster   = "nodefail"
 		instances = 3
 	)
 
-	var ns, prevNS, password string
+	var password, prevNS, prevContext, dedicatedCluster string
 
 	BeforeAll(func() {
-		workers := workerNodeNames()
-		if len(workers) < instances {
-			Skip(fmt.Sprintf(
-				"node-failure specs need at least %d worker nodes to spread one instance per node, found %d; "+
-					"the default Kind topology provides them (override only with KIND_CONFIG= for single-node)",
-				instances, len(workers)))
+		if !kindAvailable() {
+			Skip("kind binary not available; the node-failure spec provisions its own multi-node cluster")
 		}
 
+		dedicatedCluster = dedicatedClusterName()
 		prevNS = testNamespace
-		ns = createTestNamespace("nodefail")
+		By(fmt.Sprintf("provisioning a dedicated multi-node Kind cluster %q for the node-failure spec", dedicatedCluster))
+		prevContext = provisionDedicatedCluster(dedicatedCluster, "test/e2e/kind-multinode.yaml")
+		DeferCleanup(func() {
+			testNamespace = prevNS
+			teardownDedicatedCluster(dedicatedCluster, prevContext)
+		})
+
+		// From here on, the active kube-context targets the dedicated cluster.
+		createTestNamespace("nodefail")
 
 		By("creating a 3-instance cluster pinned one instance per node")
 		applyManifest(cluster, spreadClusterManifest(cluster, instances))
-		DeferCleanup(func() {
-			// Restore schedulability on every worker before tearing down, so a
-			// failed spec that left a node cordoned does not leak into other runs.
-			for _, node := range workerNodeNames() {
-				_, _ = kubectl("uncordon", node)
-			}
-			deleteCluster(cluster)
-			deleteTestNamespace(ns, prevNS)
-		})
 		expectClusterReady(cluster, instances, 20*time.Minute)
 		password = appPassword(cluster)
 
@@ -200,17 +202,88 @@ spec:
 `, name, testNamespace, instances, instanceImage, e2eInstanceResources, e2eMySQLParameters)
 }
 
-// workerNodeNames returns the names of all schedulable worker nodes (those
-// without the control-plane role), used to decide whether the cluster has enough
-// nodes to spread instances.
-func workerNodeNames() []string {
-	out, err := kubectl("get", "nodes",
-		"-l", "!node-role.kubernetes.io/control-plane",
-		"-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
-	if err != nil {
-		return nil
+// kindBinary returns the kind executable, honoring the KIND override the Makefile
+// passes through to the suite.
+func kindBinary() string {
+	if v := os.Getenv("KIND"); v != "" {
+		return v
 	}
-	return strings.Fields(out)
+	return "kind"
+}
+
+// kindAvailable reports whether the kind binary can be found, so the spec can
+// skip cleanly rather than fail when it cannot provision its cluster.
+func kindAvailable() bool {
+	_, err := exec.LookPath(kindBinary())
+	return err == nil
+}
+
+// dedicatedClusterName derives a Kind cluster name distinct from the shared
+// suite cluster, so the two never collide.
+func dedicatedClusterName() string {
+	base := os.Getenv("KIND_CLUSTER")
+	if base == "" {
+		base = "cnmsql-test-e2e"
+	}
+	return base + "-nodefail"
+}
+
+// currentKubeContext returns the active kube-context, or "" if none is set.
+func currentKubeContext() string {
+	out, err := kubectl("config", "current-context")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// provisionDedicatedCluster creates a multi-node Kind cluster from configPath,
+// loads the operator and instance images into it, and deploys the operator and
+// cert-manager. Kind switches the active kube-context to the new cluster, so
+// every helper run afterwards targets it. It returns the previously active
+// context for teardownDedicatedCluster to restore.
+func provisionDedicatedCluster(name, configPath string) string {
+	GinkgoHelper()
+	prev := currentKubeContext()
+
+	By(fmt.Sprintf("creating Kind cluster %s", name))
+	createArgs := []string{"create", "cluster", "--name", name, "--config", configPath}
+	if v := os.Getenv("K8S_VERSION"); v != "" {
+		createArgs = append(createArgs, "--image", "kindest/node:"+v)
+	}
+	_, err := utils.Run(exec.Command(kindBinary(), createArgs...))
+	Expect(err).NotTo(HaveOccurred(), "failed to create dedicated Kind cluster %s", name)
+
+	By("loading the operator and instance images into the dedicated cluster")
+	for _, image := range []string{managerImage, instanceImage} {
+		_, err := utils.Run(exec.Command(kindBinary(), "load", "docker-image", image, "--name", name))
+		Expect(err).NotTo(HaveOccurred(), "failed to load image %s into %s", image, name)
+	}
+
+	By("installing cert-manager on the dedicated cluster")
+	Expect(utils.InstallCertManager()).To(Succeed(), "failed to install cert-manager on the dedicated cluster")
+
+	By("deploying the operator on the dedicated cluster")
+	deployOperator()
+
+	By("waiting for the operator and admission webhook to become ready")
+	_, err = kubectl("wait", "deployment", "-l", "control-plane=controller-manager",
+		"-n", namespace, "--for=condition=Available", "--timeout="+e2eTimeout(5*time.Minute).String())
+	Expect(err).NotTo(HaveOccurred(), "controller-manager did not become available on the dedicated cluster")
+	waitForWebhookReady("default")
+
+	return prev
+}
+
+// teardownDedicatedCluster restores the previously active kube-context and
+// deletes the dedicated cluster. It is best-effort: a failure here must not mask
+// the spec result.
+func teardownDedicatedCluster(name, prevContext string) {
+	if prevContext != "" {
+		_, _ = kubectl("config", "use-context", prevContext)
+	}
+	By(fmt.Sprintf("deleting dedicated Kind cluster %s", name))
+	_, _ = utils.Run(exec.Command(kindBinary(), "delete", "cluster", "--name", name))
 }
 
 // nodeForPod returns the node a Pod is scheduled on.
