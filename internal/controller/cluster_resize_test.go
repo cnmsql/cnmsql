@@ -34,12 +34,12 @@ import (
 
 // existingPVC builds the data PVC for an instance at the given current size,
 // optionally carrying a pending node-side resize condition.
-func existingPVC(cluster *mysqlv1alpha1.Cluster, name, size string, pending bool) *corev1.PersistentVolumeClaim {
+func existingPVC(cluster *mysqlv1alpha1.Cluster, name string, pending bool) *corev1.PersistentVolumeClaim {
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(size)},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
 			},
 		},
 	}
@@ -59,7 +59,7 @@ func TestEnsurePVCGrowsRequest(t *testing.T) {
 	cluster.Spec.Storage.Size = "2Gi"
 	scheme := testScheme(t)
 	inst := testPlan().instanceFor(cluster, 1)
-	pvc := existingPVC(cluster, inst.PVCName, "1Gi", false)
+	pvc := existingPVC(cluster, inst.PVCName, false)
 	reconciler := &ClusterReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pvc).Build(),
 		Scheme: scheme,
@@ -103,7 +103,7 @@ func TestEnsurePVCResizeRollGatedOnResizeInUseVolumes(t *testing.T) {
 			scheme := testScheme(t)
 			inst := testPlan().instanceFor(cluster, 1)
 			// Request already matches desired; only the pending condition should drive the roll.
-			pvc := existingPVC(cluster, inst.PVCName, "1Gi", tc.pending)
+			pvc := existingPVC(cluster, inst.PVCName, tc.pending)
 			reconciler := &ClusterReconciler{
 				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pvc).Build(),
 				Scheme: scheme,
@@ -198,7 +198,7 @@ func TestObserveSurfacesResizingPVC(t *testing.T) {
 	scheme := testScheme(t)
 	inst := testPlan().instanceFor(cluster, 1)
 	pod := readyPod(cluster, inst.Name, rolePrimary)
-	pvc := existingPVC(cluster, inst.PVCName, "1Gi", true)
+	pvc := existingPVC(cluster, inst.PVCName, true)
 	reconciler := &ClusterReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -236,7 +236,7 @@ func TestObserveNoResizingPVCWhenSettled(t *testing.T) {
 	scheme := testScheme(t)
 	inst := testPlan().instanceFor(cluster, 1)
 	pod := readyPod(cluster, inst.Name, rolePrimary)
-	pvc := existingPVC(cluster, inst.PVCName, "1Gi", false)
+	pvc := existingPVC(cluster, inst.PVCName, false)
 	reconciler := &ClusterReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
