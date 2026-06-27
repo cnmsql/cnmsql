@@ -45,7 +45,11 @@ with actionable diagnostics; a genuinely healthy change is green every time.
   `major-upgrade`, `node-failure`, `flavor-MySQL-<v>`) instead of the whole suite
   per MySQL version. `e2e.yml` maps lane fields to env, sweeps leftover Kind
   clusters and names each run's cluster uniquely, uploads JUnit + run-log
-  artifacts, and no longer cancels the nightly schedule. The PR gate is a single
+  artifacts, and no longer cancels the nightly schedule. Lanes whose specs all use
+  dedicated clusters (operator-upgrade, node-failure) skip the shared
+  operator/MinIO (`E2E_SHARED_SETUP=false`), and the runner raises inotify limits,
+  so a lane never drives two heavy control planes into resource/inotify
+  exhaustion. The PR gate is a single
   `e2e` pending status (`register-e2e-pending.yml`) that a maintainer's `/test`
   resolves; `authorize-e2e.yml` then dispatches the run **on the PR branch**
   (default-branch fallback for fork PRs), and the run posts the per-lane

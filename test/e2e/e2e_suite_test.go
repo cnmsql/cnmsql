@@ -21,6 +21,16 @@ const trueEnvValue = "true"
 // shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 var shouldCleanupCertManager = false
 
+// sharedSetupEnabled reports whether the suite should deploy the shared operator,
+// MinIO and cert-manager on the suite cluster. Disruptive lanes set
+// E2E_SHARED_SETUP=false because every disruptive spec provisions its OWN
+// ephemeral cluster — so deploying them on the shared cluster is unused overhead,
+// and running a second cluster's control plane alongside it on the single runner
+// risks resource/inotify exhaustion. Defaults to enabled when unset.
+func sharedSetupEnabled() bool {
+	return os.Getenv("E2E_SHARED_SETUP") != "false"
+}
+
 // TestE2E runs the e2e test suite to validate the solution in an isolated environment.
 // The default setup requires Kind and CertManager.
 //
@@ -40,6 +50,12 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	doSuiteSetup()
 	return nil
 }, func([]byte) {
+	// Disruptive lanes deploy no shared operator (each spec provisions its own
+	// cluster), so there is nothing to wait for here.
+	if !sharedSetupEnabled() {
+		return
+	}
+
 	By("waiting for the operator to be ready")
 	_, err := kubectl("wait", "deployment", "-l", "control-plane=controller-manager",
 		"-n", namespace, "--for=condition=Available", "--timeout="+e2eTimeout(5*time.Minute).String())
@@ -71,8 +87,10 @@ spec:
 var _ = SynchronizedAfterSuite(func() {
 	// Per-process teardown (no-op — each spec handles its own namespace cleanup).
 }, func() {
-	teardownSharedMinio()
-	undeployOperator()
+	if sharedSetupEnabled() {
+		teardownSharedMinio()
+		undeployOperator()
+	}
 	teardownCertManager()
 	restoreManagerKustomization()
 })
@@ -106,9 +124,16 @@ func doSuiteSetup() {
 	}
 
 	configureKubectlKubeRC()
-	setupCertManager()
-	deployOperator()
-	deploySharedMinio()
+
+	// Disruptive lanes (E2E_SHARED_SETUP=false) skip the shared operator/MinIO:
+	// every disruptive spec provisions its own ephemeral cluster, so this is pure
+	// overhead and a second running control plane on the single runner. Instance
+	// images are still pulled above so those dedicated clusters can load them.
+	if sharedSetupEnabled() {
+		setupCertManager()
+		deployOperator()
+		deploySharedMinio()
+	}
 }
 
 // managerKustomizationPath is the operator overlay that `make deploy` mutates via

@@ -80,14 +80,16 @@ mysql_rows = sorted(load_json(MYSQL_VERSIONS_FILE), key=_server_version_key, rev
 MYSQL = VersionList([row["version"] for row in mysql_rows])
 
 
-def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False):
+def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, shared_setup=True):
     """One matrix entry. The workflow maps these fields onto the env vars the
     suite and hack/e2e.sh consume (GINKGO_LABEL_FILTER, E2E_MYSQL_VERSION,
-    GINKGO_PROCS, E2E_MAJOR_UPGRADE).
+    GINKGO_PROCS, E2E_MAJOR_UPGRADE, E2E_SHARED_SETUP).
 
     Every gate lane excludes `flaky`: quarantined specs never block a merge. They
     are exercised by the non-blocking flake-hunt workflow (e2e-flake-hunt.yml)
-    instead. See design/025-e2e-testing-overhaul.md."""
+    instead. shared_setup=False skips deploying the shared operator/MinIO for lanes
+    whose every spec provisions its own ephemeral cluster (so the runner never runs
+    two heavy clusters at once). See design/025-e2e-testing-overhaul.md."""
     return {
         "id": lane_id,
         "label_filter": f"({label_filter}) && !flaky",
@@ -95,6 +97,7 @@ def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False):
         "mysql_version": mysql_version,
         "procs": procs,
         "major_upgrade": major_upgrade,
+        "shared_setup": shared_setup,
     }
 
 
@@ -103,12 +106,15 @@ def build_lanes():
     lanes = [
         lane("core-feature", "(core || feature) && !heavy", latest, 3),
         lane("heavy", "heavy", latest, 1),
-        # Disruptive operator-lifecycle specs (each provisions its own ephemeral
-        # cluster); major-upgrade and node-failure get their own lanes below.
-        lane("operator-upgrade", "disruptive && !major-upgrade && !node-failure", latest, 1),
-        # major-upgrade co-loads every supported series image (E2E_MAJOR_UPGRADE).
+        # Disruptive operator-lifecycle specs each provision their own ephemeral
+        # cluster, so the shared operator/MinIO is not needed (shared_setup=False).
+        lane("operator-upgrade", "disruptive && !major-upgrade && !node-failure", latest, 1,
+             shared_setup=False),
+        # major-upgrade runs on the shared cluster and co-loads every supported
+        # series image (E2E_MAJOR_UPGRADE), so it keeps the shared setup.
         lane("major-upgrade", "major-upgrade", latest, 1, major_upgrade=True),
-        lane("node-failure", "node-failure", latest, 1),
+        # node-failure provisions its own multi-node cluster (shared_setup=False).
+        lane("node-failure", "node-failure", latest, 1, shared_setup=False),
     ]
     # Only version-sensitive specs run across the whole MySQL axis.
     for mysql_version in MYSQL:
