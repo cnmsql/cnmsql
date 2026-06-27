@@ -80,7 +80,8 @@ For each instance, the operator reconciles stable Kubernetes objects with
 predictable names:
 
 - Pod: `<cluster>-1`, `<cluster>-2`, and so on.
-- PVC: one data volume per instance, retained during scale-down.
+- PVC: one data volume per instance, retained during scale-down. See
+  [Storage](./storage.md) for configuration and resizing.
 - Headless per-instance Service: stable DNS for instance-to-instance traffic.
 - Secrets: root, application, replication, backup, and control credentials when
   the user does not provide them.

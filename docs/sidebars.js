@@ -29,6 +29,11 @@ const sidebars = {
       label: 'Instance Images and Versions',
     },
     {
+      type: 'doc',
+      id: 'storage',
+      label: 'Storage',
+    },
+    {
       type: 'html',
       value: '<small class="sidebar-section-label">Core Design</small>',
       defaultStyle: true,
