@@ -37,9 +37,14 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 	// extend the grace period by the handoff budget to keep mysqld's stop window
 	// intact. Replicas return from preStop immediately, so the extension only ever
 	// matters for the primary.
+	//
+	// A single-instance cluster has no replica to hand off to, so its sole primary
+	// could never be demoted: the hook would only ever burn its whole timeout on a
+	// teardown. Skip it entirely there. The handoff budget is small (a switchover
+	// takes seconds), so a stuck preStop on a multi-instance teardown is bounded.
 	var mysqlLifecycle *corev1.Lifecycle
-	if cluster.IsSwitchoverOnDrainEnabled() {
-		handoff := int64(cluster.GetMaxStopDelay())
+	if cluster.IsSwitchoverOnDrainEnabled() && plan.Instances > 1 {
+		handoff := switchoverHandoffSeconds
 		gracePeriod += handoff
 		mysqlLifecycle = &corev1.Lifecycle{
 			PreStop: &corev1.LifecycleHandler{

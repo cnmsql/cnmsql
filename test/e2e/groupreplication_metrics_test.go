@@ -38,7 +38,6 @@ var _ = Describe("Group Replication operator metrics", Ordered, func() {
 		By("creating a single-member Group Replication cluster the operator will report on")
 		applyManifest(cluster, grClusterManifest(cluster, instances))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 15*time.Minute)

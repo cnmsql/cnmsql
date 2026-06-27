@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -34,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -410,6 +412,68 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	})
 	t.Run("secret volumes", func(t *testing.T) {
 		testSecretVolumes(t, &spec)
+	})
+}
+
+func TestPodSpecSwitchoverPreStopHook(t *testing.T) {
+	t.Parallel()
+
+	maxStop := int64(baseCluster().GetMaxStopDelay())
+
+	t.Run("single instance has no blocking preStop hook", func(t *testing.T) {
+		t.Parallel()
+		cluster := baseCluster() // Instances: 1, switchover-on-drain default-enabled
+		plan := testPlan()       // plan.Instances: 1
+		spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+
+		if lc := spec.Containers[0].Lifecycle; lc != nil {
+			t.Fatalf("single-instance Pod must not get a preStop hook (it can never be demoted): %+v", lc)
+		}
+		// Grace period stays at the bare mysqld stop budget — no handoff extension.
+		if got := *spec.TerminationGracePeriodSeconds; got != maxStop {
+			t.Fatalf("grace period = %d, want %d (no handoff extension)", got, maxStop)
+		}
+	})
+
+	t.Run("multi instance gets a bounded preStop handoff", func(t *testing.T) {
+		t.Parallel()
+		cluster := baseCluster()
+		cluster.Spec.Instances = 3
+		plan := testPlan()
+		plan.Instances = 3
+		spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+
+		lc := spec.Containers[0].Lifecycle
+		if lc == nil || lc.PreStop == nil || lc.PreStop.Exec == nil {
+			t.Fatalf("multi-instance Pod must carry a preStop exec hook, got %+v", lc)
+		}
+		cmd := strings.Join(lc.PreStop.Exec.Command, " ")
+		if !strings.Contains(cmd, "instance prestop") {
+			t.Fatalf("preStop command = %q, want the prestop handoff", cmd)
+		}
+		// The handoff timeout must be the small fixed budget, not the full stop delay.
+		wantTimeout := fmt.Sprintf("--timeout=%ds", switchoverHandoffSeconds)
+		if !strings.Contains(cmd, wantTimeout) {
+			t.Fatalf("preStop command = %q, want %q", cmd, wantTimeout)
+		}
+		// Grace period is extended only by the small handoff budget.
+		if got, want := *spec.TerminationGracePeriodSeconds, maxStop+switchoverHandoffSeconds; got != want {
+			t.Fatalf("grace period = %d, want %d (stop delay + handoff)", got, want)
+		}
+	})
+
+	t.Run("disabling switchover-on-drain drops the hook", func(t *testing.T) {
+		t.Parallel()
+		cluster := baseCluster()
+		cluster.Spec.Instances = 3
+		cluster.Spec.EnableSwitchoverOnDrain = ptr.To(false)
+		plan := testPlan()
+		plan.Instances = 3
+		spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+
+		if lc := spec.Containers[0].Lifecycle; lc != nil {
+			t.Fatalf("disabled switchover-on-drain must not attach a preStop hook: %+v", lc)
+		}
 	})
 }
 

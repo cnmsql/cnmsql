@@ -264,6 +264,6 @@ spec:
         command: ["/bin/sh", "-c", "sleep infinity"]
         env:
         - name: MC_HOST_local
-          value: http://minioadmin:minioadmin@minio.%[1]s.svc:9000
-`, testNamespace)
+          value: http://minioadmin:minioadmin@minio.%[2]s.svc:9000
+`, testNamespace, minioNamespace)
 }

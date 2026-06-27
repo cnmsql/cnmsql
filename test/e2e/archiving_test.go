@@ -144,16 +144,16 @@ func archivingVersionSpecs(version string) {
 			primary := clusterPrimary(cluster)
 
 			By("scaling MinIO down to simulate an object-store outage")
-			_, err := kubectl("scale", "deployment/minio", "-n", testNamespace, "--replicas=0")
+			_, err := kubectl("scale", "deployment/minio", "-n", minioNamespace, "--replicas=0")
 			Expect(err).NotTo(HaveOccurred(), "Failed to scale MinIO down")
 			DeferCleanup(func() {
-				_, _ = kubectl("scale", "deployment/minio", "-n", testNamespace, "--replicas=1")
-				_, _ = kubectl("wait", "deployment/minio", "-n", testNamespace,
+				_, _ = kubectl("scale", "deployment/minio", "-n", minioNamespace, "--replicas=1")
+				_, _ = kubectl("wait", "deployment/minio", "-n", minioNamespace,
 					"--for=condition=Available", "--timeout=3m")
 			})
 			By("waiting for MinIO to have no available replicas")
 			Eventually(func(g Gomega) {
-				ready, err := kubectl("get", "deployment/minio", "-n", testNamespace,
+				ready, err := kubectl("get", "deployment/minio", "-n", minioNamespace,
 					"-o", "jsonpath={.status.availableReplicas}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(ready).To(BeEmpty(), "MinIO still has available replicas")
@@ -180,9 +180,9 @@ func archivingVersionSpecs(version string) {
 			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("restoring MinIO and waiting for it to come back")
-			_, err = kubectl("scale", "deployment/minio", "-n", testNamespace, "--replicas=1")
+			_, err = kubectl("scale", "deployment/minio", "-n", minioNamespace, "--replicas=1")
 			Expect(err).NotTo(HaveOccurred(), "Failed to scale MinIO back up")
-			_, err = kubectl("wait", "deployment/minio", "-n", testNamespace,
+			_, err = kubectl("wait", "deployment/minio", "-n", minioNamespace,
 				"--for=condition=Available", "--timeout=3m")
 			Expect(err).NotTo(HaveOccurred(), "MinIO did not come back")
 

@@ -266,7 +266,6 @@ var _ = Describe("MySQL major-version upgrade rollout", Ordered, Label("major-up
 		By("bootstrapping a three-member 8.0 Group Replication cluster")
 		applyManifest(cluster, majorUpgradeGRClusterManifest(cluster, ns, catalog, "8.0"))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteManifest(catalog, majorUpgradeCatalogManifest(catalog, ns))
 			deleteTestNamespace(ns, prevNS)
 		})

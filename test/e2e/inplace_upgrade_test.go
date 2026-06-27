@@ -36,7 +36,6 @@ var _ = Describe("In-place instance manager upgrade", Ordered, func() {
 		manifest = strings.Replace(manifest, "\n  storage:", "\n  failoverDelay: 60\n  storage:", 1)
 		applyManifest(cluster, manifest)
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 20*time.Minute)

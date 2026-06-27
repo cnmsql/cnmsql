@@ -141,6 +141,13 @@ const (
 	metricsUser     = "cnmsql_metrics"
 	mysqldBinary    = "/usr/sbin/mysqld"
 
+	// switchoverHandoffSeconds bounds how long a draining primary's preStop hook
+	// blocks waiting for the operator to switch its role away. A switchover
+	// completes in seconds, so this is a small budget rather than the full
+	// MaxStopDelay: it caps the worst case (a teardown, where no demotion ever
+	// comes) instead of letting the Pod hang for the whole stop delay.
+	switchoverHandoffSeconds = int64(30)
+
 	// provisioningRequeue paces reconciles while the instance is still coming up.
 	provisioningRequeue = 10 * time.Second
 	// readyResync re-polls the instance manager once the cluster is ready so the

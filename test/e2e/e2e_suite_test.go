@@ -79,6 +79,7 @@ spec:
 var _ = SynchronizedAfterSuite(func() {
 	// Per-process teardown (no-op — each spec handles its own namespace cleanup).
 }, func() {
+	teardownSharedMinio()
 	undeployOperator()
 	teardownCertManager()
 })
@@ -102,6 +103,7 @@ func doSuiteSetup() {
 	configureKubectlKubeRC()
 	setupCertManager()
 	deployOperator()
+	deploySharedMinio()
 }
 
 // pullAndLoadInstanceImage pulls this version's published slim instance image

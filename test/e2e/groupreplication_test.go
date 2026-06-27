@@ -54,7 +54,6 @@ var _ = Describe("Group Replication single-member", Ordered, func() {
 		By("creating a single-member Group Replication cluster")
 		applyManifest(cluster, grClusterManifest(cluster, instances))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 15*time.Minute)
@@ -141,7 +140,6 @@ var _ = Describe("Group Replication multi-member", Ordered, func() {
 		By("creating a 3-member Group Replication cluster")
 		applyManifest(cluster, grClusterManifest(cluster, instances))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 20*time.Minute)

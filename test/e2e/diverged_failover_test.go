@@ -32,7 +32,6 @@ var _ = Describe("Diverged replica failover guard", Ordered, func() {
 		By("creating a 2-instance async cluster")
 		applyManifest(cluster, basicClusterManifest(cluster, instances))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 20*time.Minute)

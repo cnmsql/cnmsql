@@ -27,7 +27,6 @@ var _ = Describe("Failover rejoin", Ordered, func() {
 		By("creating a 3-instance cluster")
 		applyManifest(cluster, basicClusterManifest(cluster, instances))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 20*time.Minute)

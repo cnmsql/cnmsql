@@ -48,6 +48,10 @@ const defaultTestNamespace = "default"
 // test group sets this to its own namespace before creating resources.
 var testNamespace = defaultTestNamespace
 
+// minioNamespace is the shared namespace where MinIO runs once for the whole
+// suite, avoiding per-Describe deploy/teardown cycles.
+const minioNamespace = "e2e-minio"
+
 // minioBucket is the bucket pre-created in the in-cluster MinIO and targeted by
 // the backup/recovery specs.
 const minioBucket = "cnmsql-backups"
@@ -79,9 +83,18 @@ func generateTestNamespace(prefix string) string {
 // createTestNamespace creates a Kubernetes namespace for test resources and
 // returns the name. The caller is responsible for calling deleteTestNamespace.
 // It sets testNamespace to the result so downstream helpers target it.
+//
+// Before creating, it deletes any stale namespace left behind from a previous
+// run. CRs are deleted first, then Pods with a 10s grace period so mysqld gets
+// a brief SIGTERM for clean shutdown before the namespace is deleted.
 func createTestNamespace(prefix string) string {
 	ns := generateTestNamespace(prefix)
 	By(fmt.Sprintf("creating test namespace %s", ns))
+	_, _ = kubectl("delete",
+		"clusters,backups,scheduledbackups,databases,databaseusers,imagecatalogs",
+		"--all", "-n", ns, "--ignore-not-found", "--wait=false")
+	_, _ = kubectl("delete", "pods", "--all", "-n", ns, "--ignore-not-found",
+		"--grace-period=10", "--wait=false")
 	_, _ = kubectl("delete", "ns", ns, "--ignore-not-found", "--wait=true", "--timeout=120s")
 	_, err := kubectl("create", "ns", ns)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create namespace %s", ns)
@@ -91,8 +104,19 @@ func createTestNamespace(prefix string) string {
 
 // deleteTestNamespace removes a Kubernetes namespace and waits for it to fully
 // terminate. It restores the testNamespace global to the caller-provided prev.
+//
+// Managed CRs are deleted first with --wait=false so the operator starts tearing
+// down finalizer chains. Pods are then deleted with --grace-period=10, which
+// overrides the Pod's 3600s terminationGracePeriodSeconds and caps the preStop
+// hook + SIGTERM + SIGKILL sequence to 10s — fast enough for e2e cleanup, but
+// gives mysqld a few seconds of SIGTERM for a clean flush before the SIGKILL.
 func deleteTestNamespace(ns, prev string) {
 	By(fmt.Sprintf("deleting test namespace %s", ns))
+	_, _ = kubectl("delete",
+		"clusters,backups,scheduledbackups,databases,databaseusers,imagecatalogs",
+		"--all", "-n", ns, "--ignore-not-found", "--wait=false")
+	_, _ = kubectl("delete", "pods", "--all", "-n", ns, "--ignore-not-found",
+		"--grace-period=10", "--wait=false")
 	_, _ = kubectl("delete", "ns", ns, "--ignore-not-found", "--wait=true", "--timeout=120s")
 	testNamespace = prev
 }
@@ -352,35 +376,68 @@ func mysqlExec(pod, user, password, database, sql string) (string, error) {
 	return kubectl(args...)
 }
 
-// setupMinio deploys a single-node MinIO, waits for a bucket-creation Job to
-// finish, and creates the credentials Secret referenced by object stores. It is
-// idempotent enough to run once per backup-focused Describe.
-func setupMinio() {
-	By("deploying in-cluster MinIO and credentials")
-	applyManifest("minio", minioManifest())
-
-	By("waiting for MinIO to become available")
-	_, err := kubectl("wait", "deployment/minio", "-n", testNamespace,
-		"--for=condition=Available", "--timeout=3m")
-	Expect(err).NotTo(HaveOccurred(), "MinIO did not become available")
-
-	By("waiting for the MinIO bucket-creation Job to complete")
-	_, err = kubectl("wait", "job/minio-mkbucket", "-n", testNamespace,
-		"--for=condition=Complete", "--timeout=3m")
-	Expect(err).NotTo(HaveOccurred(), "MinIO bucket-creation Job did not complete")
+// minioEndpoint returns the HTTP endpoint for the shared in-cluster MinIO, which
+// runs once in minioNamespace and is reachable from every test namespace.
+func minioEndpoint() string {
+	return fmt.Sprintf("http://minio.%s.svc:9000", minioNamespace)
 }
 
-// teardownMinio removes the MinIO deployment and its supporting objects.
-// It waits for the PVC to be fully deleted so the next run doesn't hit
-// "persistentvolumeclaim is being deleted" scheduling errors.
+// deploySharedMinio creates the shared MinIO namespace and deploys a single-node
+// MinIO instance once for the whole suite. This avoids per-Describe deploy/teardown
+// cycles (each ~6 minutes), saving significant wall-clock time in parallel runs
+// since every Describe that needs an object store stands up and tears down its own
+// MinIO instance.
+func deploySharedMinio() {
+	By("creating shared MinIO namespace")
+	_, _ = kubectl("create", "ns", minioNamespace)
+
+	By("deploying shared in-cluster MinIO")
+	applyManifest("minio-shared", sharedMinioManifest())
+
+	By("waiting for shared MinIO to become available")
+	_, err := kubectl("wait", "deployment/minio", "-n", minioNamespace,
+		"--for=condition=Available", "--timeout=3m")
+	Expect(err).NotTo(HaveOccurred(), "Shared MinIO did not become available")
+
+	By("waiting for the shared MinIO bucket-creation Job to complete")
+	_, err = kubectl("wait", "job/minio-mkbucket", "-n", minioNamespace,
+		"--for=condition=Complete", "--timeout=3m")
+	Expect(err).NotTo(HaveOccurred(), "Shared MinIO bucket-creation Job did not complete")
+}
+
+// teardownSharedMinio removes the shared MinIO namespace and all its resources.
+func teardownSharedMinio() {
+	_, _ = kubectl("delete", "ns", minioNamespace, "--ignore-not-found", "--wait=false")
+}
+
+// ensureMinioCreds creates the minio-creds Secret in the current testNamespace
+// so Cluster CRs can reference it locally. The shared MinIO runs in minioNamespace
+// and this Secret mirrors its credentials in each test namespace.
+func ensureMinioCreds() {
+	_, _ = kubectl("delete", "secret", minioCredsSecret, "-n", testNamespace, "--ignore-not-found")
+	_, err := kubectl("create", "secret", "generic", minioCredsSecret, "-n", testNamespace,
+		"--from-literal=ACCESS_KEY_ID=minioadmin",
+		"--from-literal=SECRET_ACCESS_KEY=minioadmin")
+	Expect(err).NotTo(HaveOccurred(), "Failed to create %s secret in %s", minioCredsSecret, testNamespace)
+}
+
+// setupMinio ensures the shared MinIO is ready and creates the credentials Secret
+// in the current test namespace. The shared MinIO is deployed once by the suite,
+// so this is a fast idempotent operation per Describe.
+func setupMinio() {
+	ensureMinioCreds()
+}
+
+// teardownMinio removes the per-namespace credentials Secret. The shared MinIO
+// instance survives across Describes and is torn down by SynchronizedAfterSuite.
 func teardownMinio() {
-	deleteManifest("minio", minioManifest())
-	_, _ = kubectl("delete", "pvc", "minio-data", "-n", testNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s")
+	_, _ = kubectl("delete", "secret", minioCredsSecret, "-n", testNamespace, "--ignore-not-found")
 }
 
 // seedObjectStoreMarker writes a small object at the given key in the MinIO
 // bucket via a one-shot mc Job and waits for it to complete. It is used to make
-// a destination prefix non-empty deterministically.
+// a destination prefix non-empty deterministically. The Job targets the shared
+// MinIO in minioNamespace.
 func seedObjectStoreMarker(key string) {
 	name := "seed-" + strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(key)
 	manifest := fmt.Sprintf(`apiVersion: batch/v1
@@ -400,9 +457,9 @@ spec:
         - sh
         - -c
         - |
-          until mc alias set local http://minio.%[2]s.svc:9000 minioadmin minioadmin; do sleep 2; done
-          echo cnmsql-guard-marker | mc pipe local/%[3]s/%[4]s
-`, name, testNamespace, minioBucket, key)
+          until mc alias set local %[3]s minioadmin minioadmin; do sleep 2; done
+          echo cnmsql-guard-marker | mc pipe local/%[4]s/%[5]s
+`, name, testNamespace, minioEndpoint(), minioBucket, key)
 	applyManifest(name, manifest)
 	DeferCleanup(func() {
 		deleteManifest(name, manifest)
@@ -413,12 +470,12 @@ spec:
 }
 
 // objectStoreYAML returns the indented spec.backup.objectStore block pointing at
-// the in-cluster MinIO. indent is the leading whitespace for the `objectStore`
-// key so the snippet can be embedded under spec.backup.
+// the shared in-cluster MinIO. indent is the leading whitespace for the
+// `objectStore` key so the snippet can be embedded under spec.backup.
 func objectStoreYAML(indent string) string {
 	lines := []string{
 		"objectStore:",
-		"  endpoint: http://minio." + testNamespace + ".svc:9000",
+		"  endpoint: " + minioEndpoint(),
 		"  region: us-east-1",
 		"  bucket: " + minioBucket,
 		"  forcePathStyle: true",
@@ -533,4 +590,15 @@ spec:
           mc mb --ignore-existing local/%[3]s
           mc ls local
 `, testNamespace, minioCredsSecret, minioBucket)
+}
+
+// sharedMinioManifest returns the MinIO manifest for the shared namespace. It is
+// identical to minioManifest but uses minioNamespace instead of testNamespace so
+// the suite deploys MinIO once in a dedicated namespace reachable from all tests.
+func sharedMinioManifest() string {
+	m := minioManifest()
+	// Replace every occurrence of the per-test namespace with the shared one.
+	// minioManifest uses %[1]s=testNamespace — the formatted string contains the
+	// actual namespace name, so we do a plain string replace.
+	return strings.ReplaceAll(m, testNamespace, minioNamespace)
 }

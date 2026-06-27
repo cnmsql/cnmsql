@@ -36,7 +36,6 @@ var _ = Describe("Group Replication fencing and quorum guards", Ordered, func() 
 		By("creating a 3-member Group Replication cluster")
 		applyManifest(cluster, grClusterManifest(cluster, instances))
 		DeferCleanup(func() {
-			deleteCluster(cluster)
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, instances, 20*time.Minute)
