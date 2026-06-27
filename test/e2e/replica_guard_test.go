@@ -89,27 +89,28 @@ var _ = Describe("Replica creation guard", Serial, Ordered, func() {
 		By("requesting scale-up to 2 instances while the primary is down")
 		scaleInstances(cluster, 2)
 
-		By("waiting for the primary to actually become unavailable")
+		By("verifying the new replica is not created while the primary is not ready")
 		// kubectl delete --wait=false returns before the kubelet has updated the
 		// Pod's Ready condition, so the just-deleted primary still reports Ready=True
-		// for a moment. Observe it actually go down before checking the guard,
-		// otherwise the guard loop below would see the stale Ready=True and exit
-		// immediately without ever exercising the unavailable window.
-		Eventually(func() bool {
-			return instancePodReadyE2E(primary)
-		}, e2eTimeout(2*time.Minute), 2*time.Second).Should(BeFalse(),
-			"primary %s never became unavailable after its Pod was deleted", primary)
-
-		By("verifying the new replica is not created while the primary is not ready")
+		// for a moment. A shared single loop that waits for the primary to
+		// go down AND asserts the guard, so the unavailable window cannot be
+		// missed between two separate phases.
 		sawPrimaryDown := false
+		sawPrimaryReady := false
 		deadline := time.Now().Add(e2eTimeout(6 * time.Minute))
 		for time.Now().Before(deadline) {
-			if instancePodReadyE2E(primary) {
+			ready := instancePodReadyE2E(primary)
+			if ready && !sawPrimaryReady {
+				sawPrimaryReady = true
+			}
+			if !ready && sawPrimaryReady {
+				sawPrimaryDown = true
+				Expect(podExists(replica)).To(BeFalse(),
+					"replica %s must not be created while the primary %s is unavailable", replica, primary)
+			}
+			if ready && sawPrimaryDown {
 				break
 			}
-			sawPrimaryDown = true
-			Expect(podExists(replica)).To(BeFalse(),
-				"replica %s must not be created while the primary %s is unavailable", replica, primary)
 			time.Sleep(3 * time.Second)
 		}
 		Expect(sawPrimaryDown).To(BeTrue(),
