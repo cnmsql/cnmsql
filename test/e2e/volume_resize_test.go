@@ -68,6 +68,47 @@ var _ = Describe("Volume resize", Ordered, func() {
 		}, 30*time.Second, 5*time.Second).Should(Equal(uid),
 			"instance Pod %s was recycled during an online resize", instance)
 	})
+
+	It("recycles the Pod to finish a resize when in-use expansion is disabled", func() {
+		const (
+			cluster   = "resize-offline"
+			instances = 2
+		)
+		// Target a replica so the primary stays writable through the roll, exercising
+		// the replica-first ordering of the resize roll.
+		replica := cluster + "-2"
+
+		By("creating a cluster with resizeInUseVolumes disabled")
+		applyManifest(cluster, offlineResizeClusterManifest(cluster, instances))
+		DeferCleanup(func() {
+			deleteCluster(cluster)
+		})
+		expectClusterReady(cluster, instances, 20*time.Minute)
+
+		uid := podUID(replica)
+		Expect(uid).NotTo(BeEmpty(), "replica Pod %s has no UID", replica)
+
+		// The Kind default backend has no resizer, so a node-side resize never becomes
+		// pending on its own. Inject the condition the operator keys on
+		// (FileSystemResizePending) — the same signal a real offline-expand backend
+		// sets — to drive the recycle. We re-inject until the roll starts (in case a
+		// controller strips it) and clear it the moment the roll is observed, so the
+		// operator completes exactly one recycle instead of looping.
+		By("marking the replica PVC as pending a node-side resize and waiting for the recycle")
+		Eventually(func() bool {
+			setPVCResizePending(replica)
+			return podTerminatingOrReplaced(replica, uid)
+		}, e2eTimeout(5*time.Minute), 2*time.Second).Should(BeTrue(),
+			"operator did not recycle replica Pod %s after a pending resize", replica)
+		clearPVCConditions(replica)
+
+		By("verifying the replica comes back with a fresh Pod and the cluster converges")
+		Eventually(func() string {
+			return podUID(replica)
+		}, e2eTimeout(5*time.Minute), 5*time.Second).ShouldNot(Or(Equal(uid), BeEmpty()),
+			"replica Pod %s was not recreated", replica)
+		expectClusterReady(cluster, instances, 20*time.Minute)
+	})
 })
 
 // createExpandableStorageClass provisions a StorageClass that allows volume
@@ -153,4 +194,75 @@ func podUID(name string) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// offlineResizeClusterManifest is a Cluster whose storage backend cannot expand a
+// mounted volume (resizeInUseVolumes: false), so the operator must recycle Pods
+// to finish a resize. maxStopDelay is lowered so the recycle is quick.
+func offlineResizeClusterManifest(name string, instances int) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  instances: %[3]d
+  imageName: %[4]s
+  maxStopDelay: 30
+  storage:
+    size: 2Gi
+    resizeInUseVolumes: false
+%[5]s
+  mysql:
+    binlogFormat: ROW
+%[6]s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+`, name, testNamespace, instances, instanceImage, e2eInstanceResources, e2eMySQLParameters)
+}
+
+// setPVCResizePending injects a FileSystemResizePending condition into a PVC's
+// status — the signal a real offline-expand backend sets when a node-side
+// filesystem resize is waiting on the volume being remounted. It patches the
+// status subresource so the operator sees the pending resize.
+func setPVCResizePending(pvcName string) {
+	GinkgoHelper()
+	const patch = `{"status":{"conditions":[{` +
+		`"type":"FileSystemResizePending","status":"True",` +
+		`"lastProbeTime":"2026-01-01T00:00:00Z","lastTransitionTime":"2026-01-01T00:00:00Z",` +
+		`"reason":"E2EInjected","message":"injected by e2e to exercise the offline resize roll"}]}}`
+	_, _ = kubectl("patch", "pvc", pvcName, "-n", testNamespace,
+		"--subresource=status", "--type=merge", "-p", patch)
+}
+
+// clearPVCConditions removes any injected conditions from a PVC's status so the
+// operator stops treating the resize as pending and does not roll the Pod again.
+func clearPVCConditions(pvcName string) {
+	GinkgoHelper()
+	_, _ = kubectl("patch", "pvc", pvcName, "-n", testNamespace,
+		"--subresource=status", "--type=merge", "-p", `{"status":{"conditions":[]}}`)
+}
+
+// podTerminatingOrReplaced reports whether the named Pod has either started
+// terminating (a DeletionTimestamp is set) or already been recreated with a
+// different UID — i.e. the operator has begun recycling it.
+func podTerminatingOrReplaced(name, originalUID string) bool {
+	out, err := kubectl("get", "pod", name, "-n", testNamespace,
+		"-o", "jsonpath={.metadata.uid}{'|'}{.metadata.deletionTimestamp}")
+	if err != nil {
+		// A NotFound (Pod deleted, not yet recreated) is part of the recycle.
+		return true
+	}
+	parts := strings.SplitN(strings.TrimSpace(out), "|", 2)
+	uid := parts[0]
+	deletionTimestamp := ""
+	if len(parts) == 2 {
+		deletionTimestamp = parts[1]
+	}
+	if uid == "" {
+		return true
+	}
+	return uid != originalUID || deletionTimestamp != ""
 }
