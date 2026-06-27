@@ -1007,6 +1007,14 @@ type ClusterStatus struct {
 	// +optional
 	ReplicationBrokenInstances []string `json:"replicationBrokenInstances,omitempty"`
 
+	// ResizingPVC lists the PVCs whose storage is currently being expanded — the
+	// volume-level resize or the node-side filesystem grow has not yet completed.
+	// For a backend that cannot expand a volume in use (storage.resizeInUseVolumes
+	// false) a name lingers here until the operator recycles the owning Pod and the
+	// fresh mount finishes the resize.
+	// +optional
+	ResizingPVC []string `json:"resizingPVC,omitempty"`
+
 	// PrimaryFailingSince records when the current primary first became
 	// unreachable. It is used to enforce spec.failoverDelay before an automatic
 	// failover, and is cleared once the primary is healthy again.

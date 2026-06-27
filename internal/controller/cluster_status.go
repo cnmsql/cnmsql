@@ -73,6 +73,11 @@ type observedCluster struct {
 	// repeated restarts). They mark a degradation independent of whether the
 	// cluster ever finished provisioning.
 	FailedInstances []string
+	// ResizingPVCs are the instance PVC names whose storage expansion has not yet
+	// completed (a Resizing or FileSystemResizePending condition is set). Surfaced
+	// for observability; for an offline-expand backend a name persists until the
+	// operator recycles the Pod and the resize finishes on remount.
+	ResizingPVCs []string
 	// ReplicationBrokenInstances are reachable replicas whose replication has
 	// aborted with a recorded error (a stopped IO or SQL thread, e.g. a
 	// duplicate-key conflict). Unlike a diverged replica — which is caught by GTID
@@ -107,6 +112,17 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	for i := 1; i <= plan.Instances; i++ {
 		inst := plan.instanceFor(cluster, i)
+		// Check the data PVC independently of the Pod: an offline-expand resize
+		// lingers precisely while the volume is detached (no Pod), so gating this on
+		// the Pod existing would hide the case the field exists to surface.
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err == nil {
+			if pvcResizePending(pvc) {
+				observed.ResizingPVCs = append(observed.ResizingPVCs, pvc.Name)
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return observedCluster{}, err
+		}
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -391,6 +407,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	latest.Status.FencedInstances = observed.FencedInstances
 	latest.Status.FailedInstances = observed.FailedInstances
 	latest.Status.ReplicationBrokenInstances = observed.ReplicationBrokenInstances
+	latest.Status.ResizingPVC = observed.ResizingPVCs
 	// EstablishedAt is sticky: record it the first time the cluster is fully ready
 	// (or backfill it for a cluster whose persisted phase already implies it was
 	// operational, for upgrades that predate this field) and never clear it. It is

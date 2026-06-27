@@ -190,3 +190,68 @@ func TestRollForResizeMissingPodIsNoError(t *testing.T) {
 		t.Fatal("a missing Pod must not report a roll")
 	}
 }
+
+func TestObserveSurfacesResizingPVC(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	inst := testPlan().instanceFor(cluster, 1)
+	pod := readyPod(cluster, inst.Name, rolePrimary)
+	pvc := existingPVC(cluster, inst.PVCName, "1Gi", true)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, pod, pvc).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: readyStatusClient{},
+	}
+
+	observed, err := reconciler.observe(ctx, cluster, testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{inst.PVCName}; len(observed.ResizingPVCs) != 1 || observed.ResizingPVCs[0] != want[0] {
+		t.Fatalf("ResizingPVCs = %v, want %v", observed.ResizingPVCs, want)
+	}
+
+	if err := reconciler.patchStatus(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.ResizingPVC) != 1 || got.Status.ResizingPVC[0] != inst.PVCName {
+		t.Fatalf("Status.ResizingPVC = %v, want [%s]", got.Status.ResizingPVC, inst.PVCName)
+	}
+}
+
+func TestObserveNoResizingPVCWhenSettled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	inst := testPlan().instanceFor(cluster, 1)
+	pod := readyPod(cluster, inst.Name, rolePrimary)
+	pvc := existingPVC(cluster, inst.PVCName, "1Gi", false)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, pod, pvc).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: readyStatusClient{},
+	}
+
+	observed, err := reconciler.observe(ctx, cluster, testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observed.ResizingPVCs) != 0 {
+		t.Fatalf("ResizingPVCs = %v, want none", observed.ResizingPVCs)
+	}
+}

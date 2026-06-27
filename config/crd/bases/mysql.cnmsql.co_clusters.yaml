@@ -4044,6 +4044,16 @@ spec:
                 items:
                   type: string
                 type: array
+              resizingPVC:
+                description: |-
+                  ResizingPVC lists the PVCs whose storage is currently being expanded — the
+                  volume-level resize or the node-side filesystem grow has not yet completed.
+                  For a backend that cannot expand a volume in use (storage.resizeInUseVolumes
+                  false) a name lingers here until the operator recycles the owning Pod and the
+                  fresh mount finishes the resize.
+                items:
+                  type: string
+                type: array
               targetPrimary:
                 description: |-
                   TargetPrimary is the name of the instance that should become primary (used
