@@ -120,10 +120,13 @@ jobs:
 
     - name: Prepare runner
       run: |
-        # Unique cluster name per run+lane so a leftover cluster from a crashed
-        # job is never silently reused (the self-hosted runner is persistent).
-        slug="$(echo '${{ matrix.id }}' | tr 'A-Z.' 'a-z-')"
-        echo "KIND_CLUSTER=cnmsql-e2e-${GITHUB_RUN_ID}-${slug}" >> "$GITHUB_ENV"
+        # Unique cluster name per run so a leftover cluster from a crashed job is
+        # never silently reused (the self-hosted runner is persistent). The lane
+        # is NOT part of the name: lanes run sequentially on the single runner and
+        # the sweep below clears leftovers, and adding it would push the dedicated
+        # clusters' node names (<cluster>-control-plane, capped by the harness)
+        # past the 63-char hostname limit.
+        echo "KIND_CLUSTER=cnmsql-e2e-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
         # Sweep leftover cnmsql Kind clusters and reclaim disk before starting.
         for c in $(kind get clusters 2>/dev/null || true); do
           case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac

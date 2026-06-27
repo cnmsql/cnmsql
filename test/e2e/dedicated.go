@@ -111,7 +111,16 @@ func dedicatedClusterName(slug string) string {
 	if base == "" {
 		base = "cnmsql-test-e2e"
 	}
-	return base + "-" + slug
+	suffix := "-" + slug
+	// kind derives node names as "<cluster>-control-plane" (and "-worker2", …),
+	// which must stay under the 63-char RFC 1123 hostname limit. Cap the cluster
+	// name, trimming the base (never the slug, which identifies the spec) when a
+	// long CI-provided KIND_CLUSTER would otherwise overflow.
+	const maxName = 48
+	if keep := maxName - len(suffix); keep >= 0 && len(base) > keep {
+		base = base[:keep]
+	}
+	return base + suffix
 }
 
 // kindBinary returns the kind executable, honoring the KIND override the Makefile
