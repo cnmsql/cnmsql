@@ -470,22 +470,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	if len(observed.ExecutableHashByInstance) > 0 {
 		latest.Status.ExecutableHashByInstance = observed.ExecutableHashByInstance
 	}
-	if observed.ContinuousArchiving != nil {
-		healthy := archivingHealthy(observed.ContinuousArchiving)
-		reason := "Archiving"
-		message := "Continuous binlog archiving is healthy"
-		if !healthy {
-			reason = "ArchivingDegraded"
-			message = "Continuous binlog archiving is degraded: " + observed.ContinuousArchiving.LastFailureReason
-		}
-		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:               conditionContinuousArchiving,
-			Status:             conditionStatus(healthy),
-			Reason:             reason,
-			Message:            message,
-			ObservedGeneration: latest.Generation,
-		})
-	}
+	r.applyContinuousArchivingCondition(latest, observed)
 	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             conditionStatus(observed.Ready),
@@ -503,19 +488,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// Capture the prior pressure state before updating the condition so the event
 	// below fires only on the transition, not on every reconcile while pressured.
 	wasStoragePressured := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStoragePressure)
-	if observed.StorageObserved {
-		reason := "BelowThreshold"
-		if observed.StoragePressure {
-			reason = "AboveThreshold"
-		}
-		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:               conditionStoragePressure,
-			Status:             conditionStatus(observed.StoragePressure),
-			Reason:             reason,
-			Message:            observed.StoragePressureReason,
-			ObservedGeneration: latest.Generation,
-		})
-	}
+	r.applyStoragePressureCondition(latest, observed)
 	// gtid_executed advances on every write, so persisting it on every reconcile
 	// would patch the Cluster status (an etcd write) continuously under load. It
 	// is purely informational — failover and switchover decisions read the live
@@ -536,6 +509,50 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"from", before.Status.Phase, "to", observed.Phase,
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
+	r.recordPhaseEvents(latest, before, observed, wasStoragePressured)
+	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+		return err
+	}
+	r.recordFailoverEvent(ctx, latest, before)
+	return nil
+}
+
+func (r *ClusterReconciler) applyContinuousArchivingCondition(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
+	if observed.ContinuousArchiving != nil {
+		healthy := archivingHealthy(observed.ContinuousArchiving)
+		reason := "Archiving"
+		message := "Continuous binlog archiving is healthy"
+		if !healthy {
+			reason = "ArchivingDegraded"
+			message = "Continuous binlog archiving is degraded: " + observed.ContinuousArchiving.LastFailureReason
+		}
+		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               conditionContinuousArchiving,
+			Status:             conditionStatus(healthy),
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: latest.Generation,
+		})
+	}
+}
+
+func (r *ClusterReconciler) applyStoragePressureCondition(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
+	if observed.StorageObserved {
+		reason := "BelowThreshold"
+		if observed.StoragePressure {
+			reason = "AboveThreshold"
+		}
+		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               conditionStoragePressure,
+			Status:             conditionStatus(observed.StoragePressure),
+			Reason:             reason,
+			Message:            observed.StoragePressureReason,
+			ObservedGeneration: latest.Generation,
+		})
+	}
+}
+
+func (r *ClusterReconciler) recordPhaseEvents(latest *mysqlv1alpha1.Cluster, before *mysqlv1alpha1.Cluster, observed observedCluster, wasStoragePressured bool) {
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
 	if observed.Phase == topology.PhaseBlocked && latest.IsGroupReplication() &&
 		latest.Status.GroupReplication != nil && !latest.Status.GroupReplication.HasQuorum {
@@ -559,9 +576,9 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 				observed.StoragePressureReason)
 		}
 	}
-	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
-		return err
-	}
+}
+
+func (r *ClusterReconciler) recordFailoverEvent(ctx context.Context, latest *mysqlv1alpha1.Cluster, before *mysqlv1alpha1.Cluster) {
 	if from, to, ok := r.topologyReconciler(latest).ObservedFailover(before, latest); ok {
 		logf.FromContext(ctx).Info("Observed Group Replication failover", "from", from, "to", to)
 		if r.Recorder != nil {
@@ -569,7 +586,6 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 				"Observed Group Replication failover from %s to %s", from, to)
 		}
 	}
-	return nil
 }
 
 // gtidPersistInterval bounds how often the operator persists the gtid_executed

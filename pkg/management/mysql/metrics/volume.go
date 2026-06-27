@@ -57,7 +57,7 @@ func NewVolumeCollector(dataDir string) *VolumeCollector {
 			"Bytes available to mysqld on the instance data volume.", nil, nil),
 		errorDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, volumeSubsystem, "scrape_error"),
-			"Whether reading the instance data volume usage failed (1 for error, 0 for success).",
+			"1 if reading instance data volume usage failed, 0 otherwise.",
 			nil, nil),
 	}
 }
