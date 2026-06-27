@@ -19,7 +19,7 @@ import (
 // via the controller-runtime registry. With a GR cluster in scope, scraping the
 // operator metrics must expose the cnmsql_cluster_gr_* family labelled with the
 // cluster, proving the collector rides the existing secure endpoint.
-var _ = Describe("Group Replication operator metrics", Ordered, func() {
+var _ = Describe("Group Replication operator metrics", Ordered, Label("feature"), func() {
 	const (
 		cluster   = "gr-metrics"
 		instances = 1

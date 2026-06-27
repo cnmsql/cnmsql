@@ -22,7 +22,7 @@ import (
 // One Percona version is exercised (the first of the archive matrix) to bound
 // runtime; the replay mechanism itself is version-agnostic and covered per
 // version by the binlog integration test.
-var _ = Describe("Point-in-time recovery", Ordered, func() {
+var _ = Describe("Point-in-time recovery", Ordered, Label("flavor"), func() {
 	const (
 		sourceCluster   = "pitr-src"
 		restoredCluster = "pitr-restored"

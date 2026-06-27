@@ -28,7 +28,7 @@ import (
 //
 // One Percona version is exercised (the first of the archive matrix) to bound
 // runtime; the replay mechanism itself is version-agnostic.
-var _ = Describe("Group Replication point-in-time recovery", Ordered, func() {
+var _ = Describe("Group Replication point-in-time recovery", Ordered, Label("flavor", "heavy"), func() {
 	const (
 		sourceCluster   = "gr-pitr-src"
 		restoredCluster = "gr-pitr-restored"

@@ -21,7 +21,7 @@ import (
 // cannot expand a mounted volume — is covered by unit tests, since reliably
 // forcing a node-side FileSystemResizePending requires a CSI driver that the
 // Kind default (rancher local-path) does not provide.
-var _ = Describe("Volume resize", Ordered, func() {
+var _ = Describe("Volume resize", Ordered, Label("feature"), func() {
 	var ns, prevNS, scName string
 
 	BeforeAll(func() {

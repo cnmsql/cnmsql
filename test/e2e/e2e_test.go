@@ -32,7 +32,7 @@ const metricsServiceName = "cnmsql-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "cnmsql-metrics-binding"
 
-var _ = Describe("Manager", Ordered, func() {
+var _ = Describe("Manager", Ordered, Label("core", "flavor"), func() {
 	var controllerPodName string
 
 	// The CRDs and controller-manager are deployed once for the whole suite in
@@ -617,13 +617,16 @@ type tokenRequest struct {
 	} `json:"status"`
 }
 
-// Serial: `make deploy` rolls the shared cluster-wide operator, which watches
-// every namespace. While it rolls it stops reconciling Clusters in other specs'
-// namespaces, so this must not run alongside any other spec.
-var _ = Describe("Operator Upgrade", Ordered, Serial, func() {
+// Serial + dedicated cluster: this spec rolls its operator with `make deploy`, so
+// it runs against its OWN ephemeral Kind cluster, never the shared suite operator
+// the rest of the suite depends on. See design/025-e2e-testing-overhaul.md.
+var _ = Describe("Operator Upgrade", Ordered, Serial, Label("disruptive"), func() {
 	const v2Image = "example.com/cnmsql:v0.0.2"
+	var dc *dedicated
 
 	BeforeAll(func() {
+		dc = provisionDedicated("op-upgrade", "")
+
 		By("building v2 manager image with a different binary hash")
 		insertE2EMarker()
 		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v2Image))
@@ -631,13 +634,13 @@ var _ = Describe("Operator Upgrade", Ordered, Serial, func() {
 		restoreE2EMarker()
 		Expect(err).NotTo(HaveOccurred(), "Failed to build v2 manager image")
 
-		By("loading v2 manager image on Kind")
-		err = utils.LoadImageToKindClusterWithName(v2Image)
-		Expect(err).NotTo(HaveOccurred(), "Failed to load v2 manager image into Kind")
+		By("loading v2 manager image into the dedicated cluster")
+		dc.loadImage(v2Image)
 	})
 
 	AfterAll(func() {
 		restoreE2EMarker()
+		dc.teardown()
 	})
 
 	It("should upgrade the operator with a serialized, primary-last rollout", func() {
@@ -839,13 +842,16 @@ func restoreE2EMarker() {
 
 // Serial: tests that verify operator upgrade resilience — webhook availability,
 // metrics continuity, rapid re-deploy survival, and downgrade safety.
-var _ = Describe("Operator Upgrade defensive scenarios", Ordered, Serial, func() {
+var _ = Describe("Operator Upgrade defensive scenarios", Ordered, Serial, Label("disruptive"), func() {
 	const v2Image = "example.com/cnmsql:v0.0.2"
 	const v1Image = "example.com/cnmsql:v0.0.1"
 
 	var ns string
+	var dc *dedicated
 
 	BeforeAll(func() {
+		dc = provisionDedicated("op-upgrade-def", "")
+
 		By("building v2 manager image with a different binary hash")
 		insertE2EMarker()
 		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v2Image))
@@ -853,13 +859,13 @@ var _ = Describe("Operator Upgrade defensive scenarios", Ordered, Serial, func()
 		restoreE2EMarker()
 		Expect(err).NotTo(HaveOccurred(), "Failed to build v2 manager image")
 
-		By("loading v2 manager image on Kind")
-		err = utils.LoadImageToKindClusterWithName(v2Image)
-		Expect(err).NotTo(HaveOccurred(), "Failed to load v2 manager image into Kind")
+		By("loading v2 manager image into the dedicated cluster")
+		dc.loadImage(v2Image)
 	})
 
 	AfterAll(func() {
 		restoreE2EMarker()
+		dc.teardown()
 	})
 
 	BeforeEach(func() {

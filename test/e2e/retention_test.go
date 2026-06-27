@@ -16,7 +16,7 @@ import (
 // e2e, so it seeds an artificially-old base backup manifest directly into the
 // store alongside a real, recent backup, then asserts the operator expires the
 // old one while keeping the recent (newest-floor) backup.
-var _ = Describe("Backup retention GC", Ordered, func() {
+var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 	const (
 		retCluster = "ret-src"
 		realBackup = "real-backup"

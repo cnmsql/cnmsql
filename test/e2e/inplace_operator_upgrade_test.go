@@ -24,16 +24,19 @@ import (
 // operator hash while the mysql container restart count stays flat, mysqld uptime
 // keeps climbing, and the primary never changes.
 //
-// Serial: `make deploy` rolls the shared cluster-wide operator, which watches
-// every namespace. While it rolls it stops reconciling Clusters in other specs'
-// namespaces, so this must not run alongside any other spec.
-var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, func() {
+// Serial + dedicated cluster: this spec rolls its operator with `make deploy`, so
+// it runs against its OWN ephemeral Kind cluster, never the shared suite operator.
+// See design/025-e2e-testing-overhaul.md.
+var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, Label("disruptive"), func() {
 	const (
 		v3Image     = "example.com/cnmsql:v0.0.3-inplace"
 		clusterName = "inplace-upgrade"
 	)
+	var dc *dedicated
 
 	BeforeAll(func() {
+		dc = provisionDedicated("inplace-op", "")
+
 		By("building a manager image with a distinct binary hash")
 		insertInPlaceMarker()
 		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v3Image))
@@ -41,17 +44,13 @@ var _ = Describe("In-place operator upgrade (streamed)", Ordered, Serial, func()
 		restoreE2EMarker()
 		Expect(err).NotTo(HaveOccurred(), "Failed to build the in-place upgrade manager image")
 
-		By("loading the in-place upgrade manager image on Kind")
-		Expect(utils.LoadImageToKindClusterWithName(v3Image)).To(Succeed(),
-			"Failed to load the in-place upgrade manager image into Kind")
+		By("loading the in-place upgrade manager image into the dedicated cluster")
+		dc.loadImage(v3Image)
 	})
 
 	AfterAll(func() {
 		restoreE2EMarker()
-		By("restoring the baseline operator for subsequent specs")
-		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to restore the baseline operator after in-place upgrade test")
+		dc.teardown()
 	})
 
 	It("upgrades every instance in place without restarting mysqld or switching over", func() {
@@ -182,10 +181,13 @@ func insertInPlaceMarker() {
 
 // Serial: defensive scenarios for in-place operator upgrades — verifies
 // concurrent in-place upgrades are safe and handles unhealthy instances.
-var _ = Describe("In-place operator upgrade defensive scenarios", Ordered, Serial, func() {
+var _ = Describe("In-place operator upgrade defensive scenarios", Ordered, Serial, Label("disruptive"), func() {
 	const v3Image = "example.com/cnmsql:v0.0.3-inplace"
+	var dc *dedicated
 
 	BeforeAll(func() {
+		dc = provisionDedicated("inplace-op-def", "")
+
 		By("building a manager image with a distinct binary hash")
 		insertInPlaceMarker()
 		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", v3Image))
@@ -193,17 +195,13 @@ var _ = Describe("In-place operator upgrade defensive scenarios", Ordered, Seria
 		restoreE2EMarker()
 		Expect(err).NotTo(HaveOccurred(), "Failed to build the in-place upgrade manager image")
 
-		By("loading the in-place upgrade manager image on Kind")
-		Expect(utils.LoadImageToKindClusterWithName(v3Image)).To(Succeed(),
-			"Failed to load the in-place upgrade manager image into Kind")
+		By("loading the in-place upgrade manager image into the dedicated cluster")
+		dc.loadImage(v3Image)
 	})
 
 	AfterAll(func() {
 		restoreE2EMarker()
-		By("restoring the baseline operator for subsequent specs")
-		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to restore the baseline operator after in-place upgrade defensive test")
+		dc.teardown()
 	})
 
 	It("re-execs multiple instances concurrently without losing quorum or data", func() {

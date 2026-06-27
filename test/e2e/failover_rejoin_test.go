@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Failover rejoin", Ordered, func() {
+var _ = Describe("Failover rejoin", Ordered, Label("feature"), func() {
 	const (
 		cluster   = "failjoin"
 		instances = 3

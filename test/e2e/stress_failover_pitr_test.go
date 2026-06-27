@@ -19,7 +19,7 @@ import (
 // completed. Data sanity is asserted on the recovered cluster to confirm that
 // the archive preserved both the pre- and post-failover writes correctly and
 // that no data past the recovery target leaked through.
-var _ = Describe("Failover + PITR under heavy writes", Ordered, func() {
+var _ = Describe("Failover + PITR under heavy writes", Ordered, Label("flavor", "heavy"), func() {
 	const (
 		sourceCluster   = "stress-pitr-src"
 		restoredCluster = "stress-pitr-restored"

@@ -17,7 +17,7 @@ import (
 // the primary crashes. The operator must refuse to promote the diverged replica
 // and block the failover rather than creating a split-brain with irrecoverable
 // data divergence.
-var _ = Describe("Diverged replica failover guard", Ordered, func() {
+var _ = Describe("Diverged replica failover guard", Ordered, Label("feature"), func() {
 	const (
 		cluster   = "divguard"
 		instances = 2

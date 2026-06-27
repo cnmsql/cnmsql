@@ -335,9 +335,23 @@ func (r *ClusterReconciler) handleQuorumRecovery(
 		return ctrl.Result{}, nil, false
 	}
 	gr := latestCluster.Status.GroupReplication
-	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
+	if gr == nil || !gr.Bootstrapped {
 		logf.FromContext(ctx).Info("Cannot perform quorum recovery: group is not in a recoverable state",
 			"hasQuorum", gr != nil && gr.HasQuorum, "bootstrapped", gr != nil && gr.Bootstrapped)
+		if annotated {
+			r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
+		}
+		return ctrl.Result{}, nil, false
+	}
+	// The persisted HasQuorum bit can be stale under load: the first reconcile
+	// after every member disappears may still read HasQuorum=true from an earlier
+	// healthy observation. For an automatic total-outage recovery rely on the fresh
+	// observation (PhaseFullOutage already implies no ONLINE member). For a manual
+	// annotation (force_members) insist on actual quorum loss so an operator does
+	// not accidentally reset a healthy group.
+	if gr.HasQuorum && !autoFullOutage {
+		logf.FromContext(ctx).Info("Cannot perform quorum recovery: group reports quorum",
+			"hasQuorum", gr.HasQuorum, "auto", autoFullOutage)
 		if annotated {
 			r.clearAnnotation(ctx, latestCluster, forceQuorumRecoveryAnnotation)
 		}

@@ -17,7 +17,7 @@ import (
 // load-bearing GR guarantee is that recovery forms a FRESH group — a new pinned
 // group name, never rejoining the source's group — while the data is restored
 // verbatim and secondaries join the new group via distributed recovery.
-var _ = Describe("Group Replication backup and restore into a fresh group", Ordered, func() {
+var _ = Describe("Group Replication backup and restore into a fresh group", Ordered, Label("flavor", "heavy"), func() {
 	const (
 		sourceCluster   = "gr-bkp-src"
 		restoredCluster = "gr-bkp-restored"

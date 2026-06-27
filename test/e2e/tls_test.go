@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("TLS Certificate Renewal", Ordered, func() {
+var _ = Describe("TLS Certificate Renewal", Ordered, Label("feature"), func() {
 	const cluster = "tlsrenew"
 
 	var ns, prevNS, rootPass string

@@ -1,4 +1,4 @@
-name: Register E2E pending statuses
+name: Register E2E pending status
 
 on:
   pull_request_target:
@@ -15,43 +15,19 @@ jobs:
     name: Register
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       statuses: write
     steps:
-    - name: Clone the code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        persist-credentials: false
-
-    - name: Register pending statuses
+    - name: Register the e2e approval gate
+      # A single pending status nudges for /test. A maintainer commenting /test
+      # (authorize-e2e.yml) resolves it and dispatches the run; the run then posts
+      # the per-lane `E2E / <lane>` result statuses.
       run: |
         PR_SHA="${{ github.event.pull_request.head.sha }}"
-        RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-        script_output=$(GITHUB_OUTPUT="" python3 .github/e2e-matrix-generator.py -m pull_request)
-        if [[ $? -ne 0 ]]; then
-          echo "::error::Matrix generator failed — check logs above for details"
-          exit 1
-        fi
-
-        matrix_json=$(echo "$script_output" | sed -n 's/^kindMatrix=//p')
-
-        if [[ -z "$matrix_json" || "$matrix_json" == "null" ]]; then
-          echo "No matrix entries generated — nothing to register"
-          exit 0
-        fi
-
-        echo "Generated matrix: $matrix_json"
-
-        echo "$matrix_json" | jq -c '.include[]' | while IFS= read -r job; do
-          id=$(echo "$job" | jq -r '.id')
-          echo "Registering pending status: E2E / $id"
-          gh api "repos/${{ github.repository }}/statuses/$PR_SHA" \
-            -f state="pending" \
-            -f context="E2E / $id" \
-            -f description="Pending approval — comment /test to run" \
-            -f target_url="$RUN_URL" \
-            --silent
-        done
+        gh api "repos/${{ github.repository }}/statuses/$PR_SHA" \
+          -f state="pending" \
+          -f context="e2e" \
+          -f description="Pending approval — comment /test to run" \
+          -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          --silent
       env:
         GH_TOKEN: ${{ github.token }}

@@ -121,7 +121,7 @@ func expectApplyRejected(name, manifest, want string) {
 		"rejection message should explain why")
 }
 
-var _ = Describe("MySQL major-version upgrade admission", Ordered, func() {
+var _ = Describe("MySQL major-version upgrade admission", Ordered, Label("feature"), func() {
 	const cluster = "upgrade-guard"
 
 	BeforeAll(func() {
@@ -245,7 +245,7 @@ spec:
 	})
 })
 
-var _ = Describe("MySQL major-version upgrade rollout", Ordered, Label("major-upgrade"), func() {
+var _ = Describe("MySQL major-version upgrade rollout", Ordered, Label("disruptive", "major-upgrade"), func() {
 	const (
 		cluster = "major-upgrade"
 		catalog = "major-upgrade-images"
@@ -312,7 +312,7 @@ var _ = Describe("MySQL major-version upgrade rollout", Ordered, Label("major-up
 	})
 })
 
-var _ = Describe("MySQL major-version upgrade defensive scenarios", Ordered, Label("major-upgrade"), func() {
+var _ = Describe("MySQL major-version upgrade defensive scenarios", Ordered, Label("disruptive", "major-upgrade"), func() {
 	const catalog = "major-upgrade-def-images"
 
 	var ns, prevNS string
@@ -403,7 +403,7 @@ var _ = Describe("MySQL major-version upgrade defensive scenarios", Ordered, Lab
 	})
 })
 
-var _ = Describe("MySQL major-version upgrade single-instance", Ordered, Label("major-upgrade"), func() {
+var _ = Describe("MySQL major-version upgrade single-instance", Ordered, Label("disruptive", "major-upgrade"), func() {
 	const (
 		cluster = "major-upgrade-solo"
 		catalog = "major-upgrade-solo-images"
@@ -496,7 +496,7 @@ spec:
 	})
 })
 
-var _ = Describe("MySQL major-version upgrade with backupBeforeUpgrade", Ordered, Label("major-upgrade"), func() {
+var _ = Describe("MySQL major-version upgrade with backupBeforeUpgrade", Ordered, Label("disruptive", "major-upgrade"), func() {
 	const (
 		cluster = "major-upgrade-backup"
 		catalog = "major-upgrade-backup-images"
@@ -588,7 +588,7 @@ spec:
 	})
 })
 
-var _ = Describe("MySQL major-version upgrade blocked by missing backup store", Ordered, Label("major-upgrade"), func() {
+var _ = Describe("MySQL major-version upgrade blocked by missing backup store", Ordered, Label("disruptive", "major-upgrade"), func() {
 	const (
 		cluster = "major-upgrade-noobj"
 		catalog = "major-upgrade-noobj-images"
@@ -693,7 +693,7 @@ spec:
 	})
 })
 
-var _ = Describe("MySQL major-version upgrade with removed parameters", Ordered, Label("major-upgrade"), func() {
+var _ = Describe("MySQL major-version upgrade with removed parameters", Ordered, Label("disruptive", "major-upgrade"), func() {
 	const (
 		cluster = "major-upgrade-removed"
 		catalog = "major-upgrade-removed-images"

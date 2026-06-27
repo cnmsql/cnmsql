@@ -250,6 +250,25 @@ func TestIsFullOutageRequiresEstablishedCluster(t *testing.T) {
 	}
 }
 
+// The first observation after every member disappears still reads the previously
+// persisted status, which may say HasQuorum=true from the healthy view. FullOutage
+// must be based on the fresh observation, not that stale bit, or the controller
+// can misclassify a total outage as a partial quorum loss under load.
+func TestIsFullOutageIgnoresStalePersistedQuorum(t *testing.T) {
+	t.Parallel()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{
+		Bootstrapped:    true,
+		HasQuorum:       true,
+		ObservedViewMax: 3,
+	})
+	cluster.Spec.Instances = 3
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+
+	if !isFullOutage(cluster, observedCluster{GroupReplication: nil}) {
+		t.Fatal("isFullOutage must use the fresh no-view observation even when persisted HasQuorum is stale")
+	}
+}
+
 // Once handleQuorumRecovery resets ObservedViewMax to 0, the cluster must stay in
 // FullOutage until the survivor re-forms the group — otherwise the auto-recovery
 // retry loop and the in-Pod stand-down are abandoned mid-recovery.

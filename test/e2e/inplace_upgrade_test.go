@@ -19,7 +19,7 @@ import (
 // (no Pod restart, no switchover). The proof is threefold: the manager logs the
 // adopt path, the mysql container's restart count stays flat, and mysqld's uptime
 // keeps climbing (a restart would reset it to ~0).
-var _ = Describe("In-place instance manager upgrade", Ordered, func() {
+var _ = Describe("In-place instance manager upgrade", Ordered, Label("flavor"), func() {
 	const (
 		cluster   = "inplace"
 		instances = 3

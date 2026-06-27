@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -17,58 +16,6 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
-
-// archiveVersions is the set of Percona versions the continuous-archiving specs
-// run against. Precedence:
-//   - E2E_MYSQL_VERSION (single version): the CI matrix model — each job pins
-//     one MySQL version and the whole suite runs against it.
-//   - E2E_ARCHIVE_VERSIONS (comma-separated list): explicit local override to
-//     exercise several versions in one cluster.
-//   - default: the full supported matrix, so a bare local run proves archiving
-//     broadly compatible.
-func archiveVersions() []string {
-	if v := strings.TrimSpace(os.Getenv("E2E_MYSQL_VERSION")); v != "" {
-		return []string{v}
-	}
-	if raw := strings.TrimSpace(os.Getenv("E2E_ARCHIVE_VERSIONS")); raw != "" {
-		var out []string
-		for v := range strings.SplitSeq(raw, ",") {
-			if v = strings.TrimSpace(v); v != "" {
-				out = append(out, v)
-			}
-		}
-		return out
-	}
-	return []string{"8.0", "8.4", "9.x"}
-}
-
-// sampleVersion is the MySQL version used by the non-archiving sample Clusters
-// (the bulk of the suite). Under the CI matrix model it follows
-// E2E_MYSQL_VERSION so every spec runs against the job's pinned version;
-// otherwise it defaults to 8.4 (the historical sample version).
-func sampleVersion() string {
-	if v := strings.TrimSpace(os.Getenv("E2E_MYSQL_VERSION")); v != "" {
-		return v
-	}
-	return "8.4"
-}
-
-// instanceImageFor returns the published slim instance image reference for a
-// version. The images are built and pushed from the separate containers repo;
-// the suite pulls them and loads them into Kind (see pullAndLoadInstanceImage).
-func instanceImageFor(version string) string {
-	return instanceImageRepo + ":" + version
-}
-
-// instanceImageRepo is the GHCR repository the containers repo publishes the
-// slim instance images to. Override with E2E_INSTANCE_IMAGE_REPO to test against
-// a fork or a private mirror.
-var instanceImageRepo = func() string {
-	if v := strings.TrimSpace(os.Getenv("E2E_INSTANCE_IMAGE_REPO")); v != "" {
-		return v
-	}
-	return "ghcr.io/cnmsql/cnmsql-instance"
-}()
 
 // setupMC deploys a long-lived mc (MinIO client) toolbox Pod with the bucket
 // credentials pre-wired through MC_HOST_local, so the archiving specs can read

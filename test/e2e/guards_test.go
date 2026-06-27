@@ -15,7 +15,7 @@ import (
 // These specs exercise the M13.3 guards end to end: instance fencing (a fenced
 // Pod is pulled out of the routing Services and held read-only) and the deletion
 // guard (an accidental delete is blocked until the bypass annotation is set).
-var _ = Describe("Guards", Ordered, func() {
+var _ = Describe("Guards", Ordered, Label("feature"), func() {
 	const (
 		cluster  = "guards"
 		replicas = 3

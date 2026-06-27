@@ -19,7 +19,8 @@ permissions: {}
 
 concurrency:
   group: e2e-${{ github.event.inputs.pr_number || github.event_name }}
-  cancel-in-progress: true
+  # Cancel superseded PR/dispatch runs, but never cancel the nightly schedule.
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   # renovate: datasource=github-releases depName=kubernetes-sigs/kind
@@ -31,7 +32,7 @@ env:
 
 jobs:
   generate-jobs:
-    name: Generate E2E matrix
+    name: Generate E2E lane matrix
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -54,12 +55,9 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
 
-    - name: Generate jobs
+    - name: Generate lanes
       id: generate
       run: |
-        # Map the triggering event onto a matrix mode. All events currently run
-        # the full cross; the case is kept so a cheaper mode can be reintroduced
-        # per event without touching the workflow wiring.
         case "${{ github.event_name }}" in
           schedule)           mode=schedule ;;
           workflow_dispatch)  mode=workflow_dispatch ;;
@@ -79,19 +77,16 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.generate-jobs.outputs.kindMatrix) }}
     env:
+      # Lane fields map straight onto the knobs the suite + hack/e2e.sh consume.
       K8S_VERSION: ${{ matrix.k8s_version }}
       E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
       E2E_MAJOR_UPGRADE: ${{ matrix.major_upgrade }}
-      # Three flavors of matrix entry, each selected by a flag the generator sets:
-      #   - major_upgrade: only the heavy multi-image upgrade specs;
-      #   - node_failure:  only the Serial node-failure spec (it provisions its
-      #                    own multi-node cluster, so it runs single-process);
-      #   - otherwise:     the rest of the suite, excluding both.
-      GINKGO_LABEL_FILTER: ${{ matrix.node_failure && 'node-failure' || (matrix.major_upgrade && 'major-upgrade' || '!major-upgrade && !node-failure') }}
+      GINKGO_LABEL_FILTER: ${{ matrix.label_filter }}
+      GINKGO_PROCS: ${{ matrix.procs }}
       CERT_MANAGER_INSTALL_SKIP: "false"
       GINKGO_TIMEOUT: ${{ github.repository_owner == 'cnmsql' && '240m' || '120m' }}
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
-      GINKGO_PROCS: ${{ matrix.node_failure && 1 || 3 }}
+      E2E_JUNIT: test-results/junit.xml
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -123,9 +118,24 @@ jobs:
         sudo mv ./kind /usr/local/bin/kind
         kind version
 
-    - name: Run e2e suite (k8s ${{ matrix.k8s_version }}, MySQL ${{ matrix.mysql_version }})
+    - name: Prepare runner
       run: |
-        make test-e2e
+        # Unique cluster name per run+lane so a leftover cluster from a crashed
+        # job is never silently reused (the self-hosted runner is persistent).
+        slug="$(echo '${{ matrix.id }}' | tr 'A-Z.' 'a-z-')"
+        echo "KIND_CLUSTER=cnmsql-e2e-${GITHUB_RUN_ID}-${slug}" >> "$GITHUB_ENV"
+        # Sweep leftover cnmsql Kind clusters and reclaim disk before starting.
+        for c in $(kind get clusters 2>/dev/null || true); do
+          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
+        done
+        docker system prune -f || true
+        df -h / || true
+
+    - name: Run e2e lane ${{ matrix.id }} (k8s ${{ matrix.k8s_version }}, MySQL ${{ matrix.mysql_version }})
+      run: |
+        mkdir -p test-results
+        set -o pipefail
+        make test-e2e 2>&1 | tee "test-results/run.log"
 
     - name: Update status
       if: always() && github.event.inputs.pr_sha != ''
@@ -145,11 +155,22 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
 
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-${{ matrix.id }}
+        path: test-results/
+        if-no-files-found: ignore
+        retention-days: 14
+
     - name: Cleanup after e2e
       if: always()
       run: |
-        make cleanup-test-e2e || true
-        # Safety net for the node-failure entry: delete the cluster the spec
-        # provisions, in case a hard failure skipped its in-test teardown. No-op
-        # for every other entry.
-        kind delete cluster --name "${KIND_CLUSTER:-cnmsql-test-e2e}-nodefail" || true
+        # Delete every cnmsql Kind cluster this lane may have created: the shared
+        # suite cluster plus any ephemeral clusters the disruptive specs provision
+        # (named <KIND_CLUSTER>-<slug>).
+        for c in $(kind get clusters 2>/dev/null || true); do
+          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
+        done
+        rm -f /tmp/cnmsql-e2e-*.yaml || true

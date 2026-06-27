@@ -38,7 +38,7 @@ spec:
 `, name, testNamespace, instances, instanceImage, e2eInstanceResources, e2eMySQLParameters)
 }
 
-var _ = Describe("Group Replication single-member", Ordered, func() {
+var _ = Describe("Group Replication single-member", Ordered, Label("feature"), func() {
 	const (
 		cluster   = "gr-single"
 		instances = 1
@@ -124,7 +124,7 @@ var _ = Describe("Group Replication single-member", Ordered, func() {
 	})
 })
 
-var _ = Describe("Group Replication multi-member", Ordered, func() {
+var _ = Describe("Group Replication multi-member", Ordered, Label("feature", "heavy"), func() {
 	const (
 		cluster   = "gr-multi"
 		instances = 3

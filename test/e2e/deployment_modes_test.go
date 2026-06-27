@@ -55,7 +55,7 @@ spec:
 `, name, ns, instanceImage, e2eMySQLParameters, e2eInstanceResources)
 }
 
-var _ = Describe("Cluster-wide deployment mode", Ordered, func() {
+var _ = Describe("Cluster-wide deployment mode", Ordered, Label("feature"), func() {
 	It("brings a 2-instance cluster to Ready using the shared cluster-wide operator", func() {
 		ns := createTestNamespace("clusterwide")
 		defer deleteTestNamespace(ns, defaultTestNamespace)
@@ -68,14 +68,18 @@ var _ = Describe("Cluster-wide deployment mode", Ordered, func() {
 	})
 })
 
-// Namespaced mode runs Serial: it stands the shared cluster-wide operator down
-// for the duration (that operator watches every namespace, so it would also
-// reconcile the namespaced Clusters and its Fail-policy webhook would block
-// their status writes), runs two operators side by side, then restores the
-// shared operator in AfterAll.
-var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
+// Namespaced mode runs Serial against its OWN ephemeral Kind cluster: it stands
+// the cluster-wide operator down (scales it to zero and removes its cluster-wide
+// webhook) and runs two namespaced operators side by side. Using a dedicated
+// cluster means it never disturbs the shared suite operator; teardown deletes the
+// whole cluster. See design/025-e2e-testing-overhaul.md.
+var _ = Describe("Namespaced deployment mode", Ordered, Serial, Label("disruptive"), func() {
+	var dc *dedicated
+
 	BeforeAll(func() {
-		By("standing down the shared cluster-wide operator")
+		dc = provisionDedicated("nsmode", "")
+
+		By("standing down the dedicated cluster's cluster-wide operator")
 		// Scale to zero so it cannot reconcile the namespaced Clusters, and remove
 		// its cluster-wide webhook so its Fail policy does not block status writes
 		// in the namespaced operators' namespaces.
@@ -108,36 +112,12 @@ var _ = Describe("Namespaced deployment mode", Ordered, Serial, func() {
 	})
 
 	AfterAll(func() {
-		By("ensuring both operators are running so they can clear Cluster finalizers")
-		_, _ = kubectl("scale", "deployment", operatorDeploymentName(nsModeAPfx), "-n", nsModeA, "--replicas=1")
-		_, _ = kubectl("scale", "deployment", operatorDeploymentName(nsModeBPfx), "-n", nsModeB, "--replicas=1")
-		waitOperatorRunning(nsModeA)
-		waitOperatorRunning(nsModeB)
-
-		By("deleting the namespaced Clusters while their operators are still running")
-		_, _ = kubectl("delete", "cluster", "ca", "-n", nsModeA, "--ignore-not-found", "--wait=true", "--timeout=120s")
-		_, _ = kubectl("delete", "cluster", "cb", "-n", nsModeB, "--ignore-not-found", "--wait=true", "--timeout=120s")
-
-		By("deleting the operator namespaces and their cluster-scoped webhook configurations")
-		_, _ = kubectl("delete", "ns", nsModeA, "--ignore-not-found", "--wait=true", "--timeout=180s")
-		_, _ = kubectl("delete", "ns", nsModeB, "--ignore-not-found", "--wait=true", "--timeout=180s")
-		_, _ = kubectl("delete", "validatingwebhookconfiguration",
-			webhookConfigName(nsModeAPfx), webhookConfigName(nsModeBPfx), "--ignore-not-found")
-
+		// The whole dedicated cluster is destroyed below, so there is no finalizer
+		// dance or operator to restore — only the local working-tree file the
+		// `make deploy-namespaced` kustomize-edit mutated needs reverting.
 		By("restoring config/namespaced/kustomization.yaml")
 		restoreNamespacedKustomization()
-
-		By("restoring the shared cluster-wide operator")
-		cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to restore the cluster-wide operator")
-		Eventually(func() (string, error) {
-			return kubectl("get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace, "-o", "jsonpath={.items[*].status.phase}")
-		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(ContainSubstring("Running"),
-			"cluster-wide operator did not come back")
-		By("waiting for the restored cluster-wide webhook to accept requests")
-		waitForWebhookReady("default")
+		dc.teardown()
 	})
 
 	It("brings up a 2-instance cluster in each namespace, each reconciled by its own operator", func() {

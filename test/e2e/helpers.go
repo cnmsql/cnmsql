@@ -60,20 +60,6 @@ const minioBucket = "cnmsql-backups"
 // by Clusters and Backups through their object-store configuration.
 const minioCredsSecret = "minio-creds"
 
-const e2eInstanceResources = `  resources:
-    requests:
-      cpu: 100m
-      memory: 384Mi
-    limits:
-      cpu: "1"
-      memory: 1536Mi
-`
-
-const e2eMySQLParameters = `    parameters:
-      innodb_buffer_pool_size: 128M
-      max_connections: "80"
-`
-
 // generateTestNamespace returns a unique namespace name using the current
 // Ginkgo parallel process id, so parallel nodes never collide.
 func generateTestNamespace(prefix string) string {
@@ -350,6 +336,16 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 		if lastErr == nil {
 			return
 		}
+		// Fail fast on a state the cluster cannot recover from on its own, so a
+		// misconfigured cluster surfaces in seconds with diagnostics instead of
+		// burning the whole timeout. clusterTerminalState is deliberately
+		// conservative (Blocked phase + image-pull errors only), so a transient
+		// CrashLoopBackOff during bootstrap never trips a false failure.
+		if reason := clusterTerminalState(name); reason != "" {
+			By(fmt.Sprintf("cluster %s entered a terminal state (%s); dumping diagnostics", name, reason))
+			dumpE2EDiagnostics()
+			Fail(fmt.Sprintf("cluster %s cannot become ready: %s (last check: %v)", name, reason, lastErr))
+		}
 		if time.Now().After(deadline) {
 			By(fmt.Sprintf("cluster %s did not become ready within %s; dumping diagnostics", name, timeout))
 			dumpE2EDiagnostics()
@@ -357,6 +353,38 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// clusterTerminalState reports a non-empty reason when a cluster is in a state it
+// cannot recover from without intervention, so expectClusterReady can fail fast
+// instead of polling to the deadline. It is intentionally conservative: only an
+// operator-declared Blocked phase and image-pull failures count. Because every
+// instance image is preloaded into Kind, an image-pull error is a real
+// misconfiguration, never transient; a CrashLoopBackOff is NOT treated as
+// terminal, since instances may crash-loop briefly during bootstrap. Any read
+// error degrades to "" (no fast-fail), so a jsonpath/label mismatch only loses
+// the optimization, never causes a false failure.
+func clusterTerminalState(name string) string {
+	if phase, err := clusterField(name, "{.status.phase}"); err == nil && strings.TrimSpace(phase) == "Blocked" {
+		reason, _ := clusterField(name, "{.status.phaseReason}")
+		return fmt.Sprintf("cluster phase Blocked: %s", strings.TrimSpace(reason))
+	}
+	out, err := kubectl("get", "pods", "-n", testNamespace,
+		"-l", "mysql.cnmsql.co/cluster="+name,
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{'='}"+
+			"{.status.initContainerStatuses[*].state.waiting.reason}{','}"+
+			"{.status.containerStatuses[*].state.waiting.reason}{'\\n'}{end}")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		for _, bad := range []string{"ImagePullBackOff", "ErrImagePull", "InvalidImageName"} {
+			if strings.Contains(line, bad) {
+				return fmt.Sprintf("pod image error: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	return ""
 }
 
 // clusterPrimary returns the current primary Pod name for a cluster.

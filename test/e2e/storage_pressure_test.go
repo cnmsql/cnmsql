@@ -31,7 +31,7 @@ import (
 // per-PVC quota, so statfs sees the whole node disk and a volume cannot be driven
 // to the threshold deterministically. The True->False edge and event are covered
 // by unit tests.
-var _ = Describe("Storage pressure", Ordered, func() {
+var _ = Describe("Storage pressure", Ordered, Label("feature"), func() {
 	const cluster = "pressure"
 	instance := cluster + "-1"
 

@@ -18,16 +18,8 @@ import (
 
 const trueEnvValue = "true"
 
-var (
-	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/cnmsql:v0.0.1"
-	// instanceImage is the local instance image consumed by the sample Cluster.
-	// It tracks sampleVersion so a matrix job pinning E2E_MYSQL_VERSION runs the
-	// whole suite against that one version.
-	instanceImage = instanceImageFor(sampleVersion())
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
-)
+// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
+var shouldCleanupCertManager = false
 
 // TestE2E runs the e2e test suite to validate the solution in an isolated environment.
 // The default setup requires Kind and CertManager.
@@ -82,19 +74,32 @@ var _ = SynchronizedAfterSuite(func() {
 	teardownSharedMinio()
 	undeployOperator()
 	teardownCertManager()
+	restoreManagerKustomization()
 })
 
 // doSuiteSetup is the one-time shared setup that runs on Ginkgo parallel
 // process 1 only, via SynchronizedBeforeSuite.
 func doSuiteSetup() {
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	// `make deploy` rewrites config/manager/kustomization.yaml in the working tree
+	// (kustomize edit set image). Snapshot it now and restore it in
+	// SynchronizedAfterSuite so an e2e run leaves the tree clean.
+	snapshotManagerKustomization()
 
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+	// hack/e2e.sh builds and loads the manager image once, outside Ginkgo, and
+	// sets E2E_SKIP_IMAGE_BUILD so the suite does not rebuild it. A bare `ginkgo`
+	// run (no env set) still builds in-suite, so this stays backward compatible.
+	if os.Getenv("E2E_SKIP_IMAGE_BUILD") != trueEnvValue {
+		By("building the manager image")
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+
+		By("loading the manager image on Kind")
+		err = utils.LoadImageToKindClusterWithName(managerImage)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+	} else {
+		By("skipping manager image build/load (E2E_SKIP_IMAGE_BUILD=true; prebuilt by hack/e2e.sh)")
+	}
 
 	for _, version := range neededInstanceVersions() {
 		pullAndLoadInstanceImage(version)
@@ -104,6 +109,33 @@ func doSuiteSetup() {
 	setupCertManager()
 	deployOperator()
 	deploySharedMinio()
+}
+
+// managerKustomizationPath is the operator overlay that `make deploy` mutates via
+// `kustomize edit set image`. The suite snapshots it at setup and restores it at
+// teardown so an e2e run leaves the working tree clean — mirroring how the
+// namespaced-mode spec handles config/namespaced/kustomization.yaml.
+const managerKustomizationPath = "config/manager/kustomization.yaml"
+
+var managerKustomizationSnapshot []byte
+
+func snapshotManagerKustomization() {
+	data, err := os.ReadFile(managerKustomizationPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to snapshot %s: %v\n", managerKustomizationPath, err)
+		return
+	}
+	managerKustomizationSnapshot = data
+}
+
+func restoreManagerKustomization() {
+	if managerKustomizationSnapshot == nil {
+		return
+	}
+	if err := os.WriteFile(managerKustomizationPath, managerKustomizationSnapshot, 0o644); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to restore %s: %v\n", managerKustomizationPath, err)
+	}
+	managerKustomizationSnapshot = nil
 }
 
 // pullAndLoadInstanceImage pulls this version's published slim instance image

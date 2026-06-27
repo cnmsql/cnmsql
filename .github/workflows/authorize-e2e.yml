@@ -36,51 +36,46 @@ jobs:
             ;;
         esac
 
-        PR_SHA=$(gh pr view "${{ github.event.issue.number }}" -R "${{ github.repository }}" --json headRefOid -q .headRefOid)
-        echo "Authorized /test for PR #${{ github.event.issue.number }} (commit $PR_SHA)"
-        echo "pr_sha=$PR_SHA" >> "$GITHUB_OUTPUT"
+        PR_JSON=$(gh pr view "${{ github.event.issue.number }}" -R "${{ github.repository }}" \
+          --json headRefOid,headRefName,isCrossRepository)
+        {
+          echo "pr_sha=$(jq -r .headRefOid <<<"$PR_JSON")"
+          echo "head_ref=$(jq -r .headRefName <<<"$PR_JSON")"
+          echo "cross=$(jq -r .isCrossRepository <<<"$PR_JSON")"
+        } >> "$GITHUB_OUTPUT"
+        echo "Authorized /test for PR #${{ github.event.issue.number }}"
       env:
         GH_TOKEN: ${{ github.token }}
 
-    - name: Clone the code
-      if: steps.check.outputs.pr_sha != ''
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        persist-credentials: false
-
-    - name: Register pending statuses
+    - name: Resolve the e2e gate and dispatch the run
       if: steps.check.outputs.pr_sha != ''
       run: |
         PR_SHA="${{ steps.check.outputs.pr_sha }}"
         RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-        matrix_json=$(GITHUB_OUTPUT="" python3 .github/e2e-matrix-generator.py -m workflow_dispatch 2>/dev/null | sed -n 's/^kindMatrix=//p')
+        # Clear the single approval gate so it no longer shows pending; the
+        # dispatched run reports the real per-lane E2E results.
+        gh api "repos/${{ github.repository }}/statuses/$PR_SHA" \
+          -f state="success" \
+          -f context="e2e" \
+          -f description="Dispatched by /test — see E2E checks" \
+          -f target_url="$RUN_URL" --silent || true
 
-        if [[ -z "$matrix_json" || "$matrix_json" == "null" ]]; then
-          echo "No matrix entries generated — nothing to register"
-          exit 0
+        # Run the pipeline on the PR branch so the PR's own workflow version runs
+        # (it may itself change e2e.yml) and the jobs attach to the PR commit.
+        # Fork PRs have no branch in this repo, so fall back to the default branch
+        # and rely on the pr_sha checkout.
+        if [[ "${{ steps.check.outputs.cross }}" == "true" ]]; then
+          echo "Fork PR — dispatching e2e.yml from the default branch"
+          gh workflow run e2e.yml -R "${{ github.repository }}" \
+            -f pr_number="${{ github.event.issue.number }}" \
+            -f pr_sha="$PR_SHA"
+        else
+          echo "Same-repo PR — dispatching e2e.yml on branch ${{ steps.check.outputs.head_ref }}"
+          gh workflow run e2e.yml -R "${{ github.repository }}" \
+            --ref "${{ steps.check.outputs.head_ref }}" \
+            -f pr_number="${{ github.event.issue.number }}" \
+            -f pr_sha="$PR_SHA"
         fi
-
-        echo "Generated matrix: $matrix_json"
-
-        echo "$matrix_json" | jq -c '.include[]' | while IFS= read -r job; do
-          id=$(echo "$job" | jq -r '.id')
-          echo "Registering pending status: E2E / $id"
-          gh api "repos/${{ github.repository }}/statuses/$PR_SHA" \
-            -f state="pending" \
-            -f context="E2E / $id" \
-            -f description="Awaiting runner" \
-            -f target_url="$RUN_URL" \
-            --silent
-        done
-      env:
-        GH_TOKEN: ${{ github.token }}
-
-    - name: Dispatch e2e workflow
-      if: steps.check.outputs.pr_sha != ''
-      run: |
-        gh workflow run e2e.yml -R "${{ github.repository }}" \
-          -f pr_number="${{ github.event.issue.number }}" \
-          -f pr_sha="${{ steps.check.outputs.pr_sha }}"
       env:
         GH_TOKEN: ${{ github.token }}

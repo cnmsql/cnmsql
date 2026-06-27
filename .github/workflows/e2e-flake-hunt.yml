@@ -1,0 +1,102 @@
+name: E2E Flake Hunt
+
+# Proactively surfaces flaky specs by repeating a lane several times, so flakes
+# are found by CI rather than by contributors. It is NON-BLOCKING: it posts no
+# commit statuses and is never a required check. Quarantined (`flaky`-labelled)
+# specs are excluded from the gate lanes (see .github/e2e-matrix-generator.py)
+# and can be exercised here with `tier: flaky`.
+#
+# See design/025-e2e-testing-overhaul.md.
+
+on:
+  schedule:
+  # 04:00 UTC — offset from the main E2E nightly (01:00) so they do not contend
+  # for the single self-hosted runner.
+  - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Tier to hunt (smoke|feature|flavor|heavy|disruptive|flaky)'
+        required: false
+        default: 'smoke'
+        type: string
+      repeat:
+        description: 'Extra reruns (ginkgo --repeat); total runs = repeat + 1'
+        required: false
+        default: '2'
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: e2e-flake-hunt
+  cancel-in-progress: false
+
+env:
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kind
+  KIND_VERSION: v0.32.0
+
+jobs:
+  hunt:
+    name: Flake hunt (${{ github.event.inputs.tier || 'smoke' }})
+    runs-on: ${{ github.repository_owner == 'cnmsql' && 'self-hosted' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    env:
+      GINKGO_TIMEOUT: ${{ github.repository_owner == 'cnmsql' && '240m' || '120m' }}
+      E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
+      E2E_JUNIT: test-results/junit.xml
+      GINKGO_EXTRA_ARGS: --repeat=${{ github.event.inputs.repeat || '2' }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Setup Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install kind
+      run: |
+        curl -fsSL -o ./kind \
+          "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+        kind version
+
+    - name: Prepare runner
+      run: |
+        echo "KIND_CLUSTER=cnmsql-flake-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+        for c in $(kind get clusters 2>/dev/null || true); do
+          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
+        done
+        docker system prune -f || true
+
+    - name: Flake hunt
+      run: |
+        mkdir -p test-results
+        set -o pipefail
+        # `flaky` tier may legitimately match no specs; allow that without failing.
+        if [[ "${{ github.event.inputs.tier || 'smoke' }}" == "flaky" ]]; then
+          export GINKGO_EXTRA_ARGS="$GINKGO_EXTRA_ARGS --allow-empty"
+        fi
+        ./hack/e2e.sh --tier "${{ github.event.inputs.tier || 'smoke' }}" 2>&1 | tee test-results/run.log
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-flake-hunt-${{ github.event.inputs.tier || 'smoke' }}
+        path: test-results/
+        if-no-files-found: ignore
+        retention-days: 14
+
+    - name: Cleanup
+      if: always()
+      run: |
+        for c in $(kind get clusters 2>/dev/null || true); do
+          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
+        done
+        rm -f /tmp/cnmsql-e2e-*.yaml || true

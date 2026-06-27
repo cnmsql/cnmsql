@@ -18,7 +18,7 @@ import (
 // acknowledgement count to stay writable when a synchronous replica is lost,
 // then restores it) and the liveness isolation guard (a healthy instance keeps
 // its API-server contact fresh and is never spuriously restarted).
-var _ = Describe("Self-healing", Ordered, func() {
+var _ = Describe("Self-healing", Ordered, Label("feature", "heavy"), func() {
 	const (
 		cluster  = "selfheal"
 		minSync  = 2

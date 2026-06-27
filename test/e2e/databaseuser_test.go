@@ -17,7 +17,7 @@ import (
 // primary with grants spanning multiple schemas, its password rotates when the
 // Secret changes, a pre-existing account is refused until adopted, and the
 // account is reclaimed on deletion under a `delete` policy.
-var _ = Describe("DatabaseUser", Ordered, func() {
+var _ = Describe("DatabaseUser", Ordered, Label("feature"), func() {
 	const (
 		cluster   = "dbusr"
 		userCR    = "tenant"

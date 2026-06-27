@@ -20,7 +20,7 @@ const (
 // GROUP_REPLICATION), quorum-preserving PDB, fence and scale-down quorum
 // guards, quorum-loss detection with Blocked surfacing, and guarded quorum
 // recovery via force_members.
-var _ = Describe("Group Replication fencing and quorum guards", Ordered, func() {
+var _ = Describe("Group Replication fencing and quorum guards", Ordered, Label("feature"), func() {
 	const (
 		cluster   = "gr-guards"
 		instances = 3

@@ -24,7 +24,7 @@ import (
 // of a recovering primary never starve a timing-sensitive spec running in
 // parallel (e.g. the in-place manager re-exec, where an over-long control-API
 // outage would otherwise trip automatic failover).
-var _ = Describe("Replica creation guard", Serial, Ordered, func() {
+var _ = Describe("Replica creation guard", Serial, Ordered, Label("feature"), func() {
 	var ns, prevNS string
 
 	BeforeAll(func() {

@@ -15,7 +15,7 @@ import (
 // cluster by recovering one of those backups, and the safety guard that keeps a
 // fresh cluster from overwriting a non-empty backup destination. They stand up a
 // single-node MinIO inside the test cluster to act as the S3-compatible store.
-var _ = Describe("Physical backup and recovery", Ordered, func() {
+var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func() {
 	const (
 		sourceCluster   = "bkp-src"
 		restoredCluster = "bkp-restored"

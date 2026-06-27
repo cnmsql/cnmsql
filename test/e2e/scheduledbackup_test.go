@@ -16,7 +16,7 @@ import (
 // backup fires on creation and the cron cadence keeps producing Backups, each
 // labeled with its parent ScheduledBackup. It reuses the single-node MinIO store
 // stood up for the one-shot backup specs.
-var _ = Describe("Scheduled backups", Ordered, func() {
+var _ = Describe("Scheduled backups", Ordered, Label("feature"), func() {
 	const (
 		sourceCluster = "sched-src"
 		scheduleName  = "sched-nightly"

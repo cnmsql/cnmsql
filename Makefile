@@ -103,23 +103,22 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Opt
 	esac
 
 GINKGO_VERSION ?= v2.27.2
-GINKGO_PROCS ?= 1
-ifeq ($(firstword $(MAKECMDGOALS)),test-e2e)
-E2E_EXTRA_GOALS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-E2E_FOCUS ?= $(strip $(E2E_EXTRA_GOALS))
-.PHONY: $(E2E_EXTRA_GOALS)
-$(E2E_EXTRA_GOALS):
-	@:
-endif
-E2E_FOCUS_ARG = $(if $(E2E_FOCUS),--focus='$(E2E_FOCUS)',)
-GINKGO_LABEL_FILTER ?=
-E2E_LABEL_FILTER_ARG = $(if $(GINKGO_LABEL_FILTER),--label-filter='$(GINKGO_LABEL_FILTER)',)
+# Empty GINKGO_PROCS lets hack/e2e.sh auto-size parallelism from CPU/RAM.
+GINKGO_PROCS ?=
 GINKGO_TIMEOUT ?= 120m
+# GINKGO_LABEL_FILTER is honored by hack/e2e.sh when neither --label nor --tier
+# is passed (the CI lanes set it directly).
+GINKGO_LABEL_FILTER ?=
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ginkgo ## Run the e2e tests. Optional: make test-e2e FocusRegex or E2E_FOCUS=FocusRegex.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) $(GINKGO) -procs=$(GINKGO_PROCS) -v -tags=e2e $(E2E_FOCUS_ARG) $(E2E_LABEL_FILTER_ARG) --timeout=$(GINKGO_TIMEOUT) ./test/e2e/
-	$(MAKE) cleanup-test-e2e
+test-e2e: ## Run the full e2e suite via hack/e2e.sh. For focus / --k8s / --mysql / --tier, run ./hack/e2e.sh --help.
+	KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" GINKGO="$(GINKGO)" \
+		GINKGO_PROCS="$(GINKGO_PROCS)" GINKGO_TIMEOUT="$(GINKGO_TIMEOUT)" \
+		GINKGO_LABEL_FILTER="$(GINKGO_LABEL_FILTER)" ./hack/e2e.sh
+
+.PHONY: e2e-build-images
+e2e-build-images: docker-build ## Build the manager image and load it into the e2e Kind cluster (build happens outside the suite; used by hack/e2e.sh).
+	$(KIND) load docker-image $(IMG) --name $(KIND_CLUSTER)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests

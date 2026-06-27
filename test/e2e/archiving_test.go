@@ -33,7 +33,7 @@ import (
 func init() {
 	for _, version := range archiveVersions() {
 		v := version
-		Describe(fmt.Sprintf("Continuous binlog archiving - %s", v), Ordered, func() {
+		Describe(fmt.Sprintf("Continuous binlog archiving - %s", v), Ordered, Label("flavor"), func() {
 			var ns, prevNS string
 
 			BeforeAll(func() {

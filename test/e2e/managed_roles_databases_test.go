@@ -18,7 +18,7 @@ import (
 // primary with the right privileges, and a namespaced Database CR creates a
 // schema and a schema-scoped user, then drops the schema on deletion under a
 // `delete` reclaim policy.
-var _ = Describe("Managed roles and databases", Ordered, func() {
+var _ = Describe("Managed roles and databases", Ordered, Label("feature"), func() {
 	const (
 		cluster = "mrdb"
 		// Managed role declared in the Cluster spec (generated password).

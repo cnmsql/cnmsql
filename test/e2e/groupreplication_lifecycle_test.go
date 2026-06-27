@@ -18,7 +18,7 @@ import (
 // total-outage re-bootstrap (every member down, then guarded re-form from the
 // most-advanced survivor with no data loss). They run Ordered and sequentially
 // against one cluster so each step builds on the previous group state.
-var _ = Describe("Group Replication lifecycle", Ordered, func() {
+var _ = Describe("Group Replication lifecycle", Ordered, Label("feature", "heavy"), func() {
 	const (
 		cluster   = "gr-lifecycle"
 		instances = 3
@@ -200,10 +200,10 @@ var _ = Describe("Group Replication lifecycle", Ordered, func() {
 
 	It("re-bootstraps the same group after a total outage with no data loss", func() {
 		By("killing every member so no ONLINE survivor remains (total outage)")
-		for _, member := range []string{cluster + "-1", cluster + "-2", cluster + "-3"} {
-			_, err := kubectl("delete", "pod", member, "-n", testNamespace, "--wait=false")
-			Expect(err).NotTo(HaveOccurred(), "failed to delete %s", member)
-		}
+		_, err := kubectl("delete", "pod",
+			cluster+"-1", cluster+"-2", cluster+"-3",
+			"-n", testNamespace, "--wait=false")
+		Expect(err).NotTo(HaveOccurred(), "failed to delete pods")
 
 		// Detection and recovery are watched in a single loop so the brief FullOutage
 		// window cannot slip through a gap between two separate Eventually blocks.

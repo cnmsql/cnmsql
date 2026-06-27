@@ -35,11 +35,22 @@ make run                  # Run the controller against your current kubeconfig
 
 Run `make help` for the full list of targets. The [README](README.md) has a Kind-based quickstart.
 
-End-to-end tests run against a real cluster and take longer:
+End-to-end tests run against a real cluster and take longer. `./hack/e2e.sh` is
+the one-command entrypoint: it creates a Kind cluster, builds and loads the
+operator image, runs the suite, and tears the cluster down.
 
 ```bash
-make test-e2e
+make test-e2e                              # whole suite (alias for ./hack/e2e.sh)
+./hack/e2e.sh --tier smoke                 # critical path only, fast
+./hack/e2e.sh --focus 'switchover' --keep  # one spec, reuse the cluster
+./hack/e2e.sh --mysql 9.x --tier flavor    # version-sensitive specs on 9.x
+./hack/e2e.sh --help                       # all flags (--k8s, --procs, --junit, --fresh, ...)
 ```
+
+Specs carry tier labels (`core`/`feature`/`flavor`/`heavy`/`disruptive`); CI runs
+them as separate lanes so version-agnostic specs run once and only `flavor` specs
+run across every MySQL version. Operator-disrupting specs each provision their own
+ephemeral Kind cluster, so they never destabilise the shared suite operator.
 
 ## Pull requests
 

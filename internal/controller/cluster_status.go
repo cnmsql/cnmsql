@@ -721,7 +721,7 @@ func isFullOutage(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool
 		return false
 	}
 	gr := cluster.Status.GroupReplication
-	if gr == nil || !gr.Bootstrapped || gr.HasQuorum {
+	if gr == nil || !gr.Bootstrapped {
 		return false
 	}
 	// A surviving ONLINE member means a partial quorum loss (force_members can
