@@ -43,7 +43,7 @@ func Of(path string) (Usage, error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return Usage{}, err
 	}
-	bsize := int64(st.Bsize)
+	bsize := st.Bsize
 	capacity := int64(st.Blocks) * bsize
 	return Usage{
 		UsedBytes:      capacity - int64(st.Bfree)*bsize,

@@ -32,7 +32,7 @@ func TestVolumeCollectorReportsUsage(t *testing.T) {
 		t.Fatalf("CollectAndCount = %d, want 4", got)
 	}
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP mysql_instance_data_volume_scrape_error Whether reading the instance data volume usage failed (1 for error, 0 for success).
+# HELP mysql_instance_data_volume_scrape_error 1 if reading instance data volume usage failed, 0 otherwise.
 # TYPE mysql_instance_data_volume_scrape_error gauge
 mysql_instance_data_volume_scrape_error 0
 `), "mysql_instance_data_volume_scrape_error"); err != nil {
@@ -49,7 +49,7 @@ func TestVolumeCollectorReportsErrorOnMissingPath(t *testing.T) {
 		t.Fatalf("CollectAndCount = %d, want 1", got)
 	}
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP mysql_instance_data_volume_scrape_error Whether reading the instance data volume usage failed (1 for error, 0 for success).
+# HELP mysql_instance_data_volume_scrape_error 1 if reading instance data volume usage failed, 0 otherwise.
 # TYPE mysql_instance_data_volume_scrape_error gauge
 mysql_instance_data_volume_scrape_error 1
 `), "mysql_instance_data_volume_scrape_error"); err != nil {
