@@ -88,6 +88,16 @@ type observedCluster struct {
 	// ContinuousArchiving holds the primary's archiving frontier/health when
 	// continuous archiving is enabled; nil otherwise.
 	ContinuousArchiving *mysqlv1alpha1.ContinuousArchivingStatus
+	// StorageObserved is true when at least one reachable instance reported its
+	// data-volume usage. The StoragePressure condition is only set once there is a
+	// signal to base it on, so a cluster whose instances are all unreachable (or
+	// running an instance manager that predates storage reporting) does not get a
+	// spurious StoragePressure=False.
+	StorageObserved bool
+	// StoragePressure is true when any instance's data-volume usage is at or above
+	// storagePressurePercent. StoragePressureReason names the offending instances.
+	StoragePressure       bool
+	StoragePressureReason string
 	// GroupReplication is the operator's aggregated view of the group under GR
 	// mode (primary, members, quorum); nil for async clusters or before any
 	// member is observed ONLINE. The sticky groupName/bootstrapped fields are
@@ -198,8 +208,43 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
 	observed.Progressing = !observed.Ready
 
+	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
+
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
+}
+
+// evaluateStoragePressure aggregates the per-instance data-volume usage into the
+// cluster-level StoragePressure signal. It reports whether any instance reported
+// usage at all (observed), whether any is at or above the threshold (pressure),
+// and a message naming the instances over the threshold.
+//
+// The message deliberately lists only instance names, not live percentages: the
+// usage gauge changes on every write, and folding it into the condition message
+// would patch the Cluster status on every reconcile. The precise figure lives in
+// the Prometheus volume metrics and the point-in-time pressure Event instead.
+func evaluateStoragePressure(observed observedCluster) (bool, bool, string) {
+	var anyObserved bool
+	var pressured []string
+	for _, name := range observed.InstanceNames {
+		status := observed.StatusByInstance[name]
+		if status == nil || status.Storage == nil || status.Storage.CapacityBytes <= 0 {
+			continue
+		}
+		anyObserved = true
+		usedPercent := float64(status.Storage.UsedBytes) / float64(status.Storage.CapacityBytes) * 100
+		if usedPercent >= storagePressurePercent {
+			pressured = append(pressured, name)
+		}
+	}
+	if !anyObserved {
+		return false, false, ""
+	}
+	if len(pressured) == 0 {
+		return true, false, fmt.Sprintf("All instance data volumes are below %d%% usage", storagePressurePercent)
+	}
+	return true, true, fmt.Sprintf("Data volume usage is at or above %d%% on instance(s): %s",
+		storagePressurePercent, strings.Join(pressured, ", "))
 }
 
 // computeClusterPhase sets the Phase, PhaseReason, Ready, and Progressing
@@ -455,6 +500,22 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		Message:            observed.PhaseReason,
 		ObservedGeneration: latest.Generation,
 	})
+	// Capture the prior pressure state before updating the condition so the event
+	// below fires only on the transition, not on every reconcile while pressured.
+	wasStoragePressured := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStoragePressure)
+	if observed.StorageObserved {
+		reason := "BelowThreshold"
+		if observed.StoragePressure {
+			reason = "AboveThreshold"
+		}
+		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               conditionStoragePressure,
+			Status:             conditionStatus(observed.StoragePressure),
+			Reason:             reason,
+			Message:            observed.StoragePressureReason,
+			ObservedGeneration: latest.Generation,
+		})
+	}
 	// gtid_executed advances on every write, so persisting it on every reconcile
 	// would patch the Cluster status (an etcd write) continuously under load. It
 	// is purely informational — failover and switchover decisions read the live
@@ -487,6 +548,15 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		if r.Recorder != nil {
 			r.Recorder.Event(latest, corev1.EventTypeWarning, "FullOutage",
 				"All members are down; re-bootstrapping the group from the last-seen primary")
+		}
+	}
+	if r.Recorder != nil && observed.StorageObserved {
+		switch {
+		case observed.StoragePressure && !wasStoragePressured:
+			r.Recorder.Event(latest, corev1.EventTypeWarning, eventStoragePressure, observed.StoragePressureReason)
+		case !observed.StoragePressure && wasStoragePressured:
+			r.Recorder.Event(latest, corev1.EventTypeNormal, eventStoragePressureResolved,
+				observed.StoragePressureReason)
 		}
 	}
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {

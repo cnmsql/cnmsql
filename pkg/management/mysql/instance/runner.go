@@ -34,6 +34,7 @@ import (
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/diskusage"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance/rolereconciler"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
@@ -350,6 +351,21 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.GroupReplication {
 		controller.EnableGroupReplication()
 	}
+	if opts.DataDir != "" {
+		dataDir := opts.DataDir
+		controller.SetStorageProvider(func() *webserver.StorageStatus {
+			usage, err := diskusage.Of(dataDir)
+			if err != nil {
+				log.Error(err, "Could not read data volume usage", "dataDir", dataDir)
+				return nil
+			}
+			return &webserver.StorageStatus{
+				UsedBytes:      usage.UsedBytes,
+				CapacityBytes:  usage.CapacityBytes,
+				AvailableBytes: usage.AvailableBytes,
+			}
+		})
+	}
 	// Skip destructive (re)configuration when adopting: mysqld is already running,
 	// configured, and serving its role. Semi-sync plugins are already installed and
 	// enabled, and re-applying them would clear read_only on a serving instance.
@@ -467,7 +483,8 @@ func Run(ctx context.Context, opts RunOptions) error {
 			}
 		}
 	}
-	metricsSrv := metricserver.New(opts.MetricsAddr, metrics.NewExporter(db), metricsTLSConfig)
+	metricsSrv := metricserver.New(opts.MetricsAddr, metricsTLSConfig,
+		metrics.NewExporter(db), metrics.NewVolumeCollector(opts.DataDir))
 
 	serverErr := make(chan error, 1)
 	log.Info("Starting control API server", "addr", opts.WebserverAddr, "tls", opts.TLS.ServerCertFile != "")

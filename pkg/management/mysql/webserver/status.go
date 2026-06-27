@@ -84,6 +84,24 @@ type Status struct {
 	// it does Replication, and cross-validates the group primary across the ONLINE
 	// majority.
 	GroupReplication *GroupReplicationMemberStatus `json:"groupReplication,omitempty"`
+
+	// Storage reports the instance data volume's space usage as observed by
+	// statfs. The operator aggregates it across instances to raise the
+	// StoragePressure condition. It is nil when usage could not be read (e.g. an
+	// instance manager that predates this field), in which case the operator
+	// treats the instance as contributing no storage signal.
+	Storage *StorageStatus `json:"storage,omitempty"`
+}
+
+// StorageStatus reports an instance data volume's space usage, in bytes, as
+// observed by statfs on the data directory.
+type StorageStatus struct {
+	// UsedBytes is the consumed space (capacity minus all free blocks).
+	UsedBytes int64 `json:"usedBytes"`
+	// CapacityBytes is the total filesystem size.
+	CapacityBytes int64 `json:"capacityBytes"`
+	// AvailableBytes is the space free to mysqld (excludes root-reserved blocks).
+	AvailableBytes int64 `json:"availableBytes"`
 }
 
 // GroupReplicationMemberStatus is one instance manager's Group Replication

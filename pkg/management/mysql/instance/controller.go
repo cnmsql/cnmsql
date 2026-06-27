@@ -73,6 +73,10 @@ type Controller struct {
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus
+	// storage, when set, supplies the data volume's space usage for inclusion in
+	// the instance status. nil leaves status.Storage unset (e.g. in tests, or when
+	// no data directory is known).
+	storage func() *webserver.StorageStatus
 	// isolation, when set, fails the liveness probe once the instance has lost
 	// contact with the Kubernetes API server for too long. nil disables the check.
 	isolation *IsolationDetector
@@ -129,6 +133,13 @@ func NewController(
 // archiver's current state for inclusion in the instance status.
 func (c *Controller) SetArchivingProvider(provider func() *webserver.ArchivingStatus) {
 	c.archiving = provider
+}
+
+// SetStorageProvider registers a callback that supplies the data volume's space
+// usage for inclusion in the instance status. The run loop wires it to a statfs
+// of the data directory; tests may leave it unset.
+func (c *Controller) SetStorageProvider(provider func() *webserver.StorageStatus) {
+	c.storage = provider
 }
 
 // SetIsolationDetector wires the API-server isolation detector into the liveness
@@ -303,6 +314,9 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	}
 	if c.archiving != nil {
 		status.Archiving = c.archiving()
+	}
+	if c.storage != nil {
+		status.Storage = c.storage()
 	}
 
 	if replicaState.Configured {

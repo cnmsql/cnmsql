@@ -24,6 +24,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -526,6 +527,189 @@ func TestPatchStatusEstablishedAtIsSticky(t *testing.T) {
 	}
 	if !got2.IsEstablished() {
 		t.Fatal("cluster no longer reports established after a Provisioning re-stamp")
+	}
+}
+
+func storageStatus(instance string, usedPercent int) *webserver.Status {
+	const capacity = 100 << 30
+	return &webserver.Status{
+		InstanceName: instance,
+		IsReady:      true,
+		Storage: &webserver.StorageStatus{
+			CapacityBytes:  capacity,
+			UsedBytes:      int64(capacity) * int64(usedPercent) / 100,
+			AvailableBytes: int64(capacity) * int64(100-usedPercent) / 100,
+		},
+	}
+}
+
+func TestEvaluateStoragePressure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		statuses     map[string]*webserver.Status
+		wantObserved bool
+		wantPressure bool
+		wantContains string
+	}{
+		{
+			name: "no instance reports storage",
+			statuses: map[string]*webserver.Status{
+				testPrimary: {InstanceName: testPrimary, IsReady: true},
+			},
+		},
+		{
+			name: "all below threshold",
+			statuses: map[string]*webserver.Status{
+				testPrimary:  storageStatus(testPrimary, 50),
+				testReplica2: storageStatus(testReplica2, 84),
+			},
+			wantObserved: true,
+		},
+		{
+			name: "one at threshold",
+			statuses: map[string]*webserver.Status{
+				testPrimary:  storageStatus(testPrimary, 85),
+				testReplica2: storageStatus(testReplica2, 50),
+			},
+			wantObserved: true,
+			wantPressure: true,
+			wantContains: testPrimary,
+		},
+		{
+			name: "ignores zero-capacity volume",
+			statuses: map[string]*webserver.Status{
+				testPrimary: {InstanceName: testPrimary, Storage: &webserver.StorageStatus{}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			observed := observedCluster{
+				InstanceNames:    []string{testPrimary, testReplica2, testReplica3},
+				StatusByInstance: tc.statuses,
+			}
+			gotObserved, gotPressure, gotReason := evaluateStoragePressure(observed)
+			if gotObserved != tc.wantObserved || gotPressure != tc.wantPressure {
+				t.Fatalf("evaluateStoragePressure = (observed=%v, pressure=%v), want (observed=%v, pressure=%v)",
+					gotObserved, gotPressure, tc.wantObserved, tc.wantPressure)
+			}
+			if tc.wantContains != "" && !strings.Contains(gotReason, tc.wantContains) {
+				t.Fatalf("reason = %q, want to contain %q", gotReason, tc.wantContains)
+			}
+		})
+	}
+}
+
+func TestPatchStatusStoragePressureConditionAndEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 1
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(4)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster).
+		Build()
+	reconciler := &ClusterReconciler{Client: c, Scheme: scheme, Recorder: recorder}
+	plan := testPlan()
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+
+	// 1) Volume crosses the threshold: condition flips True and a Warning fires.
+	if err := reconciler.patchStatus(ctx, cluster, observedCluster{
+		Plan:                  plan,
+		InstanceNames:         []string{testPrimary},
+		Phase:                 topology.PhaseReady,
+		Ready:                 true,
+		ReadyInstances:        1,
+		StorageObserved:       true,
+		StoragePressure:       true,
+		StoragePressureReason: "Data volume usage is at or above 85% on instance(s): " + testPrimary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, conditionStoragePressure); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("StoragePressure condition = %+v, want True", cond)
+	}
+	assertEvent(t, recorder, eventStoragePressure)
+
+	// 2) Steady-state resync while still pressured: no duplicate event.
+	if err := reconciler.patchStatus(ctx, got, observedCluster{
+		Plan:                  plan,
+		InstanceNames:         []string{testPrimary},
+		Phase:                 topology.PhaseReady,
+		Ready:                 true,
+		ReadyInstances:        1,
+		StorageObserved:       true,
+		StoragePressure:       true,
+		StoragePressureReason: "Data volume usage is at or above 85% on instance(s): " + testPrimary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertNoEvent(t, recorder, eventStoragePressure)
+
+	// 3) Usage drops back: condition flips False and a resolved event fires.
+	got2 := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got2); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.patchStatus(ctx, got2, observedCluster{
+		Plan:                  plan,
+		InstanceNames:         []string{testPrimary},
+		Phase:                 topology.PhaseReady,
+		Ready:                 true,
+		ReadyInstances:        1,
+		StorageObserved:       true,
+		StoragePressure:       false,
+		StoragePressureReason: "All instance data volumes are below 85% usage",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got3 := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got3); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got3.Status.Conditions, conditionStoragePressure); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("StoragePressure condition = %+v, want False", cond)
+	}
+	assertEvent(t, recorder, eventStoragePressureResolved)
+}
+
+// assertEvent drains every currently buffered event and fails unless one of them
+// contains reason. A patchStatus call may emit several events (e.g. a phase
+// transition alongside the storage one), so it scans rather than peeking the head.
+func assertEvent(t *testing.T, recorder *record.FakeRecorder, reason string) {
+	t.Helper()
+	for {
+		select {
+		case event := <-recorder.Events:
+			if strings.Contains(event, reason) {
+				return
+			}
+		default:
+			t.Fatalf("expected an event containing %q", reason)
+		}
+	}
+}
+
+func assertNoEvent(t *testing.T, recorder *record.FakeRecorder, reason string) {
+	t.Helper()
+	for {
+		select {
+		case event := <-recorder.Events:
+			if strings.Contains(event, reason) {
+				t.Fatalf("unexpected event containing %q: %q", reason, event)
+			}
+		default:
+			return
+		}
 	}
 }
 

@@ -127,8 +127,16 @@ const (
 	conditionReady               = "Ready"
 	conditionProgressing         = "Progressing"
 	conditionContinuousArchiving = "ContinuousArchiving"
+	conditionStoragePressure     = "StoragePressure"
 
-	eventFailoverObserved = "FailoverObserved"
+	eventFailoverObserved        = "FailoverObserved"
+	eventStoragePressure         = "StoragePressure"
+	eventStoragePressureResolved = "StoragePressureResolved"
+
+	// storagePressurePercent is the data-volume usage (percent of capacity) at or
+	// above which an instance is considered under storage pressure. It is a fixed
+	// default for now; promote to a storage.* field if clusters need to tune it.
+	storagePressurePercent = 85
 
 	dataDir       = "/var/lib/mysql"
 	socketPath    = "/var/run/mysqld/mysqld.sock"

@@ -27,12 +27,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// New creates a standalone metrics HTTP server. When tlsConfig is non-nil the
-// server is configured to serve over (mutual) TLS; the caller then starts it
-// with ListenAndServeTLS. A nil tlsConfig serves plain HTTP.
-func New(addr string, collector prometheus.Collector, tlsConfig *tls.Config) *http.Server {
+// New creates a standalone metrics HTTP server exposing the given collectors.
+// When tlsConfig is non-nil the server is configured to serve over (mutual) TLS;
+// the caller then starts it with ListenAndServeTLS. A nil tlsConfig serves plain
+// HTTP.
+func New(addr string, tlsConfig *tls.Config, collectors_ ...prometheus.Collector) *http.Server {
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(collector)
+	for _, collector := range collectors_ {
+		registry.MustRegister(collector)
+	}
 	registry.MustRegister(collectors.NewGoCollector())
 
 	mux := http.NewServeMux()
