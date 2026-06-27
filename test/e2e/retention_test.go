@@ -80,9 +80,7 @@ var _ = Describe("Backup retention GC", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("nudging a reconcile so the retention pass runs promptly")
-		_, err = kubectl("annotate", "cluster", retCluster, "-n", testNamespace,
-			"cnmsql.co/retention-nudge="+fmt.Sprint(time.Now().Unix()), "--overwrite")
-		Expect(err).NotTo(HaveOccurred())
+		clusterAnnotate(retCluster, "cnmsql.co/retention-nudge="+fmt.Sprint(time.Now().Unix()))
 
 		By("verifying the stale backup directory is GC'd")
 		Eventually(func(g Gomega) {

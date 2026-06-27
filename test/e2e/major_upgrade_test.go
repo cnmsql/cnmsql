@@ -365,9 +365,7 @@ var _ = Describe("MySQL major-version upgrade defensive scenarios", Ordered, Lab
 		applyManifest(catalog, majorUpgradeCatalogManifest(catalog, ns))
 
 		By("triggering reconciliation by updating the Cluster")
-		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			"cnmsql.co/e2e-trigger=reconcile", "--overwrite")
-		Expect(err).NotTo(HaveOccurred())
+		clusterAnnotate(cluster, "cnmsql.co/e2e-trigger=reconcile")
 
 		By("verifying the cluster recovers to Ready after the catalog is back")
 		expectClusterReady(cluster, 3, 20*time.Minute)

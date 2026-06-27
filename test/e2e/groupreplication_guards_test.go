@@ -204,9 +204,7 @@ var _ = Describe("Group Replication fencing and quorum guards", Ordered, func() 
 
 	It("recovers quorum via guarded force_members annotation", func() {
 		By("applying the force-quorum-recovery annotation")
-		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			forceQuorumRecoveryAnnotation+"=yes", "--overwrite")
-		Expect(err).NotTo(HaveOccurred())
+		clusterAnnotate(cluster, forceQuorumRecoveryAnnotation+"=yes")
 
 		By("verifying the operator clears the annotation and the survivor re-forms the group")
 		Eventually(func(g Gomega) {

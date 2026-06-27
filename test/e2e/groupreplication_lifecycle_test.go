@@ -163,9 +163,7 @@ var _ = Describe("Group Replication lifecycle", Ordered, func() {
 		}
 
 		By("requesting a rolling restart via the restart annotation")
-		_, err := kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			"cnmsql.cnmsql.co/restart="+time.Now().UTC().Format(time.RFC3339), "--overwrite")
-		Expect(err).NotTo(HaveOccurred())
+		clusterAnnotate(cluster, "cnmsql.cnmsql.co/restart="+time.Now().UTC().Format(time.RFC3339))
 
 		By("verifying every member's Pod is recreated (new UID) and the group regains all three ONLINE")
 		Eventually(func(g Gomega) {

@@ -264,6 +264,26 @@ func isTransientWebhookError(out string, err error) bool {
 	return false
 }
 
+// clusterAnnotate annotates a Cluster resource, retrying on transient
+// admission-webhook connectivity errors (e.g. webhook Pod restarting). The
+// webhook uses failurePolicy: Fail, so a momentarily unreachable endpoint
+// must not fail the test.
+func clusterAnnotate(name, annotation string) {
+	GinkgoHelper()
+	Eventually(func() error {
+		out, err := kubectl("annotate", "cluster", name, "-n", testNamespace,
+			annotation, "--overwrite")
+		if err != nil && isTransientWebhookError(out, err) {
+			return err
+		}
+		if err != nil {
+			StopTrying("annotate rejected").Wrap(err).Now()
+		}
+		return nil
+	}, e2eTimeout(2*time.Minute), 2*time.Second).Should(Succeed(),
+		"Failed to annotate Cluster %s", name)
+}
+
 // deleteManifest deletes the resources described by the named manifest, ignoring
 // any that are already gone. It is safe to call from DeferCleanup.
 func deleteManifest(name, manifest string) {

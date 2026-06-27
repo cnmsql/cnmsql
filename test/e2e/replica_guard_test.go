@@ -124,9 +124,18 @@ var _ = Describe("Replica creation guard", Serial, Ordered, func() {
 // number of instances.
 func scaleInstances(name string, instances int) {
 	GinkgoHelper()
-	_, err := kubectl("patch", "cluster", name, "-n", testNamespace,
-		"--type=merge", "-p", fmt.Sprintf(`{"spec":{"instances":%d}}`, instances))
-	Expect(err).NotTo(HaveOccurred(), "failed to scale cluster %s to %d instances", name, instances)
+	Eventually(func() error {
+		out, err := kubectl("patch", "cluster", name, "-n", testNamespace,
+			"--type=merge", "-p", fmt.Sprintf(`{"spec":{"instances":%d}}`, instances))
+		if err != nil && isTransientWebhookError(out, err) {
+			return err
+		}
+		if err != nil {
+			StopTrying("scale rejected").Wrap(err).Now()
+		}
+		return nil
+	}, e2eTimeout(2*time.Minute), 2*time.Second).Should(Succeed(),
+		"failed to scale cluster %s to %d instances", name, instances)
 }
 
 // podExists reports whether a Pod with the given name is present. A read error

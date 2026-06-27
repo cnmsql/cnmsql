@@ -144,9 +144,7 @@ var _ = Describe("Diverged replica failover guard", Ordered, func() {
 			"post-divergence data must survive the primary restart")
 
 		By(fmt.Sprintf("re-initialising the diverged replica %s", replica))
-		_, err = kubectl("annotate", "cluster", cluster, "-n", testNamespace,
-			"cnmsql.cnmsql.co/reinit="+replica, "--overwrite")
-		Expect(err).NotTo(HaveOccurred(), "failed to set reinit annotation")
+		clusterAnnotate(cluster, "cnmsql.cnmsql.co/reinit="+replica)
 
 		By("waiting for the replica to re-clone and the cluster to become Ready")
 		expectClusterReady(cluster, instances, 20*time.Minute)
