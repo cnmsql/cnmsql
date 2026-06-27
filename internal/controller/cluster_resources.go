@@ -194,44 +194,110 @@ func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
 	}
 }
 
-func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
+// ensurePVC reconciles the instance's data PVC, growing its storage request when
+// spec.storage.size increases (Kubernetes never allows shrinking). It returns
+// needsRoll=true when the volume has a pending node-side resize that cannot
+// complete while it stays mounted — see ShouldResizeInUseVolumes — so the caller
+// must recycle the Pod to finish the expansion.
+func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) (bool, error) {
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 		Name:      inst.PVCName,
 		Namespace: cluster.Namespace,
 	}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return err
+			return false, err
 		}
 		spec, err := pvcSpec(cluster.Spec.Storage)
 		if err != nil {
-			return err
+			return false, err
 		}
 		pvc.Labels = labelsFor(cluster, inst.Name, roleOf(inst))
 		pvc.Spec = spec
 		if err := controllerutil.SetControllerReference(cluster, pvc, r.Scheme); err != nil {
-			return err
+			return false, err
 		}
-		return r.Create(ctx, pvc)
+		return false, r.Create(ctx, pvc)
 	}
 
 	if cluster.Spec.Storage.Size == "" {
-		return nil
+		return false, nil
 	}
 	desired, err := resource.ParseQuantity(cluster.Spec.Storage.Size)
 	if err != nil {
-		return err
+		return false, err
 	}
 	current := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
-	if current.Cmp(desired) >= 0 {
-		return nil
+	if current.Cmp(desired) < 0 {
+		before := pvc.DeepCopy()
+		if pvc.Spec.Resources.Requests == nil {
+			pvc.Spec.Resources.Requests = corev1.ResourceList{}
+		}
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desired
+		if err := r.Patch(ctx, pvc, client.MergeFrom(before)); err != nil {
+			return false, err
+		}
 	}
-	before := pvc.DeepCopy()
-	if pvc.Spec.Resources.Requests == nil {
-		pvc.Spec.Resources.Requests = corev1.ResourceList{}
+
+	// With an online-expandable backend the kubelet grows the filesystem in place
+	// and no roll is needed. When ResizeInUseVolumes is false the backend cannot,
+	// so the resize parks in a pending condition until the volume is detached:
+	// signal the caller to recycle the Pod and let the new mount complete it.
+	if !cluster.ShouldResizeInUseVolumes() && pvcResizePending(pvc) {
+		return true, nil
 	}
-	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desired
-	return r.Patch(ctx, pvc, client.MergeFrom(before))
+	return false, nil
+}
+
+// rollForResize recycles the instance Pod so a pending volume resize can
+// complete on the new mount. It mirrors ensurePod's roll contract: it returns
+// rolled=true only when it deletes (or finds already terminating) the Pod, so the
+// caller stops the pass and requeues; allowRoll=false defers the action (the
+// primary is rolled last). A missing Pod is not an error — ensurePod will create
+// it and the fresh mount completes the resize.
+func (r *ClusterReconciler) rollForResize(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan, allowRoll bool) (bool, error) {
+	if !allowRoll {
+		return false, nil
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      inst.Name,
+		Namespace: cluster.Namespace,
+	}}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if pod.DeletionTimestamp != nil {
+		return true, nil
+	}
+	if err := r.Delete(ctx, pod); err != nil {
+		return false, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "VolumeResize",
+			"Recreating instance %s to complete an offline volume resize", inst.Name)
+	}
+	return true, nil
+}
+
+// pvcResizePending reports whether a PVC has a resize that Kubernetes has not yet
+// finished applying to the underlying filesystem: either the volume-level
+// expansion is still in progress (Resizing) or it is done and waiting on a
+// node-side filesystem grow that only happens on (re)mount (FileSystemResizePending).
+func pvcResizePending(pvc *corev1.PersistentVolumeClaim) bool {
+	for _, condition := range pvc.Status.Conditions {
+		if condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch condition.Type {
+		case corev1.PersistentVolumeClaimResizing,
+			corev1.PersistentVolumeClaimFileSystemResizePending:
+			return true
+		}
+	}
+	return false
 }
 
 func pvcSpec(storage mysqlv1alpha1.StorageConfiguration) (corev1.PersistentVolumeClaimSpec, error) {

@@ -704,6 +704,18 @@ func (cluster *Cluster) IsSwitchoverOnDrainEnabled() bool {
 	return cluster.Spec.EnableSwitchoverOnDrain == nil || *cluster.Spec.EnableSwitchoverOnDrain
 }
 
+// ShouldResizeInUseVolumes reports whether the operator may grow PVCs that are
+// still mounted by a running instance (online expansion). It defaults to true.
+//
+// When false, the storage backend cannot expand a volume while it is in use, so
+// the node-side filesystem resize stays pending until the volume is detached and
+// remounted. In that case the operator completes the resize by recycling the
+// instance Pod (serialised replica-by-replica, primary last) rather than leaving
+// the PVC stuck.
+func (cluster *Cluster) ShouldResizeInUseVolumes() bool {
+	return cluster.Spec.Storage.ResizeInUseVolumes == nil || *cluster.Spec.Storage.ResizeInUseVolumes
+}
+
 // GetMaxStopDelay returns the amount of time in seconds MySQL has to stop.
 func (cluster *Cluster) GetMaxStopDelay() int32 {
 	if cluster.Spec.MaxStopDelay > 0 {

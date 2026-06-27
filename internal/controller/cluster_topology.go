@@ -206,11 +206,21 @@ func (r *ClusterReconciler) ensureInstance(ctx context.Context, cluster *mysqlv1
 	if err := r.ensureConfigMap(ctx, cluster, plan, inst); err != nil {
 		return false, err
 	}
-	if err := r.ensurePVC(ctx, cluster, inst); err != nil {
+	needsResizeRoll, err := r.ensurePVC(ctx, cluster, inst)
+	if err != nil {
 		return false, err
 	}
 	if err := r.ensureInstanceService(ctx, cluster, inst); err != nil {
 		return false, err
+	}
+	// A volume whose backend cannot expand in use only finishes resizing once the
+	// Pod is recycled. Route that through the same serialised roll as a template
+	// change: when allowRoll is false (the primary, deferred to last) leave the Pod
+	// for a later pass; ensurePod below is then a no-op for the unchanged template.
+	if needsResizeRoll {
+		if rolled, err := r.rollForResize(ctx, cluster, inst, allowRoll); err != nil || rolled {
+			return rolled, err
+		}
 	}
 	return r.ensurePod(ctx, cluster, plan, inst, allowRoll)
 }

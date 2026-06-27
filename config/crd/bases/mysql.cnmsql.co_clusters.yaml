@@ -1444,7 +1444,12 @@ spec:
                     type: object
                   resizeInUseVolumes:
                     default: true
-                    description: Resize existing PVCs, defaults to true
+                    description: |-
+                      ResizeInUseVolumes, when true (the default), grows mounted PVCs in place and
+                      relies on the storage backend to expand the filesystem online. Set it to
+                      false when the backend cannot expand a volume in use: the operator then
+                      completes a resize by recycling the instance Pod (serialised
+                      replica-by-replica, primary last) so the volume is detached and remounted.
                     type: boolean
                   size:
                     description: |-
@@ -3429,7 +3434,12 @@ spec:
                     type: object
                   resizeInUseVolumes:
                     default: true
-                    description: Resize existing PVCs, defaults to true
+                    description: |-
+                      ResizeInUseVolumes, when true (the default), grows mounted PVCs in place and
+                      relies on the storage backend to expand the filesystem online. Set it to
+                      false when the backend cannot expand a volume in use: the operator then
+                      completes a resize by recycling the instance Pod (serialised
+                      replica-by-replica, primary last) so the volume is detached and remounted.
                     type: boolean
                   size:
                     description: |-

@@ -98,7 +98,11 @@ type StorageConfiguration struct {
 	// +optional
 	Size string `json:"size,omitempty"`
 
-	// Resize existing PVCs, defaults to true
+	// ResizeInUseVolumes, when true (the default), grows mounted PVCs in place and
+	// relies on the storage backend to expand the filesystem online. Set it to
+	// false when the backend cannot expand a volume in use: the operator then
+	// completes a resize by recycling the instance Pod (serialised
+	// replica-by-replica, primary last) so the volume is detached and remounted.
 	// +optional
 	// +kubebuilder:default:=true
 	ResizeInUseVolumes *bool `json:"resizeInUseVolumes,omitempty"`
