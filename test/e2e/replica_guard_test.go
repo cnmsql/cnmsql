@@ -60,7 +60,7 @@ var _ = Describe("Replica creation guard", Serial, Ordered, Label("feature"), fu
 			sawPrimaryBootstrapping = true
 			Expect(podExists(replica)).To(BeFalse(),
 				"replica %s must not be created before the bootstrap primary %s is ready", replica, primary)
-			time.Sleep(3 * time.Second)
+			time.Sleep(200 * time.Millisecond)
 		}
 		Expect(sawPrimaryBootstrapping).To(BeTrue(),
 			"primary became ready before the guard could be observed; the spec did not exercise the bootstrap window")
@@ -111,7 +111,7 @@ var _ = Describe("Replica creation guard", Serial, Ordered, Label("feature"), fu
 			if ready && sawPrimaryDown {
 				break
 			}
-			time.Sleep(3 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 		}
 		Expect(sawPrimaryDown).To(BeTrue(),
 			"primary recovered before the guard could be observed; the spec did not exercise the unavailable window")
