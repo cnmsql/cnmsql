@@ -12,6 +12,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/format"
 
 	"github.com/cnmsql/cnmsql/test/utils"
 )
@@ -39,6 +40,10 @@ func sharedSetupEnabled() bool {
 // To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
+	// Do not truncate failure output: shell helpers (e.g. `make deploy`) wrap their
+	// combined stdout/stderr into the error, and the default 4000-char cap hides the
+	// actual kubectl/kustomize failure line behind boilerplate.
+	format.MaxLength = 0
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting cnmsql e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
