@@ -163,6 +163,14 @@ var _ = Describe("Group Replication fencing and quorum guards", Ordered, Label("
 			fencingAnnotation+"-")
 		Expect(err).NotTo(HaveOccurred())
 
+		By("waiting for the cluster to exit the Blocked phase")
+		Eventually(func(g Gomega) {
+			phase, err := clusterField(cluster, "{.status.phase}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(phase).NotTo(Equal("Blocked"),
+				"cluster must exit the Blocked phase before asserting readiness")
+		}, e2eTimeout(4*time.Minute), 5*time.Second).Should(Succeed())
+
 		expectClusterReady(cluster, instances, 15*time.Minute)
 	})
 
