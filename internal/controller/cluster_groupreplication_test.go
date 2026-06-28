@@ -282,6 +282,19 @@ func TestIsFullOutageStaysTrueAfterObservedViewMaxReset(t *testing.T) {
 	}
 }
 
+// When handleQuorumRecovery resets ObservedViewMax to 0 but force_members has not
+// completed yet, isQuorumLost must still return true. Otherwise the cluster exits
+// the Blocked phase mid-recovery, creating new pods that join a dead group.
+func TestIsQuorumLostStaysTrueAfterObservedViewMaxReset(t *testing.T) {
+	t.Parallel()
+	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{Bootstrapped: true, ObservedViewMax: 0})
+	cluster.Spec.Instances = 3
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	if !isQuorumLost(cluster, observedCluster{GroupReplication: nil}) {
+		t.Fatal("isQuorumLost must remain true after the ObservedViewMax reset, before the group re-forms")
+	}
+}
+
 func TestMergeGroupReplicationSetsCurrentPrimaryAndBootstrapped(t *testing.T) {
 	t.Parallel()
 	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{GroupName: "group-uuid"})

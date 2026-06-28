@@ -688,9 +688,16 @@ func isQuorumLost(cluster *mysqlv1alpha1.Cluster, observed observedCluster) bool
 		return false
 	}
 	if observed.GroupReplication == nil {
-		// No member reports a group view. Treat as quorum-lost only when the
-		// group was previously observed at its full configured size — not during
-		// initial bootstrap or scale-up where observation is still converging.
+		// No member reports a group view. Treat as quorum-lost when the
+		// group was previously observed at its full configured size or when
+		// ObservedViewMax was reset to 0 during a recovery in flight — not
+		// during initial bootstrap or scale-up where observation is still
+		// converging. A bootstrapped group with ObservedViewMax=0 can only
+		// happen after handleQuorumRecovery reset it; the cluster must
+		// remain blocked until the re-formed group reports a healthy view.
+		if gr.Bootstrapped && gr.ObservedViewMax == 0 {
+			return true
+		}
 		return gr.ObservedViewMax >= cluster.Spec.Instances
 	}
 	// Use the sticky ObservedViewMax as the quorum denominator so that a

@@ -454,11 +454,11 @@ func parseRevokeTokens(line string) []string {
 	}
 	privPart := strings.TrimSpace(upper[len("REVOKE "):idx])
 	rest := strings.TrimSpace(upper[idx+len(" ON "):])
-	fromIdx := strings.Index(rest, " FROM ")
-	if fromIdx < 0 {
+	targetPart, _, found := strings.Cut(rest, " FROM ")
+	if !found {
 		return nil
 	}
-	target := normalizeGrantTarget(strings.TrimSpace(rest[:fromIdx]))
+	target := normalizeGrantTarget(strings.TrimSpace(targetPart))
 	var tokens []string
 	for p := range strings.SplitSeq(privPart, ",") {
 		tokens = append(tokens, strings.ToLower(strings.TrimSpace(p))+"@"+target)
