@@ -454,7 +454,7 @@ func parseRevokeTokens(line string) []string {
 	}
 	privPart := strings.TrimSpace(upper[len("REVOKE "):idx])
 	rest := strings.TrimSpace(upper[idx+len(" ON "):])
-	fromIdx := strings.Index(upper, " FROM ")
+	fromIdx := strings.Index(rest, " FROM ")
 	if fromIdx < 0 {
 		return nil
 	}
