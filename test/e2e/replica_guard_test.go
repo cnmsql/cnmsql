@@ -82,19 +82,25 @@ var _ = Describe("Replica creation guard", Serial, Ordered, Label("feature"), fu
 
 		primary := clusterPrimary(cluster)
 
-		By(fmt.Sprintf("making the primary unavailable by deleting its Pod %s", primary))
-		_, err := kubectl("delete", "pod", primary, "-n", testNamespace, "--wait=false")
-		Expect(err).NotTo(HaveOccurred(), "failed to delete the primary Pod")
+		By(fmt.Sprintf("making the primary unavailable by crashing mysqld in Pod %s", primary))
+		// SIGKILL mysqld rather than deleting the Pod: a Pod delete inherits the
+		// 1800s maxStopDelay grace period, during which the gracefully-draining
+		// mysqld keeps /readyz passing so the Pod never reports NotReady within the
+		// spec deadline (the guard window would be missed). A hard crash flips
+		// /readyz to failing within a few probe periods, so the primary genuinely
+		// goes unavailable in place and then recovers — without --force, which
+		// would orphan the still-running container.
+		_, err := kubectl("exec", primary, "-n", testNamespace, "-c", "mysql", "--",
+			"bash", "-c", "kill -9 $(pidof mysqld)")
+		Expect(err).NotTo(HaveOccurred(), "failed to crash mysqld in the primary Pod")
 
 		By("requesting scale-up to 2 instances while the primary is down")
 		scaleInstances(cluster, 2)
 
 		By("verifying the new replica is not created while the primary is not ready")
-		// kubectl delete --wait=false returns before the kubelet has updated the
-		// Pod's Ready condition, so the just-deleted primary still reports Ready=True
-		// for a moment. A shared single loop that waits for the primary to
-		// go down AND asserts the guard, so the unavailable window cannot be
-		// missed between two separate phases.
+		// The crash flips readiness asynchronously, so a single loop waits for the
+		// primary to go down AND asserts the guard, so the unavailable window cannot
+		// be missed between two separate phases.
 		sawPrimaryDown := false
 		sawPrimaryReady := false
 		deadline := time.Now().Add(e2eTimeout(6 * time.Minute))
