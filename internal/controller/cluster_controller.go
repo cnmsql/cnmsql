@@ -44,7 +44,7 @@ const (
 	// from the separate containers repo to GHCR. See docs/src/instance-images.md.
 	defaultInstanceImage = "ghcr.io/cnmsql/cnmsql-instance:8.0"
 
-	clusterLabel           = "mysql.cnmsql.co/cluster"
+	clusterLabel           = mysqlv1alpha1.ClusterLabelName
 	podMonitorClusterLabel = "cnmsql.co/cluster"
 	instanceLabel          = "mysql.cnmsql.co/instance"
 	roleLabel              = "mysql.cnmsql.co/role"

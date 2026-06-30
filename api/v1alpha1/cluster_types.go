@@ -951,6 +951,14 @@ type ClusterStatus struct {
 	// +optional
 	ReadyInstances int `json:"readyInstances,omitempty"`
 
+	// LabelSelector is the serialized label selector that identifies the
+	// instance Pods managed by this Cluster. It is populated by the operator
+	// and exposed through the scale sub-resource (selectorpath) so that
+	// autoscalers such as the Vertical Pod Autoscaler can discover the managed
+	// Pods to resize.
+	// +optional
+	LabelSelector string `json:"labelSelector,omitempty"`
+
 	// InstanceNames is the list of instance (pod) names.
 	// +optional
 	InstanceNames []string `json:"instanceNames,omitempty"`
@@ -1258,7 +1266,7 @@ type ContinuousArchivingStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:subresource:scale:specpath=.spec.instances,statuspath=.status.instances
+// +kubebuilder:subresource:scale:specpath=.spec.instances,statuspath=.status.instances,selectorpath=.status.labelSelector
 // +kubebuilder:resource:scope=Namespaced,shortName=mysql;mysqlcluster,categories=all
 // +kubebuilder:printcolumn:name="Instances",type=integer,JSONPath=`.status.instances`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyInstances`

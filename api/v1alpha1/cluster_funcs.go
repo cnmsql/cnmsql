@@ -25,11 +25,28 @@ import (
 
 	"github.com/google/uuid"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
+
+// ClusterLabelName is the label the operator stamps on every resource owned by a
+// Cluster, carrying the Cluster's name as its value. It is the canonical way to
+// select the instance Pods belonging to a Cluster and is published through the
+// scale sub-resource so autoscalers (HPA, VPA) can discover them.
+const ClusterLabelName = "mysql.cnmsql.co/cluster"
+
+// GetInstancesSelector returns the serialized label selector that matches all
+// the instance Pods managed by this Cluster. It is published in the status and
+// exposed through the scale sub-resource so that autoscalers (such as HPA or
+// VPA) can discover the managed Pods.
+func (cluster *Cluster) GetInstancesSelector() string {
+	return labels.SelectorFromSet(labels.Set{
+		ClusterLabelName: cluster.Name,
+	}).String()
+}
 
 // retentionPolicyRe matches a retention-policy duration string: a positive
 // integer followed by a unit (d=day, w=week, m=month). It mirrors the

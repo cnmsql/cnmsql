@@ -21,8 +21,39 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 )
+
+var _ = Describe("Cluster instance selector", func() {
+	It("exposes a serialized selector keyed on the cluster label", func() {
+		cluster := &Cluster{}
+		cluster.Name = "demo"
+		cluster.Namespace = "default"
+
+		selector := cluster.GetInstancesSelector()
+
+		parsed, err := labels.Parse(selector)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(parsed.Matches(labels.Set{ClusterLabelName: "demo"})).To(BeTrue())
+		Expect(parsed.Matches(labels.Set{ClusterLabelName: "other"})).To(BeFalse())
+	})
+
+	It("matches the label the controller stamps on instance Pods", func() {
+		cluster := &Cluster{}
+		cluster.Name = "demo"
+
+		selector := cluster.GetInstancesSelector()
+		parsed, err := labels.Parse(selector)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The operator labels every instance Pod with the cluster label set to
+		// the Cluster name (see internal/controller labelsFor); the scale
+		// sub-resource selector must select exactly those Pods.
+		instancePodLabels := labels.Set{"mysql.cnmsql.co/cluster": "demo", "mysql.cnmsql.co/role": "replica"}
+		Expect(parsed.Matches(instancePodLabels)).To(BeTrue())
+	})
+})
 
 var _ = Describe("Cluster defaulting", func() {
 	It("applies defaults to an empty spec", func() {

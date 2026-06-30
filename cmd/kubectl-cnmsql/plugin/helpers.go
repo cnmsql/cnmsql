@@ -51,7 +51,7 @@ const (
 	// refuses otherwise — the annotation is a request, not a command.
 	ForceQuorumRecoveryAnnotation = "cnmsql.cnmsql.co/force-quorum-recovery"
 
-	ClusterLabel = "mysql.cnmsql.co/cluster"
+	ClusterLabel = mysqlv1alpha1.ClusterLabelName
 	RoleLabel    = "mysql.cnmsql.co/role"
 )
 

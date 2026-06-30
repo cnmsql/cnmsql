@@ -444,6 +444,11 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		latest.Status.LatestGeneratedNode = 0
 		latest.Status.Image = ""
 	}
+	// Publish the label selector for the scale sub-resource so autoscalers
+	// (HPA, VPA) can discover the instance Pods managed by this Cluster. It is
+	// derived from the cluster name, so it is stable across reconciles and
+	// independent of the observed pods.
+	latest.Status.LabelSelector = latest.GetInstancesSelector()
 	latest.Status.ObservedGeneration = latest.Generation
 	latest.Status.Phase = observed.Phase
 	latest.Status.PhaseReason = observed.PhaseReason

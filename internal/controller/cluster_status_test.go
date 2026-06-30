@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -527,6 +528,57 @@ func TestPatchStatusEstablishedAtIsSticky(t *testing.T) {
 	}
 	if !got2.IsEstablished() {
 		t.Fatal("cluster no longer reports established after a Provisioning re-stamp")
+	}
+}
+
+// TestPatchStatusPublishesLabelSelector verifies the scale sub-resource
+// selector is published on every status patch so autoscalers (VPA/HPA) can
+// discover the cluster's instance Pods. The selector is derived from the
+// Cluster name, so it must be populated even before any instance is observed.
+func TestPatchStatusPublishesLabelSelector(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 1
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster).
+		Build()
+	reconciler := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan()
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+
+	// Patch with no observed instances: the selector must still be published
+	// because it only depends on the Cluster name.
+	if err := reconciler.patchStatus(ctx, cluster, observedCluster{
+		Plan: plan,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LabelSelector == "" {
+		t.Fatal("status.labelSelector is empty, want a serialized selector")
+	}
+	parsed, err := labels.Parse(got.Status.LabelSelector)
+	if err != nil {
+		t.Fatalf("status.labelSelector = %q is not a valid selector: %v", got.Status.LabelSelector, err)
+	}
+	// It must select an instance Pod the operator would stamp for this cluster
+	// and reject a Pod belonging to another cluster.
+	if !parsed.Matches(labels.Set{mysqlv1alpha1.ClusterLabelName: cluster.Name, "mysql.cnmsql.co/role": "primary"}) {
+		t.Fatalf("selector %q does not match this cluster's instance Pod", got.Status.LabelSelector)
+	}
+	if parsed.Matches(labels.Set{mysqlv1alpha1.ClusterLabelName: "other-cluster"}) {
+		t.Fatalf("selector %q matched a Pod belonging to another cluster", got.Status.LabelSelector)
+	}
+	// It must equal GetInstancesSelector(), the value the status path advertises.
+	if got.Status.LabelSelector != cluster.GetInstancesSelector() {
+		t.Fatalf("status.labelSelector = %q, want %q", got.Status.LabelSelector, cluster.GetInstancesSelector())
 	}
 }
 

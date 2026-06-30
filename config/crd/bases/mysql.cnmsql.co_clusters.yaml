@@ -3957,6 +3957,14 @@ spec:
               instances:
                 description: Instances is the total number of instances reported.
                 type: integer
+              labelSelector:
+                description: |-
+                  LabelSelector is the serialized label selector that identifies the
+                  instance Pods managed by this Cluster. It is populated by the operator
+                  and exposed through the scale sub-resource (selectorpath) so that
+                  autoscalers such as the Vertical Pod Autoscaler can discover the managed
+                  Pods to resize.
+                type: string
               lastRetentionRunTime:
                 description: |-
                   LastRetentionRunTime is when the operator last ran a backup-retention GC
@@ -4072,6 +4080,7 @@ spec:
     storage: true
     subresources:
       scale:
+        labelSelectorPath: .status.labelSelector
         specReplicasPath: .spec.instances
         statusReplicasPath: .status.instances
       status: {}
