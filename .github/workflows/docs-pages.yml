@@ -1,5 +1,10 @@
 name: Documentation
 
+# Docs are published from the website repo (cnmsql/docs), which owns GitHub
+# Pages and the versioned site. This workflow:
+#   - validates that docs still build on pull requests, and
+#   - notifies the website repo to (re)build when docs change on main or a
+#     release is published.
 on:
   push:
     branches:
@@ -11,22 +16,23 @@ on:
     paths:
     - docs/**
     - .github/workflows/docs-pages.yml
+  release:
+    types: [published]
   workflow_dispatch:
-
 
 permissions: {}
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build documentation
+  validate:
+    name: Validate documentation build
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pages: write
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -48,30 +54,28 @@ jobs:
       working-directory: docs
       run: npm run build
 
-    - name: Setup Pages
-      if: github.event_name != 'pull_request'
-      uses: actions/configure-pages@v6.0.0
-      with:
-        enablement: true
-
-    - name: Upload Pages artifact
-      if: github.event_name != 'pull_request'
-      uses: actions/upload-pages-artifact@v5.0.0
-      with:
-        path: docs/build
-
-  deploy:
-    name: Deploy documentation
+  notify-website:
+    name: Notify website repo
     if: github.event_name != 'pull_request'
-    needs: build
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions: {}
     steps:
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v5.0.0
+    - name: Dispatch to cnmsql/docs
+      env:
+        GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+      run: |
+        set -euo pipefail
+        if [ "${{ github.event_name }}" = "release" ]; then
+          event_type=docs-release
+          ref="${{ github.event.release.tag_name }}"
+          version="${{ github.event.release.tag_name }}"
+        else
+          event_type=docs-update
+          ref="${{ github.ref_name }}"
+          version=""
+        fi
+        echo "dispatching $event_type (ref=$ref version=$version)"
+        gh api "repos/cnmsql/docs/dispatches" \
+          -f "event_type=$event_type" \
+          -F "client_payload[ref]=$ref" \
+          -F "client_payload[version]=$version"
