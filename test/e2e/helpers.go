@@ -331,6 +331,7 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 	}
 
 	deadline := time.Now().Add(timeout)
+	var prevTerminal string
 	for {
 		lastErr := check()
 		if lastErr == nil {
@@ -341,11 +342,20 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 		// burning the whole timeout. clusterTerminalState is deliberately
 		// conservative (Blocked phase + image-pull errors only), so a transient
 		// CrashLoopBackOff during bootstrap never trips a false failure.
-		if reason := clusterTerminalState(name); reason != "" {
+		//
+		// Blocked is also parked transiently during switchover/failover (while the
+		// operator waits for the target primary to demote to replica), resolving
+		// within a poll interval. Require the same terminal reason on two
+		// consecutive polls before failing, so that sub-second Blocked window never
+		// trips a false failure while a genuine misconfiguration (which persists
+		// forever) still surfaces promptly.
+		reason := clusterTerminalState(name)
+		if reason != "" && reason == prevTerminal {
 			By(fmt.Sprintf("cluster %s entered a terminal state (%s); dumping diagnostics", name, reason))
 			dumpE2EDiagnostics()
 			Fail(fmt.Sprintf("cluster %s cannot become ready: %s (last check: %v)", name, reason, lastErr))
 		}
+		prevTerminal = reason
 		if time.Now().After(deadline) {
 			By(fmt.Sprintf("cluster %s did not become ready within %s; dumping diagnostics", name, timeout))
 			dumpE2EDiagnostics()

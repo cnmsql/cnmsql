@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
@@ -79,9 +80,45 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
 
-	_, err := Run(cmd)
-	return err
+	// Deployment-Available is necessary but not sufficient: the API server can
+	// still fail to call the cert-manager validating webhook with
+	// "x509: certificate signed by unknown authority" (or "connection refused")
+	// until cainjector has injected the serving CA into the webhook's caBundle
+	// and that update has propagated. Callers immediately server-side-apply
+	// cert-manager resources (Issuer/Certificate), so probe the admission webhook
+	// with a server-side dry-run until it actually accepts requests.
+	return waitCertManagerWebhookReady()
+}
+
+// waitCertManagerWebhookReady polls the cert-manager validating webhook with a
+// server-side dry-run apply of a trivial SelfSigned Issuer until the webhook
+// accepts the request, closing the race between Deployment-Available and the
+// webhook's serving certificate being trusted by the API server.
+func waitCertManagerWebhookReady() error {
+	const probe = `apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cnmsql-e2e-webhook-probe
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+`
+	deadline := time.Now().Add(5 * time.Minute)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		cmd := exec.Command("kubectl", "apply", "--dry-run=server", "-f", "-")
+		cmd.Stdin = strings.NewReader(probe)
+		_, lastErr = Run(cmd)
+		if lastErr == nil {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("cert-manager webhook did not become ready within 5m: %w", lastErr)
 }
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
