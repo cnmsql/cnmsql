@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -66,13 +67,13 @@ func (r *ClusterReconciler) checkBackupDestination(
 	if err != nil {
 		return backupDestinationCheck{Retry: err}
 	}
-	client, err := objectstore.NewClient(cfg)
+	osClient, err := objectstore.NewClient(cfg)
 	if err != nil {
 		return backupDestinationCheck{Retry: err}
 	}
 
 	prefix := objectstore.ClusterPrefix(*store, cluster.Name)
-	empty, err := client.IsEmptyPrefix(ctx, store.Bucket, prefix)
+	empty, err := osClient.IsEmptyPrefix(ctx, store.Bucket, prefix)
 	if err != nil {
 		return backupDestinationCheck{Retry: err}
 	}
@@ -124,14 +125,14 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 	if err != nil {
 		return recoveryTargetCheck{Retry: err}
 	}
-	client, err := objectstore.NewClient(cfg)
+	osClient, err := objectstore.NewClient(cfg)
 	if err != nil {
 		return recoveryTargetCheck{Retry: err}
 	}
 
 	indexKey := objectstore.ArchiveIndexKey(store, plan.Recovery.SourceCluster)
 	var index objectstore.ArchiveIndex
-	if err := client.GetJSON(ctx, store.Bucket, indexKey, &index); err != nil {
+	if err := osClient.GetJSON(ctx, store.Bucket, indexKey, &index); err != nil {
 		// The archive index is missing or unreadable. A recovery target needs a
 		// binlog archive; requeue so a still-initialising archive can appear.
 		return recoveryTargetCheck{Retry: fmt.Errorf("reading archive index %q: %w", indexKey, err)}
@@ -161,24 +162,36 @@ func (r *ClusterReconciler) objectStoreConfig(
 	namespace string,
 	store *mysqlv1alpha1.S3ObjectStore,
 ) (objectstore.Config, error) {
+	return resolveObjectStoreConfig(ctx, r.Client, namespace, store)
+}
+
+// resolveObjectStoreConfig resolves an object store plus its secret-backed
+// credentials into a client Config, using c to read the referenced Secrets. It
+// is shared by every reconciler that needs its own object-store access.
+func resolveObjectStoreConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	store *mysqlv1alpha1.S3ObjectStore,
+) (objectstore.Config, error) {
 	var accessKeyID, secretAccessKey, sessionToken string
 	creds := store.Credentials
 	if creds.AccessKeyID != nil {
-		value, err := r.secretValue(ctx, namespace, *creds.AccessKeyID)
+		value, err := resolveSecretValue(ctx, c, namespace, *creds.AccessKeyID)
 		if err != nil {
 			return objectstore.Config{}, err
 		}
 		accessKeyID = value
 	}
 	if creds.SecretAccessKey != nil {
-		value, err := r.secretValue(ctx, namespace, *creds.SecretAccessKey)
+		value, err := resolveSecretValue(ctx, c, namespace, *creds.SecretAccessKey)
 		if err != nil {
 			return objectstore.Config{}, err
 		}
 		secretAccessKey = value
 	}
 	if creds.SessionToken != nil {
-		value, err := r.secretValue(ctx, namespace, *creds.SessionToken)
+		value, err := resolveSecretValue(ctx, c, namespace, *creds.SessionToken)
 		if err != nil {
 			return objectstore.Config{}, err
 		}
@@ -187,14 +200,15 @@ func (r *ClusterReconciler) objectStoreConfig(
 	return objectstore.ConfigFromStore(*store, accessKeyID, secretAccessKey, sessionToken), nil
 }
 
-func (r *ClusterReconciler) secretValue(
+func resolveSecretValue(
 	ctx context.Context,
+	c client.Client,
 	namespace string,
 	selector mysqlv1alpha1.SecretKeySelector,
 ) (string, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: namespace, Name: selector.Name}
-	if err := r.Get(ctx, key, secret); err != nil {
+	if err := c.Get(ctx, key, secret); err != nil {
 		return "", fmt.Errorf("reading secret %s/%s: %w", namespace, selector.Name, err)
 	}
 	value, ok := secret.Data[selector.Key]

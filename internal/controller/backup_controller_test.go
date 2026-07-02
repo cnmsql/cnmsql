@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +34,16 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
+
+// listBackupArchive is the S3 LIST response for a single backup's archive
+// directory: the xbstream and its metadata.json.
+const listBackupArchive = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>override-backups</Name><Prefix>manual/demo/backup-sample/backup-sample-123/</Prefix>
+  <KeyCount>2</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Contents><Key>manual/demo/backup-sample/backup-sample-123/backup.xbstream</Key><Size>42</Size></Contents>
+  <Contents><Key>manual/demo/backup-sample/backup-sample-123/metadata.json</Key><Size>10</Size></Contents>
+</ListBucketResult>`
 
 // demoPrimaryInstance is the conventional primary instance name used across
 // the controller unit tests.
@@ -65,6 +78,17 @@ func baseBackup() *mysqlv1alpha1.Backup {
 	}
 }
 
+// reconcileBackup runs a single reconcile pass and returns its result.
+func reconcileBackup(t *testing.T, r *BackupReconciler, backup *mysqlv1alpha1.Backup) ctrl.Result {
+	t.Helper()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: backup.Namespace, Name: backup.Name}}
+	result, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
 func readyReplicaPod(name string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -97,13 +121,7 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
-		Namespace: "default",
-		Name:      "backup-sample",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := reconcileBackup(t, reconciler, backup)
 	if result.RequeueAfter != provisioningRequeue {
 		t.Fatalf("requeue = %s, want %s", result.RequeueAfter, provisioningRequeue)
 	}
@@ -173,12 +191,7 @@ func TestBackupSpecObjectStoreOverridesCluster(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
-		Namespace: "default",
-		Name:      "backup-sample",
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	reconcileBackup(t, reconciler, backup)
 
 	job := &batchv1.Job{}
 	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample-backup"}, job); err != nil {
@@ -206,12 +219,7 @@ func TestBackupPrimaryTargetUsesCurrentPrimary(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
-		Namespace: "default",
-		Name:      "backup-sample",
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	reconcileBackup(t, reconciler, backup)
 
 	updated := &mysqlv1alpha1.Backup{}
 	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, updated); err != nil {
@@ -410,12 +418,7 @@ func TestBackupFailsWithoutObjectStore(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
-		Namespace: "default",
-		Name:      "backup-sample",
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	reconcileBackup(t, reconciler, backup)
 
 	updated := &mysqlv1alpha1.Backup{}
 	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, updated); err != nil {
@@ -426,5 +429,97 @@ func TestBackupFailsWithoutObjectStore(t *testing.T) {
 	}
 	if !strings.Contains(updated.Status.Error, "objectStore") {
 		t.Fatalf("error = %q", updated.Status.Error)
+	}
+}
+
+func TestBackupDeleteWithFinalizerCleansObjectStore(t *testing.T) {
+	t.Parallel()
+
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = append(deleted, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = w.Write([]byte(listBackupArchive))
+	}))
+	defer server.Close()
+
+	scheme := testScheme(t)
+	forcePath := true
+	backup := baseBackup()
+	backup.Finalizers = []string{backupFinalizer}
+	now := metav1.Now()
+	backup.DeletionTimestamp = &now
+	backup.Status.BackupID = "backup-sample-123"
+	backup.Spec.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket:         "override-backups",
+		Path:           "manual",
+		Endpoint:       server.URL,
+		ForcePathStyle: &forcePath,
+		Credentials: mysqlv1alpha1.S3Credentials{
+			AccessKeyID:     &mysqlv1alpha1.SecretKeySelector{Name: "override-s3", Key: "access"},
+			SecretAccessKey: &mysqlv1alpha1.SecretKeySelector{Name: "override-s3", Key: "secret"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default"},
+		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
+	}
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(backup, secret).
+			Build(),
+		Scheme: scheme,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	if len(deleted) != 2 {
+		t.Fatalf("expected 2 object deletions, got %d: %v", len(deleted), deleted)
+	}
+	for _, want := range []string{"backup.xbstream", "metadata.json"} {
+		if !strings.Contains(strings.Join(deleted, " "), want) {
+			t.Fatalf("cleanup did not delete %q, deleted=%v", want, deleted)
+		}
+	}
+
+	// The finalizer released, so the object is gone.
+	got := &mysqlv1alpha1.Backup{}
+	err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("backup should be deleted after cleanup, got err=%v finalizers=%v", err, got.Finalizers)
+	}
+}
+
+func TestBackupDeleteReleasesFinalizerWhenStoreUnresolvable(t *testing.T) {
+	t.Parallel()
+
+	// No cluster and no spec.ObjectStore: the destination cannot be resolved, so
+	// cleanup is skipped rather than blocking deletion of the Kubernetes object.
+	scheme := testScheme(t)
+	backup := baseBackup()
+	backup.Finalizers = []string{backupFinalizer}
+	now := metav1.Now()
+	backup.DeletionTimestamp = &now
+	backup.Status.BackupID = "backup-sample-123"
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(backup).
+			Build(),
+		Scheme: scheme,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	got := &mysqlv1alpha1.Backup{}
+	err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("backup should be deleted after finalizer release, got err=%v finalizers=%v", err, got.Finalizers)
 	}
 }

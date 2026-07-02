@@ -20,6 +20,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// BackupCleanupFinalizer, when present on a Backup, makes the operator delete
+// the backup's object-store artifacts (backup.xbstream + metadata.json) when the
+// Backup object is deleted. It is opt-in: the operator never adds it on its own,
+// so default deletes leave remote archives untouched.
+const BackupCleanupFinalizer = "mysql.cnmsql.co/cleanup-backup-files"
+
 // BackupMethod is the method used to take a physical backup.
 // +kubebuilder:validation:Enum=xtrabackup;volumeSnapshot
 type BackupMethod string

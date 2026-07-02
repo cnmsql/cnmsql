@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -47,6 +48,18 @@ const (
 	backupPhaseFailed    = string(mysqlv1alpha1.BackupPhaseFailed)
 )
 
+// backupFinalizer triggers object-store cleanup of a Backup's archive when the
+// Backup object is deleted, so removing the Kubernetes object also reclaims the
+// remote backup.xbstream and metadata.json.
+//
+// It is opt-in: the operator never adds it automatically, because deleting the
+// only copy of a recovery point by default is dangerous (accidental deletes,
+// namespace teardown, owner-ref cascades, GitOps prunes). A user opts a Backup
+// into remote cleanup by putting this finalizer on it (directly, or via a
+// ScheduledBackup's spec.objectStoreCleanup); the operator then honours it on
+// deletion.
+const backupFinalizer = mysqlv1alpha1.BackupCleanupFinalizer
+
 // BackupReconciler reconciles one-shot physical Backup objects.
 type BackupReconciler struct {
 	client.Client
@@ -59,8 +72,9 @@ type BackupReconciler struct {
 	OperatorImageName string
 }
 
-// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -75,6 +89,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Get(ctx, req.NamespacedName, backup); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	if !backup.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, backup)
+	}
+
 	if backup.Status.Phase == mysqlv1alpha1.BackupPhaseCompleted {
 		return ctrl.Result{}, nil
 	}
@@ -377,6 +396,88 @@ func (r *BackupReconciler) createBackupJob(ctx context.Context, job *batchv1.Job
 		return r.Create(ctx, job)
 	}
 	return err
+}
+
+// reconcileDelete cleans up the Backup's object-store artifacts and then
+// releases the finalizer so the Kubernetes object can be removed. A cleanup
+// failure requeues (via the returned error) so deletion never silently leaves
+// half-cleaned remote state.
+func (r *BackupReconciler) reconcileDelete(ctx context.Context, backup *mysqlv1alpha1.Backup) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(backup, backupFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if err := r.cleanupObjectStore(ctx, backup); err != nil {
+		if r.Recorder != nil {
+			r.Recorder.Event(backup, corev1.EventTypeWarning, "CleanupFailed", err.Error())
+		}
+		return ctrl.Result{}, err
+	}
+	controllerutil.RemoveFinalizer(backup, backupFinalizer)
+	return ctrl.Result{}, r.Update(ctx, backup)
+}
+
+// cleanupObjectStore removes the backup's archive directory (backup.xbstream +
+// metadata.json) from the object store. It is a no-op when the backup never
+// uploaded anything, and it skips (without blocking deletion) when the
+// destination object store can no longer be resolved — e.g. the cluster that
+// held the configuration is already gone and the Backup did not override it.
+func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysqlv1alpha1.Backup) error {
+	log := logf.FromContext(ctx)
+
+	backupID := backup.Status.BackupID
+	if backupID == "" {
+		return nil
+	}
+
+	store, err := r.resolveBackupStore(ctx, backup)
+	if err != nil {
+		log.Info("Skipping backup object-store cleanup: object store not resolvable",
+			"backup", backup.Name, "reason", err.Error())
+		return nil
+	}
+
+	keys, err := objectstore.BuildBackupKeys(*store, backup.Spec.Cluster.Name, backup.Name, backupID)
+	if err != nil {
+		return err
+	}
+	cfg, err := resolveObjectStoreConfig(ctx, r.Client, backup.Namespace, store)
+	if err != nil {
+		return err
+	}
+	osClient, err := objectstore.NewClient(cfg)
+	if err != nil {
+		return err
+	}
+
+	// Delete the whole backup directory wholesale (archive + metadata), matching
+	// the retention GC's per-backup removal.
+	prefix := strings.TrimSuffix(keys.MetadataKey, objectstore.BackupMetadataName)
+	if err := osClient.RemovePrefix(ctx, store.Bucket, prefix); err != nil {
+		return err
+	}
+	log.Info("Removed backup object-store artifacts", "backup", backup.Name, "bucket", store.Bucket, "prefix", prefix)
+	if r.Recorder != nil {
+		r.Recorder.Event(backup, corev1.EventTypeNormal, "Cleanup",
+			fmt.Sprintf("Removed object-store artifacts under s3://%s/%s", store.Bucket, prefix))
+	}
+	return nil
+}
+
+// resolveBackupStore resolves the Backup's destination object store, preferring
+// its spec override and otherwise reading it from the referenced Cluster.
+func (r *BackupReconciler) resolveBackupStore(
+	ctx context.Context,
+	backup *mysqlv1alpha1.Backup,
+) (*mysqlv1alpha1.S3ObjectStore, error) {
+	if backup.Spec.ObjectStore != nil {
+		return backup.Spec.ObjectStore, nil
+	}
+	cluster := &mysqlv1alpha1.Cluster{}
+	key := types.NamespacedName{Namespace: backup.Namespace, Name: backup.Spec.Cluster.Name}
+	if err := r.Get(ctx, key, cluster); err != nil {
+		return nil, err
+	}
+	return backupObjectStore(backup, cluster)
 }
 
 func (r *BackupReconciler) failBackup(ctx context.Context, backup *mysqlv1alpha1.Backup, reason, message string) error {

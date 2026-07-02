@@ -36,6 +36,7 @@ var _ = Describe("ScheduledBackup defaulting", func() {
 		Expect(sb.Spec.Method).To(Equal(BackupMethodXtrabackup))
 		Expect(sb.Spec.Target).To(Equal(BackupTargetPreferStandby))
 		Expect(sb.Spec.Online).To(HaveValue(BeTrue()))
+		Expect(sb.Spec.ObjectStoreCleanup).To(HaveValue(BeFalse()))
 	})
 
 	It("does not override explicitly set values", func() {
@@ -128,6 +129,21 @@ var _ = Describe("ScheduledBackup CreateBackup", func() {
 		Expect(backup.Spec.Method).To(Equal(BackupMethodXtrabackup))
 		Expect(backup.Spec.Target).To(Equal(BackupTargetPrimary))
 		Expect(backup.Spec.Online).To(HaveValue(BeFalse()))
+	})
+
+	It("does not add the cleanup finalizer by default", func() {
+		sb := &ScheduledBackup{ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"}}
+		backup := sb.CreateBackup("nightly-1")
+		Expect(backup.Finalizers).NotTo(ContainElement(BackupCleanupFinalizer))
+	})
+
+	It("adds the cleanup finalizer when objectStoreCleanup is enabled", func() {
+		sb := &ScheduledBackup{
+			ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"},
+			Spec:       ScheduledBackupSpec{ObjectStoreCleanup: ptr.To(true)},
+		}
+		backup := sb.CreateBackup("nightly-1")
+		Expect(backup.Finalizers).To(ContainElement(BackupCleanupFinalizer))
 	})
 })
 

@@ -86,6 +86,15 @@ spec:
                 - xtrabackup
                 - volumeSnapshot
                 type: string
+              objectStoreCleanup:
+                default: false
+                description: |-
+                  ObjectStoreCleanup, when true, adds the object-store cleanup finalizer
+                  (mysql.cnmsql.co/cleanup-backup-files) to generated Backups, so deleting a
+                  generated Backup also removes its archive (backup.xbstream + metadata.json)
+                  from the object store. Defaults to false, matching the non-destructive
+                  default for one-shot Backups.
+                type: boolean
               online:
                 default: true
                 description: Online, when true, performs non-blocking (hot) backups.

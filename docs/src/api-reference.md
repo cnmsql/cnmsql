@@ -87,7 +87,7 @@ spec:
   online: true
 ```
 
-Deleting a `Backup` object does not delete remote object-store data.
+By default, deleting a `Backup` object does not delete remote object-store data. To opt a Backup into remote cleanup, add the `mysql.cnmsql.co/cleanup-backup-files` finalizer: the operator then deletes the backup's archive (`backup.xbstream` + `metadata.json`) from the object store when the Backup is deleted, and releases the finalizer only after cleanup succeeds. The operator never adds this finalizer on its own.
 
 Backup is the Schema for the backups API.
 
@@ -1822,11 +1822,14 @@ spec:
   method: xtrabackup
   target: prefer-standby
   online: true
+  objectStoreCleanup: false
 ```
 
 `schedule` uses six-field cron format: `second minute hour day-of-month month day-of-week`.
 
 Generated Backups are labelled with `mysql.cnmsql.co/scheduled-backup=<name>` and immediate Backups also carry `mysql.cnmsql.co/immediate-backup=true`.
+
+Set `objectStoreCleanup: true` to have generated Backups carry the `mysql.cnmsql.co/cleanup-backup-files` finalizer, so deleting a generated Backup also removes its archive from the object store. It defaults to `false`.
 
 ScheduledBackup is the Schema for the scheduledbackups API.
 
@@ -1884,6 +1887,7 @@ _Appears in:_
 | `suspend` _boolean_ | Suspend, when true, pauses the schedule. | false | Optional: \{\} <br /> |
 | `immediate` _boolean_ | Immediate, when true, takes a backup as soon as the ScheduledBackup is<br />created, in addition to the schedule. | false | Optional: \{\} <br /> |
 | `backupOwnerReference` _string_ | BackupOwnerReference controls the owner reference set on the generated<br />Backup objects. | self | Enum: [none self cluster] <br />Optional: \{\} <br /> |
+| `objectStoreCleanup` _boolean_ | ObjectStoreCleanup, when true, adds the object-store cleanup finalizer<br />(mysql.cnmsql.co/cleanup-backup-files) to generated Backups, so deleting a<br />generated Backup also removes its archive (backup.xbstream + metadata.json)<br />from the object store. Defaults to false, matching the non-destructive<br />default for one-shot Backups. | false | Optional: \{\} <br /> |
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method used for the generated backups. | xtrabackup | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the generated backups from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs non-blocking (hot) backups. | true | Optional: \{\} <br /> |

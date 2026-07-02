@@ -1921,6 +1921,11 @@ func (in *ScheduledBackupSpec) DeepCopyInto(out *ScheduledBackupSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.ObjectStoreCleanup != nil {
+		in, out := &in.ObjectStoreCleanup, &out.ObjectStoreCleanup
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Online != nil {
 		in, out := &in.Online, &out.Online
 		*out = new(bool)

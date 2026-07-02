@@ -63,6 +63,15 @@ func (s *ScheduledBackup) SetDefaults() {
 	if spec.Online == nil {
 		spec.Online = ptr.To(true)
 	}
+	if spec.ObjectStoreCleanup == nil {
+		spec.ObjectStoreCleanup = ptr.To(false)
+	}
+}
+
+// WantsObjectStoreCleanup reports whether generated Backups should carry the
+// object-store cleanup finalizer.
+func (s *ScheduledBackup) WantsObjectStoreCleanup() bool {
+	return s.Spec.ObjectStoreCleanup != nil && *s.Spec.ObjectStoreCleanup
 }
 
 // IsSuspended returns whether the schedule is paused.
@@ -92,9 +101,10 @@ func (s *ScheduledBackup) BackupName(t time.Time) string {
 // CreateBackup builds a Backup for this ScheduledBackup with the given name.
 // The backup inherits the cluster reference, method, target and online setting;
 // the object store is resolved from the Cluster by the BackupReconciler, as for
-// one-shot backups.
+// one-shot backups. When spec.objectStoreCleanup is set, the generated Backup
+// also carries the object-store cleanup finalizer.
 func (s *ScheduledBackup) CreateBackup(name string) *Backup {
-	return &Backup{
+	backup := &Backup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: s.Namespace,
@@ -106,6 +116,10 @@ func (s *ScheduledBackup) CreateBackup(name string) *Backup {
 			Online:  s.Spec.Online,
 		},
 	}
+	if s.WantsObjectStoreCleanup() {
+		backup.Finalizers = append(backup.Finalizers, BackupCleanupFinalizer)
+	}
+	return backup
 }
 
 // Validate returns the list of validation errors for the ScheduledBackup spec.

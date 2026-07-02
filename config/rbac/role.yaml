@@ -93,7 +93,18 @@ rules:
   - create
   - get
   - list
+  - patch
+  - update
   - watch
+- apiGroups:
+  - mysql.cnmsql.co
+  resources:
+  - backups/finalizers
+  - clusters/finalizers
+  - databases/finalizers
+  - databaseusers/finalizers
+  verbs:
+  - update
 - apiGroups:
   - mysql.cnmsql.co
   resources:
@@ -128,14 +139,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - mysql.cnmsql.co
-  resources:
-  - clusters/finalizers
-  - databases/finalizers
-  - databaseusers/finalizers
-  verbs:
-  - update
 - apiGroups:
   - policy
   resources:
