@@ -99,11 +99,46 @@ same cnmsql instance image as the Cluster so the XtraBackup version matches the
 server version. Object-store credentials are mounted into the short-lived Job,
 not into the long-running database Pods.
 
-A finished worker Job is kept for 24h by default so you can inspect its logs,
-then Kubernetes garbage-collects it (`ttlSecondsAfterFinished`). Tune this with
-`spec.backup.jobTTL` on the Cluster (the default for every backup) or
-`spec.jobTTL` on an individual Backup, which wins. Both take a duration such as
-`1h` or `0s`; a zero duration deletes the Job as soon as it finishes.
+### Shaping the worker Job
+
+You can shape the worker Job's pod with `spec.backup.jobTemplate` on the Cluster
+(the default for every backup) or `spec.jobTemplate` on an individual Backup,
+which overrides the cluster default field by field. The template is a curated
+subset of the pod spec, not a full `PodTemplateSpec`: the operator keeps
+ownership of the bootstrap init container, the scratch and TLS volumes and
+mounts, the worker command and args, and the object-store credential env, so a
+template cannot break them. A `ScheduledBackup` carries a `spec.jobTemplate` too
+and propagates it to every generated Backup.
+
+The template exposes:
+
+- `resources`: requests and limits for the worker container. Streaming xbstream
+  can be memory-hungry. During recovery the cluster-level template's `resources`
+  also apply to the restore init container.
+- `nodeSelector`, `tolerations`, `affinity`: keep backups off the critical nodes.
+- `priorityClassName`: the pod priority for the worker Job.
+- `labels`, `annotations`: merged onto the generated Job and its pod. Operator
+  labels win on conflict.
+- `ttl`: how long a finished worker Job is kept before Kubernetes
+  garbage-collects it (`ttlSecondsAfterFinished`). Defaults to 24h so you can
+  inspect its logs. A zero duration (`0s`) deletes the Job as soon as it finishes.
+
+```yaml
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+spec:
+  backup:
+    jobTemplate:
+      ttl: 1h
+      priorityClassName: batch-low
+      nodeSelector:
+        node-role.kubernetes.io/backup: ""
+      resources:
+        requests:
+          memory: 512Mi
+        limits:
+          memory: 2Gi
+```
 
 ## Backup data path
 

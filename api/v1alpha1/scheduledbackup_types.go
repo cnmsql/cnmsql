@@ -73,6 +73,13 @@ type ScheduledBackupSpec struct {
 	// +kubebuilder:default:=true
 	// +optional
 	Online *bool `json:"online,omitempty"`
+
+	// JobTemplate is propagated to every generated Backup as its spec.jobTemplate,
+	// shaping the backup worker Job (resources, scheduling, labels/annotations, and
+	// the finished-Job TTL). When unset the generated Backups fall back to the
+	// cluster-wide spec.backup.jobTemplate.
+	// +optional
+	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
 }
 
 // ScheduledBackupStatus defines the observed state of ScheduledBackup.

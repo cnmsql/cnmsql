@@ -72,6 +72,48 @@ var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func(
 		Expect(dest).To(ContainSubstring("s3://"+minioBucket), "unexpected destination path")
 	})
 
+	It("shapes the backup worker Job from spec.jobTemplate", func() {
+		const tmplBackup = "tmpl-backup"
+		const tmplJob = tmplBackup + "-backup"
+
+		By("creating a Backup that carries a jobTemplate")
+		applyManifest(tmplBackup, backupManifestWithJobTemplate(tmplBackup, sourceCluster))
+		DeferCleanup(func() {
+			deleteManifest(tmplBackup, backupManifestWithJobTemplate(tmplBackup, sourceCluster))
+		})
+
+		By("waiting for the worker Job to be created and asserting the template landed on it")
+		Eventually(func(g Gomega) {
+			out, err := kubectl("get", "job", tmplJob, "-n", testNamespace,
+				"-o", "jsonpath={.metadata.labels.team}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("backups"), "user label not merged onto the Job")
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+
+		checks := map[string]string{
+			"{.metadata.labels.team}":                                        "backups",
+			"{.metadata.labels.mysql\\.cnmsql\\.co/backup}":                  tmplBackup,
+			"{.metadata.annotations.note}":                                   "nightly",
+			"{.spec.ttlSecondsAfterFinished}":                                "60",
+			"{.spec.template.spec.tolerations[?(@.key==\"dedicated\")].key}": "dedicated",
+			"{.spec.template.spec.containers[0].resources.requests.memory}":  "128Mi",
+		}
+		for path, want := range checks {
+			out, err := kubectl("get", "job", tmplJob, "-n", testNamespace, "-o", "jsonpath="+path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(Equal(want), "job %s = %q, want %q", path, out, want)
+		}
+
+		By("verifying the shaped backup still completes")
+		Eventually(func(g Gomega) {
+			phase, err := kubectl("get", "backup", tmplBackup, "-n", testNamespace,
+				"-o", "jsonpath={.status.phase}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(phase).NotTo(Equal("failed"), "shaped backup failed")
+			g.Expect(phase).To(Equal("completed"), "shaped backup is not completed yet")
+		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
 	It("bootstraps a new cluster by recovering the backup", func() {
 		By("creating a cluster that recovers from the backup")
 		applyManifest(restoredCluster, recoveryClusterManifest(restoredCluster, backupName))
@@ -185,5 +227,34 @@ spec:
   cluster:
     name: %s
   method: xtrabackup
+`, name, testNamespace, cluster)
+}
+
+// backupManifestWithJobTemplate exercises spec.jobTemplate: a small memory
+// request, a toleration, a short finished-Job TTL, and merged labels/annotations.
+// It deliberately avoids nodeSelector so the worker still schedules and the
+// backup completes on the single-node test cluster.
+func backupManifestWithJobTemplate(name, cluster string) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Backup
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster:
+    name: %s
+  method: xtrabackup
+  jobTemplate:
+    ttl: 60s
+    labels:
+      team: backups
+    annotations:
+      note: nightly
+    tolerations:
+      - key: dedicated
+        operator: Exists
+    resources:
+      requests:
+        memory: 128Mi
 `, name, testNamespace, cluster)
 }

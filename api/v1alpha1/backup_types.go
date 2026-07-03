@@ -17,8 +17,60 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// BackupJobTemplate is a curated subset of the pod configuration operators may
+// set on the backup worker Job. It deliberately does not expose a full
+// PodTemplateSpec: the operator owns the bootstrap init container, the
+// scratch/TLS volumes and mounts, the worker command and args, and the
+// object-store credential env, and a free-form template would let those be
+// broken. Every field is optional; a per-Backup template overrides the
+// cluster-wide spec.backup.jobTemplate field by field.
+type BackupJobTemplate struct {
+	// TTL is how long the finished backup worker Job is kept before Kubernetes
+	// garbage-collects it (its ttlSecondsAfterFinished). When unset on both the
+	// Backup and the cluster, the operator keeps the Job for 24h. A zero duration
+	// deletes the Job as soon as it finishes.
+	// +optional
+	TTL *metav1.Duration `json:"ttl,omitempty"`
+
+	// Resources sets the resource requests and limits on the backup worker
+	// container. Streaming xbstream can be memory-hungry, so operators often want
+	// explicit limits. During recovery the same requests/limits from the
+	// cluster-level template are applied to the restore init container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// NodeSelector constrains the backup worker Job's pod to nodes with matching
+	// labels, e.g. to keep backups off the critical nodes.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations allow the backup worker Job's pod to schedule onto tainted
+	// nodes.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity sets the affinity/anti-affinity rules for the backup worker Job's
+	// pod.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// PriorityClassName sets the pod priority for the backup worker Job.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// Labels are merged onto the generated Job and its pod template. Operator
+	// labels take precedence on conflict.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations are merged onto the generated Job and its pod template.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
 
 // BackupCleanupFinalizer, when present on a Backup, makes the operator delete
 // the backup's object-store artifacts (backup.xbstream + metadata.json) when the
@@ -112,12 +164,12 @@ type BackupSpec struct {
 	// +optional
 	ReclaimPolicy BackupReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
-	// JobTTL is how long the finished backup worker Job is kept before Kubernetes
-	// garbage-collects it (its ttlSecondsAfterFinished). It overrides the
-	// cluster-wide spec.backup.jobTTL. When unset on both, the operator keeps the
-	// Job for 24h. A zero duration deletes the Job as soon as it finishes.
+	// JobTemplate shapes the backup worker Job for this backup: resources,
+	// scheduling (nodeSelector/tolerations/affinity/priorityClassName), extra
+	// labels/annotations, and the finished-Job TTL. It overrides the cluster-wide
+	// spec.backup.jobTemplate field by field.
 	// +optional
-	JobTTL *metav1.Duration `json:"jobTTL,omitempty"`
+	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
 }
 
 // BackupStatus defines the observed state of Backup.

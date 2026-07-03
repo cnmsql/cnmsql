@@ -589,12 +589,13 @@ type BackupConfiguration struct {
 	// +optional
 	XtrabackupOptions []string `json:"xtrabackupOptions,omitempty"`
 
-	// JobTTL is the default retention for finished backup worker Jobs created for
-	// this cluster (their ttlSecondsAfterFinished). A per-Backup spec.jobTTL takes
-	// precedence. When unset, the operator keeps a finished Job for 24h. A zero
-	// duration deletes the Job as soon as it finishes.
+	// JobTemplate is the default shaping applied to backup worker Jobs created for
+	// this cluster: resources, scheduling (nodeSelector/tolerations/affinity/
+	// priorityClassName), extra labels/annotations, and the finished-Job TTL. A
+	// per-Backup spec.jobTemplate overrides it field by field. During recovery the
+	// resources from this template are also applied to the restore init container.
 	// +optional
-	JobTTL *metav1.Duration `json:"jobTTL,omitempty"`
+	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
 
 	// ContinuousArchiving configures continuous binary-log archiving to the
 	// object store, the foundation for point-in-time recovery. Disabled by

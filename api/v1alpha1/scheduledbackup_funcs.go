@@ -120,6 +120,7 @@ func (s *ScheduledBackup) CreateBackup(name string) *Backup {
 			Target:        s.Spec.Target,
 			Online:        s.Spec.Online,
 			ReclaimPolicy: reclaimPolicy,
+			JobTemplate:   s.Spec.JobTemplate,
 		},
 	}
 }
