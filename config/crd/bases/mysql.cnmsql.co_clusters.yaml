@@ -1088,6 +1088,13 @@ spec:
                         minimum: 10
                         type: integer
                     type: object
+                  jobTTL:
+                    description: |-
+                      JobTTL is the default retention for finished backup worker Jobs created for
+                      this cluster (their ttlSecondsAfterFinished). A per-Backup spec.jobTTL takes
+                      precedence. When unset, the operator keeps a finished Job for 24h. A zero
+                      duration deletes the Job as soon as it finishes.
+                    type: string
                   objectStore:
                     description: |-
                       ObjectStore is the S3-compatible destination for backups and binlog
@@ -1217,6 +1224,22 @@ spec:
                     - bucket
                     - credentials
                     type: object
+                  reclaimPolicy:
+                    allOf:
+                    - enum:
+                      - Retain
+                      - Delete
+                    - enum:
+                      - Retain
+                      - Delete
+                    default: Retain
+                    description: |-
+                      ReclaimPolicy controls what happens to the cluster's entire object-store
+                      archive (every base backup, the archived binlogs, and the archive index)
+                      when the Cluster is deleted. With "Delete" the operator adds a cleanup
+                      finalizer and wipes the archive on teardown; with "Retain" (the default)
+                      the archive is kept so a deleted Cluster can still be recovered.
+                    type: string
                   retentionPolicy:
                     description: |-
                       RetentionPolicy is a duration string (e.g. "30d", "8w") describing how

@@ -52,12 +52,11 @@ const (
 // Backup object is deleted, so removing the Kubernetes object also reclaims the
 // remote backup.xbstream and metadata.json.
 //
-// It is opt-in: the operator never adds it automatically, because deleting the
-// only copy of a recovery point by default is dangerous (accidental deletes,
-// namespace teardown, owner-ref cascades, GitOps prunes). A user opts a Backup
-// into remote cleanup by putting this finalizer on it (directly, or via a
-// ScheduledBackup's spec.objectStoreCleanup); the operator then honours it on
-// deletion.
+// It is opt-in: the operator only adds it when the Backup's reclaim policy is
+// Delete, because removing the only copy of a recovery point by default is
+// dangerous (accidental deletes, namespace teardown, owner-ref cascades, GitOps
+// prunes). A user opts in with spec.reclaimPolicy: Delete on the Backup, or via
+// a ScheduledBackup's spec.reclaimPolicy, which the generated Backups inherit.
 const backupFinalizer = mysqlv1alpha1.BackupCleanupFinalizer
 
 // BackupReconciler reconciles one-shot physical Backup objects.
@@ -89,9 +88,17 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Get(ctx, req.NamespacedName, backup); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	backup.SetDefaults()
 
 	if !backup.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, backup)
+	}
+
+	// Keep the cleanup finalizer in sync with the reclaim policy before anything
+	// else, so a backup that opts in (even after it completed) is protected and
+	// one that opts back out drops the finalizer.
+	if changed, err := r.reconcileFinalizer(ctx, backup); err != nil || changed {
+		return ctrl.Result{}, err
 	}
 
 	if backup.Status.Phase == mysqlv1alpha1.BackupPhaseCompleted {
@@ -138,7 +145,8 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if operatorImage == "" {
 		operatorImage = image
 	}
-	job := backupJob(backup, cluster, *store, keys, backupID, sourceInstance, image, operatorImage, jobName)
+	jobTTL := resolveBackupJobTTL(backup, cluster)
+	job := backupJob(backup, cluster, *store, keys, backupID, sourceInstance, image, operatorImage, jobName, jobTTL)
 	if err := controllerutil.SetControllerReference(backup, job, r.Scheme); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -157,6 +165,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.JobName = jobName
 		status.InstanceName = sourceInstance
 		status.DestinationPath = keys.ArchiveURI
+		status.ObjectStore = store
 		status.Error = ""
 		setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionTrue, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
 		setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionFalse, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
@@ -213,6 +222,26 @@ func defaultBackupID(backup *mysqlv1alpha1.Backup) string {
 
 func backupJobName(backup *mysqlv1alpha1.Backup) string {
 	return backup.Name + "-backup"
+}
+
+// defaultBackupJobTTL is how long a finished backup worker Job is kept when
+// neither the Backup nor the cluster overrides it.
+const defaultBackupJobTTL = 24 * time.Hour
+
+// resolveBackupJobTTL resolves the finished-Job retention (ttlSecondsAfterFinished)
+// in seconds: the Backup's own spec.jobTTL wins, then the cluster-wide
+// spec.backup.jobTTL, then the 24h default. A negative duration is invalid and
+// falls back to the default; a zero duration is honoured (delete immediately).
+func resolveBackupJobTTL(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster) int32 {
+	if d := backup.Spec.JobTTL; d != nil && d.Duration >= 0 {
+		return int32(d.Seconds())
+	}
+	if cluster.Spec.Backup != nil {
+		if d := cluster.Spec.Backup.JobTTL; d != nil && d.Duration >= 0 {
+			return int32(d.Seconds())
+		}
+	}
+	return int32(defaultBackupJobTTL.Seconds())
 }
 
 func backupWorkerImage(cluster *mysqlv1alpha1.Cluster) string {
@@ -276,9 +305,9 @@ func backupJob(
 	image string,
 	operatorImage string,
 	jobName string,
+	ttl int32,
 ) *batchv1.Job {
 	backoffLimit := int32(1)
-	ttl := int32((24 * time.Hour).Seconds())
 	sourceHost := sourceInstance + "." + backup.Namespace + ".svc"
 	env := backupObjectStoreEnv(store)
 	return &batchv1.Job{
@@ -398,6 +427,22 @@ func (r *BackupReconciler) createBackupJob(ctx context.Context, job *batchv1.Job
 	return err
 }
 
+// reconcileFinalizer adds or removes the cleanup finalizer so it matches the
+// Backup's reclaim policy. It reports whether it changed the object (in which
+// case the caller should stop this pass and let the update re-trigger reconcile).
+func (r *BackupReconciler) reconcileFinalizer(ctx context.Context, backup *mysqlv1alpha1.Backup) (bool, error) {
+	has := controllerutil.ContainsFinalizer(backup, backupFinalizer)
+	switch {
+	case backup.WantsObjectStoreCleanup() && !has:
+		controllerutil.AddFinalizer(backup, backupFinalizer)
+		return true, r.Update(ctx, backup)
+	case !backup.WantsObjectStoreCleanup() && has:
+		controllerutil.RemoveFinalizer(backup, backupFinalizer)
+		return true, r.Update(ctx, backup)
+	}
+	return false, nil
+}
+
 // reconcileDelete cleans up the Backup's object-store artifacts and then
 // releases the finalizer so the Kubernetes object can be removed. A cleanup
 // failure requeues (via the returned error) so deletion never silently leaves
@@ -463,12 +508,17 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 	return nil
 }
 
-// resolveBackupStore resolves the Backup's destination object store, preferring
-// its spec override and otherwise reading it from the referenced Cluster.
+// resolveBackupStore resolves the Backup's destination object store. It prefers
+// the destination snapshotted onto status at backup time (which survives the
+// referenced Cluster being deleted), then the spec override, and finally reads
+// it from the referenced Cluster.
 func (r *BackupReconciler) resolveBackupStore(
 	ctx context.Context,
 	backup *mysqlv1alpha1.Backup,
 ) (*mysqlv1alpha1.S3ObjectStore, error) {
+	if backup.Status.ObjectStore != nil {
+		return backup.Status.ObjectStore, nil
+	}
 	if backup.Spec.ObjectStore != nil {
 		return backup.Spec.ObjectStore, nil
 	}

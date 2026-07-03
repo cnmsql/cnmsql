@@ -569,6 +569,16 @@ type BackupConfiguration struct {
 	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*[dwm]$`
 	RetentionPolicy string `json:"retentionPolicy,omitempty"`
 
+	// ReclaimPolicy controls what happens to the cluster's entire object-store
+	// archive (every base backup, the archived binlogs, and the archive index)
+	// when the Cluster is deleted. With "Delete" the operator adds a cleanup
+	// finalizer and wipes the archive on teardown; with "Retain" (the default)
+	// the archive is kept so a deleted Cluster can still be recovered.
+	// +kubebuilder:validation:Enum=Retain;Delete
+	// +kubebuilder:default:=Retain
+	// +optional
+	ReclaimPolicy BackupReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
 	// Target instance to take backups from, defaults to a standby if available.
 	// +kubebuilder:validation:Enum=primary;prefer-standby
 	// +kubebuilder:default:=prefer-standby
@@ -578,6 +588,13 @@ type BackupConfiguration struct {
 	// XtrabackupOptions are extra flags passed to xtrabackup.
 	// +optional
 	XtrabackupOptions []string `json:"xtrabackupOptions,omitempty"`
+
+	// JobTTL is the default retention for finished backup worker Jobs created for
+	// this cluster (their ttlSecondsAfterFinished). A per-Backup spec.jobTTL takes
+	// precedence. When unset, the operator keeps a finished Job for 24h. A zero
+	// duration deletes the Job as soon as it finishes.
+	// +optional
+	JobTTL *metav1.Duration `json:"jobTTL,omitempty"`
 
 	// ContinuousArchiving configures continuous binary-log archiving to the
 	// object store, the foundation for point-in-time recovery. Disabled by

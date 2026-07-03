@@ -69,7 +69,7 @@ spec:
   method: xtrabackup
   target: prefer-standby
   online: true
-  objectStoreCleanup: false
+  reclaimPolicy: Retain
 ```
 
 The generated Backup inherits the cluster reference, method, target, and online
@@ -79,12 +79,14 @@ setting. The object store is resolved by the Backup controller, usually from
 ## Object-store cleanup on deletion
 
 By default, deleting a generated Backup leaves its archive (`backup.xbstream` +
-`metadata.json`) in the object store. Set `spec.objectStoreCleanup: true` to have
-every generated Backup created with the `mysql.cnmsql.co/cleanup-backup-files`
-finalizer, so deleting a generated Backup also removes its archive from the
-object store. It defaults to `false`, keeping deletion non-destructive. See
+`metadata.json`) in the object store. Set `spec.reclaimPolicy: Delete` on the
+schedule to have every generated Backup inherit that policy; the Backup controller
+then stamps the `mysql.cnmsql.co/cleanup-backup-files` finalizer and removes the
+archive when a generated Backup is deleted. It defaults to `Retain`, keeping
+deletion non-destructive. See
 [Backup retention and deletion](backup-retention-deletion.md) for the full
-finalizer semantics.
+reclaim-policy semantics, including reclaiming a whole Cluster's archive on
+teardown.
 
 ## Immediate backup
 

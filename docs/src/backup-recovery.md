@@ -99,6 +99,12 @@ same cnmsql instance image as the Cluster so the XtraBackup version matches the
 server version. Object-store credentials are mounted into the short-lived Job,
 not into the long-running database Pods.
 
+A finished worker Job is kept for 24h by default so you can inspect its logs,
+then Kubernetes garbage-collects it (`ttlSecondsAfterFinished`). Tune this with
+`spec.backup.jobTTL` on the Cluster (the default for every backup) or
+`spec.jobTTL` on an individual Backup, which wins. Both take a duration such as
+`1h` or `0s`; a zero duration deletes the Job as soon as it finishes.
+
 ## Backup data path
 
 The worker Job:

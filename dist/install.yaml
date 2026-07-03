@@ -71,6 +71,13 @@ spec:
                 required:
                 - name
                 type: object
+              jobTTL:
+                description: |-
+                  JobTTL is how long the finished backup worker Job is kept before Kubernetes
+                  garbage-collects it (its ttlSecondsAfterFinished). It overrides the
+                  cluster-wide spec.backup.jobTTL. When unset on both, the operator keeps the
+                  Job for 24h. A zero duration deletes the Job as soon as it finishes.
+                type: string
               method:
                 default: xtrabackup
                 description: Method is the backup method to use.
@@ -212,6 +219,21 @@ spec:
                 description: Online, when true, performs a non-blocking (hot) backup.
                   Defaults to true.
                 type: boolean
+              reclaimPolicy:
+                allOf:
+                - enum:
+                  - Retain
+                  - Delete
+                - enum:
+                  - Retain
+                  - Delete
+                default: Retain
+                description: |-
+                  ReclaimPolicy controls what happens to this backup's object-store archive
+                  (backup.xbstream + metadata.json) when the Backup object is deleted. With
+                  "Delete" the operator adds the cleanup finalizer and removes the archive on
+                  deletion; with "Retain" (the default) the archive is kept.
+                type: string
               target:
                 default: prefer-standby
                 description: Target instance to take the backup from.
@@ -320,6 +342,137 @@ spec:
                 - xtrabackup
                 - volumeSnapshot
                 type: string
+              objectStore:
+                description: |-
+                  ObjectStore records the destination the backup was uploaded to, resolved at
+                  backup time from the Backup spec or the referenced Cluster. It is snapshotted
+                  so the cleanup finalizer can still locate and remove the archive after the
+                  referenced Cluster is gone.
+                properties:
+                  bucket:
+                    description: Bucket is the destination bucket name.
+                    type: string
+                  credentials:
+                    description: Credentials to access the object store.
+                    properties:
+                      accessKeyId:
+                        description: The reference to the secret key containing the
+                          access key id.
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      inheritFromIAMRole:
+                        default: false
+                        description: |-
+                          InheritFromIAMRole, when true, makes the credentials be retrieved from the
+                          pod's environment (IRSA / instance profile) instead of from a secret.
+                        type: boolean
+                      secretAccessKey:
+                        description: The reference to the secret key containing the
+                          secret access key.
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      sessionToken:
+                        description: |-
+                          The reference to the secret key containing the session token, used for
+                          temporary credentials.
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    type: object
+                  endpoint:
+                    description: |-
+                      Endpoint is the URL of the S3-compatible service. Leave empty to target
+                      AWS S3 with the region's default endpoint.
+                    type: string
+                  forcePathStyle:
+                    default: true
+                    description: |-
+                      ForcePathStyle uses path-style addressing (endpoint/bucket/key) instead of
+                      virtual-hosted style (bucket.endpoint/key). Required by MinIO, Ceph and
+                      most non-AWS providers; defaults to true for maximum compatibility.
+                    type: boolean
+                  path:
+                    description: |-
+                      Path is the key prefix (folder) inside the bucket under which backups are
+                      stored.
+                    type: string
+                  region:
+                    description: |-
+                      Region is the bucket region. Required by most providers; for AWS it
+                      selects the regional endpoint.
+                    type: string
+                  serverSideEncryption:
+                    description: ServerSideEncryption sets the SSE algorithm (e.g.
+                      "AES256" or "aws:kms").
+                    type: string
+                  signatureVersion:
+                    default: s3v4
+                    description: |-
+                      SignatureVersion selects the request signing scheme. Defaults to s3v4;
+                      set to s3v2 for legacy providers.
+                    enum:
+                    - s3v4
+                    - s3v2
+                    type: string
+                  storageClass:
+                    description: StorageClass sets the object storage class (e.g.
+                      "STANDARD_IA").
+                    type: string
+                  tls:
+                    description: TLS configuration for the endpoint connection.
+                    properties:
+                      caBundleSecret:
+                        description: |-
+                          CABundleSecret references a secret key holding a PEM CA bundle used to
+                          verify the endpoint certificate (for private CAs / self-signed endpoints).
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        default: false
+                        description: |-
+                          InsecureSkipVerify disables TLS certificate verification against the
+                          endpoint. Use only for testing.
+                        type: boolean
+                    type: object
+                required:
+                - bucket
+                - credentials
+                type: object
               phase:
                 description: Phase is the current phase of the backup.
                 type: string
@@ -1515,6 +1668,13 @@ spec:
                         minimum: 10
                         type: integer
                     type: object
+                  jobTTL:
+                    description: |-
+                      JobTTL is the default retention for finished backup worker Jobs created for
+                      this cluster (their ttlSecondsAfterFinished). A per-Backup spec.jobTTL takes
+                      precedence. When unset, the operator keeps a finished Job for 24h. A zero
+                      duration deletes the Job as soon as it finishes.
+                    type: string
                   objectStore:
                     description: |-
                       ObjectStore is the S3-compatible destination for backups and binlog
@@ -1644,6 +1804,22 @@ spec:
                     - bucket
                     - credentials
                     type: object
+                  reclaimPolicy:
+                    allOf:
+                    - enum:
+                      - Retain
+                      - Delete
+                    - enum:
+                      - Retain
+                      - Delete
+                    default: Retain
+                    description: |-
+                      ReclaimPolicy controls what happens to the cluster's entire object-store
+                      archive (every base backup, the archived binlogs, and the archive index)
+                      when the Cluster is deleted. With "Delete" the operator adds a cleanup
+                      finalizer and wipes the archive on teardown; with "Retain" (the default)
+                      the archive is kept so a deleted Cluster can still be recovered.
+                    type: string
                   retentionPolicy:
                     description: |-
                       RetentionPolicy is a duration string (e.g. "30d", "8w") describing how
@@ -4384,6 +4560,14 @@ spec:
               instances:
                 description: Instances is the total number of instances reported.
                 type: integer
+              labelSelector:
+                description: |-
+                  LabelSelector is the serialized label selector that identifies the
+                  instance Pods managed by this Cluster. It is populated by the operator
+                  and exposed through the scale sub-resource (selectorpath) so that
+                  autoscalers such as the Vertical Pod Autoscaler can discover the managed
+                  Pods to resize.
+                type: string
               lastRetentionRunTime:
                 description: |-
                   LastRetentionRunTime is when the operator last ran a backup-retention GC
@@ -4499,6 +4683,7 @@ spec:
     storage: true
     subresources:
       scale:
+        labelSelectorPath: .status.labelSelector
         specReplicasPath: .spec.instances
         statusReplicasPath: .status.instances
       status: {}
@@ -5237,6 +5422,22 @@ spec:
                 default: true
                 description: Online, when true, performs non-blocking (hot) backups.
                 type: boolean
+              reclaimPolicy:
+                allOf:
+                - enum:
+                  - Retain
+                  - Delete
+                - enum:
+                  - Retain
+                  - Delete
+                default: Retain
+                description: |-
+                  ReclaimPolicy is propagated to every generated Backup as its
+                  spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup
+                  finalizer, so deleting it also removes its archive (backup.xbstream +
+                  metadata.json) from the object store. Defaults to "Retain", the
+                  non-destructive default.
+                type: string
               schedule:
                 description: |-
                   Schedule is a cron expression (6 fields, including seconds) defining when
@@ -5780,7 +5981,18 @@ rules:
   - create
   - get
   - list
+  - patch
+  - update
   - watch
+- apiGroups:
+  - mysql.cnmsql.co
+  resources:
+  - backups/finalizers
+  - clusters/finalizers
+  - databases/finalizers
+  - databaseusers/finalizers
+  verbs:
+  - update
 - apiGroups:
   - mysql.cnmsql.co
   resources:
@@ -5815,14 +6027,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - mysql.cnmsql.co
-  resources:
-  - clusters/finalizers
-  - databases/finalizers
-  - databaseusers/finalizers
-  verbs:
-  - update
 - apiGroups:
   - policy
   resources:

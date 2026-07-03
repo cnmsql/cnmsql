@@ -145,8 +145,13 @@ func (cluster *Cluster) SetDefaults() {
 		spec.Storage.ResizeInUseVolumes = ptr.To(true)
 	}
 
-	if spec.Backup != nil && spec.Backup.ObjectStore != nil {
-		spec.Backup.ObjectStore.SetDefaults()
+	if spec.Backup != nil {
+		if spec.Backup.ReclaimPolicy == "" {
+			spec.Backup.ReclaimPolicy = BackupReclaimRetain
+		}
+		if spec.Backup.ObjectStore != nil {
+			spec.Backup.ObjectStore.SetDefaults()
+		}
 	}
 	for i := range spec.ExternalClusters {
 		if spec.ExternalClusters[i].ObjectStore != nil {

@@ -254,10 +254,12 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	cluster.SetDefaults()
 
-	// Nothing to do while the Cluster is being deleted: owned resources are
-	// garbage-collected via owner references.
-	if !cluster.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+	// Handle the object-store reclaim lifecycle: wipe the archive on deletion
+	// (when opted in) and otherwise keep the teardown finalizer in sync with the
+	// reclaim policy. This short-circuits reconcile while the Cluster is being
+	// deleted or when the finalizer set just changed.
+	if handled, err := r.handleBackupReclaimLifecycle(ctx, cluster); handled {
+		return ctrl.Result{}, err
 	}
 
 	if reason := unsupportedReason(cluster); reason != "" {

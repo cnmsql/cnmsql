@@ -11,16 +11,16 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// backupCleanupFinalizer opts a Backup into object-store cleanup on deletion. It
-// must match the constant used by the operator
+// backupCleanupFinalizer is the finalizer the operator stamps onto a Backup with
+// reclaimPolicy: Delete. It must match the constant used by the operator
 // (internal/controller.backupFinalizer).
 const backupCleanupFinalizer = "mysql.cnmsql.co/cleanup-backup-files"
 
-// This spec exercises the opt-in Backup cleanup finalizer: a Backup carrying
-// mysql.cnmsql.co/cleanup-backup-files has its archive (backup.xbstream +
-// metadata.json) removed from the object store when the Backup object is
-// deleted, and the finalizer is released so the object goes away. It also
-// asserts the default (no finalizer) behavior leaves the archive in place.
+// This spec exercises the opt-in Backup reclaim policy: a Backup with
+// spec.reclaimPolicy: Delete has the operator stamp the cleanup finalizer and,
+// on deletion, remove its archive (backup.xbstream + metadata.json) from the
+// object store before releasing the finalizer. It also asserts the default
+// (Retain) behavior leaves the archive in place.
 var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 	const (
 		finCluster   = "bkp-fin-src"
@@ -47,9 +47,18 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		expectClusterReady(finCluster, 1, 20*time.Minute)
 	})
 
-	It("removes the archive from the object store when a finalized Backup is deleted", func() {
-		By("creating a Backup that carries the cleanup finalizer")
-		applyManifest(finalizedBkp, backupManifestWithFinalizer(finalizedBkp, finCluster, backupCleanupFinalizer))
+	It("removes the archive from the object store when a Delete-policy Backup is deleted", func() {
+		By("creating a Backup with reclaimPolicy: Delete")
+		applyManifest(finalizedBkp, backupManifestReclaimDelete(finalizedBkp, finCluster))
+
+		By("verifying the operator stamps the cleanup finalizer")
+		Eventually(func(g Gomega) {
+			finalizers, err := kubectl("get", "backup", finalizedBkp, "-n", testNamespace,
+				"-o", "jsonpath={.metadata.finalizers[*]}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(finalizers).To(ContainSubstring(backupCleanupFinalizer),
+				"operator should stamp the cleanup finalizer for reclaimPolicy: Delete")
+		}, e2eTimeout(1*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for the backup to complete")
 		Eventually(func(g Gomega) {
@@ -95,7 +104,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		const scheduleName = "bkp-fin-sched"
 		selector := "mysql.cnmsql.co/scheduled-backup=" + scheduleName
 
-		By("creating a ScheduledBackup with objectStoreCleanup enabled")
+		By("creating a ScheduledBackup with reclaimPolicy: Delete")
 		// immediate fires one backup now; the daily cron slot won't fire during the
 		// test, so exactly one generated Backup is exercised.
 		applyManifest(scheduleName, scheduledBackupCleanupManifest(scheduleName, finCluster, "0 0 2 * * *"))
@@ -111,12 +120,14 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 			genBackup = names[0]
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
-		By("verifying the generated Backup carries the cleanup finalizer")
-		finalizers, err := kubectl("get", "backup", genBackup, "-n", testNamespace,
-			"-o", "jsonpath={.metadata.finalizers[*]}")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(finalizers).To(ContainSubstring(backupCleanupFinalizer),
-			"generated Backup should inherit the cleanup finalizer")
+		By("verifying the generated Backup inherits reclaimPolicy and gets the cleanup finalizer")
+		Eventually(func(g Gomega) {
+			finalizers, err := kubectl("get", "backup", genBackup, "-n", testNamespace,
+				"-o", "jsonpath={.metadata.finalizers[*]}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(finalizers).To(ContainSubstring(backupCleanupFinalizer),
+				"generated Backup should inherit reclaimPolicy: Delete and get the finalizer")
+		}, e2eTimeout(1*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for the generated Backup to complete")
 		Eventually(func(g Gomega) {
@@ -196,24 +207,23 @@ metadata:
 spec:
   schedule: "%s"
   immediate: true
-  objectStoreCleanup: true
+  reclaimPolicy: Delete
   cluster:
     name: %s
   method: xtrabackup
 `, name, testNamespace, schedule, cluster)
 }
 
-func backupManifestWithFinalizer(name, cluster, finalizer string) string {
+func backupManifestReclaimDelete(name, cluster string) string {
 	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Backup
 metadata:
   name: %s
   namespace: %s
-  finalizers:
-    - %s
 spec:
   cluster:
     name: %s
   method: xtrabackup
-`, name, testNamespace, finalizer, cluster)
+  reclaimPolicy: Delete
+`, name, testNamespace, cluster)
 }

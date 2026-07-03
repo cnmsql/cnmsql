@@ -63,15 +63,15 @@ func (s *ScheduledBackup) SetDefaults() {
 	if spec.Online == nil {
 		spec.Online = ptr.To(true)
 	}
-	if spec.ObjectStoreCleanup == nil {
-		spec.ObjectStoreCleanup = ptr.To(false)
+	if spec.ReclaimPolicy == "" {
+		spec.ReclaimPolicy = BackupReclaimRetain
 	}
 }
 
-// WantsObjectStoreCleanup reports whether generated Backups should carry the
-// object-store cleanup finalizer.
+// WantsObjectStoreCleanup reports whether generated Backups should reclaim their
+// object-store archive when deleted.
 func (s *ScheduledBackup) WantsObjectStoreCleanup() bool {
-	return s.Spec.ObjectStoreCleanup != nil && *s.Spec.ObjectStoreCleanup
+	return s.Spec.ReclaimPolicy == BackupReclaimDelete
 }
 
 // IsSuspended returns whether the schedule is paused.
@@ -101,25 +101,27 @@ func (s *ScheduledBackup) BackupName(t time.Time) string {
 // CreateBackup builds a Backup for this ScheduledBackup with the given name.
 // The backup inherits the cluster reference, method, target and online setting;
 // the object store is resolved from the Cluster by the BackupReconciler, as for
-// one-shot backups. When spec.objectStoreCleanup is set, the generated Backup
-// also carries the object-store cleanup finalizer.
+// one-shot backups. The schedule's reclaimPolicy is propagated so the generated
+// Backup opts into (or out of) object-store cleanup on its own; the reconciler
+// stamps the finalizer from that field.
 func (s *ScheduledBackup) CreateBackup(name string) *Backup {
-	backup := &Backup{
+	reclaimPolicy := s.Spec.ReclaimPolicy
+	if reclaimPolicy == "" {
+		reclaimPolicy = BackupReclaimRetain
+	}
+	return &Backup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: s.Namespace,
 		},
 		Spec: BackupSpec{
-			Cluster: s.Spec.Cluster,
-			Method:  s.Spec.Method,
-			Target:  s.Spec.Target,
-			Online:  s.Spec.Online,
+			Cluster:       s.Spec.Cluster,
+			Method:        s.Spec.Method,
+			Target:        s.Spec.Target,
+			Online:        s.Spec.Online,
+			ReclaimPolicy: reclaimPolicy,
 		},
 	}
-	if s.WantsObjectStoreCleanup() {
-		backup.Finalizers = append(backup.Finalizers, BackupCleanupFinalizer)
-	}
-	return backup
 }
 
 // Validate returns the list of validation errors for the ScheduledBackup spec.

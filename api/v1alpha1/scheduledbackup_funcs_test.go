@@ -36,7 +36,7 @@ var _ = Describe("ScheduledBackup defaulting", func() {
 		Expect(sb.Spec.Method).To(Equal(BackupMethodXtrabackup))
 		Expect(sb.Spec.Target).To(Equal(BackupTargetPreferStandby))
 		Expect(sb.Spec.Online).To(HaveValue(BeTrue()))
-		Expect(sb.Spec.ObjectStoreCleanup).To(HaveValue(BeFalse()))
+		Expect(sb.Spec.ReclaimPolicy).To(Equal(BackupReclaimRetain))
 	})
 
 	It("does not override explicitly set values", func() {
@@ -131,19 +131,22 @@ var _ = Describe("ScheduledBackup CreateBackup", func() {
 		Expect(backup.Spec.Online).To(HaveValue(BeFalse()))
 	})
 
-	It("does not add the cleanup finalizer by default", func() {
+	It("defaults the generated backup to Retain and never stamps the finalizer", func() {
 		sb := &ScheduledBackup{ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"}}
 		backup := sb.CreateBackup("nightly-1")
+		Expect(backup.Spec.ReclaimPolicy).To(Equal(BackupReclaimRetain))
+		// The finalizer is stamped later by the reconciler, not at creation.
 		Expect(backup.Finalizers).NotTo(ContainElement(BackupCleanupFinalizer))
 	})
 
-	It("adds the cleanup finalizer when objectStoreCleanup is enabled", func() {
+	It("propagates reclaimPolicy Delete to the generated backup", func() {
 		sb := &ScheduledBackup{
 			ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"},
-			Spec:       ScheduledBackupSpec{ObjectStoreCleanup: ptr.To(true)},
+			Spec:       ScheduledBackupSpec{ReclaimPolicy: BackupReclaimDelete},
 		}
 		backup := sb.CreateBackup("nightly-1")
-		Expect(backup.Finalizers).To(ContainElement(BackupCleanupFinalizer))
+		Expect(backup.Spec.ReclaimPolicy).To(Equal(BackupReclaimDelete))
+		Expect(backup.WantsObjectStoreCleanup()).To(BeTrue())
 	})
 })
 

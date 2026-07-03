@@ -49,14 +49,15 @@ type ScheduledBackupSpec struct {
 	// +optional
 	BackupOwnerReference string `json:"backupOwnerReference,omitempty"`
 
-	// ObjectStoreCleanup, when true, adds the object-store cleanup finalizer
-	// (mysql.cnmsql.co/cleanup-backup-files) to generated Backups, so deleting a
-	// generated Backup also removes its archive (backup.xbstream + metadata.json)
-	// from the object store. Defaults to false, matching the non-destructive
-	// default for one-shot Backups.
-	// +kubebuilder:default:=false
+	// ReclaimPolicy is propagated to every generated Backup as its
+	// spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup
+	// finalizer, so deleting it also removes its archive (backup.xbstream +
+	// metadata.json) from the object store. Defaults to "Retain", the
+	// non-destructive default.
+	// +kubebuilder:validation:Enum=Retain;Delete
+	// +kubebuilder:default:=Retain
 	// +optional
-	ObjectStoreCleanup *bool `json:"objectStoreCleanup,omitempty"`
+	ReclaimPolicy BackupReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
 	// Method is the backup method used for the generated backups.
 	// +kubebuilder:default:=xtrabackup

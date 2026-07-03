@@ -123,8 +123,10 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore is the S3-compatible destination for backups and binlog<br />archiving. |  | Optional: \{\} <br /> |
 | `retentionPolicy` _string_ | RetentionPolicy is a duration string (e.g. "30d", "8w") describing how<br />long to keep backups. |  | Pattern: `^[1-9][0-9]*[dwm]$` <br />Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to the cluster's entire object-store<br />archive (every base backup, the archived binlogs, and the archive index)<br />when the Cluster is deleted. With "Delete" the operator adds a cleanup<br />finalizer and wipes the archive on teardown; with "Retain" (the default)<br />the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take backups from, defaults to a standby if available. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `xtrabackupOptions` _string array_ | XtrabackupOptions are extra flags passed to xtrabackup. |  | Optional: \{\} <br /> |
+| `jobTTL` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | JobTTL is the default retention for finished backup worker Jobs created for<br />this cluster (their ttlSecondsAfterFinished). A per-Backup spec.jobTTL takes<br />precedence. When unset, the operator keeps a finished Job for 24h. A zero<br />duration deletes the Job as soon as it finishes. |  | Optional: \{\} <br /> |
 | `continuousArchiving` _[ContinuousArchivingConfiguration](#continuousarchivingconfiguration)_ | ContinuousArchiving configures continuous binary-log archiving to the<br />object store, the foundation for point-in-time recovery. Disabled by<br />default. |  | Optional: \{\} <br /> |
 
 
@@ -188,6 +190,27 @@ _Appears in:_
 | `failed` | BackupPhaseFailed means the backup failed.<br /> |
 
 
+#### BackupReclaimPolicy
+
+_Underlying type:_ _string_
+
+BackupReclaimPolicy describes what happens to an object-store archive when the
+Kubernetes object that owns it (a Backup or a Cluster) is deleted.
+
+_Validation:_
+- Enum: [Retain Delete]
+
+_Appears in:_
+- [BackupConfiguration](#backupconfiguration)
+- [BackupSpec](#backupspec)
+- [ScheduledBackupSpec](#scheduledbackupspec)
+
+| Field | Description |
+| --- | --- |
+| `Retain` | BackupReclaimRetain keeps object-store artifacts after the owning object is<br />deleted. This is the default: removing a Kubernetes object never destroys<br />the only copy of a recovery point unless the user opts in.<br /> |
+| `Delete` | BackupReclaimDelete removes the object-store artifacts when the owning<br />object is deleted, via the cleanup finalizer.<br /> |
+
+
 #### BackupSpec
 
 
@@ -206,6 +229,8 @@ _Appears in:_
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method to use. | xtrabackup | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the backup from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs a non-blocking (hot) backup. Defaults to true. | true | Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(backup.xbstream + metadata.json) when the Backup object is deleted. With<br />"Delete" the operator adds the cleanup finalizer and removes the archive on<br />deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `jobTTL` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | JobTTL is how long the finished backup worker Job is kept before Kubernetes<br />garbage-collects it (its ttlSecondsAfterFinished). It overrides the<br />cluster-wide spec.backup.jobTTL. When unset on both, the operator keeps the<br />Job for 24h. A zero duration deletes the Job as soon as it finishes. |  | Optional: \{\} <br /> |
 
 
 #### BackupStatus
@@ -227,6 +252,7 @@ _Appears in:_
 | `backupId` _string_ | BackupID is a unique identifier of the backup in the object store. |  | Optional: \{\} <br /> |
 | `jobName` _string_ | JobName is the Kubernetes Job running this backup. |  | Optional: \{\} <br /> |
 | `destinationPath` _string_ | DestinationPath is the full path of the backup in the object store. |  | Optional: \{\} <br /> |
+| `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore records the destination the backup was uploaded to, resolved at<br />backup time from the Backup spec or the referenced Cluster. It is snapshotted<br />so the cleanup finalizer can still locate and remove the archive after the<br />referenced Cluster is gone. |  | Optional: \{\} <br /> |
 | `sha256` _string_ | SHA256 is the checksum of the uploaded backup artifact. |  | Optional: \{\} <br /> |
 | `beginGTID` _string_ | BeginGTID/EndGTID record the GTID range covered by the backup. |  | Optional: \{\} <br /> |
 | `endGTID` _string_ |  |  | Optional: \{\} <br /> |
@@ -1822,14 +1848,14 @@ spec:
   method: xtrabackup
   target: prefer-standby
   online: true
-  objectStoreCleanup: false
+  reclaimPolicy: Retain
 ```
 
 `schedule` uses six-field cron format: `second minute hour day-of-month month day-of-week`.
 
 Generated Backups are labelled with `mysql.cnmsql.co/scheduled-backup=<name>` and immediate Backups also carry `mysql.cnmsql.co/immediate-backup=true`.
 
-Set `objectStoreCleanup: true` to have generated Backups carry the `mysql.cnmsql.co/cleanup-backup-files` finalizer, so deleting a generated Backup also removes its archive from the object store. It defaults to `false`.
+Set `reclaimPolicy: Delete` to have generated Backups inherit that policy; the Backup controller then stamps the `mysql.cnmsql.co/cleanup-backup-files` finalizer so deleting a generated Backup also removes its archive from the object store. It defaults to `Retain`.
 
 ScheduledBackup is the Schema for the scheduledbackups API.
 
@@ -1887,7 +1913,7 @@ _Appears in:_
 | `suspend` _boolean_ | Suspend, when true, pauses the schedule. | false | Optional: \{\} <br /> |
 | `immediate` _boolean_ | Immediate, when true, takes a backup as soon as the ScheduledBackup is<br />created, in addition to the schedule. | false | Optional: \{\} <br /> |
 | `backupOwnerReference` _string_ | BackupOwnerReference controls the owner reference set on the generated<br />Backup objects. | self | Enum: [none self cluster] <br />Optional: \{\} <br /> |
-| `objectStoreCleanup` _boolean_ | ObjectStoreCleanup, when true, adds the object-store cleanup finalizer<br />(mysql.cnmsql.co/cleanup-backup-files) to generated Backups, so deleting a<br />generated Backup also removes its archive (backup.xbstream + metadata.json)<br />from the object store. Defaults to false, matching the non-destructive<br />default for one-shot Backups. | false | Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy is propagated to every generated Backup as its<br />spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup<br />finalizer, so deleting it also removes its archive (backup.xbstream +<br />metadata.json) from the object store. Defaults to "Retain", the<br />non-destructive default. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method used for the generated backups. | xtrabackup | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the generated backups from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs non-blocking (hot) backups. | true | Optional: \{\} <br /> |
