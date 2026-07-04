@@ -4,7 +4,6 @@
 package e2e
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -69,22 +68,23 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		Expect(password).NotTo(BeEmpty(), "app password secret not ready")
 
 		By("writing data on the primary")
-		_, err := mysqlExec(primary, "app", password, "app",
+		curPrimary := clusterPrimary(clusterName)
+		_, err := mariadbExec(curPrimary, "app", password, "app",
 			"CREATE TABLE IF NOT EXISTS notes (id INT PRIMARY KEY, body VARCHAR(64)); "+
 				"INSERT INTO notes VALUES (1, 'hello-mariadb') ON DUPLICATE KEY UPDATE body='hello-mariadb';")
 		Expect(err).NotTo(HaveOccurred(), "failed to write data")
 
-		By("verifying data on replica cluster-sample-2")
+		By("verifying data on replica " + clusterName + "-2")
 		Eventually(func(g Gomega) {
-			out, err := mysqlExec("cluster-sample-2", "app", password, "app",
+			out, err := mariadbExec(clusterName+"-2", "app", password, "app",
 				"SELECT body FROM notes WHERE id = 1")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("hello-mariadb"))
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
-		By("verifying data on replica cluster-sample-3")
+		By("verifying data on replica " + clusterName + "-3")
 		Eventually(func(g Gomega) {
-			out, err := mysqlExec("cluster-sample-3", "app", password, "app",
+			out, err := mariadbExec(clusterName+"-3", "app", password, "app",
 				"SELECT body FROM notes WHERE id = 1")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("hello-mariadb"))
@@ -93,11 +93,13 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 
 	It("performs a planned switchover and preserves data", func() {
 		By("identifying a replica to promote")
+		curPrimary := clusterPrimary(clusterName)
+		pod1 := clusterName + "-1"
 		var replica string
-		if primary == "cluster-sample-1" {
-			replica = "cluster-sample-2"
+		if curPrimary == pod1 {
+			replica = clusterName + "-2"
 		} else {
-			replica = "cluster-sample-1"
+			replica = pod1
 		}
 
 		By("patching targetPrimary to trigger switchover")
@@ -108,31 +110,31 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 
 		By("waiting for the switchover to complete")
 		Eventually(func(g Gomega) {
-			cur, _ := clusterField(clusterName, ".status.currentPrimary")
+			cur, _ := clusterField(clusterName, "{.status.currentPrimary}")
 			g.Expect(cur).To(Equal(replica))
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
-		oldPrimary := primary
+		oldPrimary := curPrimary
 		primary = replica
 		GinkgoWriter.Printf("Switchover completed: %s → %s\n", oldPrimary, primary)
 
 		By("verifying data survived the switchover")
 		password := appPassword(clusterName)
-		out, err := mysqlExec(primary, "app", password, "app",
+		out, err := mariadbExec(primary, "app", password, "app",
 			"SELECT body FROM notes WHERE id = 1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("hello-mariadb"))
 
 		By("verifying the old primary became a replica and is replicating")
 		Eventually(func(g Gomega) {
-			out, err := mysqlExec(oldPrimary, "app", password, "app",
+			out, err := mariadbExec(oldPrimary, "app", password, "app",
 				"SELECT body FROM notes WHERE id = 1")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("hello-mariadb"))
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("writing new data through the new primary")
-		_, err = mysqlExec(primary, "app", password, "app",
+		_, err = mariadbExec(primary, "app", password, "app",
 			"INSERT INTO notes VALUES (2, 'after-switchover') ON DUPLICATE KEY UPDATE body='after-switchover';")
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -147,7 +149,7 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		By("waiting for a new primary to be elected")
 		var newPrimary string
 		Eventually(func(g Gomega) {
-			cur, _ := clusterField(clusterName, ".status.currentPrimary")
+			cur, _ := clusterField(clusterName, "{.status.currentPrimary}")
 			g.Expect(cur).NotTo(BeEmpty())
 			g.Expect(cur).NotTo(Equal(primary))
 			newPrimary = cur
@@ -161,12 +163,12 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 
 		By("verifying data survived the failover")
 		password := appPassword(clusterName)
-		out, err := mysqlExec(primary, "app", password, "app",
+		out, err := mariadbExec(primary, "app", password, "app",
 			"SELECT body FROM notes WHERE id = 1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("hello-mariadb"))
 
-		out, err = mysqlExec(primary, "app", password, "app",
+		out, err = mariadbExec(primary, "app", password, "app",
 			"SELECT body FROM notes WHERE id = 2")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("after-switchover"))
@@ -192,7 +194,7 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		By("seeding data on the source cluster")
 		bkpPrimary := clusterPrimary(bkpSource)
 		password := appPassword(bkpSource)
-		_, err := mysqlExec(bkpPrimary, "app", password, "app",
+		_, err := mariadbExec(bkpPrimary, "app", password, "app",
 			"CREATE TABLE IF NOT EXISTS notes (id INT PRIMARY KEY, body VARCHAR(64)); "+
 				"INSERT INTO notes VALUES (1, 'backup-test') ON DUPLICATE KEY UPDATE body='backup-test';")
 		Expect(err).NotTo(HaveOccurred())
@@ -220,8 +222,8 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 
 		By("verifying data was restored")
 		restoredPrimary := clusterPrimary(bkpRestored)
-		password = appPassword(bkpRestored)
-		out, err := mysqlExec(restoredPrimary, "app", password, "app",
+		password = appPassword(bkpSource)
+		out, err := mariadbExec(restoredPrimary, "app", password, "app",
 			"SELECT body FROM notes WHERE id = 1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("backup-test"))
@@ -248,7 +250,7 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		password := appPassword(pitrSource)
 
 		By("seeding initial data")
-		_, err := mysqlExec(pitrPrimary, "app", password, "app",
+		_, err := mariadbExec(pitrPrimary, "app", password, "app",
 			"CREATE TABLE IF NOT EXISTS events (id INT PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, msg VARCHAR(128)); "+
 				"INSERT INTO events (msg) VALUES ('pre-backup');")
 		Expect(err).NotTo(HaveOccurred())
@@ -266,13 +268,19 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("writing data after the backup for PITR validation")
-		_, err = mysqlExec(pitrPrimary, "app", password, "app",
+		_, err = mariadbExec(pitrPrimary, "app", password, "app",
 			"INSERT INTO events (msg) VALUES ('post-backup');")
 		Expect(err).NotTo(HaveOccurred())
-		time.Sleep(5 * time.Second)
+
+		By("flushing binary logs and waiting for the archiver to ship them")
+		rootPW := rootPassword(pitrSource)
+		_, err = mariadbExec(pitrPrimary, "root", rootPW, "",
+			"FLUSH BINARY LOGS")
+		Expect(err).NotTo(HaveOccurred())
+		time.Sleep(20 * time.Second)
 
 		By("recording the binlog position after post-backup write")
-		gtidOut, err := mysqlExec(pitrPrimary, "app", password, "app",
+		gtidOut, err := mariadbExec(pitrPrimary, "app", password, "app",
 			"SELECT @@gtid_current_pos")
 		Expect(err).NotTo(HaveOccurred())
 		targetGTID := strings.TrimSpace(gtidOut)
@@ -287,8 +295,8 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 
 		By("verifying both pre- and post-backup data exist")
 		restoredPrimary := clusterPrimary(pitrRestored)
-		password = appPassword(pitrRestored)
-		out, err := mysqlExec(restoredPrimary, "app", password, "app",
+		password = appPassword(pitrSource)
+		out, err := mariadbExec(restoredPrimary, "app", password, "app",
 			"SELECT COUNT(*) FROM events")
 		Expect(err).NotTo(HaveOccurred())
 		count, err := strconv.Atoi(strings.TrimSpace(out))
@@ -296,7 +304,7 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		Expect(count).To(BeNumerically(">=", 2),
 			"PITR should recover at least pre-backup and post-backup rows; got %d", count)
 
-		out, err = mysqlExec(restoredPrimary, "app", password, "app",
+		out, err = mariadbExec(restoredPrimary, "app", password, "app",
 			"SELECT msg FROM events WHERE msg='post-backup'")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("post-backup"),
@@ -310,22 +318,11 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		createUser := fmt.Sprintf(
 			`{"name":"e2euser","host":"%%","password":"%s","superuser":false,"privileges":[{"privileges":["SELECT","INSERT"],"on":"app.*"}]}`,
 			password)
-		podName := clusterPrimary(clusterName)
-		cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "mysql",
-			"--", "curl", "-s", "-k",
-			"--cert", "/etc/cnmsql/tls-server/tls.crt",
-			"--key", "/etc/cnmsql/tls-server/tls.key",
-			"--cacert", "/etc/cnmsql/client-ca/ca.crt",
-			"-X", "POST",
-			"-H", "Content-Type: application/json",
-			"-d", createUser,
-			"https://localhost:8080/user/create")
-		out, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "failed to create user: %s", string(out))
+		createUserViaControlAPI(clusterName, clusterPrimary(clusterName), createUser)
 
 		By("verifying the user can connect and query")
 		Eventually(func(g Gomega) {
-			out, err := mysqlExec(primary, "e2euser", password, "app",
+			out, err := mariadbExec(primary, "e2euser", password, "app",
 				"SELECT body FROM notes WHERE id = 1")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("hello-mariadb"))
@@ -407,8 +404,9 @@ spec:
     recovery:
       backup:
         name: %s
-      recoveryTarget: {}
-`, name, testNamespace, mariadbImage, e2eInstanceResources, e2eMySQLParameters, backup)
+  backup:
+%s
+`, name, testNamespace, mariadbImage, e2eInstanceResources, e2eMySQLParameters, backup, objectStoreYAML("    "))
 }
 
 func mariadbContinuousArchivingClusterManifest(name string) string {
@@ -433,14 +431,14 @@ spec:
       owner: app
   backup:
 %s
-  archiving:
-    enabled: true
-    purgeGate: false
+    continuousArchiving:
+      enabled: true
+      targetRPOSeconds: 10
+      maxBinlogSizeMB: 1
 `, name, testNamespace, mariadbImage, e2eInstanceResources, e2eMySQLParameters, objectStoreYAML("    "))
 }
 
 func mariadbPITRClusterManifest(name, backup, sourceCluster, targetGTID string) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(targetGTID))
 	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
@@ -461,8 +459,9 @@ spec:
       backup:
         name: %s
       recoveryTarget:
-        targetGTID: %s
-      sourceCluster: %s
+        targetGTID: "%s"
+  backup:
+%s
 `, name, testNamespace, mariadbImage, e2eInstanceResources, e2eMySQLParameters,
-		backup, encoded, sourceCluster)
+		backup, targetGTID, objectStoreYAML("    "))
 }

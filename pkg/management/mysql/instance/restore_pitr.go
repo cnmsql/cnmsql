@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -218,10 +219,11 @@ func (o *RestoreOptions) applyReplay(
 	startPos := plan.StartPosition
 
 	// For MariaDB positional replay: find the anchor file in the downloaded files
-	// and skip everything before it.
+	// and skip everything before it. Downloaded files are stored as
+	// <serverUUID>_<binlogName>, so we match on the suffix.
 	if isMariaDB && plan.AnchorFile != "" {
 		for i, f := range files {
-			if filepath.Base(f) == plan.AnchorFile {
+			if strings.HasSuffix(f, "_"+plan.AnchorFile) || filepath.Base(f) == plan.AnchorFile {
 				replayFiles = files[i:]
 				break
 			}

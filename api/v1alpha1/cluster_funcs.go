@@ -85,6 +85,11 @@ var gtidSetSyntaxRe = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+(-[0-9]+)?(:[0-9]+(-[0-9]+)?)*` +
 		`(,[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+(-[0-9]+)?(:[0-9]+(-[0-9]+)?)*)*$`)
 
+// mariadbGTIDSetSyntaxRe matches a MariaDB GTID set: one or more comma-separated
+// "<domain>-<server>-<seq>" terms, each component being an unsigned integer.
+var mariadbGTIDSetSyntaxRe = regexp.MustCompile(
+	`^[0-9]+-[0-9]+-[0-9]+(,[0-9]+-[0-9]+-[0-9]+)*$`)
+
 // SetDefaults fills in the unset fields of the Cluster spec with their default
 // values. It is idempotent. Defaults declared via kubebuilder markers are
 // applied by the API server; this mirrors them so the in-memory object is
@@ -726,10 +731,18 @@ func (spec *ClusterSpec) validateRecovery(path *field.Path) field.ErrorList {
 				"must be an RFC3339 timestamp"))
 		}
 	}
-	if target.TargetGTID != "" && !gtidSetSyntaxRe.MatchString(target.TargetGTID) {
-		allErrs = append(allErrs, field.Invalid(
-			tPath.Child("targetGTID"), target.TargetGTID,
-			"must be a valid GTID set (e.g. \"uuid:1-100\")"))
+	if target.TargetGTID != "" {
+		valid := spec.Flavor == FlavorMariaDB && mariadbGTIDSetSyntaxRe.MatchString(target.TargetGTID) ||
+			spec.Flavor != FlavorMariaDB && gtidSetSyntaxRe.MatchString(target.TargetGTID)
+		if !valid {
+			example := "uuid:1-100"
+			if spec.Flavor == FlavorMariaDB {
+				example = "0-1-16"
+			}
+			allErrs = append(allErrs, field.Invalid(
+				tPath.Child("targetGTID"), target.TargetGTID,
+				"must be a valid GTID set (e.g. \""+example+"\")"))
+		}
 	}
 	return allErrs
 }

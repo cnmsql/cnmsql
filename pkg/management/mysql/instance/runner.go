@@ -467,6 +467,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 		if opts.Archiving.MysqlbinlogPath == "" {
 			opts.Archiving.MysqlbinlogPath = eng.Backup().BinlogClientBinary()
 		}
+		if eng.Flavor() == engine.FlavorMariaDB {
+			opts.Archiving.MariaDB = true
+			opts.Archiving.MariaDBGTIDModel = eng.GTID()
+		}
 		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery())
 		if err != nil {
 			_ = sup.Shutdown(ctx)

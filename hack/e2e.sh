@@ -27,6 +27,7 @@ TIMEOUT="${GINKGO_TIMEOUT:-120m}"
 K8S="${K8S_VERSION:-}"
 MYSQL="${E2E_MYSQL_VERSION:-}"
 MARIADB="${E2E_MARIADB_VERSION:-}"
+MARIADB_FLAG=false
 FOCUS="${E2E_FOCUS:-}"
 LABEL=""                       # set only by --label
 TIER=""                        # set only by --tier
@@ -77,7 +78,7 @@ while [[ $# -gt 0 ]]; do
 	--tier) TIER="$2"; shift 2 ;;
 	--k8s) K8S="$2"; shift 2 ;;
 		--mysql) MYSQL="$2"; shift 2 ;;
-		--mariadb) MARIADB=true; shift ;;
+		--mariadb) MARIADB_FLAG=true; shift ;;
 	--procs) PROCS="$2"; shift 2 ;;
 	--junit) JUNIT="$2"; shift 2 ;;
 	--keep) KEEP=true; shift ;;
@@ -108,12 +109,16 @@ if [[ -z "$LABEL" ]]; then
 	fi
 fi
 
-# --mariadb adds the mariadb label constraint to any existing filter.
-if [[ "$MARIADB" == true ]]; then
+# --mariadb adds the mariadb label constraint to any existing filter and defaults
+# E2E_MARIADB_VERSION to "11.4" when no explicit version is set.
+if [[ "$MARIADB_FLAG" == true ]]; then
 	if [[ -n "$LABEL" ]]; then
 		LABEL="$LABEL && mariadb"
 	else
 		LABEL="mariadb"
+	fi
+	if [[ -z "$MARIADB" ]]; then
+		MARIADB="11.4"
 	fi
 fi
 

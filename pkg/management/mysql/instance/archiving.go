@@ -42,12 +42,28 @@ type ArchivingConfig struct {
 	// BinlogDir is the directory holding the local binary-log files (the
 	// datadir, where log_bin writes them).
 	BinlogDir string
-	// MysqlbinlogPath is the mysqlbinlog binary (defaults to PATH lookup).
+	// MysqlbinlogPath is the mysqlbinlog/mariadb-binlog binary (defaults to PATH lookup).
 	MysqlbinlogPath string
 	// FlushInterval bounds the time-based RPO via forced FLUSH BINARY LOGS.
 	FlushInterval time.Duration
 	// Purge enables the active purge gate.
 	Purge bool
+	// MariaDB selects MariaDB GTID format for the binlog scanner and archiver.
+	MariaDB bool
+	// MariaDBGTIDModel provides MariaDB GTID operations for the archiver's
+	// cumulative set tracking. Nil for MySQL.
+	MariaDBGTIDModel binlog.MariaDBGTIDModel
+}
+
+// newGTIDSet returns a factory for the binlog accumulation set. For MariaDB it
+// uses the MariaDBGTIDModel; for MySQL it returns the default (replication.GTIDSet).
+func (c *ArchivingConfig) newGTIDSet() func() binlog.GTIDOps {
+	if c.MariaDB && c.MariaDBGTIDModel != nil {
+		return func() binlog.GTIDOps {
+			return binlog.NewMariadbGTIDSet(c.MariaDBGTIDModel)
+		}
+	}
+	return nil // fallback to default in archiver (newMysqlGTIDSet)
 }
 
 // startArchiver builds and runs the continuous binlog archiver loop against the
@@ -80,7 +96,8 @@ func startArchiver(
 		InstanceName: cfg.InstanceName,
 		ServerUUID:   serverUUID,
 		BinlogDir:    cfg.BinlogDir,
-		Scan:         binlog.MysqlbinlogScanner(cfg.MysqlbinlogPath, log.WithName("mysqlbinlog")),
+		Scan:         binlog.MysqlbinlogScanner(cfg.MysqlbinlogPath, cfg.MariaDB, log.WithName("binlog-scanner")),
+		NewSet:       cfg.newGTIDSet(),
 	})
 	if err != nil {
 		return nil, nil, err

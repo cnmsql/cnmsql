@@ -120,14 +120,14 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		return fmt.Errorf("prepare: %w", err)
 	}
 
-	// 2. Restore into the (empty) data directory. ext4-backed PVCs ship a
-	// lost+found directory at the mount root; copy-back aborts on a non-empty
-	// data dir, so clear it first.
+	// 2. Restore into the data directory. Clear it fully first — a previous
+	// failed copy-back may have left files behind, and mariabackup refuses to
+	// write into a non-empty target dir.
 	if err := os.MkdirAll(opts.DataDir, 0o750); err != nil {
 		return fmt.Errorf("creating data dir: %w", err)
 	}
-	if err := removeLostFound(opts.DataDir); err != nil {
-		return err
+	if err := purgeDataDir(opts.DataDir); err != nil {
+		return fmt.Errorf("purging data dir: %w", err)
 	}
 	copyBackArgs, err := bt.CopyBackArgs(opts.BackupDir, opts.DataDir)
 	if err != nil {
@@ -171,14 +171,9 @@ func (o *JoinOptions) configureReplication(
 		"--datadir="+o.DataDir,
 		"--socket="+o.Socket,
 		"--skip-networking",
-		// GTID replication is mandatory; ensure it is enabled even if the
-		// temporary server is started without the rendered configuration. The
-		// CHANGE REPLICATION SOURCE ... AUTO_POSITION and SET gtid_purged below
-		// both require it.
-		"--gtid-mode=ON",
-		"--enforce-gtid-consistency=ON",
 		"--log-bin=binlog",
 	)
+	args = append(args, eng.GTIDStartupArgs()...)
 	// Do not start replication on the temporary server; we configure it and let
 	// the real server start it. The option was renamed slave→replica in 8.0.26.
 	if o.MysqldPath == defaultMysqldBinary {

@@ -76,6 +76,12 @@ func FetchBackup(ctx context.Context, opts FetchOptions) error {
 		return fmt.Errorf("creating backup dir: %w", err)
 	}
 
+	// Purge stale files from a previous failed attempt. mbstream lacks
+	// --force-overwrite; leftover files cause "File exists" errors.
+	if err := purgeDataDir(opts.BackupDir); err != nil {
+		log.Info("Could not purge backup directory (may be ok on first run)", "backupDir", opts.BackupDir, "error", err)
+	}
+
 	bt := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR"))).Backup()
 
 	transport, err := opts.transport()

@@ -28,7 +28,6 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // ErrCollision is returned when a binlog about to be uploaded would clobber an
@@ -62,6 +61,7 @@ type Archiver struct {
 	binlogDir    string
 	scan         Scanner
 	now          func() time.Time
+	newSet       func() gtidOps
 }
 
 // ArchiverOptions configures an Archiver.
@@ -78,6 +78,9 @@ type ArchiverOptions struct {
 	Scan Scanner
 	// Now is the clock; defaults to time.Now.
 	Now func() time.Time
+	// NewSet returns a fresh GTIDOps accumulator for this archiver's engine.
+	// Defaults to a MySQL (replication.GTIDSet-backed) set.
+	NewSet func() GTIDOps
 }
 
 // NewArchiver builds an Archiver from validated options.
@@ -98,6 +101,10 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 	if now == nil {
 		now = time.Now
 	}
+	newSet := opts.NewSet
+	if newSet == nil {
+		newSet = newMysqlGTIDSet
+	}
 	return &Archiver{
 		store:        opts.Store,
 		objectStore:  opts.ObjectStore,
@@ -107,6 +114,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		binlogDir:    opts.BinlogDir,
 		scan:         opts.Scan,
 		now:          now,
+		newSet:       newSet,
 	}, nil
 }
 
@@ -135,15 +143,15 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 	if err != nil {
 		return ArchiveResult{}, err
 	}
-	covered, err := replication.ParseGTIDSet(status.CoveredGTIDSet)
-	if err != nil {
+	covered := a.newSet()
+	if err := covered.Parse(status.CoveredGTIDSet); err != nil {
 		return ArchiveResult{}, fmt.Errorf("binlog: parsing covered gtid set: %w", err)
 	}
 
 	result := ArchiveResult{
 		LastArchivedBinlog: status.LastArchivedBinlog,
 		LastArchivedGTID:   status.LastArchivedGTID,
-		CoveredGTIDSet:     covered.String(),
+		CoveredGTIDSet:     status.CoveredGTIDSet,
 	}
 
 	for _, l := range Archivable(logs) {
@@ -163,8 +171,8 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 
 		// Whether freshly archived or already present, fold its coverage into the
 		// segment frontier so a resumed pass converges.
-		fileSet, err := replication.ParseGTIDSet(meta.GTIDSet)
-		if err != nil {
+		fileSet := a.newSet()
+		if err := fileSet.Parse(meta.GTIDSet); err != nil {
 			return result, fmt.Errorf("binlog: parsing file gtid set for %q: %w", l.Name, err)
 		}
 		covered.Union(fileSet)
@@ -330,10 +338,10 @@ func (a *Archiver) updateIndex(ctx context.Context, bucket string, status object
 	}
 
 	// Recompute the cumulative covered set across every segment.
-	cumulative := replication.GTIDSet{}
+	cumulative := a.newSet()
 	for i := range index.Segments {
-		parsed, err := replication.ParseGTIDSet(index.Segments[i].GTIDSet)
-		if err != nil {
+		parsed := a.newSet()
+		if err := parsed.Parse(index.Segments[i].GTIDSet); err != nil {
 			return fmt.Errorf("binlog: parsing segment gtid set: %w", err)
 		}
 		cumulative.Union(parsed)

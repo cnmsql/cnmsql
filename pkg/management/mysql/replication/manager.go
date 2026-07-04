@@ -263,9 +263,12 @@ func (m *Manager) Promote(ctx context.Context) error {
 			return err
 		}
 	}
-	// super_read_only must be cleared before read_only.
-	if err := m.SetSuperReadOnly(ctx, false); err != nil {
-		return err
+	// super_read_only must be cleared before read_only. Skip on engines
+	// (e.g. MariaDB) that do not support the variable.
+	if m.repl.HasSuperReadOnly() {
+		if err := m.SetSuperReadOnly(ctx, false); err != nil {
+			return err
+		}
 	}
 	return m.SetReadOnly(ctx, false)
 }

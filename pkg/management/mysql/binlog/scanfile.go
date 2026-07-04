@@ -33,9 +33,15 @@ const DefaultMysqlbinlog = "mysqlbinlog"
 // file's GTID range and timestamps. binPath defaults to DefaultMysqlbinlog when
 // empty. mysqlbinlog stdout is a data path that is parsed by Scan; only its
 // stderr is turned into structured log lines, per the project logging decision.
-func MysqlbinlogScanner(binPath string, logger logr.Logger) Scanner {
+// When mariaDB is true, mariadb-binlog output is parsed (domain-server-seq
+// triples) and the process name in log lines reflects that.
+func MysqlbinlogScanner(binPath string, mariaDB bool, logger logr.Logger) Scanner {
 	if binPath == "" {
 		binPath = DefaultMysqlbinlog
+	}
+	procName := "mysqlbinlog"
+	if mariaDB {
+		procName = "mariadb-binlog"
 	}
 	return func(ctx context.Context, path string) (ScanResult, error) {
 		args, err := ReadArgs(path)
@@ -62,11 +68,11 @@ func MysqlbinlogScanner(binPath string, logger logr.Logger) Scanner {
 			defer close(stderrDone)
 			sc := bufio.NewScanner(stderr)
 			for sc.Scan() {
-				logger.Info("Process output", "process", "mysqlbinlog", "stream", "stderr", "line", sc.Text())
+				logger.Info("Process output", "process", procName, "stream", "stderr", "line", sc.Text())
 			}
 		}()
 
-		res, scanErr := Scan(stdout)
+		res, scanErr := Scan(stdout, ScanOpts{MariaDB: mariaDB})
 		// Ensure stdout is fully drained even on a parse error, so Wait succeeds.
 		_, _ = io.Copy(io.Discard, stdout)
 		<-stderrDone

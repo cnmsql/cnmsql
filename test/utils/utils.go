@@ -160,14 +160,36 @@ func LoadImageToKindClusterWithName(name string) error {
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	kindBinary := defaultKindBinary
 	if v, ok := os.LookupEnv("KIND"); ok {
 		kindBinary = v
 	}
+
+	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command(kindBinary, kindOptions...)
 	_, err := Run(cmd)
-	return err
+	if err == nil {
+		return nil
+	}
+
+	// Retry via image-archive: docker save | kind load image-archive. This
+	// bypasses a containerd snapshotter bug where `ctr import` fails to resolve
+	// layer digests on certain images (ghcr.io/cnmsql/cnmsql-mariadb-instance).
+	saveCmd := exec.Command("docker", "save", name)
+	loadCmd := exec.Command(kindBinary, "load", "image-archive", "--name", cluster)
+	loadCmd.Stdin, _ = saveCmd.StdoutPipe()
+	loadCmd.Stdout = os.Stdout
+	loadCmd.Stderr = os.Stderr
+	if startErr := loadCmd.Start(); startErr != nil {
+		return err
+	}
+	if runErr := saveCmd.Run(); runErr != nil {
+		return fmt.Errorf("docker save %s: %w (original: %w)", name, runErr, err)
+	}
+	if waitErr := loadCmd.Wait(); waitErr != nil {
+		return fmt.Errorf("kind load image-archive %s: %w (original: %w)", name, waitErr, err)
+	}
+	return nil
 }
 
 // GetNonEmptyLines converts given command output string into individual objects

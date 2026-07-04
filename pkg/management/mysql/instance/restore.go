@@ -201,6 +201,13 @@ func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool
 		return fmt.Errorf("creating backup dir: %w", err)
 	}
 
+	// Purge any leftover from a previous failed attempt (mbstream does not
+	// support --force-overwrite). If purgeDataDir succeeds on a nonexistent
+	// directory, the subsequent MkdirAll is harmless.
+	if err := purgeDataDir(opts.BackupDir); err != nil {
+		log.Info("Could not purge backup directory (may be ok on first run)", "backupDir", opts.BackupDir, "error", err)
+	}
+
 	// 1. Stream the archive out of object storage straight into the extractor,
 	// checksumming in flight so it can be verified against the metadata.
 	checksum, err := opts.extract(ctx, bt)
@@ -233,14 +240,14 @@ func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool
 		return fmt.Errorf("prepare: %w", err)
 	}
 
-	// 4. Restore into the (empty) data directory. ext4-backed PVCs ship a
-	// lost+found directory at the mount root; copy-back aborts on a non-empty
-	// data dir, so clear it first.
+	// 4. Restore into the data directory. Clear it fully first — a previous
+	// failed copy-back may have left files behind, and mariabackup refuses to
+	// write into a non-empty target dir.
 	if err := os.MkdirAll(opts.DataDir, 0o750); err != nil {
 		return fmt.Errorf("creating data dir: %w", err)
 	}
-	if err := removeLostFound(opts.DataDir); err != nil {
-		return err
+	if err := purgeDataDir(opts.DataDir); err != nil {
+		return fmt.Errorf("purging data dir: %w", err)
 	}
 	copyBackArgs, err := bt.CopyBackArgs(opts.BackupDir, opts.DataDir)
 	if err != nil {

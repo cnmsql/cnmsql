@@ -452,6 +452,75 @@ func mysqlExec(pod, user, password, database, sql string) (string, error) {
 	return kubectl(args...)
 }
 
+// mariadbExec runs a SQL statement on a MariaDB pod using the mariadb binary
+// (which does not print a deprecation warning like the mysql symlink).
+func mariadbExec(pod, user, password, database, sql string) (string, error) {
+	args := []string{"exec", pod, "-n", testNamespace, "-c", "mysql", "--",
+		"env", "MYSQL_PWD=" + password, "mariadb", "-u" + user, "-N"}
+	if database != "" {
+		args = append(args, database)
+	}
+	args = append(args, "-e", sql)
+	return kubectl(args...)
+}
+
+// createUserViaControlAPI POSTs a user-create request to an instance's mTLS
+// control API using a one-shot curl Pod that mounts the cluster client cert and
+// CA (the same material the operator authenticates with). The DB container image
+// does not necessarily ship curl — the MariaDB instance image does not — so we
+// cannot `kubectl exec ... -- curl` inside it; the curlimages/curl Pod is
+// engine-agnostic. It blocks until the Pod reports the call returned HTTP 200.
+func createUserViaControlAPI(cluster, instance, jsonBody string) {
+	GinkgoHelper()
+	name := "user-create-" + instance
+	url := fmt.Sprintf("https://%s.%s.svc:8080/user/create", instance, testNamespace)
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:latest
+    command: ["sh", "-c"]
+    args:
+    - >
+      code=$(curl -sS -X POST --retry 10 --retry-connrefused --retry-delay 2
+      -H 'Content-Type: application/json' -d '%[3]s'
+      --cert /client/tls.crt --key /client/tls.key --cacert /ca/ca.crt
+      -o /dev/null -w '%%{http_code}' %[4]s);
+      echo "control API returned $code"; test "$code" = "200"
+    volumeMounts:
+    - {name: client, mountPath: /client, readOnly: true}
+    - {name: ca, mountPath: /ca, readOnly: true}
+  volumes:
+  - name: client
+    secret:
+      secretName: %[5]s-client-tls
+  - name: ca
+    secret:
+      secretName: %[5]s-ca
+`, name, testNamespace, jsonBody, url, cluster)
+
+	applyManifest(name, manifest)
+	DeferCleanup(func() {
+		_, _ = kubectl("delete", "pod", name, "-n", testNamespace, "--ignore-not-found", "--wait=false")
+	})
+
+	Eventually(func(g Gomega) {
+		phase, err := kubectl("get", "pod", name, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
+		g.Expect(err).NotTo(HaveOccurred())
+		phase = strings.TrimSpace(phase)
+		if phase == "Failed" {
+			logs, _ := kubectl("logs", name, "-n", testNamespace)
+			Fail(fmt.Sprintf("user-create Pod failed: %s", logs))
+		}
+		g.Expect(phase).To(Equal("Succeeded"), "user-create Pod has not reported a 200 yet")
+	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
+}
+
 // minioEndpoint returns the HTTP endpoint for the shared in-cluster MinIO, which
 // runs once in minioNamespace and is reachable from every test namespace.
 func minioEndpoint() string {

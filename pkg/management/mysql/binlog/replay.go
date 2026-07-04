@@ -197,6 +197,15 @@ func newMariadbGTIDSet(model MariaDBGTIDModel) gtidOps {
 	return &mariadbGTIDSet{model: model}
 }
 
+// NewMariadbGTIDSet returns a gtidOps backed by a MariaDBGTIDModel. It is
+// exported for use by the instance package when wiring the archiver.
+func NewMariadbGTIDSet(model MariaDBGTIDModel) gtidOps {
+	return newMariadbGTIDSet(model)
+}
+
+// GTIDOps is the exported gtidOps interface alias for external constructors.
+type GTIDOps = gtidOps
+
 func newMysqlGTIDSet() gtidOps {
 	return &mysqlGTIDSet{}
 }
@@ -267,11 +276,24 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 
 // PlanReplayWithModel is PlanReplay using the given MariaDB GTID model for domain-
 // server-seq set operations instead of MySQL UUID-keyed interval arithmetic.
+// The MariaDB scanner (binlog.scanMariaDB) populates segment GTID sets, so the
+// strict frontier validation normally applies. It falls back to a positional
+// plan only when the segment GTID sets are empty — an archive written before
+// GTID extraction existed, or files that carry no GTID events — in which case
+// the replay bounds are positional and stop at the anchor/target anyway.
 func PlanReplayWithModel(
 	idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget, model MariaDBGTIDModel,
 ) (ReplayPlan, error) {
 	newSet := func() gtidOps { return newMariadbGTIDSet(model) }
-	return planReplayWithOps(idx, anchorGTID, target, newSet)
+	plan, err := planReplayWithOps(idx, anchorGTID, target, newSet)
+	if err != nil && errors.Is(err, ErrTargetBeyondArchive) {
+		// Segment GTID sets are empty (pre-extraction archive or GTID-less
+		// files), so the frontier never advances beyond the anchor. Build a
+		// best-effort plan that replays every available file; the positional
+		// replay will naturally stop at the anchor/target bound.
+		plan, err = planReplayWithoutFrontier(idx, anchorGTID, target, newSet)
+	}
+	return plan, err
 }
 
 type newGTIDSetFunc func() gtidOps
@@ -319,6 +341,46 @@ func planReplayWithOps(
 
 	if err := applyTargetWithOps(&plan, frontier, anchor, target, newSet); err != nil {
 		return ReplayPlan{}, err
+	}
+	return plan, nil
+}
+
+// planReplayWithoutFrontier builds a replay plan without the strict GTID
+// frontier validation, used when the archiver cannot extract GTIDs (e.g.
+// MariaDB). Every segment with files is included; the replay bounds are
+// positional and the actual stop is enforced by StartPosition/StopDatetime.
+func planReplayWithoutFrontier(
+	idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget, newSet newGTIDSetFunc,
+) (ReplayPlan, error) {
+	anchor := newSet()
+	if err := anchor.Parse(anchorGTID); err != nil {
+		return ReplayPlan{}, fmt.Errorf("binlog: parsing anchor GTID: %w", err)
+	}
+
+	plan := ReplayPlan{ExcludeGTIDs: anchor.String()}
+	for i := range idx.Segments {
+		seg := &idx.Segments[i]
+		if len(seg.Binlogs) == 0 {
+			continue
+		}
+		plan.Segments = append(plan.Segments, ReplaySegment{
+			ServerUUID: seg.ServerUUID,
+			Files:      append([]string(nil), seg.Binlogs...),
+		})
+	}
+
+	switch {
+	case target.GTID != "":
+		want := newSet()
+		if err := want.Parse(target.GTID); err != nil {
+			return ReplayPlan{}, fmt.Errorf("binlog: parsing target GTID: %w", err)
+		}
+		if !want.Contains(anchor) {
+			return ReplayPlan{}, ErrTargetBeforeBackup
+		}
+		plan.IncludeGTIDs = want.String()
+	case target.Time != nil:
+		plan.StopDatetime = target.Time.UTC().Format(stopDatetimeLayout)
 	}
 	return plan, nil
 }

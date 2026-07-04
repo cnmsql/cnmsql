@@ -229,7 +229,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from cnmsql_S3_* env)")
 	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")
 	cmd.Flags().BoolVar(&archivePurge, "archive-purge", true, "Purge binary logs once archived (the active purge gate)")
-	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "mysqlbinlog", "Path to the mysqlbinlog binary")
+	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Path to the mysqlbinlog binary (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")
 	cmd.Flags().BoolVar(&semiSync, "semi-sync", false, "Install and enable semi-synchronous replication plugins")
 	cmd.Flags().IntVar(&semiSyncWait, "semi-sync-wait-for-replica-count", 0, "Initial semi-sync acknowledgement count")
 	cmd.Flags().IntVar(&semiSyncTimeout, "semi-sync-timeout-millis", 0, "Semi-sync source wait timeout in milliseconds")

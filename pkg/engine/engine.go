@@ -130,6 +130,12 @@ type Engine interface {
 	// MySQL 8.0+; MariaDB always uses log_slave_updates.
 	HasLogReplicaUpdates(version.Version) bool
 
+	// GTIDStartupArgs returns the command-line options needed to enable GTID
+	// replication when starting a temporary server. MySQL requires explicit
+	// --gtid-mode=ON and --enforce-gtid-consistency=ON; MariaDB always has
+	// GTID enabled and rejects those options.
+	GTIDStartupArgs() []string
+
 	// UsesResetBinaryLogsAndGtids reports whether the server uses the modern
 	// "RESET BINARY LOGS AND GTIDS" syntax (MySQL 8.4.0+) vs "RESET MASTER".
 	UsesResetBinaryLogsAndGtids(version.Version) bool
@@ -284,6 +290,10 @@ func (mysqlEngine) HasLogReplicaUpdates(v version.Version) bool {
 	return v.HasLogReplicaUpdates()
 }
 
+func (mysqlEngine) GTIDStartupArgs() []string {
+	return []string{"--gtid-mode=ON", "--enforce-gtid-consistency=ON"}
+}
+
 func (mysqlEngine) UsesResetBinaryLogsAndGtids(v version.Version) bool {
 	return v.UsesResetBinaryLogsAndGtids()
 }
@@ -423,6 +433,10 @@ func (mariadbEngine) HasAdminInterface(version.Version) bool {
 
 func (mariadbEngine) HasLogReplicaUpdates(version.Version) bool {
 	return false
+}
+
+func (mariadbEngine) GTIDStartupArgs() []string {
+	return nil
 }
 
 func (mariadbEngine) UsesResetBinaryLogsAndGtids(version.Version) bool {
