@@ -233,6 +233,9 @@ func TestMariaDBFacets(t *testing.T) {
 	if eng.HasAdminInterface(v) {
 		t.Error("MariaDB HasAdminInterface() = true, want false")
 	}
+	if eng.HasLogReplicaUpdates(v) {
+		t.Error("MariaDB HasLogReplicaUpdates() = true, want false")
+	}
 	if eng.UsesResetBinaryLogsAndGtids(v) {
 		t.Error("MariaDB UsesResetBinaryLogsAndGtids() = true, want false")
 	}
@@ -255,5 +258,215 @@ func TestMariaDBFacets(t *testing.T) {
 	}
 	if n.EnabledVarReplica != "rpl_semi_sync_slave_enabled" {
 		t.Errorf("MariaDB SemiSync EnabledVarReplica = %q, want rpl_semi_sync_slave_enabled", n.EnabledVarReplica)
+	}
+}
+
+func TestMariaDBVersionFacet(t *testing.T) {
+	eng := MustForFlavor(FlavorMariaDB)
+
+	// ParseServerVersion with a real MariaDB @@version string.
+	raw := "11.4.3-MariaDB-1:11.4.3+maria~ubu2404"
+	got, err := eng.ParseServerVersion(raw)
+	if err != nil {
+		t.Fatalf("ParseServerVersion(%q) error: %v", raw, err)
+	}
+	want := version.Version{Major: 11, Minor: 4, Patch: 3}
+	if got != want {
+		t.Errorf("ParseServerVersion(%q) = %v, want %v", raw, got, want)
+	}
+
+	// Series: all 11.x runtime versions map to catalog series 11.4.
+	seriesTests := []struct {
+		runtime string
+		series  version.Version
+	}{
+		{"10.6.0", version.Version{Major: 10, Minor: 6}},
+		{"10.11.3", version.Version{Major: 10, Minor: 11}},
+		{"11.4.0", version.Version{Major: 11, Minor: 4}},
+		{"11.4.3", version.Version{Major: 11, Minor: 4}},
+	}
+	for _, tc := range seriesTests {
+		v := mustVersion(t, tc.runtime)
+		got := eng.Series(v)
+		if got != tc.series {
+			t.Errorf("Series(%s) = %v, want %v", tc.runtime, got, tc.series)
+		}
+	}
+
+	// Upgrade chain.
+	chain := eng.UpgradeChain()
+	expectedChain := []version.Version{
+		{Major: 10, Minor: 6},
+		{Major: 10, Minor: 11},
+		{Major: 11, Minor: 4},
+		{Major: 12, Minor: 3},
+	}
+	if len(chain) != len(expectedChain) {
+		t.Fatalf("UpgradeChain len = %d, want %d", len(chain), len(expectedChain))
+	}
+	for i := range chain {
+		if chain[i] != expectedChain[i] {
+			t.Errorf("UpgradeChain[%d] = %v, want %v", i, chain[i], expectedChain[i])
+		}
+	}
+
+	// CheckUpgrade validates against the MariaDB chain.
+	upgradeTests := []struct {
+		from, to string
+		wantErr  bool
+	}{
+		{"10.6.1", "10.11.0", false},
+		{"10.11.0", "11.4.0", false},
+		{"11.4.0", "12.3.0", false},
+		{"10.6.1", "11.4.0", true},  // skips 10.11
+		{"11.4.0", "10.11.0", true}, // downgrade
+		{"5.7.0", "10.6.0", true},   // unknown source
+		{"10.6.0", "10.6.5", false}, // patch bump within series
+	}
+	for _, tc := range upgradeTests {
+		fv, tv := mustVersion(t, tc.from), mustVersion(t, tc.to)
+		err := eng.CheckUpgrade(fv, tv)
+		if tc.wantErr && err == nil {
+			t.Errorf("CheckUpgrade(%s → %s): expected error", tc.from, tc.to)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("CheckUpgrade(%s → %s): unexpected error: %v", tc.from, tc.to, err)
+		}
+	}
+}
+
+func TestMariaDBDefaults(t *testing.T) {
+	eng := MustForFlavor(FlavorMariaDB)
+
+	if got, want := eng.DefaultImage(), "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"; got != want {
+		t.Errorf("DefaultImage() = %q, want %q", got, want)
+	}
+
+	tests := []struct {
+		tag     string
+		want    string
+		wantErr bool
+	}{
+		{"10.6", "10.6.18", false},
+		{"10.11", "10.11.8", false},
+		{"11.4", "11.4.3", false},
+		{"12.3", "12.3.0", false},
+		{"9.0", "", true},
+	}
+	for _, tc := range tests {
+		got, err := eng.DefaultServerVersion(tc.tag)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("DefaultServerVersion(%q): expected error", tc.tag)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("DefaultServerVersion(%q): unexpected error: %v", tc.tag, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("DefaultServerVersion(%q) = %q, want %q", tc.tag, got, tc.want)
+		}
+	}
+
+	if got, want := eng.DefaultAuthenticationPlugin(), "mysql_native_password"; got != want {
+		t.Errorf("DefaultAuthenticationPlugin() = %q, want %q", got, want)
+	}
+}
+
+func TestMariaDBLifecycle(t *testing.T) {
+	eng := MustForFlavor(FlavorMariaDB)
+
+	if got, want := eng.InitBinary(), "mariadb-install-db"; got != want {
+		t.Errorf("InitBinary() = %q, want %q", got, want)
+	}
+
+	if got, want := eng.ServerdCommand(), "mariadbd"; got != want {
+		t.Errorf("ServerdCommand() = %q, want %q", got, want)
+	}
+
+	args := eng.InitDataDirArgs("/var/lib/mysql")
+	if len(args) != 3 {
+		t.Fatalf("InitDataDirArgs length = %d, want 3", len(args))
+	}
+	if args[0] != "--datadir=/var/lib/mysql" {
+		t.Errorf("InitDataDirArgs[0] = %q", args[0])
+	}
+	if args[1] != "--auth-root-authentication-method=normal" {
+		t.Errorf("InitDataDirArgs[1] = %q", args[1])
+	}
+	if args[2] != "--skip-test-db" {
+		t.Errorf("InitDataDirArgs[2] = %q", args[2])
+	}
+
+	if len(eng.UpgradeArgs()) != 0 {
+		t.Errorf("UpgradeArgs() should be empty for MariaDB")
+	}
+}
+
+func TestMySQLDefaults(t *testing.T) {
+	eng := MustForFlavor(FlavorMySQL)
+
+	if got, want := eng.DefaultImage(), "ghcr.io/cnmsql/cnmsql-instance:8.0"; got != want {
+		t.Errorf("DefaultImage() = %q, want %q", got, want)
+	}
+
+	tests := []struct {
+		tag     string
+		want    string
+		wantErr bool
+	}{
+		{"8.0", "8.0.46", false},
+		{"8.4", "8.4.0", false},
+		{"9.x", "9.6.0", false},
+		{"10.6", "", true},
+	}
+	for _, tc := range tests {
+		got, err := eng.DefaultServerVersion(tc.tag)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("DefaultServerVersion(%q): expected error", tc.tag)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("DefaultServerVersion(%q): unexpected error: %v", tc.tag, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("DefaultServerVersion(%q) = %q, want %q", tc.tag, got, tc.want)
+		}
+	}
+
+	if got, want := eng.DefaultAuthenticationPlugin(), "caching_sha2_password"; got != want {
+		t.Errorf("DefaultAuthenticationPlugin() = %q, want %q", got, want)
+	}
+}
+
+func TestMySQLLifecycle(t *testing.T) {
+	eng := MustForFlavor(FlavorMySQL)
+
+	if got, want := eng.InitBinary(), "mysqld"; got != want {
+		t.Errorf("InitBinary() = %q, want %q", got, want)
+	}
+
+	if got, want := eng.ServerdCommand(), "mysqld"; got != want {
+		t.Errorf("ServerdCommand() = %q, want %q", got, want)
+	}
+
+	args := eng.InitDataDirArgs("/var/lib/mysql")
+	if len(args) != 2 {
+		t.Fatalf("InitDataDirArgs length = %d, want 2", len(args))
+	}
+	if args[0] != "--initialize-insecure" {
+		t.Errorf("InitDataDirArgs[0] = %q", args[0])
+	}
+	if args[1] != "--datadir=/var/lib/mysql" {
+		t.Errorf("InitDataDirArgs[1] = %q", args[1])
+	}
+
+	if len(eng.UpgradeArgs()) != 0 {
+		t.Errorf("UpgradeArgs() should be empty for MySQL")
 	}
 }

@@ -123,6 +123,18 @@ type ServerConfig struct {
 	GroupReplication GroupReplication
 	// UserParameters are operator-validated user my.cnf settings.
 	UserParameters map[string]string
+	// HasAdminInterface reports whether to render admin_address/admin_port.
+	// Set from the engine to avoid flavor-dependent version.Version methods.
+	HasAdminInterface bool
+	// HasSuperReadOnly reports whether super_read_only is available.
+	HasSuperReadOnly bool
+	// HasLogReplicaUpdates reports whether log_replica_updates (MySQL 8.0+)
+	// is preferred over log_slave_updates.
+	HasLogReplicaUpdates bool
+	// SemiSyncNaming overrides the version-derived semi-sync variable names
+	// when the engine provides a divergent set (MariaDB uses master/slave
+	// regardless of version; MySQL 8.0.26+ uses source/replica).
+	SemiSyncNaming *version.SemiSyncNaming
 }
 
 // GroupReplication is the fully-resolved input to rendering the
@@ -452,8 +464,22 @@ func filterRemovedParams(params map[string]string, ver version.Version) map[stri
 }
 
 // managedSettings returns the ordered operator-managed key/value pairs for the
-// given version.
+// given version. When SemiSyncNaming is set (engine-aware callers), the config
+// struct's capability fields are used; otherwise the version-derived defaults
+// are used for backward compatibility.
 func (c *ServerConfig) managedSettings(ver version.Version) []pair {
+	engineCapabilities := c.SemiSyncNaming != nil
+
+	hasAdminInterface := ver.HasAdminInterface()
+	hasLogReplicaUpdates := ver.HasLogReplicaUpdates()
+	hasSuperReadOnly := ver.HasSuperReadOnly()
+	semiSyncNaming := ver.SemiSync()
+	if engineCapabilities {
+		hasAdminInterface = c.HasAdminInterface
+		hasLogReplicaUpdates = c.HasLogReplicaUpdates
+		hasSuperReadOnly = c.HasSuperReadOnly
+		semiSyncNaming = *c.SemiSyncNaming
+	}
 	binlogFormat := c.BinlogFormat
 	if binlogFormat == "" {
 		binlogFormat = "ROW"
@@ -479,7 +505,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 
 	// Administrative interface (8.0.14+): a dedicated listener exempt from
 	// max_connections, so the instance manager can always reach mysqld.
-	if ver.HasAdminInterface() {
+	if hasAdminInterface {
 		addr := c.AdminAddress
 		if addr == "" {
 			addr = DefaultAdminAddress
@@ -495,7 +521,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	}
 
 	// log_replica_updates was renamed from log_slave_updates in 8.0.
-	if ver.HasLogReplicaUpdates() {
+	if hasLogReplicaUpdates {
 		pairs = append(pairs, pair{"log_replica_updates", "ON"})
 	} else {
 		pairs = append(pairs, pair{"log_slave_updates", "ON"})
@@ -508,7 +534,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	// initdb/join temporary servers, which must be writable to bootstrap.
 	if c.Role == RoleReplica {
 		pairs = append(pairs, pair{"read_only", "ON"})
-		if ver.HasSuperReadOnly() {
+		if hasSuperReadOnly {
 			pairs = append(pairs, pair{"super_read_only", "ON"})
 		}
 	}
@@ -526,7 +552,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	}
 
 	if c.SemiSync.Enabled {
-		naming := ver.SemiSync()
+		naming := semiSyncNaming
 		pairs = append(pairs,
 			pair{"loose-" + naming.EnabledVarSource, "1"},
 			pair{"loose-" + naming.EnabledVarReplica, "1"},

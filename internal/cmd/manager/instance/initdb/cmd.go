@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
@@ -83,8 +84,14 @@ func NewCommand() *cobra.Command {
 				appPassword = os.Getenv("MYSQL_APP_PASSWORD")
 			}
 
+			// The engine (selected from CNMSQL_FLAVOR, set by the controller)
+			// picks the flavor-appropriate init binary and data-dir arguments;
+			// it falls back to MySQL when the var is unset.
+			eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+
 			return instance.Initialize(cmd.Context(), instance.InitOptions{
 				MysqldPath: mysqldPath,
+				Engine:     eng,
 				Version:    serverVersion,
 				DataDir:    dataDir,
 				ConfigFile: configFile,

@@ -174,13 +174,16 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 	// Read the engine flavor from the env var set by the controller
 	// (CNMSQL_FLAVOR), falling back to mysql.
 	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+	if o.MysqldPath == defaultMysqldBinary {
+		o.MysqldPath = eng.ServerdCommand()
+	}
 	if eng.UsesReplicaTerminology(ver) {
 		args = append(args, "--skip-replica-start")
 	} else {
 		args = append(args, "--skip-slave-start")
 	}
 	// log_slave_updates was renamed to log_replica_updates in 8.0.
-	if ver.HasLogReplicaUpdates() {
+	if eng.HasLogReplicaUpdates(ver) {
 		args = append(args, "--log-replica-updates=ON")
 	} else {
 		args = append(args, "--log-slave-updates")

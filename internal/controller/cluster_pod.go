@@ -384,12 +384,12 @@ func initEnv(plan clusterPlan) []corev1.EnvVar {
 // are appended so the in-Pod archiver can ship binlogs. cluster may be nil for
 // the init container, which never archives.
 func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
-	// TODO(M-MDB.3): the init container calls runEnv(nil, plan), so its
-	// CNMSQL_FLAVOR falls back to mysql even for a MariaDB cluster. Data-dir
-	// bootstrap must learn the real flavor before M-MDB.3 relies on it.
-	flavor := string(mysqlv1alpha1.FlavorMySQL)
-	if cluster != nil {
-		flavor = string(cluster.ResolvedFlavor())
+	// The flavor rides on the plan (not the cluster arg) so the init container —
+	// which passes cluster=nil to keep archiving env out — still selects the
+	// right engine for data-dir bootstrap and replica join.
+	flavor := string(plan.Flavor)
+	if flavor == "" {
+		flavor = string(mysqlv1alpha1.FlavorMySQL)
 	}
 	env := []corev1.EnvVar{
 		{Name: "MYSQL_VERSION", Value: plan.ServerVersion},

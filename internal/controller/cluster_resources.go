@@ -37,6 +37,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 )
 
@@ -166,6 +167,22 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 		InstanceName: inst.Name,
 		MemberNames:  memberNames,
 	}, cfg)
+
+	// Apply engine-specific capability overrides after ConfigureServer has
+	// set topology-dependent fields. These flags override what applyVersionDefaults
+	// derived from the version string, which gives correct results for MySQL but
+	// wrong answers for MariaDB (version.Version assumes MySQL semantics).
+	clusterEng := engine.MustForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
+	ver, err := clusterEng.ParseServerVersion(plan.ServerVersion)
+	if err != nil {
+		return "", fmt.Errorf("parsing server version %q: %w", plan.ServerVersion, err)
+	}
+	cfg.HasAdminInterface = clusterEng.HasAdminInterface(ver)
+	cfg.HasSuperReadOnly = clusterEng.HasSuperReadOnly()
+	cfg.HasLogReplicaUpdates = clusterEng.HasLogReplicaUpdates(ver)
+	naming := clusterEng.SemiSync(ver)
+	cfg.SemiSyncNaming = &naming
+
 	return cfg.Render()
 }
 

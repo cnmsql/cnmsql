@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
@@ -33,6 +34,10 @@ import (
 type clusterPlan struct {
 	Image         string
 	ServerVersion string
+	// Flavor is the resolved engine flavor (mysql or mariadb). It selects the
+	// in-Pod engine via the CNMSQL_FLAVOR env var on both the init and run
+	// containers.
+	Flavor mysqlv1alpha1.Flavor
 	// OperatorImage is the image the operator controller runs as. Used for the
 	// bootstrap-controller init container. Falls back to Image when empty.
 	OperatorImage string
@@ -163,12 +168,6 @@ func instanceName(cluster *mysqlv1alpha1.Cluster, ordinal int) string {
 	return fmt.Sprintf("%s-%d", cluster.Name, ordinal)
 }
 
-const (
-	defaultMySQL80ServerVersion = "8.0.46"
-	defaultMySQL84ServerVersion = "8.4.0"
-	defaultMySQL9xServerVersion = "9.6.0"
-)
-
 func unsupportedReason(cluster *mysqlv1alpha1.Cluster) string {
 	switch {
 	case cluster.Spec.Instances < 1:
@@ -218,11 +217,12 @@ func (r *ClusterReconciler) warnRemovedParameters(cluster *mysqlv1alpha1.Cluster
 }
 
 func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (clusterPlan, error) {
-	image, err := r.resolveImage(ctx, cluster)
+	clusterEng := engine.MustForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
+	image, err := r.resolveImage(ctx, cluster, clusterEng)
 	if err != nil {
 		return clusterPlan{}, err
 	}
-	serverVersion, err := resolveServerVersion(image)
+	serverVersion, err := resolveServerVersion(image, clusterEng)
 	if err != nil {
 		return clusterPlan{}, err
 	}
@@ -232,6 +232,7 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 	plan := clusterPlan{
 		Image:              image,
 		ServerVersion:      serverVersion,
+		Flavor:             cluster.ResolvedFlavor(),
 		Instances:          cluster.Spec.Instances,
 		PrimaryName:        cluster.Status.CurrentPrimary,
 		OperatorImage:      r.OperatorImageName,
@@ -455,7 +456,7 @@ func disabledServices(cluster *mysqlv1alpha1.Cluster) map[mysqlv1alpha1.ServiceS
 	return disabled
 }
 
-func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (string, error) {
+func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1alpha1.Cluster, clusterEng engine.Engine) (string, error) {
 	if cluster.Spec.ImageName != "" {
 		return cluster.Spec.ImageName, nil
 	}
@@ -482,21 +483,14 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 		}
 		return "", fmt.Errorf("no image for MySQL series %s in catalog %s", ref.Series, ref.Name)
 	}
-	return defaultInstanceImage, nil
+	return clusterEng.DefaultImage(), nil
 }
 
-func resolveServerVersion(image string) (string, error) {
-	// TODO(M-MDB.3): resolve through engine.DefaultServerVersion(series) so the
-	// MariaDB default (ghcr.io/.../cnmsql-mariadb-instance:11.4) is picked up
-	// when flavor=mariadb and no explicit imageName/imageCatalogRef is set.
+func resolveServerVersion(image string, clusterEng engine.Engine) (string, error) {
 	tag := imageTag(image)
-	switch tag {
-	case "8.0":
-		return defaultMySQL80ServerVersion, nil
-	case "8.4":
-		return defaultMySQL84ServerVersion, nil
-	case "9.x":
-		return defaultMySQL9xServerVersion, nil
+	sv, err := clusterEng.DefaultServerVersion(tag)
+	if err == nil {
+		return sv, nil
 	}
 	parsed, err := version.Parse(tag)
 	if err != nil {

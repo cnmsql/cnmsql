@@ -91,6 +91,14 @@ type Engine interface {
 	// chain.
 	CheckUpgrade(from, to version.Version) error
 
+	// DefaultImage returns the default fully-qualified container image for
+	// the latest supported series of this flavor.
+	DefaultImage() string
+
+	// DefaultServerVersion resolves the concrete server version string for a
+	// catalog series tag (e.g. "8.0" → "8.0.46", "11.4" → "11.4.3").
+	DefaultServerVersion(tag string) (string, error)
+
 	// --- replication SQL dialect ---
 
 	// Repl returns the replication SQL dialect for this flavor.
@@ -112,6 +120,11 @@ type Engine interface {
 	// does not.
 	HasAdminInterface(version.Version) bool
 
+	// HasLogReplicaUpdates reports whether the server uses the
+	// log_replica_updates variable name instead of log_slave_updates.
+	// MySQL 8.0+; MariaDB always uses log_slave_updates.
+	HasLogReplicaUpdates(version.Version) bool
+
 	// UsesResetBinaryLogsAndGtids reports whether the server uses the modern
 	// "RESET BINARY LOGS AND GTIDS" syntax (MySQL 8.4.0+) vs "RESET MASTER".
 	UsesResetBinaryLogsAndGtids(version.Version) bool
@@ -129,6 +142,29 @@ type Engine interface {
 	// BinlogExpire returns the version-appropriate binlog expiry variable name
 	// and value for the given expiry seconds.
 	BinlogExpire(ver version.Version, seconds int) (name, value string)
+
+	// DefaultAuthenticationPlugin returns the default server authentication
+	// plugin: caching_sha2_password for MySQL 8.0+, mysql_native_password for
+	// MariaDB.
+	DefaultAuthenticationPlugin() string
+
+	// --- lifecycle commands ---
+
+	// InitBinary returns the name of the binary used to initialize a fresh
+	// data directory ("mysqld" for MySQL, "mariadb-install-db" for MariaDB).
+	InitBinary() string
+
+	// InitDataDirArgs returns the arguments passed to InitBinary to
+	// initialize a fresh data directory (system tables).
+	InitDataDirArgs(datadir string) []string
+
+	// UpgradeArgs returns the arguments passed to the upgrade binary to
+	// migrate system tables across a major/minor version boundary.
+	UpgradeArgs() []string
+
+	// ServerdCommand returns the name of the server daemon binary
+	// ("mysqld" for MySQL, "mariadbd" for MariaDB).
+	ServerdCommand() string
 }
 
 // ForFlavor returns the Engine for a flavor. An empty flavor resolves to MySQL
@@ -183,6 +219,14 @@ func (mysqlEngine) CheckUpgrade(from, to version.Version) error {
 	return version.CheckUpgrade(from, to)
 }
 
+func (mysqlEngine) DefaultImage() string {
+	return "ghcr.io/cnmsql/cnmsql-instance:8.0"
+}
+
+func (mysqlEngine) DefaultServerVersion(tag string) (string, error) {
+	return mysqlDefaultServerVersion(tag)
+}
+
 // replication dialect
 
 func (mysqlEngine) Repl() ReplDialect {
@@ -203,6 +247,10 @@ func (mysqlEngine) HasAdminInterface(v version.Version) bool {
 	return v.HasAdminInterface()
 }
 
+func (mysqlEngine) HasLogReplicaUpdates(v version.Version) bool {
+	return v.HasLogReplicaUpdates()
+}
+
 func (mysqlEngine) UsesResetBinaryLogsAndGtids(v version.Version) bool {
 	return v.UsesResetBinaryLogsAndGtids()
 }
@@ -221,6 +269,26 @@ func (mysqlEngine) BinlogExpire(ver version.Version, seconds int) (string, strin
 	return config.BinlogExpire(ver, seconds)
 }
 
+func (mysqlEngine) DefaultAuthenticationPlugin() string {
+	return "caching_sha2_password"
+}
+
+func (mysqlEngine) InitBinary() string {
+	return "mysqld"
+}
+
+func (mysqlEngine) InitDataDirArgs(datadir string) []string {
+	return []string{"--initialize-insecure", "--datadir=" + datadir}
+}
+
+func (mysqlEngine) UpgradeArgs() []string {
+	return nil
+}
+
+func (mysqlEngine) ServerdCommand() string {
+	return "mysqld"
+}
+
 // --- MariaDB engine ---
 
 type mariadbEngine struct{}
@@ -230,23 +298,40 @@ func (mariadbEngine) GTID() GTIDModel                { return mariadbGTID{} }
 func (mariadbEngine) HasSuperReadOnly() bool         { return false }
 func (mariadbEngine) SupportsGroupReplication() bool { return false }
 
-// versioning — delegates to MySQL version functions for now; M-MDB.3 adds
-// MariaDB-specific series chain and version parsing.
+// versioning — MariaDB has its own series chain (10.6 → 10.11 → 11.4 → 12.3)
+// and normalizes @@version strings that carry a "-MariaDB-" suffix.
+
+var mariadbUpgradeChain = []version.Version{
+	{Major: 10, Minor: 6},
+	{Major: 10, Minor: 11},
+	{Major: 11, Minor: 4},
+	{Major: 12, Minor: 3},
+}
 
 func (mariadbEngine) ParseServerVersion(raw string) (version.Version, error) {
 	return version.Parse(raw)
 }
 
 func (mariadbEngine) Series(v version.Version) version.Version {
-	return v.Series()
+	return version.Version{Major: v.Major, Minor: v.Minor}
 }
 
 func (mariadbEngine) UpgradeChain() []version.Version {
-	return version.UpgradeSeriesChain
+	c := make([]version.Version, len(mariadbUpgradeChain))
+	copy(c, mariadbUpgradeChain)
+	return c
 }
 
 func (mariadbEngine) CheckUpgrade(from, to version.Version) error {
-	return version.CheckUpgrade(from, to)
+	return checkUpgradeChain(from, to, mariadbUpgradeChain, "MariaDB")
+}
+
+func (mariadbEngine) DefaultImage() string {
+	return "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"
+}
+
+func (mariadbEngine) DefaultServerVersion(tag string) (string, error) {
+	return mariadbDefaultServerVersion(tag)
 }
 
 // replication dialect
@@ -278,6 +363,10 @@ func (mariadbEngine) HasAdminInterface(version.Version) bool {
 	return false
 }
 
+func (mariadbEngine) HasLogReplicaUpdates(version.Version) bool {
+	return false
+}
+
 func (mariadbEngine) UsesResetBinaryLogsAndGtids(version.Version) bool {
 	return false
 }
@@ -295,4 +384,97 @@ func (mariadbEngine) IsGroupReplicationManagedKey(normalized string) bool {
 
 func (mariadbEngine) BinlogExpire(ver version.Version, seconds int) (string, string) {
 	return config.BinlogExpire(ver, seconds)
+}
+
+func (mariadbEngine) DefaultAuthenticationPlugin() string {
+	return "mysql_native_password"
+}
+
+func (mariadbEngine) InitBinary() string {
+	return "mariadb-install-db"
+}
+
+func (mariadbEngine) InitDataDirArgs(datadir string) []string {
+	return []string{
+		"--datadir=" + datadir,
+		"--auth-root-authentication-method=normal",
+		"--skip-test-db",
+	}
+}
+
+func (mariadbEngine) UpgradeArgs() []string {
+	return nil
+}
+
+func (mariadbEngine) ServerdCommand() string {
+	return "mariadbd"
+}
+
+// --- version helpers ---
+
+// checkUpgradeChain validates a version transition along the given series chain.
+// It is the flavour-agnostic equivalent of version.CheckUpgrade (which is
+// hard-coded to the MySQL chain).
+func checkUpgradeChain(from, to version.Version, chain []version.Version, label string) error {
+	if from.Series() == to.Series() {
+		return nil
+	}
+	fromIdx := -1
+	toIdx := -1
+	for i, e := range chain {
+		if e == from.Series() {
+			fromIdx = i
+		}
+		if e == to.Series() {
+			toIdx = i
+		}
+	}
+	if fromIdx == -1 {
+		return fmt.Errorf("unsupported source %s series %d.%d", label, from.Major, from.Minor)
+	}
+	if toIdx == -1 {
+		return fmt.Errorf("unsupported target %s series %d.%d", label, to.Major, to.Minor)
+	}
+	if toIdx < fromIdx {
+		return fmt.Errorf("downgrade from %s %d.%d to %d.%d is not supported",
+			label, from.Major, from.Minor, to.Major, to.Minor)
+	}
+	if toIdx > fromIdx+1 {
+		next := chain[fromIdx+1]
+		return fmt.Errorf("cannot upgrade from %s %d.%d directly to %d.%d: upgrade to %d.%d first",
+			label, from.Major, from.Minor, to.Major, to.Minor, next.Major, next.Minor)
+	}
+	return nil
+}
+
+// mysqlDefaultServerVersion resolves a MySQL catalog series tag to the concrete
+// default server version.
+func mysqlDefaultServerVersion(tag string) (string, error) {
+	switch tag {
+	case "8.0":
+		return "8.0.46", nil
+	case "8.4":
+		return "8.4.0", nil
+	case "9.x":
+		return "9.6.0", nil
+	default:
+		return "", fmt.Errorf("unsupported MySQL series %q", tag)
+	}
+}
+
+// mariadbDefaultServerVersion resolves a MariaDB catalog series tag to the
+// concrete default server version.
+func mariadbDefaultServerVersion(tag string) (string, error) {
+	switch tag {
+	case "10.6":
+		return "10.6.18", nil
+	case "10.11":
+		return "10.11.8", nil
+	case "11.4":
+		return "11.4.3", nil
+	case "12.3":
+		return "12.3.0", nil
+	default:
+		return "", fmt.Errorf("unsupported MariaDB series %q", tag)
+	}
 }

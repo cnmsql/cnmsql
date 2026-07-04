@@ -42,9 +42,14 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
+)
+
+const (
+	mysqlDefaultServerVersion = "8.0.46"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -89,7 +94,7 @@ func (readyStatusClient) Status(context.Context, *mysqlv1alpha1.Cluster, string)
 	return &webserver.Status{
 		InstanceName:  "demo-1",
 		Role:          webserver.RolePrimary,
-		Version:       defaultMySQL80ServerVersion,
+		Version:       mysqlDefaultServerVersion,
 		IsReady:       true,
 		GTIDExecuted:  "uuid:1-10",
 		UptimeSeconds: int64(time.Minute.Seconds()),
@@ -302,8 +307,8 @@ func TestBuildPlanDefaultsToLocalInstanceImage(t *testing.T) {
 	if plan.Image != defaultInstanceImage {
 		t.Fatalf("image = %q, want %q", plan.Image, defaultInstanceImage)
 	}
-	if plan.ServerVersion != defaultMySQL80ServerVersion {
-		t.Fatalf("server version = %q, want %q", plan.ServerVersion, defaultMySQL80ServerVersion)
+	if plan.ServerVersion != mysqlDefaultServerVersion {
+		t.Fatalf("server version = %q, want %q", plan.ServerVersion, mysqlDefaultServerVersion)
 	}
 }
 
@@ -335,22 +340,23 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 	if plan.Image != "registry.example/cnmsql:8.0" {
 		t.Fatalf("image = %q", plan.Image)
 	}
-	if plan.ServerVersion != defaultMySQL80ServerVersion {
+	if plan.ServerVersion != mysqlDefaultServerVersion {
 		t.Fatalf("server version = %q", plan.ServerVersion)
 	}
 }
 
 func TestResolveServerVersionFromImageTag(t *testing.T) {
 	t.Parallel()
+	mysqlEng := engine.MustForFlavor(engine.FlavorMySQL)
 	tests := map[string]string{
-		"ghcr.io/cnmsql/cnmsql-instance:8.0": defaultMySQL80ServerVersion,
-		"ghcr.io/cnmsql/cnmsql-instance:8.4": defaultMySQL84ServerVersion,
-		"ghcr.io/cnmsql/cnmsql-instance:9.x": defaultMySQL9xServerVersion,
+		"ghcr.io/cnmsql/cnmsql-instance:8.0": "8.0.46",
+		"ghcr.io/cnmsql/cnmsql-instance:8.4": "8.4.0",
+		"ghcr.io/cnmsql/cnmsql-instance:9.x": "9.6.0",
 		"registry/cnmsql:8.0.46-37":          "8.0.46-37",
 	}
 
 	for image, want := range tests {
-		got, err := resolveServerVersion(image)
+		got, err := resolveServerVersion(image, mysqlEng)
 		if err != nil {
 			t.Fatalf("resolveServerVersion(%q): %v", image, err)
 		}
@@ -362,7 +368,8 @@ func TestResolveServerVersionFromImageTag(t *testing.T) {
 
 func TestResolveServerVersionRejectsMySQL56(t *testing.T) {
 	t.Parallel()
-	if _, err := resolveServerVersion("ghcr.io/cnmsql/cnmsql-instance:5.6"); err == nil {
+	mysqlEng := engine.MustForFlavor(engine.FlavorMySQL)
+	if _, err := resolveServerVersion("ghcr.io/cnmsql/cnmsql-instance:5.6", mysqlEng); err == nil {
 		t.Fatal("expected MySQL 5.6 image tag to be unsupported")
 	}
 }

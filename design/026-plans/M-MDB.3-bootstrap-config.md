@@ -1,6 +1,6 @@
 # M-MDB.3 — MariaDB engine: bootstrap & config
 
-- **Status:** blocked (needs M-MDB.2 done)
+- **Status:** in progress
 - **Depends on:** M-MDB.1, M-MDB.2
 - **Design refs:** §7, §8, §9, §17 (decisions 1 & 3)
 - **Goal:** a single MariaDB instance boots, initializes its data dir, seeds
@@ -111,3 +111,27 @@ command-arg tests unchanged; `gofmt`/`go vet` clean.
 - next: unblock when M-MDB.2 is `done`; then Task A1 (MariaDB series chain).
 - blockers: M-MDB.2 (spec.flavor selects the engine per cluster).
 - verify: not started
+
+### 2026-07-04 — Tasks A–C (core facets + init wiring)
+- did:
+  - Task A: MariaDB `UpgradeChain` (10.6→10.11→11.4→12.3), plain `Series`,
+    `ParseServerVersion` (real `@@version` string test), `DefaultImage`,
+    `DefaultServerVersion`; shared `checkUpgradeChain` helper. MySQL defaults and
+    `resolveServerVersion`/default image moved behind the engine — MySQL output
+    unchanged (`cluster_controller_test.go` expectations intact).
+  - Task B: config facet wired into `renderMyCnf` — engine sets
+    `HasAdminInterface`/`HasSuperReadOnly`/`HasLogReplicaUpdates`/`SemiSyncNaming`
+    on `ServerConfig`; `managedSettings` honours them when engine-aware. No GR for
+    MariaDB, `mysql_native_password` default auth, `log_slave_updates` spelling,
+    master/slave semi-sync naming. Added a capability-override render test.
+  - Task C/6: lifecycle facet (`InitBinary`/`InitDataDirArgs`/`ServerdCommand`)
+    wired through the init path — controller threads the flavor on the plan so the
+    init container's `CNMSQL_FLAVOR` is correct; the initdb command selects the
+    engine and its init/serverd binaries. MySQL init args proven identical by the
+    engine facet tests.
+- next: bootstrap.go account seeding for MariaDB (native-auth grants, skip the
+  caching_sha2 `GET_SOURCE_PUBLIC_KEY`; `SupportsDynamicPrivileges` is still
+  version-derived and wrong for MariaDB); `mariadb-upgrade` wiring (Task 5,
+  `UpgradeArgs` currently a nil stub); MariaDB golden-file config tests (Task 4);
+  manual smoke (Task D).
+- verify: `go build ./...`, `gofmt -l`, `go vet ./...` clean; full suite green.

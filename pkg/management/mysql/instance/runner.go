@@ -249,6 +249,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// (CNMSQL_FLAVOR), falling back to mysql.
 	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
 
+	// Override the default server binary for non-MySQL flavors.
+	if opts.MysqldPath == defaultMysqldBinary {
+		opts.MysqldPath = eng.ServerdCommand()
+	}
+
 	args := []string{}
 	if opts.ConfigFile != "" {
 		args = append(args, "--defaults-file="+opts.ConfigFile)

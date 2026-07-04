@@ -27,6 +27,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
@@ -36,6 +37,9 @@ import (
 type InitOptions struct {
 	// MysqldPath is the mysqld binary (default "mysqld").
 	MysqldPath string
+	// Engine is the database engine (MySQL or MariaDB). When unset, the init
+	// binary defaults to MysqldPath (MySQL backward compatibility).
+	Engine engine.Engine
 	// Version is the MySQL server version (e.g. "8.0.36"). It selects the
 	// initialisation method and the bootstrap SQL dialect.
 	Version string
@@ -54,7 +58,17 @@ type InitOptions struct {
 
 func (o *InitOptions) applyDefaults() {
 	if o.MysqldPath == "" {
-		o.MysqldPath = defaultMysqldBinary
+		if o.Engine != nil {
+			o.MysqldPath = o.Engine.ServerdCommand()
+		} else {
+			o.MysqldPath = defaultMysqldBinary
+		}
+	} else if o.Engine != nil && o.MysqldPath == defaultMysqldBinary {
+		// The caller passed the default "mysqld" (e.g. the initdb command's flag
+		// default) but selected a non-MySQL engine; the temporary bootstrap
+		// server must run the engine's daemon (mariadbd). For MySQL this is a
+		// no-op since ServerdCommand() is also "mysqld".
+		o.MysqldPath = o.Engine.ServerdCommand()
 	}
 	if o.ReadyTimeout == 0 {
 		o.ReadyTimeout = 60 * time.Second
@@ -202,15 +216,12 @@ func (o *InitOptions) runInitialize(ctx context.Context) error {
 	return o.runMysqldInitialize(ctx)
 }
 
-// runMysqldInitialize runs `mysqld --initialize-insecure`.
+// runMysqldInitialize runs the engine-appropriate init binary with
+// flavor-specific arguments.
 func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysqld initialize", "binary", o.MysqldPath)
 	args := []string{}
 	if o.ConfigFile != "" {
-		// --initialize ignores plugin_load_add, so group_replication.so is never
-		// loaded and the group_replication_* settings become unknown variables
-		// that abort initialization. Feed mysqld a copy of the config with the GR
-		// block stripped out (it is meaningless during --initialize anyway).
 		initConfig, err := o.writeInitConfig()
 		if err != nil {
 			return err
@@ -218,11 +229,28 @@ func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 		defer func() { _ = os.Remove(initConfig) }()
 		args = append(args, "--defaults-file="+initConfig)
 	}
-	args = append(args,
+	args = append(args, o.initArgs()...)
+	return runStdio(ctx, o.initBinary(), args, "mysqld --initialize-insecure")
+}
+
+// initBinary returns the binary used to initialize a fresh data directory.
+func (o *InitOptions) initBinary() string {
+	if o.Engine != nil {
+		return o.Engine.InitBinary()
+	}
+	return o.MysqldPath
+}
+
+// initArgs returns the flavor-appropriate data directory initialization
+// arguments.
+func (o *InitOptions) initArgs() []string {
+	if o.Engine != nil {
+		return o.Engine.InitDataDirArgs(o.DataDir)
+	}
+	return []string{
 		"--initialize-insecure",
-		"--datadir="+o.DataDir,
-	)
-	return runStdio(ctx, o.MysqldPath, args, "mysqld --initialize-insecure")
+		"--datadir=" + o.DataDir,
+	}
 }
 
 // writeInitConfig writes a temporary copy of the runtime config with the Group
@@ -281,8 +309,10 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 		// both off on the command line so the temporary server is writable
 		// regardless of the member's eventual role.
 		"--read-only=OFF",
-		"--super-read-only=OFF",
 	)
+	if o.Engine == nil || o.Engine.HasSuperReadOnly() {
+		args = append(args, "--super-read-only=OFF")
+	}
 
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))
 	sup := NewProcessSupervisor(o.MysqldPath, args,
