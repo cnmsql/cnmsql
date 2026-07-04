@@ -28,9 +28,9 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
 )
 
 // RestoreOptions configures bootstrapping a primary's data directory from a
@@ -53,9 +53,11 @@ type RestoreOptions struct {
 	BackupDir string
 	// DataDir is the data directory to restore into.
 	DataDir string
-	// XBStreamPath is the xbstream binary (default "xbstream").
+	// XBStreamPath overrides the stream extractor. Empty (the default) selects the
+	// engine's tool: xbstream for MySQL, mbstream for MariaDB.
 	XBStreamPath string
-	// XtrabackupPath is the xtrabackup binary (default "xtrabackup").
+	// XtrabackupPath overrides the backup binary. Empty (the default) selects the
+	// engine's tool: xtrabackup for MySQL, mariabackup for MariaDB.
 	XtrabackupPath string
 	// Compress forces decompression after extraction. When MetadataKey is set the
 	// archive's recorded compression flag takes precedence.
@@ -96,19 +98,14 @@ type RestoreOptions struct {
 	SourceCluster string
 	// Target bounds the replay (targetTime / targetGTID / latest).
 	Target binlog.RecoveryTarget
-	// MysqlbinlogPath and MysqlPath are the binaries used to decode and apply the
-	// archived binlogs (default "mysqlbinlog" / "mysql").
+	// MysqlbinlogPath and MysqlPath override the binaries used to decode and apply
+	// the archived binlogs. Empty (the default) selects the engine's tools:
+	// mysqlbinlog / mysql for MySQL, mariadb-binlog / mariadb for MariaDB.
 	MysqlbinlogPath string
 	MysqlPath       string
 }
 
 func (o *RestoreOptions) applyDefaults() {
-	if o.XBStreamPath == "" {
-		o.XBStreamPath = "xbstream"
-	}
-	if o.XtrabackupPath == "" {
-		o.XtrabackupPath = defaultXtrabackupBinary
-	}
 	if o.MysqldPath == "" {
 		o.MysqldPath = "mysqld"
 	}
@@ -117,12 +114,6 @@ func (o *RestoreOptions) applyDefaults() {
 	}
 	if o.ReadyTimeout == 0 {
 		o.ReadyTimeout = 2 * time.Minute
-	}
-	if o.MysqlbinlogPath == "" {
-		o.MysqlbinlogPath = "mysqlbinlog"
-	}
-	if o.MysqlPath == "" {
-		o.MysqlPath = "mysql"
 	}
 }
 
@@ -149,6 +140,16 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 		return fmt.Errorf("restore: data dir and backup dir are required")
 	}
 
+	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+	bt := eng.Backup()
+
+	// The temporary servers this restore starts (credential reconcile, PITR
+	// replay) must run the flavor's daemon; default "mysqld" to "mariadbd" on
+	// MariaDB, mirroring the join path.
+	if opts.MysqldPath == defaultMysqldBinary {
+		opts.MysqldPath = eng.ServerdCommand()
+	}
+
 	// Base restore is idempotent on the data directory: once copy-back has run it
 	// is not repeated. Point-in-time replay, however, must still run on a retry
 	// (an init-container restart after copy-back leaves the data initialised but
@@ -156,7 +157,7 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 	// own sentinel below.
 	if IsInitialized(opts.DataDir) {
 		log.Info("Data directory already initialized; skipping base restore")
-	} else if err := opts.restoreBase(ctx); err != nil {
+	} else if err := opts.restoreBase(ctx, bt); err != nil {
 		return err
 	} else if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
 		return fmt.Errorf("marking restored data directory as bootstrapped: %w", err)
@@ -168,7 +169,17 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 	// sentinel on the (durable) data directory makes a retry skip a completed
 	// replay rather than re-applying already-executed GTIDs.
 	if opts.SourceCluster != "" {
-		if err := opts.maybeReplay(ctx); err != nil {
+		// MariaDB PITR replay is not yet wired: the binlog client (mariadb-binlog)
+		// does not accept the MySQL --include-gtids/--exclude-gtids bounding this
+		// path emits, and MariaDB GTID positions use a different format. Fail loudly
+		// and early rather than exec an unsupported command. Tracked as a follow-up;
+		// base-backup restore (without --source-cluster) works on MariaDB.
+		if eng.Flavor() == engine.FlavorMariaDB {
+			return fmt.Errorf(
+				"restore: point-in-time recovery is not yet supported for MariaDB; " +
+					"restore from a base backup without --source-cluster")
+		}
+		if err := opts.maybeReplay(ctx, bt); err != nil {
 			return fmt.Errorf("replaying archived binlogs: %w", err)
 		}
 	}
@@ -180,7 +191,7 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 // restoreBase extracts, prepares and copy-backs the base backup into the data
 // directory, then resets the restored internal accounts to this cluster's
 // credentials. It runs only when the data directory is not yet initialised.
-func (opts RestoreOptions) restoreBase(ctx context.Context) error {
+func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool) error {
 	log := logf.FromContext(ctx).WithName("instance-restore")
 
 	compress := opts.Compress
@@ -200,9 +211,9 @@ func (opts RestoreOptions) restoreBase(ctx context.Context) error {
 		return fmt.Errorf("creating backup dir: %w", err)
 	}
 
-	// 1. Stream the archive out of object storage straight into `xbstream -x`,
+	// 1. Stream the archive out of object storage straight into the extractor,
 	// checksumming in flight so it can be verified against the metadata.
-	checksum, err := opts.extract(ctx)
+	checksum, err := opts.extract(ctx, bt)
 	if err != nil {
 		return err
 	}
@@ -212,24 +223,24 @@ func (opts RestoreOptions) restoreBase(ctx context.Context) error {
 
 	// 2. Optionally decompress the extracted archive.
 	if compress {
-		decompressArgs, err := xtrabackup.DecompressArgs(opts.BackupDir)
+		decompressArgs, err := bt.DecompressArgs(opts.BackupDir)
 		if err != nil {
 			return err
 		}
 		log.Info("Decompressing backup")
-		if err := runCommand(ctx, opts.XtrabackupPath, decompressArgs); err != nil {
-			return fmt.Errorf("xtrabackup decompress: %w", err)
+		if err := runCommand(ctx, bt.BackupBinary(), decompressArgs); err != nil {
+			return fmt.Errorf("decompress: %w", err)
 		}
 	}
 
 	// 3. Prepare the backup into a consistent state.
-	prepareArgs, err := xtrabackup.PrepareArgs(opts.BackupDir)
+	prepareArgs, err := bt.PrepareArgs(opts.BackupDir)
 	if err != nil {
 		return err
 	}
 	log.Info("Preparing backup")
-	if err := runCommand(ctx, opts.XtrabackupPath, prepareArgs); err != nil {
-		return fmt.Errorf("xtrabackup prepare: %w", err)
+	if err := runCommand(ctx, bt.BackupBinary(), prepareArgs); err != nil {
+		return fmt.Errorf("prepare: %w", err)
 	}
 
 	// 4. Restore into the (empty) data directory. ext4-backed PVCs ship a
@@ -241,17 +252,17 @@ func (opts RestoreOptions) restoreBase(ctx context.Context) error {
 	if err := removeLostFound(opts.DataDir); err != nil {
 		return err
 	}
-	copyBackArgs, err := xtrabackup.CopyBackArgs(opts.BackupDir, opts.DataDir)
+	copyBackArgs, err := bt.CopyBackArgs(opts.BackupDir, opts.DataDir)
 	if err != nil {
 		return err
 	}
 	log.Info("Restoring backup")
-	if err := runCommand(ctx, opts.XtrabackupPath, copyBackArgs); err != nil {
-		return fmt.Errorf("xtrabackup copy-back: %w", err)
+	if err := runCommand(ctx, bt.BackupBinary(), copyBackArgs); err != nil {
+		return fmt.Errorf("copy-back: %w", err)
 	}
 
 	// 5. Reset the restored internal accounts to this cluster's credentials so the
-	// instance manager (and XtraBackup) can authenticate against the recovered
+	// instance manager (and the backup tool) can authenticate against the recovered
 	// data. Skipped when no root password is provided.
 	if opts.RootPassword != "" {
 		if err := opts.reconcileCredentials(ctx); err != nil {
@@ -334,34 +345,38 @@ func (o *RestoreOptions) reconcileCredentials(ctx context.Context) error {
 	return nil
 }
 
-// extract downloads the archive and pipes it into `xbstream -x`, returning the
-// SHA256 of the downloaded bytes.
-func (o *RestoreOptions) extract(ctx context.Context) (string, error) {
+// extract downloads the archive and pipes it into the stream extractor,
+// returning the SHA256 of the downloaded bytes.
+func (o *RestoreOptions) extract(ctx context.Context, bt engine.BackupTool) (string, error) {
 	log := logf.FromContext(ctx).WithName("instance-restore")
-	extractArgs, err := xtrabackup.ExtractArgs(o.BackupDir)
+	extractArgs, err := bt.ExtractArgs(o.BackupDir)
 	if err != nil {
 		return "", err
+	}
+
+	binary := o.XBStreamPath
+	if binary == "" {
+		binary = bt.StreamBinary()
 	}
 
 	pipeReader, pipeWriter := io.Pipe()
 	hasher := objectstore.NewSHA256Writer(pipeWriter)
 
-	extract := exec.CommandContext(ctx, o.XBStreamPath, extractArgs...)
+	extract := exec.CommandContext(ctx, binary, extractArgs...)
 	extract.Stdin = pipeReader
-	extractOut, extractErr := newProcessLogWriters(log.WithName("xbstream"))
+	extractOut, extractErr := newProcessLogWriters(log.WithName(binary))
 	extract.Stdout = extractOut
 	extract.Stderr = extractErr
-	log.Info("Extracting backup stream", "binary", o.XBStreamPath)
+	log.Info("Extracting backup stream", "binary", binary)
 	if err := extract.Start(); err != nil {
 		_ = pipeReader.CloseWithError(err)
-		return "", fmt.Errorf("starting xbstream: %w", err)
+		return "", fmt.Errorf("starting %s: %w", binary, err)
 	}
 
-	// Download into the pipe; closing it signals EOF to xbstream.
+	// Download into the pipe; closing it signals EOF to the extractor.
 	downloadErr := make(chan error, 1)
 	go func() {
 		_, err := o.Store.Download(ctx, o.Bucket, o.ArchiveKey, hasher)
-		// Surface any download error to the reader so xbstream fails too.
 		_ = pipeWriter.CloseWithError(err)
 		downloadErr <- err
 	}()
@@ -372,7 +387,7 @@ func (o *RestoreOptions) extract(ctx context.Context) (string, error) {
 		return "", dlErr
 	}
 	if waitErr != nil {
-		return "", fmt.Errorf("xbstream extract: %w", waitErr)
+		return "", fmt.Errorf("extract: %w", waitErr)
 	}
 	return hasher.SumHex(), nil
 }

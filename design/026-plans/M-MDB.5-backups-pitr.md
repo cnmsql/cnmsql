@@ -1,6 +1,6 @@
 # M-MDB.5 — MariaDB backups & PITR
 
-- **Status:** blocked (needs M-MDB.4 done)
+- **Status:** in progress
 - **Depends on:** M-MDB.3 (config/lifecycle), M-MDB.4 (dialect + GTID for PITR)
 - **Design refs:** §11
 - **Risk:** MEDIUM — mostly binary/extractor substitution; object-store layout is flavor-agnostic.
@@ -77,8 +77,11 @@ behind the engine's `BackupTool` facet. The object-store layout, streaming to S3
 
 - [ ] `BackupTool` facet: mariabackup/mbstream + prepare/copy-back + binlog-info file name.
 - [ ] `backup.go`/`restore.go`/`join.go` no longer hard-code the tool; select via engine.
-- [ ] PITR replay uses `mariadb-binlog | mariadb` for MariaDB, GTID via `eng.GTID()`.
-- [ ] MySQL backup args byte-identical (existing tests green, unedited).
+- [~] PITR replay selects `mariadb-binlog | mariadb`, but GTID-bounded replay is
+      **deferred**: `mariadb-binlog` rejects the MySQL `--include-gtids`/
+      `--exclude-gtids` flags and MariaDB GTID positions differ. MariaDB PITR now
+      fails loudly (see status log); MariaDB base-backup restore works.
+- [x] MySQL backup args byte-identical (existing tests green, unedited).
 - [ ] `spec.backup.xtrabackupOptions` still applies (documented as flavor's tool flags).
 
 ## Status log
@@ -89,3 +92,28 @@ behind the engine's `BackupTool` facet. The object-store layout, streaming to S3
 - next: unblock when M-MDB.4 is `done`; then Task A1 (BackupTool facet).
 - blockers: M-MDB.4 (GTID position + clone path).
 - verify: not started
+
+### 2026-07-04 — BackupTool facet + caller rewiring (review fixes)
+- did:
+  - `BackupTool` facet (`engine_backup.go`): binary names + shared arg builders
+    (xtrabackup/mariabackup, xbstream/mbstream, mysqlbinlog/mariadb-binlog,
+    mysql/mariadb, xtrabackup_binlog_info/mariadb_backup_binlog_info). MySQL
+    builders wrapped verbatim; byte-identical MySQL arg test added.
+  - Rewired `backup.go`/`fetch.go`/`restore.go`/`join.go` to select binary + args
+    from `eng.Backup()`, keyed off `CNMSQL_FLAVOR`.
+  - Fixed the critical wiring bug: the `--xtrabackup`/`--xbstream`/`--mysqlbinlog`/
+    `--mysql` manager flags defaulted to the MySQL binary names, so the engine
+    fallback never fired and MariaDB pods still ran the MySQL tools. Defaulted the
+    flags to empty (kept as optional overrides); added flag-default regression
+    tests in the restore/join/run cmd packages.
+  - `restore.go` now swaps the temporary-server daemon to `mariadbd` on MariaDB
+    (mirrors `join.go`); previously the restore/PITR temp servers hard-ran mysqld.
+- deferred: **MariaDB PITR (GTID replay).** `binlog.ReplayArgs` emits
+  `--include-gtids`/`--exclude-gtids`, which `mariadb-binlog` does not accept, and
+  MariaDB GTID positions use a different format than the shared parser assumes.
+  `Restore` now returns a clear "not yet supported for MariaDB" error when
+  `--source-cluster` is set on a MariaDB cluster, instead of exec'ing an
+  unsupported command. Base-backup restore (no PITR) works. Follow-up: implement
+  MariaDB-native binlog replay (position-based bounding + `mariadb_backup_binlog_info`
+  parsing) — likely its own task.
+- verify: `go build`, `go vet`, `gofmt -l` clean; full suite green.

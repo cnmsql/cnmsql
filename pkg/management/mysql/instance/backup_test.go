@@ -39,8 +39,8 @@ func TestSetBackupConfigDefaults(t *testing.T) {
 	if c.backup == nil {
 		t.Fatal("backup config not set")
 	}
-	if c.backup.XtrabackupPath != "xtrabackup" {
-		t.Errorf("xtrabackup path default = %q", c.backup.XtrabackupPath)
+	if c.backup.XtrabackupPath != "" {
+		t.Errorf("xtrabackup path should be empty when unset, got %q", c.backup.XtrabackupPath)
 	}
 	if c.backup.WorkDir == "" {
 		t.Error("work dir default not applied")

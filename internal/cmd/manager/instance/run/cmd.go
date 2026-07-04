@@ -222,7 +222,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sourceSSLCert, "source-ssl-cert", "", "Replication client certificate")
 	cmd.Flags().StringVar(&sourceSSLKey, "source-ssl-key", "", "Replication client key")
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "Backup user for streaming clones (password from MYSQL_BACKUP_PASSWORD); enables GET /cluster/backup")
-	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "xtrabackup", "Path to the xtrabackup binary")
+	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary for streaming clones (defaults to the engine's tool: xtrabackup / mariabackup)")
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Owning Cluster name; enables the in-Pod role reconciler (dynamic role)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Cluster namespace (defaults to POD_NAMESPACE)")
 	cmd.Flags().BoolVar(&groupReplication, "group-replication", false, "Run as a MySQL Group Replication member (the group role strategy and GR status)")

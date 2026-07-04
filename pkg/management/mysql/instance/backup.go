@@ -25,14 +25,15 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 // BackupConfig configures the streaming physical backup an instance serves to
 // joining replicas. XtraBackup must run where the data files live, so the
 // backup is always taken locally and streamed to the caller.
 type BackupConfig struct {
-	// XtrabackupPath is the xtrabackup binary (default "xtrabackup").
+	// XtrabackupPath overrides the backup binary. Empty (the default) selects the
+	// engine's tool: xtrabackup for MySQL, mariabackup for MariaDB.
 	XtrabackupPath string
 	// DataDir is the data directory to back up.
 	DataDir string
@@ -52,9 +53,6 @@ type BackupConfig struct {
 }
 
 func (c *BackupConfig) applyDefaults() {
-	if c.XtrabackupPath == "" {
-		c.XtrabackupPath = defaultXtrabackupBinary
-	}
 	if c.WorkDir == "" {
 		c.WorkDir = os.TempDir()
 	}
@@ -68,14 +66,16 @@ func (c *Controller) SetBackupConfig(cfg BackupConfig) {
 	c.backup = &cfg
 }
 
-// BackupStream runs `xtrabackup --backup --stream=xbstream` against the local
-// data directory and copies the archive to w. It satisfies
-// webserver.BackupStreamer.
+// BackupStream runs a physical backup against the local data directory and
+// copies the archive to w. It satisfies webserver.BackupStreamer.
 func (c *Controller) BackupStream(ctx context.Context, w io.Writer) error {
 	if c.backup == nil {
 		return errors.New("backup streaming is not configured on this instance")
 	}
-	args, err := xtrabackup.BackupArgs(xtrabackup.BackupOptions{
+
+	bt := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR"))).Backup()
+
+	args, err := bt.BackupArgs(engine.BackupOpts{
 		TargetDir: c.backup.WorkDir,
 		Socket:    c.backup.Socket,
 		User:      c.backup.User,
@@ -88,9 +88,14 @@ func (c *Controller) BackupStream(ctx context.Context, w io.Writer) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, c.backup.XtrabackupPath, args...)
+	binary := c.backup.XtrabackupPath
+	if binary == "" {
+		binary = bt.BackupBinary()
+	}
+
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdout = w
-	cmd.Stderr = newProcessLogWriter(logf.FromContext(ctx).WithName("xtrabackup").WithValues(
+	cmd.Stderr = newProcessLogWriter(logf.FromContext(ctx).WithName(binary).WithValues(
 		"instance", c.name,
 		"dataDir", c.backup.DataDir,
 	), "stderr")

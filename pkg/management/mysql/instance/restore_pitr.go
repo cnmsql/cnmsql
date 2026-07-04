@@ -27,16 +27,10 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
 )
-
-// binlogInfoFile is the XtraBackup artifact holding the base backup's binlog
-// position and GTID set — the anchor the replay starts from. copy-back leaves a
-// copy in the data directory, so it survives an init-container restart even
-// though the scratch backup dir (an emptyDir) does not.
-const binlogInfoFile = "xtrabackup_binlog_info"
 
 // pitrSentinelFile marks, on the durable data directory, that point-in-time
 // replay has completed. It makes the replay reentrant: a retry skips it instead
@@ -45,14 +39,14 @@ const pitrSentinelFile = ".cnmsql-pitr-done"
 
 // maybeReplay runs the point-in-time replay unless a previous attempt already
 // completed it (sentinel present on the data directory).
-func (o *RestoreOptions) maybeReplay(ctx context.Context) error {
+func (o *RestoreOptions) maybeReplay(ctx context.Context, bt engine.BackupTool) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 	sentinel := filepath.Join(o.DataDir, pitrSentinelFile)
 	if _, err := os.Stat(sentinel); err == nil {
 		log.Info("Point-in-time replay already completed; skipping", "sentinel", sentinel)
 		return nil
 	}
-	if err := o.replayBinlogs(ctx); err != nil {
+	if err := o.replayBinlogs(ctx, bt); err != nil {
 		return err
 	}
 	if err := os.WriteFile(sentinel, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o640); err != nil {
@@ -70,7 +64,7 @@ func (o *RestoreOptions) maybeReplay(ctx context.Context) error {
 // advances as each archived transaction is applied (mysqlbinlog emits
 // SET GTID_NEXT per transaction), so the recovered server ends at exactly the
 // target point with a coherent GTID history.
-func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
+func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr").WithValues(
 		"sourceCluster", o.SourceCluster, "bucket", o.ObjectStore.Bucket)
 
@@ -78,7 +72,7 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
 		return fmt.Errorf("pitr: object store bucket is required for binlog replay")
 	}
 
-	anchor, err := o.readAnchorGTID()
+	anchor, err := o.readAnchorGTID(bt)
 	if err != nil {
 		return err
 	}
@@ -112,28 +106,29 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
 	log.Info("Downloaded archived binlogs", "files", len(files),
 		"stopDatetime", plan.StopDatetime, "includeGTIDs", plan.IncludeGTIDs)
 
-	return o.applyReplay(ctx, plan, files)
+	return o.applyReplay(ctx, bt, plan, files)
 }
 
-// readAnchorGTID parses the base backup's xtrabackup_binlog_info for the GTID
-// set the restore landed at. It prefers the copy in the data directory (durable
-// on the PVC, so it survives an init-container restart that lost the scratch
-// backup dir) and falls back to the scratch dir. A missing file (older
-// XtraBackup, or no GTIDs yet) yields an empty anchor: replay from the start.
-func (o *RestoreOptions) readAnchorGTID() (string, error) {
-	content, err := os.ReadFile(filepath.Join(o.DataDir, binlogInfoFile))
+// readAnchorGTID parses the base backup's binlog-info file for the GTID set the
+// restore landed at. It prefers the copy in the data directory (durable on the
+// PVC, so it survives an init-container restart that lost the scratch backup
+// dir) and falls back to the scratch dir. A missing file (older backup tool, or
+// no GTIDs yet) yields an empty anchor: replay from the start.
+func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (string, error) {
+	infoFile := bt.BinlogInfoFileName()
+	content, err := os.ReadFile(filepath.Join(o.DataDir, infoFile))
 	if os.IsNotExist(err) {
-		content, err = os.ReadFile(filepath.Join(o.BackupDir, binlogInfoFile))
+		content, err = os.ReadFile(filepath.Join(o.BackupDir, infoFile))
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
-		return "", fmt.Errorf("pitr: reading %s: %w", binlogInfoFile, err)
+		return "", fmt.Errorf("pitr: reading %s: %w", infoFile, err)
 	}
-	info, err := xtrabackup.ParseBinlogInfo(string(content))
+	info, err := bt.ParseBinlogInfo(string(content))
 	if err != nil {
-		return "", fmt.Errorf("pitr: parsing %s: %w", binlogInfoFile, err)
+		return "", fmt.Errorf("pitr: parsing %s: %w", infoFile, err)
 	}
 	return info.GTIDSet, nil
 }
@@ -175,11 +170,13 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 }
 
 // applyReplay starts a temporary socket-only mysqld over the restored data
-// directory and pipes `mysqlbinlog <files> | mysql` into it, bounded by the
-// recovery target. The temp server runs with --skip-grant-tables (same pattern
-// as reconcileCredentials) so the mysql client connects as root without a
+// directory and pipes the binlog client output into the SQL client, bounded by
+// the recovery target. The temp server runs with --skip-grant-tables (same
+// pattern as reconcileCredentials) so the client connects as root without a
 // password; GTID tracking is independent of the grant system.
-func (o *RestoreOptions) applyReplay(ctx context.Context, plan binlog.ReplayPlan, files []string) error {
+func (o *RestoreOptions) applyReplay(
+	ctx context.Context, bt engine.BackupTool, plan binlog.ReplayPlan, files []string,
+) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
 	args := []string{}
@@ -221,53 +218,60 @@ func (o *RestoreOptions) applyReplay(ctx context.Context, plan binlog.ReplayPlan
 	}
 
 	log.Info("Replaying archived binlogs into restored data", "files", len(files))
-	return o.pipeReplay(ctx, replayArgs)
+	return o.pipeReplay(ctx, bt, replayArgs)
 }
 
-// pipeReplay runs `mysqlbinlog <replayArgs> | mysql --socket ...`, decoding the
+// pipeReplay runs the binlog client piped into the SQL client, decoding the
 // archived binlogs and applying them to the temporary server. Both child
 // processes' stderr is captured as structured logs; the binlog stream itself is
 // a data path and never logged.
-func (o *RestoreOptions) pipeReplay(ctx context.Context, replayArgs []string) error {
+func (o *RestoreOptions) pipeReplay(ctx context.Context, bt engine.BackupTool, replayArgs []string) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
 	pr, pw := io.Pipe()
 
-	decode := exec.CommandContext(ctx, o.MysqlbinlogPath, replayArgs...)
+	decodeBin := o.MysqlbinlogPath
+	if decodeBin == "" {
+		decodeBin = bt.BinlogClientBinary()
+	}
+	decode := exec.CommandContext(ctx, decodeBin, replayArgs...)
 	decode.Stdout = pw
-	_, decodeErr := newProcessLogWriters(log.WithName("mysqlbinlog"))
+	_, decodeErr := newProcessLogWriters(log.WithName(decodeBin))
 	decode.Stderr = decodeErr
 
-	apply := exec.CommandContext(ctx, o.MysqlPath,
+	sqlBin := o.MysqlPath
+	if sqlBin == "" {
+		sqlBin = bt.SQLClientBinary()
+	}
+	apply := exec.CommandContext(ctx, sqlBin,
 		"--socket="+o.Socket, "--user=root", "--binary-mode")
 	apply.Stdin = pr
 	// MYSQL_PWD keeps the (empty here) password off the argv; harmless under
 	// --skip-grant-tables but keeps the invocation consistent.
 	apply.Env = append(os.Environ(), "MYSQL_PWD="+o.RootPassword)
-	applyOut, applyErr := newProcessLogWriters(log.WithName("mysql"))
+	applyOut, applyErr := newProcessLogWriters(log.WithName(sqlBin))
 	apply.Stdout = applyOut
 	apply.Stderr = applyErr
 
 	if err := apply.Start(); err != nil {
 		_ = pr.CloseWithError(err)
-		return fmt.Errorf("pitr: starting mysql: %w", err)
+		return fmt.Errorf("pitr: starting %s: %w", sqlBin, err)
 	}
 	if err := decode.Start(); err != nil {
 		_ = pw.CloseWithError(err)
-		return fmt.Errorf("pitr: starting mysqlbinlog: %w", err)
+		return fmt.Errorf("pitr: starting %s: %w", decodeBin, err)
 	}
 
 	decErr := decode.Wait()
-	// Closing the writer signals EOF (or the decode error) to the mysql client.
 	_ = pw.CloseWithError(decErr)
 	appErr := apply.Wait()
 	_ = pr.CloseWithError(appErr)
 
 	if decErr != nil {
-		return fmt.Errorf("pitr: mysqlbinlog: %w", decErr)
+		return fmt.Errorf("pitr: %s: %w", decodeBin, decErr)
 	}
 	if appErr != nil {
-		return fmt.Errorf("pitr: mysql apply: %w", appErr)
+		return fmt.Errorf("pitr: %s apply: %w", sqlBin, appErr)
 	}
 	return nil
 }

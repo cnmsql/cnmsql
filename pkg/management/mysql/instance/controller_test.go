@@ -430,7 +430,8 @@ func TestNewControllerRejectsBadVersion(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil, engine.MustForFlavor(engine.FlavorMySQL)); err == nil {
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil, eng); err == nil {
 		t.Error("expected error for invalid version")
 	}
 }

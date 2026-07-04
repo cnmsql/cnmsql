@@ -166,6 +166,12 @@ type Engine interface {
 	// MariaDB.
 	DefaultAuthenticationPlugin() string
 
+	// --- backup tool ---
+
+	// Backup returns the BackupTool facet: binary names and argument builders
+	// for physical backup, restore and point-in-time replay.
+	Backup() BackupTool
+
 	// --- lifecycle commands ---
 
 	// InitBinary returns the name of the binary used to initialize a fresh
@@ -298,6 +304,10 @@ func (mysqlEngine) GTIDConfigSettings() [][2]string {
 
 func (mysqlEngine) DefaultAuthenticationPlugin() string {
 	return "caching_sha2_password"
+}
+
+func (mysqlEngine) Backup() BackupTool {
+	return mysqlBackupTool{}
 }
 
 func (mysqlEngine) InitBinary() string {
@@ -434,6 +444,10 @@ func (mariadbEngine) GTIDConfigSettings() [][2]string {
 
 func (mariadbEngine) DefaultAuthenticationPlugin() string {
 	return "mysql_native_password"
+}
+
+func (mariadbEngine) Backup() BackupTool {
+	return mariadbBackupTool{}
 }
 
 func (mariadbEngine) InitBinary() string {

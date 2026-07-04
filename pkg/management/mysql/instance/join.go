@@ -29,7 +29,6 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
 )
 
 // JoinOptions configures provisioning a replica from a physical backup.
@@ -40,7 +39,8 @@ import (
 // restores it into DataDir, and configures GTID replication so that, once the
 // main mysqld starts, replication resumes automatically.
 type JoinOptions struct {
-	// XtrabackupPath is the xtrabackup binary (default "xtrabackup").
+	// XtrabackupPath overrides the backup binary. Empty (the default) selects the
+	// engine's tool: xtrabackup for MySQL, mariabackup for MariaDB.
 	XtrabackupPath string
 	// MysqldPath is the mysqld binary (default "mysqld").
 	MysqldPath string
@@ -65,9 +65,6 @@ type JoinOptions struct {
 }
 
 func (o *JoinOptions) applyDefaults() {
-	if o.XtrabackupPath == "" {
-		o.XtrabackupPath = defaultXtrabackupBinary
-	}
 	if o.MysqldPath == "" {
 		o.MysqldPath = defaultMysqldBinary
 	}
@@ -102,14 +99,25 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		return err
 	}
 
+	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+	bt := eng.Backup()
+
+	if opts.MysqldPath == defaultMysqldBinary {
+		opts.MysqldPath = eng.ServerdCommand()
+	}
+
 	// 1. Prepare the backup into a consistent state.
-	prepareArgs, err := xtrabackup.PrepareArgs(opts.BackupDir)
+	prepareArgs, err := bt.PrepareArgs(opts.BackupDir)
 	if err != nil {
 		return err
 	}
 	log.Info("Preparing backup")
-	if err := runCommand(ctx, opts.XtrabackupPath, prepareArgs); err != nil {
-		return fmt.Errorf("xtrabackup prepare: %w", err)
+	binary := opts.XtrabackupPath
+	if binary == "" {
+		binary = bt.BackupBinary()
+	}
+	if err := runCommand(ctx, binary, prepareArgs); err != nil {
+		return fmt.Errorf("prepare: %w", err)
 	}
 
 	// 2. Restore into the (empty) data directory. ext4-backed PVCs ship a
@@ -121,17 +129,17 @@ func Join(ctx context.Context, opts JoinOptions) error {
 	if err := removeLostFound(opts.DataDir); err != nil {
 		return err
 	}
-	copyBackArgs, err := xtrabackup.CopyBackArgs(opts.BackupDir, opts.DataDir)
+	copyBackArgs, err := bt.CopyBackArgs(opts.BackupDir, opts.DataDir)
 	if err != nil {
 		return err
 	}
 	log.Info("Restoring backup")
-	if err := runCommand(ctx, opts.XtrabackupPath, copyBackArgs); err != nil {
-		return fmt.Errorf("xtrabackup copy-back: %w", err)
+	if err := runCommand(ctx, binary, copyBackArgs); err != nil {
+		return fmt.Errorf("copy-back: %w", err)
 	}
 
 	// 3. Read the backup's GTID position.
-	binlogInfo, err := readBinlogInfo(opts.BackupDir)
+	binlogInfo, err := readBinlogInfoWithTool(opts.BackupDir, bt)
 	if err != nil {
 		return err
 	}
@@ -139,7 +147,7 @@ func Join(ctx context.Context, opts JoinOptions) error {
 
 	// 4. Configure replication on a temporary server so it persists in the data
 	// directory and resumes when the main server starts.
-	if err := opts.configureReplication(ctx, ver, binlogInfo.GTIDSet); err != nil {
+	if err := opts.configureReplication(ctx, eng, ver, binlogInfo.GTIDSet); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
@@ -151,7 +159,9 @@ func Join(ctx context.Context, opts JoinOptions) error {
 
 // configureReplication starts a temporary socket-only server and provisions GTID
 // replication from the backup point.
-func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Version, gtidPurged string) error {
+func (o *JoinOptions) configureReplication(
+	ctx context.Context, eng engine.Engine, ver version.Version, gtidPurged string,
+) error {
 	log := logf.FromContext(ctx).WithName("instance-join")
 	args := []string{}
 	if o.ConfigFile != "" {
@@ -171,9 +181,6 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 	)
 	// Do not start replication on the temporary server; we configure it and let
 	// the real server start it. The option was renamed slave→replica in 8.0.26.
-	// Read the engine flavor from the env var set by the controller
-	// (CNMSQL_FLAVOR), falling back to mysql.
-	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
 	if o.MysqldPath == defaultMysqldBinary {
 		o.MysqldPath = eng.ServerdCommand()
 	}
@@ -211,14 +218,15 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 	return mgr.ProvisionFromBackup(ctx, gtidPurged, o.Source)
 }
 
-// readBinlogInfo reads and parses xtrabackup_binlog_info from the backup.
-func readBinlogInfo(backupDir string) (xtrabackup.BinlogInfo, error) {
-	path := filepath.Join(backupDir, "xtrabackup_binlog_info")
+// readBinlogInfoWithTool reads and parses the backup tool's binlog-info file.
+func readBinlogInfoWithTool(backupDir string, bt engine.BackupTool) (engine.BinlogInfo, error) {
+	infoFile := bt.BinlogInfoFileName()
+	path := filepath.Join(backupDir, infoFile)
 	content, err := os.ReadFile(path) //nolint:gosec // path derived from operator-provided backup dir
 	if err != nil {
-		return xtrabackup.BinlogInfo{}, fmt.Errorf("reading %s: %w", path, err)
+		return engine.BinlogInfo{}, fmt.Errorf("reading %s: %w", path, err)
 	}
-	return xtrabackup.ParseBinlogInfo(string(content))
+	return bt.ParseBinlogInfo(string(content))
 }
 
 // runCommand runs an external command, forwarding output to the process stdio.

@@ -28,7 +28,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 // FetchOptions configures pulling a streamed backup from a source instance's
@@ -39,10 +39,11 @@ type FetchOptions struct {
 	SourceURL string
 	// BackupDir is where the extracted backup is written.
 	BackupDir string
-	// XBStreamPath is the xbstream binary (default "xbstream").
+	// XBStreamPath overrides the stream extractor. Empty (the default) selects the
+	// engine's tool: xbstream for MySQL, mbstream for MariaDB.
 	XBStreamPath string
-	// XtrabackupPath is used to decompress when Compress is set (default
-	// "xtrabackup").
+	// XtrabackupPath overrides the binary used to decompress when Compress is set.
+	// Empty (the default) selects the engine's tool: xtrabackup / mariabackup.
 	XtrabackupPath string
 	// Compress indicates the stream is compressed and must be decompressed after
 	// extraction.
@@ -58,19 +59,9 @@ type FetchOptions struct {
 	Timeout time.Duration
 }
 
-func (o *FetchOptions) applyDefaults() {
-	if o.XBStreamPath == "" {
-		o.XBStreamPath = "xbstream"
-	}
-	if o.XtrabackupPath == "" {
-		o.XtrabackupPath = defaultXtrabackupBinary
-	}
-}
-
 // FetchBackup streams the source backup over mTLS and extracts it into
 // BackupDir, leaving it ready for Join to prepare and restore.
 func FetchBackup(ctx context.Context, opts FetchOptions) error {
-	opts.applyDefaults()
 	log := logf.FromContext(ctx).WithName("instance-fetch-backup").WithValues(
 		"sourceURL", opts.SourceURL,
 		"backupDir", opts.BackupDir,
@@ -84,6 +75,8 @@ func FetchBackup(ctx context.Context, opts FetchOptions) error {
 	if err := os.MkdirAll(opts.BackupDir, 0o750); err != nil {
 		return fmt.Errorf("creating backup dir: %w", err)
 	}
+
+	bt := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR"))).Backup()
 
 	transport, err := opts.transport()
 	if err != nil {
@@ -105,33 +98,40 @@ func FetchBackup(ctx context.Context, opts FetchOptions) error {
 		return fmt.Errorf("backup stream returned %s", resp.Status)
 	}
 
-	// Pipe the response body straight into `xbstream -x`.
-	extractArgs, err := xtrabackup.ExtractArgs(opts.BackupDir)
+	extractArgs, err := bt.ExtractArgs(opts.BackupDir)
 	if err != nil {
 		return err
 	}
-	extract := exec.CommandContext(ctx, opts.XBStreamPath, extractArgs...)
+	streamBin := opts.XBStreamPath
+	if streamBin == "" {
+		streamBin = bt.StreamBinary()
+	}
+	extract := exec.CommandContext(ctx, streamBin, extractArgs...)
 	extract.Stdin = resp.Body
-	extractOut, extractErr := newProcessLogWriters(log.WithName("xbstream"))
+	extractOut, extractErr := newProcessLogWriters(log.WithName(streamBin))
 	extract.Stdout = extractOut
 	extract.Stderr = extractErr
-	log.Info("Extracting backup stream", "binary", opts.XBStreamPath)
+	log.Info("Extracting backup stream", "binary", streamBin)
 	if err := extract.Run(); err != nil {
-		return fmt.Errorf("xbstream extract: %w", err)
+		return fmt.Errorf("extract: %w", err)
 	}
 
 	if opts.Compress {
-		decompressArgs, err := xtrabackup.DecompressArgs(opts.BackupDir)
+		decompressArgs, err := bt.DecompressArgs(opts.BackupDir)
 		if err != nil {
 			return err
 		}
-		decompress := exec.CommandContext(ctx, opts.XtrabackupPath, decompressArgs...)
-		decompressOut, decompressErr := newProcessLogWriters(log.WithName("xtrabackup"))
+		backupBin := opts.XtrabackupPath
+		if backupBin == "" {
+			backupBin = bt.BackupBinary()
+		}
+		decompress := exec.CommandContext(ctx, backupBin, decompressArgs...)
+		decompressOut, decompressErr := newProcessLogWriters(log.WithName(backupBin))
 		decompress.Stdout = decompressOut
 		decompress.Stderr = decompressErr
-		log.Info("Decompressing backup", "binary", opts.XtrabackupPath)
+		log.Info("Decompressing backup", "binary", backupBin)
 		if err := decompress.Run(); err != nil {
-			return fmt.Errorf("xtrabackup decompress: %w", err)
+			return fmt.Errorf("decompress: %w", err)
 		}
 	}
 	log.Info("Completed backup fetch")

@@ -17,9 +17,40 @@ limitations under the License.
 package instance
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
+
+// TestRestoreRejectsMariaDBPITR guards the deferral: MariaDB point-in-time
+// recovery is not yet wired (mariadb-binlog rejects the MySQL --include-gtids/
+// --exclude-gtids this path emits), so Restore must fail loudly rather than exec
+// an unsupported command. Base restore (no --source-cluster) is unaffected.
+func TestRestoreRejectsMariaDBPITR(t *testing.T) {
+	t.Setenv("CNMSQL_FLAVOR", "mariadb")
+	dataDir := t.TempDir()
+	// Mark the data dir initialised so base restore is skipped and Restore
+	// reaches the PITR branch.
+	if err := os.WriteFile(filepath.Join(dataDir, bootstrapSentinel), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Restore(context.Background(), RestoreOptions{
+		Store:         &objectstore.Client{},
+		Bucket:        "b",
+		ArchiveKey:    "k",
+		DataDir:       dataDir,
+		BackupDir:     t.TempDir(),
+		SourceCluster: "prod",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not yet supported for MariaDB") {
+		t.Fatalf("want MariaDB PITR rejection, got %v", err)
+	}
+}
 
 func TestCredentialReconcileStatements(t *testing.T) {
 	stmts := credentialReconcileStatements(
