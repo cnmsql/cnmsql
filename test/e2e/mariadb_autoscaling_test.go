@@ -15,7 +15,7 @@ import (
 // The MariaDB counterpart of the "Horizontal Pod Autoscaler" suite: a scale
 // sub-resource replica write must drive spec.instances and the converged count
 // must be reflected back, on a MariaDB cluster.
-var _ = Describe("MariaDB Horizontal Pod Autoscaler", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB Horizontal Pod Autoscaler", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster = "mdb-hpa"
 		initial = 1
@@ -80,7 +80,7 @@ var _ = Describe("MariaDB Horizontal Pod Autoscaler", Ordered, Label("feature", 
 // The MariaDB counterpart of the "Vertical Pod Autoscaler" suite: the operator
 // publishes a scale selector that resolves to the instance Pods and must not
 // fight an in-place (VPA) resize of a running MariaDB Pod's requests.
-var _ = Describe("MariaDB Vertical Pod Autoscaler", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB Vertical Pod Autoscaler", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster  = "mdb-vpa"
 		replicas = 1

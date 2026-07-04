@@ -18,7 +18,7 @@ import (
 // under preferred durability it lowers the wait count to stay writable, then
 // restores it once the replica recovers. The liveness isolation guard must never
 // spuriously restart a healthy instance.
-var _ = Describe("MariaDB self-healing", Ordered, Label("feature", "mariadb", "heavy"), func() {
+var _ = Describe("MariaDB self-healing", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster  = "mdb-selfheal"
 		minSync  = 2

@@ -17,7 +17,7 @@ import (
 // and adopt the already-running mariadbd, so the server is never restarted. The
 // proof is threefold: the manager logs the adopt path, the mysql container's
 // restart count stays flat, and the server's uptime keeps climbing.
-var _ = Describe("MariaDB in-place instance manager upgrade", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB in-place instance manager upgrade", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster   = "mdb-inplace"
 		instances = 3

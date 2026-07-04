@@ -16,7 +16,7 @@
 #   - operator-upgrade   disruptive (op-lifecycle)      latest MySQL   procs 1
 #   - major-upgrade      major-upgrade                  latest MySQL   procs 1
 #   - node-failure       node-failure                   latest MySQL   procs 1
-#   - flavor-MySQL-<v>   flavor && !heavy               each MySQL     procs 2
+#   - flavor-MySQL-<v>   flavor && !mariadb && !heavy   each MySQL     procs 2
 #   - flavor-MariaDB-<v> flavor && mariadb && !heavy   each MariaDB    procs 2
 #
 # k8s versions come from .github/kind_versions.json filtered by the e2e_test
@@ -123,9 +123,13 @@ def build_lanes():
         # node-failure provisions its own multi-node cluster (shared_setup=False).
         lane("node-failure", "node-failure", latest, 1, shared_setup=False),
     ]
-    # Only version-sensitive specs run across the whole MySQL axis.
+    # Only version-sensitive specs run across the whole MySQL axis. MariaDB
+    # flavor specs are excluded here: they boot a MariaDB cluster and the suite
+    # loads either the MySQL or the MariaDB instance images (never both), so a
+    # MariaDB spec on a MySQL-image lane can never pull its image. They run in
+    # the dedicated flavor-MariaDB lanes below instead.
     for mysql_version in MYSQL:
-        lanes.append(lane(f"flavor-MySQL-{mysql_version}", "flavor && !heavy", mysql_version, 2))
+        lanes.append(lane(f"flavor-MySQL-{mysql_version}", "flavor && !mariadb && !heavy", mysql_version, 2))
     # MariaDB flavor lanes: run mariadb-labeled specs across the MariaDB series.
     for mariadb_version in MARIADB:
         lanes.append(lane(

@@ -16,7 +16,7 @@ import (
 // GTIDs, no GTID_NEXT) — by killing the primary Pod while retaining its PVC and
 // asserting the recreated former primary reuses that PVC and catches up as a
 // replica from the data it already had on disk.
-var _ = Describe("MariaDB failover rejoin", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB failover rejoin", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster   = "mdb-failjoin"
 		instances = 3

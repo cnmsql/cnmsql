@@ -17,7 +17,7 @@ import (
 // identically for either engine; these specs pin that a MariaDB cluster's PVCs
 // grow (and, when in-use expansion is disabled, that the Pod is recycled) the
 // same way. It reuses the flavor-agnostic PVC/StorageClass helpers.
-var _ = Describe("MariaDB volume resize", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB volume resize", Ordered, Label("flavor", "mariadb"), func() {
 	var ns, prevNS, scName string
 
 	BeforeAll(func() {

@@ -16,7 +16,7 @@ import (
 // ALTER INSTANCE RELOAD TLS — so exercising an end-to-end cert re-issue on a live
 // MariaDB server is real coverage: mysqld must pick up the new certificate
 // (Ssl_server_not_after changes) and stay writable.
-var _ = Describe("MariaDB TLS certificate renewal", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB TLS certificate renewal", Ordered, Label("flavor", "mariadb"), func() {
 	const cluster = "mdb-tlsrenew"
 
 	var ns, prevNS, rootPass string

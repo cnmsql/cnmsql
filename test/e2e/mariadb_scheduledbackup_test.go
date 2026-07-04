@@ -16,7 +16,7 @@ import (
 // immediate backup fires on creation and the cron cadence keeps producing
 // Backups, each labeled with its parent ScheduledBackup. The `method: xtrabackup`
 // enum is flavor-agnostic — the engine maps it to mariabackup for MariaDB.
-var _ = Describe("MariaDB scheduled backups", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB scheduled backups", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		sourceCluster = "mdb-sched-src"
 		scheduleName  = "mdb-sched-nightly"

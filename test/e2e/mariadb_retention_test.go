@@ -18,7 +18,7 @@ import (
 // one while keeping the recent (newest-floor) backup. Retention GC is
 // object-store logic, but this pins that the MariaDB archive layout is GC'd the
 // same way.
-var _ = Describe("MariaDB backup retention GC", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB backup retention GC", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		retCluster = "mdb-ret-src"
 		realBackup = "mdb-real-backup"

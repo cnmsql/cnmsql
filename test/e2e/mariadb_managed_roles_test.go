@@ -19,7 +19,7 @@ import (
 // Database CR creates a schema plus a schema-scoped user, then drops the schema
 // on deletion under a `delete` reclaim policy. It reuses the flavor-agnostic
 // Database/Secret manifests from managed_roles_databases_test.go.
-var _ = Describe("MariaDB managed roles and databases", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB managed roles and databases", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster    = "mdb-mrdb"
 		roleName   = "reporter"
