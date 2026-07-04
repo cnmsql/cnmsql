@@ -151,6 +151,12 @@ type Engine interface {
 	// still gate MySQL on the 8.0 version boundary separately.
 	SupportsDynamicPrivileges() bool
 
+	// TLSReloadStatement returns the SQL that makes a running server reload its
+	// TLS key material from disk without a restart. MySQL uses
+	// "ALTER INSTANCE RELOAD TLS"; MariaDB has no such statement and reloads
+	// with "FLUSH SSL" (10.4+).
+	TLSReloadStatement() string
+
 	// --- config ---
 
 	// IsGroupReplicationManagedKey reports whether a normalized config key
@@ -304,6 +310,8 @@ func (mysqlEngine) UsesReplicaTerminology(v version.Version) bool {
 
 func (mysqlEngine) SupportsDynamicPrivileges() bool { return true }
 
+func (mysqlEngine) TLSReloadStatement() string { return "ALTER INSTANCE RELOAD TLS" }
+
 // config
 
 func (mysqlEngine) IsGroupReplicationManagedKey(normalized string) bool {
@@ -448,6 +456,10 @@ func (mariadbEngine) UsesReplicaTerminology(version.Version) bool {
 }
 
 func (mariadbEngine) SupportsDynamicPrivileges() bool { return false }
+
+// TLSReloadStatement: MariaDB has no ALTER INSTANCE RELOAD TLS; FLUSH SSL
+// (10.4+) re-reads the server's TLS key material from disk without a restart.
+func (mariadbEngine) TLSReloadStatement() string { return "FLUSH SSL" }
 
 // config
 

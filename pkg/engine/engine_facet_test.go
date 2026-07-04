@@ -180,6 +180,9 @@ func TestMySQLCapabilityFacet(t *testing.T) {
 	if !eng.SupportsDynamicPrivileges() {
 		t.Error("MySQL SupportsDynamicPrivileges() = false, want true")
 	}
+	if got := eng.TLSReloadStatement(); got != "ALTER INSTANCE RELOAD TLS" {
+		t.Errorf("MySQL TLSReloadStatement() = %q, want ALTER INSTANCE RELOAD TLS", got)
+	}
 }
 
 func TestMySQLConfigFacet(t *testing.T) {
@@ -285,6 +288,9 @@ func TestMariaDBFacets(t *testing.T) {
 	}
 	if eng.SupportsDynamicPrivileges() {
 		t.Error("MariaDB SupportsDynamicPrivileges() = true, want false")
+	}
+	if got := eng.TLSReloadStatement(); got != "FLUSH SSL" {
+		t.Errorf("MariaDB TLSReloadStatement() = %q, want FLUSH SSL", got)
 	}
 
 	v := mustVersion(t, "11.4.0")

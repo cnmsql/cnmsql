@@ -492,10 +492,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 			_ = sup.Shutdown(ctx)
 			return fmt.Errorf("loading TLS certificates: %w", err)
 		}
+		reloadStmt := eng.TLSReloadStatement()
 		cm.OnReload = func(ctx context.Context) error {
 			log.Info("Reloading mysqld TLS certificates")
-			if _, err := db.ExecContext(ctx, "ALTER INSTANCE RELOAD TLS"); err != nil {
-				return fmt.Errorf("ALTER INSTANCE RELOAD TLS: %w", err)
+			if _, err := db.ExecContext(ctx, reloadStmt); err != nil {
+				return fmt.Errorf("%s: %w", reloadStmt, err)
 			}
 			return nil
 		}
