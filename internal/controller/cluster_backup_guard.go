@@ -25,8 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // backupDestinationCheck reports the outcome of the empty-archive safety check.
@@ -141,7 +141,12 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 	// The only cheap, anchor-free check: a targetGTID must be within the
 	// archive's cumulative coverage.
 	if plan.Recovery.TargetGTID != "" {
-		contained, err := replication.GTIDContains(index.CoveredGTIDSet, plan.Recovery.TargetGTID)
+		eng, err := engine.ForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
+		if err != nil {
+			return recoveryTargetCheck{Blocked: fmt.Sprintf(
+				"Unknown engine flavor %q: %v", cluster.ResolvedFlavor(), err)}
+		}
+		contained, err := eng.GTID().Contains(index.CoveredGTIDSet, plan.Recovery.TargetGTID)
 		if err != nil {
 			return recoveryTargetCheck{Blocked: fmt.Sprintf(
 				"Invalid recovery targetGTID or archive coverage: %v", err)}

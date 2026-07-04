@@ -27,12 +27,12 @@ import (
 )
 
 // Dialect is the replication SQL dialect a Manager executes: the verbs and
-// syntax for CHANGE MASTER/SOURCE, START/STOP/RESET replica, SHOW ... STATUS and
-// RESET MASTER/BINARY LOGS. It is declared here (not imported from engine) so the
-// replication package avoids an import cycle with engine, which imports this
-// package for the statement builders. engine.ReplDialect matches this shape
-// structurally, so engine.ForFlavor(...).Repl() can be passed to
-// NewManagerWithDialect.
+// syntax for CHANGE MASTER/SOURCE, START/STOP/RESET replica, SHOW ... STATUS,
+// RESET MASTER/BINARY LOGS, GTID-position queries and replica-position seeding.
+// It is declared here (not imported from engine) so the replication package
+// avoids an import cycle with engine, which imports this package for the
+// statement builders. engine.ReplDialect matches this shape structurally, so
+// engine.ForFlavor(...).Repl() can be passed to NewManagerWithDialect.
 type Dialect interface {
 	ChangeSource(v version.Version, opts SourceOptions) string
 	StartReplica(v version.Version) string
@@ -40,6 +40,9 @@ type Dialect interface {
 	ResetReplica(v version.Version, all bool) string
 	ShowReplicaStatus(v version.Version) string
 	ResetBinaryLogs(v version.Version) string
+	GTIDExecutedQuery() string
+	SeedReplicaPosition(pos string) string
+	SemiSyncNaming(v version.Version) version.SemiSyncNaming
 }
 
 // mysqlDialect delegates to the version-aware statement builders in this
@@ -64,6 +67,15 @@ func (mysqlDialect) ShowReplicaStatus(v version.Version) string {
 }
 func (mysqlDialect) ResetBinaryLogs(v version.Version) string {
 	return ResetBinaryLogsStatement(v)
+}
+func (mysqlDialect) GTIDExecutedQuery() string {
+	return "SELECT @@GLOBAL.gtid_executed"
+}
+func (mysqlDialect) SeedReplicaPosition(pos string) string {
+	return SetGTIDPurgedStatement(pos)
+}
+func (mysqlDialect) SemiSyncNaming(v version.Version) version.SemiSyncNaming {
+	return v.SemiSync()
 }
 
 // Manager executes replication and role-transition statements against a mysqld
@@ -120,9 +132,10 @@ func (m *Manager) configureSource(ctx context.Context, opts SourceOptions, start
 }
 
 // ProvisionFromBackup configures a freshly restored replica: it resets the
-// binary logs and GTID history, sets gtid_purged to the backup's GTID set so
-// auto-positioning resumes from the backup point, then points the replica at
-// the source. gtidPurged may be empty for a non-GTID backup.
+// binary logs and GTID history, seeds the replica position (SET GLOBAL
+// gtid_purged for MySQL, gtid_slave_pos for MariaDB) so replication resumes
+// from the backup point, then points the replica at the source. gtidPurged
+// may be empty for a non-GTID backup.
 //
 // It deliberately does NOT start replication: this runs on the throwaway
 // temporary server (started with --skip-slave-start), and the real instance
@@ -133,7 +146,7 @@ func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, op
 		return err
 	}
 	if gtidPurged != "" {
-		if err := m.exec(ctx, SetGTIDPurgedStatement(gtidPurged)); err != nil {
+		if err := m.exec(ctx, m.repl.SeedReplicaPosition(gtidPurged)); err != nil {
 			return err
 		}
 	}
@@ -262,7 +275,7 @@ func (m *Manager) InstallSemiSyncReplica(ctx context.Context) error {
 
 // EnableSemiSync turns the source and replica semi-sync plugins on at runtime.
 func (m *Manager) EnableSemiSync(ctx context.Context) error {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	if err := m.exec(ctx, SetGlobalStatement(naming.EnabledVarSource, "1")); err != nil {
 		return err
 	}
@@ -275,13 +288,13 @@ func (m *Manager) EnableSemiSync(ctx context.Context) error {
 // variable). The operator lowers this below minSyncReplicas while replicas are
 // unhealthy under "preferred" data durability, then restores it as they recover.
 func (m *Manager) SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	return m.exec(ctx, SetGlobalStatement(naming.WaitForCountVar, strconv.Itoa(count)))
 }
 
 // SetSemiSyncTimeoutMillis sets the source wait timeout at runtime.
 func (m *Manager) SetSemiSyncTimeoutMillis(ctx context.Context, timeoutMillis int) error {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	return m.exec(ctx, SetGlobalStatement(naming.TimeoutVar, strconv.Itoa(timeoutMillis)))
 }
 

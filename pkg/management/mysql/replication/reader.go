@@ -48,9 +48,10 @@ type ReadOnlyState struct {
 	SuperReadOnly bool
 }
 
-// GTIDExecuted returns the global gtid_executed set.
+// GTIDExecuted returns the global gtid_executed set using the dialect's query
+// (MySQL: @@GLOBAL.gtid_executed, MariaDB: @@gtid_current_pos).
 func (m *Manager) GTIDExecuted(ctx context.Context) (string, error) {
-	return m.scalarString(ctx, "SELECT @@GLOBAL.gtid_executed")
+	return m.scalarString(ctx, m.repl.GTIDExecutedQuery())
 }
 
 // GTIDPurged returns the global gtid_purged set.

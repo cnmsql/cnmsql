@@ -153,7 +153,7 @@ func (o *RunOptions) applyDefaults() {
 	}
 }
 
-func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunOptions) error {
+func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunOptions, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("semi-sync")
 
 	roState, err := repl.ReadOnly(ctx)
@@ -185,12 +185,16 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 	}
 
 	err = func() error {
-		log.Info("Installing semi-sync replication plugins")
-		if err := repl.InstallSemiSyncSource(ctx); err != nil {
-			return err
-		}
-		if err := repl.InstallSemiSyncReplica(ctx); err != nil {
-			return err
+		if eng.SemiSyncIsPlugin() {
+			log.Info("Installing semi-sync replication plugins")
+			if err := repl.InstallSemiSyncSource(ctx); err != nil {
+				return err
+			}
+			if err := repl.InstallSemiSyncReplica(ctx); err != nil {
+				return err
+			}
+		} else {
+			log.Info("Skipping semi-sync plugin install (engine built-in)")
 		}
 		log.Info("Enabling semi-sync replication")
 		if err := repl.EnableSemiSync(ctx); err != nil {
@@ -353,7 +357,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		log.Error(err, "Could not record MySQL version marker")
 	}
 
-	controller, err := NewController(opts.InstanceName, db, opts.Version, opts.Role, sup)
+	controller, err := NewController(opts.InstanceName, db, opts.Version, opts.Role, sup, eng)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		return err
@@ -380,7 +384,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// configured, and serving its role. Semi-sync plugins are already installed and
 	// enabled, and re-applying them would clear read_only on a serving instance.
 	if opts.SemiSyncEnabled && !adopting {
-		if err := configureSemiSync(ctx, controller.repl, opts); err != nil {
+		if err := configureSemiSync(ctx, controller.repl, opts, eng); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}

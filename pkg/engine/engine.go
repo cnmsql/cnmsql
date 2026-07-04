@@ -45,10 +45,14 @@ import (
 type Flavor string
 
 const (
-	// FlavorMySQL is Percona Server for MySQL, the default and original engine.
-	FlavorMySQL Flavor = "mysql"
-	// FlavorMariaDB is MariaDB Server.
+	FlavorMySQL   Flavor = "mysql"
 	FlavorMariaDB Flavor = "mariadb"
+
+	defaultMySQLImage    = "ghcr.io/cnmsql/cnmsql-instance:8.0"
+	defaultMariaDBImage  = "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"
+	defaultMySQLdBinary  = "mysqld"
+	mariadbServerdBinary = "mariadbd"
+	mariadbInitBinary    = "mariadb-install-db"
 )
 
 // Engine is the contract every flavor implements. Implementations are
@@ -227,7 +231,7 @@ func (mysqlEngine) CheckUpgrade(from, to version.Version) error {
 }
 
 func (mysqlEngine) DefaultImage() string {
-	return "ghcr.io/cnmsql/cnmsql-instance:8.0"
+	return defaultMySQLImage
 }
 
 func (mysqlEngine) DefaultServerVersion(tag string) (string, error) {
@@ -288,7 +292,7 @@ func (mysqlEngine) DefaultAuthenticationPlugin() string {
 }
 
 func (mysqlEngine) InitBinary() string {
-	return "mysqld"
+	return defaultMySQLdBinary
 }
 
 func (mysqlEngine) InitDataDirArgs(datadir string) []string {
@@ -300,7 +304,7 @@ func (mysqlEngine) UpgradeArgs() []string {
 }
 
 func (mysqlEngine) ServerdCommand() string {
-	return "mysqld"
+	return defaultMySQLdBinary
 }
 
 // --- MariaDB engine ---
@@ -341,7 +345,7 @@ func (mariadbEngine) CheckUpgrade(from, to version.Version) error {
 }
 
 func (mariadbEngine) DefaultImage() string {
-	return "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"
+	return defaultMariaDBImage
 }
 
 func (mariadbEngine) DefaultServerVersion(tag string) (string, error) {
@@ -358,9 +362,17 @@ func (mariadbEngine) Repl() ReplDialect {
 // INSTALL PLUGIN).
 
 func (mariadbEngine) SemiSync(version.Version) version.SemiSyncNaming {
-	// Semi-sync is built into the MariaDB server: there is no INSTALL PLUGIN and
-	// no shared library, so Plugin*/Lib* are intentionally left empty. Reading
-	// them without gating on SemiSyncIsPlugin() (which is false) is a bug.
+	return mariadbSemiSyncNaming()
+}
+
+// mariadbSemiSyncNaming is the single source of truth for MariaDB's semi-sync
+// system-variable names, shared by the engine's config facet (SemiSync) and its
+// replication dialect (SemiSyncNaming). MariaDB keeps the master/slave spelling
+// at every version. Semi-sync is built into the MariaDB server: there is no
+// INSTALL PLUGIN and no shared library, so Plugin*/Lib* are intentionally left
+// empty — reading them without gating on SemiSyncIsPlugin() (which is false) is
+// a bug.
+func mariadbSemiSyncNaming() version.SemiSyncNaming {
 	return version.SemiSyncNaming{
 		EnabledVarSource:  "rpl_semi_sync_master_enabled",
 		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
@@ -414,7 +426,7 @@ func (mariadbEngine) DefaultAuthenticationPlugin() string {
 }
 
 func (mariadbEngine) InitBinary() string {
-	return "mariadb-install-db"
+	return mariadbInitBinary
 }
 
 func (mariadbEngine) InitDataDirArgs(datadir string) []string {
@@ -430,7 +442,7 @@ func (mariadbEngine) UpgradeArgs() []string {
 }
 
 func (mariadbEngine) ServerdCommand() string {
-	return "mariadbd"
+	return mariadbServerdBinary
 }
 
 // --- version helpers ---

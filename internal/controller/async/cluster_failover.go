@@ -30,7 +30,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 // ReconcileFailover fences an unreachable async primary and selects the safest
@@ -76,7 +76,11 @@ func (r *Reconciler) ReconcileFailover(
 	}
 
 	knownDiverged := append(slices.Clone(observed.Diverged), cluster.Status.DivergedInstances...)
-	candidate, reason := SelectFailoverCandidate(observed, knownDiverged)
+	eng, err := engine.ForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
+	if err != nil {
+		return topology.FailoverResult{}, fmt.Errorf("unknown engine flavor %q", cluster.ResolvedFlavor())
+	}
+	candidate, reason := SelectFailoverCandidate(observed, knownDiverged, eng.GTID())
 	if candidate == "" {
 		if !hasObservedReplica(observed) {
 			return topology.FailoverResult{}, nil
@@ -192,7 +196,7 @@ func hasObservedReplica(observed topology.FailoverState) bool {
 // SelectFailoverCandidate chooses the safest reachable async replica. The SQL
 // applier must be running and its GTID set must contain every other candidate's.
 // Equal GTID sets resolve to the first instance, preserving ordinal order.
-func SelectFailoverCandidate(observed topology.FailoverState, knownDiverged []string) (string, string) {
+func SelectFailoverCandidate(observed topology.FailoverState, knownDiverged []string, gtidModel engine.GTIDModel) (string, string) {
 	var candidates []string
 	divergedSkipped := 0
 	for _, name := range observed.InstanceNames {
@@ -221,7 +225,7 @@ func SelectFailoverCandidate(observed topology.FailoverState, knownDiverged []st
 			if candidate == other {
 				continue
 			}
-			contains, err := replication.GTIDContains(
+			contains, err := gtidModel.Contains(
 				observed.Instances[candidate].GTID,
 				observed.Instances[other].GTID,
 			)

@@ -23,7 +23,8 @@ import (
 
 // ReplDialect is the engine's replication SQL dialect: the verbs, column names
 // and syntax each flavor uses for CHANGE MASTER/SOURCE, START/STOP
-// SLAVE/REPLICA, SHOW SLAVE/REPLICA STATUS and RESET MASTER/BINARY LOGS.
+// SLAVE/REPLICA, SHOW SLAVE/REPLICA STATUS, RESET MASTER/BINARY LOGS,
+// GTID-position queries and replica-position seeding.
 type ReplDialect interface {
 	ChangeSource(v version.Version, opts replication.SourceOptions) string
 	StartReplica(v version.Version) string
@@ -31,6 +32,9 @@ type ReplDialect interface {
 	ResetReplica(v version.Version, all bool) string
 	ShowReplicaStatus(v version.Version) string
 	ResetBinaryLogs(v version.Version) string
+	GTIDExecutedQuery() string
+	SeedReplicaPosition(pos string) string
+	SemiSyncNaming(v version.Version) version.SemiSyncNaming
 }
 
 // --- MySQL replication dialect ---
@@ -61,6 +65,18 @@ func (mysqlReplDialect) ResetBinaryLogs(v version.Version) string {
 	return replication.ResetBinaryLogsStatement(v)
 }
 
+func (mysqlReplDialect) GTIDExecutedQuery() string {
+	return "SELECT @@GLOBAL.gtid_executed"
+}
+
+func (mysqlReplDialect) SeedReplicaPosition(pos string) string {
+	return replication.SetGTIDPurgedStatement(pos)
+}
+
+func (mysqlReplDialect) SemiSyncNaming(v version.Version) version.SemiSyncNaming {
+	return v.SemiSync()
+}
+
 // --- MariaDB replication dialect ---
 
 // MariaDB never adopted the SOURCE/REPLICA terminology; the canonical verbs
@@ -69,12 +85,9 @@ func (mysqlReplDialect) ResetBinaryLogs(v version.Version) string {
 
 type mariadbReplDialect struct{}
 
-func (mariadbReplDialect) ChangeSource(version.Version, replication.SourceOptions) string {
-	// NOT IMPLEMENTED. MariaDB uses CHANGE MASTER TO ... MASTER_USE_GTID=slave_pos,
-	// which the MySQL-oriented builder in the replication package cannot produce
-	// (for high version numbers it would emit CHANGE REPLICATION SOURCE TO with
-	// MASTER_AUTO_POSITION — invalid on MariaDB). This lands in M-MDB.4.
-	panic("engine: MariaDB ReplDialect.ChangeSource not implemented (TODO M-MDB.4)")
+func (mariadbReplDialect) ChangeSource(_ version.Version, opts replication.SourceOptions) string {
+	rd := replication.MariaDBChangeSourceStatement(opts)
+	return rd
 }
 
 func (mariadbReplDialect) StartReplica(version.Version) string {
@@ -98,4 +111,16 @@ func (mariadbReplDialect) ShowReplicaStatus(version.Version) string {
 
 func (mariadbReplDialect) ResetBinaryLogs(version.Version) string {
 	return "RESET MASTER"
+}
+
+func (mariadbReplDialect) GTIDExecutedQuery() string {
+	return "SELECT @@gtid_current_pos"
+}
+
+func (mariadbReplDialect) SeedReplicaPosition(pos string) string {
+	return "SET GLOBAL gtid_slave_pos = " + replication.Quote(pos)
+}
+
+func (mariadbReplDialect) SemiSyncNaming(version.Version) version.SemiSyncNaming {
+	return mariadbSemiSyncNaming()
 }

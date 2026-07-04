@@ -115,6 +115,51 @@ func ChangeSourceStatement(v version.Version, opts SourceOptions) string {
 	return fmt.Sprintf("%s %s", verb, strings.Join(clauses, ", "))
 }
 
+// MariaDBChangeSourceStatement builds CHANGE MASTER TO for MariaDB. Unlike
+// ChangeSourceStatement it always uses MASTER_* prefix (MariaDB never adopted
+// SOURCE/REPLICA terminology) and emits MASTER_USE_GTID=slave_pos in place of
+// MASTER_AUTO_POSITION/SOURCE_AUTO_POSITION.
+func MariaDBChangeSourceStatement(opts SourceOptions) string {
+	const verb = "CHANGE MASTER TO"
+	const prefix = "MASTER_"
+
+	var clauses []string
+	add := func(suffix, value string) {
+		clauses = append(clauses, prefix+suffix+"="+value)
+	}
+
+	add("HOST", quote(opts.Host))
+	if opts.Port != 0 {
+		add("PORT", strconv.Itoa(opts.Port))
+	}
+	add("USER", quote(opts.User))
+	if opts.Password != "" {
+		add("PASSWORD", quote(opts.Password))
+	}
+	if opts.ConnectRetry != 0 {
+		add("CONNECT_RETRY", strconv.Itoa(opts.ConnectRetry))
+	}
+	if opts.RetryCount != 0 {
+		add("RETRY_COUNT", strconv.Itoa(opts.RetryCount))
+	}
+
+	mtls := opts.SSLCA != "" && opts.SSLCert != "" && opts.SSLKey != ""
+	if opts.SSL || mtls {
+		add("SSL", "1")
+	}
+	if mtls {
+		add("SSL_CA", quote(opts.SSLCA))
+		add("SSL_CERT", quote(opts.SSLCert))
+		add("SSL_KEY", quote(opts.SSLKey))
+	}
+
+	if opts.AutoPosition {
+		clauses = append(clauses, "MASTER_USE_GTID=slave_pos")
+	}
+
+	return fmt.Sprintf("%s %s", verb, strings.Join(clauses, ", "))
+}
+
 // StartReplicaStatement returns START REPLICA / START SLAVE.
 func StartReplicaStatement(v version.Version) string {
 	if v.UsesReplicaTerminology() {
@@ -212,4 +257,11 @@ func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	return "'" + s + "'"
+}
+
+// Quote single-quotes a string literal for use in a SQL statement. Exported
+// so engine dialect implementations can build statement fragments without
+// importing the internal helper.
+func Quote(s string) string {
+	return quote(s)
 }

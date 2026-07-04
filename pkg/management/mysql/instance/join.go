@@ -206,7 +206,7 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 	log.Info("Connected to temporary mysqld")
 	defer func() { _ = db.Close() }()
 
-	mgr := replication.NewManager(db, ver)
+	mgr := replication.NewManagerWithDialect(db, ver, eng.Repl())
 	log.Info("Provisioning replication from backup", "sourceHost", o.Source.Host)
 	return mgr.ProvisionFromBackup(ctx, gtidPurged, o.Source)
 }

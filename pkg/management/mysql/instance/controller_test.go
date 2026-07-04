@@ -26,6 +26,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -41,7 +42,7 @@ func newControllerWithRole(t *testing.T, role webserver.Role, sup Supervisor) (*
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	c, err := NewController("cluster-1", db, "8.0.36", role, sup)
+	c, err := NewController("cluster-1", db, "8.0.36", role, sup, engine.MustForFlavor(engine.FlavorMySQL))
 	if err != nil {
 		t.Fatalf("NewController: %v", err)
 	}
@@ -429,7 +430,7 @@ func TestNewControllerRejectsBadVersion(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil); err == nil {
+	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil, engine.MustForFlavor(engine.FlavorMySQL)); err == nil {
 		t.Error("expected error for invalid version")
 	}
 }
@@ -514,7 +515,7 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 	err := configureSemiSync(ctx, c.repl, RunOptions{
 		SemiSyncWaitCount:     1,
 		SemiSyncTimeoutMillis: 10000,
-	})
+	}, engine.MustForFlavor(engine.FlavorMySQL))
 	if err != nil {
 		t.Fatalf("configureSemiSync: %v", err)
 	}

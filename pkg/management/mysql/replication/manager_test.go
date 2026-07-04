@@ -23,7 +23,26 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
+
+// masterSlaveNamingDialect is a mysqlDialect that reports MariaDB's master/slave
+// semi-sync naming. It stands in for engine.ForFlavor(FlavorMariaDB).Repl(),
+// which the replication package cannot import (engine imports replication). It
+// proves the semi-sync setters read naming from the dialect, not the raw
+// version — mariadbd rejects the source/replica spelling a high version number
+// would otherwise select.
+type masterSlaveNamingDialect struct{ mysqlDialect }
+
+func (masterSlaveNamingDialect) SemiSyncNaming(version.Version) version.SemiSyncNaming {
+	return version.SemiSyncNaming{
+		EnabledVarSource:  "rpl_semi_sync_master_enabled",
+		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
+		WaitForCountVar:   "rpl_semi_sync_master_wait_for_slave_count",
+		TimeoutVar:        "rpl_semi_sync_master_timeout",
+	}
+}
 
 func newManager(t *testing.T, ver string) (*Manager, sqlmock.Sqlmock) {
 	t.Helper()
@@ -231,6 +250,35 @@ func TestSetSuperReadOnlyNoopOnLegacy(t *testing.T) {
 	// super_read_only.
 	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
 		t.Fatalf("SetSuperReadOnly: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSemiSyncRuntimeVariablesUseDialectNaming(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// Version 11.4 would select source/replica naming via version.SemiSync();
+	// the dialect must override it with MariaDB's master/slave spelling.
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), masterSlaveNamingDialect{})
+
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_master_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_slave_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_master_wait_for_slave_count = 2").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_master_timeout = 5000").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := m.EnableSemiSync(context.Background()); err != nil {
+		t.Fatalf("EnableSemiSync: %v", err)
+	}
+	if err := m.SetSemiSyncWaitForReplicaCount(context.Background(), 2); err != nil {
+		t.Fatalf("SetSemiSyncWaitForReplicaCount: %v", err)
+	}
+	if err := m.SetSemiSyncTimeoutMillis(context.Background(), 5000); err != nil {
+		t.Fatalf("SetSemiSyncTimeoutMillis: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)

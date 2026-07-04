@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/executablehash"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/groupreplication"
@@ -98,13 +99,16 @@ type Controller struct {
 
 // NewController builds a Controller for the named instance. versionStr is the
 // MySQL server version (e.g. "8.0.36"); supervisor may be nil if restart is not
-// available in the current context.
+// available in the current context. eng selects the engine's replication
+// dialect so role transitions and semi-sync speak the flavor's SQL (MariaDB
+// uses CHANGE MASTER TO ... MASTER_USE_GTID and master/slave semi-sync naming).
 func NewController(
 	name string,
 	conn pool.Connection,
 	versionStr string,
 	expected webserver.Role,
 	supervisor Supervisor,
+	eng engine.Engine,
 ) (*Controller, error) {
 	v, err := version.Parse(versionStr)
 	if err != nil {
@@ -116,7 +120,7 @@ func NewController(
 	return &Controller{
 		name:         name,
 		conn:         conn,
-		repl:         replication.NewManager(conn, v),
+		repl:         replication.NewManagerWithDialect(conn, v, eng.Repl()),
 		gr:           groupreplication.NewManager(conn, v),
 		users:        user.NewManager(conn),
 		version:      v,

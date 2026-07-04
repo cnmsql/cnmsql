@@ -32,7 +32,13 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	controllerasync "github.com/cnmsql/cnmsql/internal/controller/async"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
+)
+
+var (
+	mysqlGTIDModel     = engine.MustForFlavor(engine.FlavorMySQL).GTID()
+	mysqlFlavorCluster = &mysqlv1alpha1.Cluster{Spec: mysqlv1alpha1.ClusterSpec{Flavor: "mysql"}}
 )
 
 const (
@@ -67,7 +73,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, testGTID),
 		},
 	}
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
 	if got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3", got, reason)
 	}
@@ -75,7 +81,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 	// Equal GTID: lowest ordinal wins.
 	observed.GTIDByInstance[testReplica2] = testGTID
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
-	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica2 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica2 {
 		t.Fatalf("candidate = %q, want demo-2 on equal GTID", got)
 	}
 }
@@ -94,7 +100,7 @@ func TestSelectFailoverCandidateBlocksOnDivergedGTID(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "other:1-4"),
 		},
 	}
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -121,11 +127,11 @@ func TestSelectFailoverCandidateExcludesKnownDivergedReplica(t *testing.T) {
 		},
 	}
 	// Sanity: without the guard the diverged superset would be chosen.
-	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica3 {
 		t.Fatalf("precondition: candidate = %q, want the diverged superset demo-3 to dominate", got)
 	}
 	// With it flagged diverged, the clean replica wins instead.
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica3})
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica3}, mysqlGTIDModel)
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want the clean replica demo-2", got, reason)
 	}
@@ -146,7 +152,7 @@ func TestSelectFailoverCandidateBlocksWhenOnlyCandidateDiverged(t *testing.T) {
 			testReplica2: healthyReplicaStatus(testReplica2, "a:1-15,b:1-3"),
 		},
 	}
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica2})
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica2}, mysqlGTIDModel)
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -171,7 +177,7 @@ func TestSelectFailoverCandidateSkipsUnhealthyReplicas(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "uuid:1-7"),
 		},
 	}
-	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
+	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica3 {
 		t.Fatalf("candidate = %q, want demo-3 (demo-2 has stalled SQL thread)", got)
 	}
 }
@@ -199,7 +205,7 @@ func TestSelectFailoverCandidateAllowsStoppedIOThread(t *testing.T) {
 		},
 	}
 
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want demo-2", got, reason)
 	}
@@ -216,7 +222,7 @@ func TestSelectFailoverCandidateSkipsReplicasWithoutGTID(t *testing.T) {
 		},
 	}
 
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil)
+	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
 	if got != "" {
 		t.Fatalf("candidate = %q (reason %q), want empty without GTID status", got, reason)
 	}
@@ -236,7 +242,7 @@ func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 			testReplica3: "a:1-15,b:1-3",
 		},
 	}
-	diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil, nil)).DivergedInstances
+	diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, mysqlFlavorCluster, nil, nil)).DivergedInstances
 	if len(diverged) != 1 || diverged[0] != testReplica3 {
 		t.Fatalf("diverged = %v, want [%s]", diverged, testReplica3)
 	}
@@ -249,7 +255,7 @@ func TestDetectDivergedReplicasIgnoresUnknownGTID(t *testing.T) {
 		InstanceNames:  []string{testPrimary, testReplica2},
 		GTIDByInstance: map[string]string{testReplica2: "a:1-5"},
 	}
-	if diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, nil, nil)).DivergedInstances; diverged != nil {
+	if diverged := (&controllerasync.Reconciler{}).Observe(topologyObservationInput(observed, mysqlFlavorCluster, nil, nil)).DivergedInstances; diverged != nil {
 		t.Fatalf("diverged = %v, want nil when primary GTID is unknown", diverged)
 	}
 }
@@ -265,7 +271,7 @@ func TestDetectDivergedReplicasStaysStickyWhenPrimaryGTIDUnavailable(t *testing.
 		GTIDByInstance: map[string]string{testReplica2: "a:1-15,b:1-3"},
 	}
 	diverged := (&controllerasync.Reconciler{}).
-		Observe(topologyObservationInput(observed, nil, []string{testReplica2})).DivergedInstances
+		Observe(topologyObservationInput(observed, mysqlFlavorCluster, nil, []string{testReplica2})).DivergedInstances
 	if len(diverged) != 1 || diverged[0] != testReplica2 {
 		t.Fatalf("diverged = %v, want sticky [%s] when primary GTID is unavailable", diverged, testReplica2)
 	}
@@ -284,7 +290,7 @@ func TestDetectDivergedReplicasClearsStickyFlagWhenReconverged(t *testing.T) {
 		},
 	}
 	diverged := (&controllerasync.Reconciler{}).
-		Observe(topologyObservationInput(observed, nil, []string{testReplica2})).DivergedInstances
+		Observe(topologyObservationInput(observed, mysqlFlavorCluster, nil, []string{testReplica2})).DivergedInstances
 	if diverged != nil {
 		t.Fatalf("diverged = %v, want nil once re-convergence is proven against a live primary", diverged)
 	}
@@ -300,7 +306,7 @@ func TestDetectDivergedReplicasDropsStickyFlagForRemovedInstance(t *testing.T) {
 		GTIDByInstance: map[string]string{},
 	}
 	diverged := (&controllerasync.Reconciler{}).
-		Observe(topologyObservationInput(observed, nil, []string{testReplica3})).DivergedInstances
+		Observe(topologyObservationInput(observed, mysqlFlavorCluster, nil, []string{testReplica3})).DivergedInstances
 	if diverged != nil {
 		t.Fatalf("diverged = %v, want nil for an instance no longer in the cluster", diverged)
 	}

@@ -17,6 +17,7 @@ limitations under the License.
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/config"
@@ -125,6 +126,17 @@ func TestMySQLReplDialect(t *testing.T) {
 		if got, want := r.ResetBinaryLogs(v), replication.ResetBinaryLogsStatement(v); got != want {
 			t.Errorf("ResetBinaryLogs(%s) = %q, want %q", s, got, want)
 		}
+		if got, want := r.SeedReplicaPosition("uuid:1-10"), replication.SetGTIDPurgedStatement("uuid:1-10"); got != want {
+			t.Errorf("SeedReplicaPosition(%s) = %q, want %q", s, got, want)
+		}
+		if got, want := r.SemiSyncNaming(v), v.SemiSync(); got != want {
+			t.Errorf("SemiSyncNaming(%s) = %+v, want %+v", s, got, want)
+		}
+	}
+
+	// GTID position is read from gtid_executed on MySQL (version-independent).
+	if got, want := r.GTIDExecutedQuery(), "SELECT @@GLOBAL.gtid_executed"; got != want {
+		t.Errorf("GTIDExecutedQuery() = %q, want %q", got, want)
 	}
 }
 
@@ -212,6 +224,31 @@ func TestMariaDBReplDialect(t *testing.T) {
 	}
 	if got, want := r.ResetReplica(v, false), "RESET SLAVE"; got != want {
 		t.Errorf("ResetReplica = %q, want %q", got, want)
+	}
+
+	// ChangeSource keeps MASTER_* terminology and seeds GTID auto-positioning
+	// with MASTER_USE_GTID=slave_pos — never the MySQL SOURCE_/AUTO_POSITION form.
+	stmt := r.ChangeSource(v, replication.SourceOptions{Host: "h", User: "u", AutoPosition: true})
+	if got, want := stmt, replication.MariaDBChangeSourceStatement(replication.SourceOptions{Host: "h", User: "u", AutoPosition: true}); got != want {
+		t.Errorf("ChangeSource = %q, want %q", got, want)
+	}
+	if !strings.Contains(stmt, "CHANGE MASTER TO") || !strings.Contains(stmt, "MASTER_USE_GTID=slave_pos") {
+		t.Errorf("ChangeSource = %q, want CHANGE MASTER TO ... MASTER_USE_GTID=slave_pos", stmt)
+	}
+
+	// GTID position and replica seeding use MariaDB's gtid_current_pos /
+	// gtid_slave_pos, not MySQL's gtid_executed / gtid_purged.
+	if got, want := r.GTIDExecutedQuery(), "SELECT @@gtid_current_pos"; got != want {
+		t.Errorf("GTIDExecutedQuery() = %q, want %q", got, want)
+	}
+	if got, want := r.SeedReplicaPosition("0-1-100"), "SET GLOBAL gtid_slave_pos = '0-1-100'"; got != want {
+		t.Errorf("SeedReplicaPosition() = %q, want %q", got, want)
+	}
+
+	// Semi-sync naming stays master/slave regardless of the (high) version number.
+	if naming := r.SemiSyncNaming(v); naming.EnabledVarSource != "rpl_semi_sync_master_enabled" ||
+		naming.EnabledVarReplica != "rpl_semi_sync_slave_enabled" {
+		t.Errorf("SemiSyncNaming() = %+v, want master/slave spelling", naming)
 	}
 }
 
@@ -384,11 +421,11 @@ func TestMariaDBDefaults(t *testing.T) {
 func TestMariaDBLifecycle(t *testing.T) {
 	eng := MustForFlavor(FlavorMariaDB)
 
-	if got, want := eng.InitBinary(), "mariadb-install-db"; got != want {
+	if got, want := eng.InitBinary(), mariadbInitBinary; got != want {
 		t.Errorf("InitBinary() = %q, want %q", got, want)
 	}
 
-	if got, want := eng.ServerdCommand(), "mariadbd"; got != want {
+	if got, want := eng.ServerdCommand(), mariadbServerdBinary; got != want {
 		t.Errorf("ServerdCommand() = %q, want %q", got, want)
 	}
 
@@ -460,11 +497,11 @@ func TestMySQLDefaults(t *testing.T) {
 func TestMySQLLifecycle(t *testing.T) {
 	eng := MustForFlavor(FlavorMySQL)
 
-	if got, want := eng.InitBinary(), "mysqld"; got != want {
+	if got, want := eng.InitBinary(), defaultMySQLdBinary; got != want {
 		t.Errorf("InitBinary() = %q, want %q", got, want)
 	}
 
-	if got, want := eng.ServerdCommand(), "mysqld"; got != want {
+	if got, want := eng.ServerdCommand(), defaultMySQLdBinary; got != want {
 		t.Errorf("ServerdCommand() = %q, want %q", got, want)
 	}
 
