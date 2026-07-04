@@ -51,7 +51,14 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 			phase, err := kubectl("get", "backup", realBackup, "-n", testNamespace,
 				"-o", "jsonpath={.status.phase}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "real backup failed")
+			if phase == "failed" {
+				// The worker Job runs with backoffLimit 1, so "failed" is terminal:
+				// it will never progress to "completed". Stop polling immediately and
+				// surface the worker's own logs instead of burning the whole timeout
+				// on a backup that has already given up.
+				dumpBackupWorkerLogs(realBackup)
+				StopTrying("real backup reached terminal phase=failed").Now()
+			}
 			g.Expect(phase).To(Equal("completed"), "real backup not completed yet")
 		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
 	})
@@ -111,16 +118,36 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 	})
 })
 
-// mcPipe writes content to the given object key through the mc toolbox pod.
+// mcPipe writes content to the given object key through the mc toolbox pod. The
+// shared MinIO is a single replica, so a mid-suite restart briefly refuses
+// connections; the write is idempotent, so retry it rather than failing the spec
+// on a transient blip.
 func mcPipe(content, key string) {
-	_, err := mcExec("sh", "-c", fmt.Sprintf("printf '%%s' %q | mc --quiet pipe %s", content, key))
-	Expect(err).NotTo(HaveOccurred(), "Failed to write object %s", key)
+	Eventually(func() error {
+		_, err := mcExec("sh", "-c", fmt.Sprintf("printf '%%s' %q | mc --quiet pipe %s", content, key))
+		return err
+	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed(), "Failed to write object %s", key)
 }
 
-// mcObjectExists reports whether an object exists in the store via mc stat.
+// mcObjectExists reports whether an object exists in the store via mc stat. A
+// genuine "object does not exist" is a definitive false; a transient transport
+// error (MinIO restarting) is retried so it is never misreported as absence.
 func mcObjectExists(key string) bool {
-	_, err := mcExec("mc", "--quiet", "stat", key)
-	return err == nil
+	var exists bool
+	Eventually(func() error {
+		out, err := mcExec("mc", "--quiet", "stat", key)
+		if err == nil {
+			exists = true
+			return nil
+		}
+		if isTransientObjectStoreError(out, err) {
+			return err // keep polling until MinIO answers definitively
+		}
+		exists = false // definitive: the object is not there
+		return nil
+	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed(),
+		"mc stat %s kept failing transiently", key)
+	return exists
 }
 
 func retentionClusterManifest(name, policy string) string {

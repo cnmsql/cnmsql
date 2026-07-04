@@ -126,8 +126,39 @@ _Appears in:_
 | `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to the cluster's entire object-store<br />archive (every base backup, the archived binlogs, and the archive index)<br />when the Cluster is deleted. With "Delete" the operator adds a cleanup<br />finalizer and wipes the archive on teardown; with "Retain" (the default)<br />the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take backups from, defaults to a standby if available. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `xtrabackupOptions` _string array_ | XtrabackupOptions are extra flags passed to xtrabackup. |  | Optional: \{\} <br /> |
-| `jobTTL` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | JobTTL is the default retention for finished backup worker Jobs created for<br />this cluster (their ttlSecondsAfterFinished). A per-Backup spec.jobTTL takes<br />precedence. When unset, the operator keeps a finished Job for 24h. A zero<br />duration deletes the Job as soon as it finishes. |  | Optional: \{\} <br /> |
+| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is the default shaping applied to backup worker Jobs created for<br />this cluster: resources, scheduling (nodeSelector/tolerations/affinity/<br />priorityClassName), extra labels/annotations, and the finished-Job TTL. A<br />per-Backup spec.jobTemplate overrides it field by field. During recovery the<br />resources from this template are also applied to the restore init container. |  | Optional: \{\} <br /> |
 | `continuousArchiving` _[ContinuousArchivingConfiguration](#continuousarchivingconfiguration)_ | ContinuousArchiving configures continuous binary-log archiving to the<br />object store, the foundation for point-in-time recovery. Disabled by<br />default. |  | Optional: \{\} <br /> |
+
+
+#### BackupJobTemplate
+
+
+
+BackupJobTemplate is a curated subset of the pod configuration operators may
+set on the backup worker Job. It deliberately does not expose a full
+PodTemplateSpec: the operator owns the bootstrap init container, the
+scratch/TLS volumes and mounts, the worker command and args, and the
+object-store credential env, and a free-form template would let those be
+broken. Every field is optional; a per-Backup template overrides the
+cluster-wide spec.backup.jobTemplate field by field.
+
+
+
+_Appears in:_
+- [BackupConfiguration](#backupconfiguration)
+- [BackupSpec](#backupspec)
+- [ScheduledBackupSpec](#scheduledbackupspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `ttl` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | TTL is how long the finished backup worker Job is kept before Kubernetes<br />garbage-collects it (its ttlSecondsAfterFinished). When unset on both the<br />Backup and the cluster, the operator keeps the Job for 24h. A zero duration<br />deletes the Job as soon as it finishes. |  | Optional: \{\} <br /> |
+| `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#resourcerequirements-v1-core)_ | Resources sets the resource requests and limits on the backup worker<br />container. Streaming xbstream can be memory-hungry, so operators often want<br />explicit limits. During recovery the same requests/limits from the<br />cluster-level template are applied to the restore init container. |  | Optional: \{\} <br /> |
+| `nodeSelector` _object (keys:string, values:string)_ | NodeSelector constrains the backup worker Job's pod to nodes with matching<br />labels, e.g. to keep backups off the critical nodes. |  | Optional: \{\} <br /> |
+| `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#toleration-v1-core) array_ | Tolerations allow the backup worker Job's pod to schedule onto tainted<br />nodes. |  | Optional: \{\} <br /> |
+| `affinity` _[Affinity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#affinity-v1-core)_ | Affinity sets the affinity/anti-affinity rules for the backup worker Job's<br />pod. |  | Optional: \{\} <br /> |
+| `priorityClassName` _string_ | PriorityClassName sets the pod priority for the backup worker Job. |  | Optional: \{\} <br /> |
+| `labels` _object (keys:string, values:string)_ | Labels are merged onto the generated Job and its pod template. Operator<br />labels take precedence on conflict. |  | Optional: \{\} <br /> |
+| `annotations` _object (keys:string, values:string)_ | Annotations are merged onto the generated Job and its pod template. |  | Optional: \{\} <br /> |
 
 
 #### BackupList
@@ -230,7 +261,7 @@ _Appears in:_
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the backup from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs a non-blocking (hot) backup. Defaults to true. | true | Optional: \{\} <br /> |
 | `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(backup.xbstream + metadata.json) when the Backup object is deleted. With<br />"Delete" the operator adds the cleanup finalizer and removes the archive on<br />deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
-| `jobTTL` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | JobTTL is how long the finished backup worker Job is kept before Kubernetes<br />garbage-collects it (its ttlSecondsAfterFinished). It overrides the<br />cluster-wide spec.backup.jobTTL. When unset on both, the operator keeps the<br />Job for 24h. A zero duration deletes the Job as soon as it finishes. |  | Optional: \{\} <br /> |
+| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate shapes the backup worker Job for this backup: resources,<br />scheduling (nodeSelector/tolerations/affinity/priorityClassName), extra<br />labels/annotations, and the finished-Job TTL. It overrides the cluster-wide<br />spec.backup.jobTemplate field by field. |  | Optional: \{\} <br /> |
 
 
 #### BackupStatus
@@ -1917,6 +1948,7 @@ _Appears in:_
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method used for the generated backups. | xtrabackup | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the generated backups from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs non-blocking (hot) backups. | true | Optional: \{\} <br /> |
+| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is propagated to every generated Backup as its spec.jobTemplate,<br />shaping the backup worker Job (resources, scheduling, labels/annotations, and<br />the finished-Job TTL). When unset the generated Backups fall back to the<br />cluster-wide spec.backup.jobTemplate. |  | Optional: \{\} <br /> |
 
 
 #### ScheduledBackupStatus

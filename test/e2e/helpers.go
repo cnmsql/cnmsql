@@ -501,6 +501,12 @@ func ensureMinioCreds() {
 // in the current test namespace. The shared MinIO is deployed once by the suite,
 // so this is a fast idempotent operation per Describe.
 func setupMinio() {
+	// The shared MinIO is a single replica; if it is mid-restart when this
+	// Describe begins, re-gate on its readiness so the first object-store call
+	// does not race a connection-refused window.
+	_, err := kubectl("wait", "deployment/minio", "-n", minioNamespace,
+		"--for=condition=Available", "--timeout=2m")
+	Expect(err).NotTo(HaveOccurred(), "shared MinIO not available at setup")
 	ensureMinioCreds()
 }
 
@@ -601,12 +607,27 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
+        # Reserve headroom so MinIO is not evicted under node memory pressure
+        # mid-suite; a single-replica restart otherwise refuses connections for
+        # the whole detach/reattach + boot window and flakes the backup specs.
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
         readinessProbe:
           httpGet:
             path: /minio/health/ready
             port: 9000
           initialDelaySeconds: 5
           periodSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
       volumes:
       - name: data
         persistentVolumeClaim:

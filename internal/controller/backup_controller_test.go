@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -54,6 +55,12 @@ const demoPrimaryInstance = "demo-1"
 // testBackupID is the conventional recorded backup id used across the backup
 // controller unit tests.
 const testBackupID = "backup-sample-123"
+
+// Shared literals used by the jobTemplate tests, extracted to satisfy goconst.
+const (
+	testNodeSSD    = "ssd"
+	testBackupNote = "nightly"
+)
 
 func baseBackupCluster() *mysqlv1alpha1.Cluster {
 	cluster := baseCluster()
@@ -316,6 +323,52 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 	}
 }
 
+func TestRecoveryBootstrapAppliesJobTemplateResources(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{
+		Recovery: &mysqlv1alpha1.BootstrapRecovery{
+			Backup: &mysqlv1alpha1.LocalObjectReference{Name: "backup-sample"},
+		},
+	}
+	// The restore init container is memory-hungry; size it via the cluster-level
+	// backup job template. Scheduling fields on the template are pod-level and do
+	// not apply to a single init container.
+	cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+		},
+		NodeSelector: map[string]string{"disk": testNodeSSD},
+	}
+
+	backup := baseBackup()
+	backup.Status = mysqlv1alpha1.BackupStatus{
+		Phase:    mysqlv1alpha1.BackupPhaseCompleted,
+		BackupID: testBackupID,
+	}
+
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, backup).Build(),
+		Scheme: scheme,
+	}
+
+	plan, err := reconciler.buildPlan(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+
+	if got := spec.InitContainers[1].Resources.Limits.Memory().String(); got != "4Gi" {
+		t.Fatalf("restore init container memory limit = %s, want 4Gi", got)
+	}
+	// The pod's scheduling is owned by the cluster spec, not the backup template.
+	if spec.NodeSelector["disk"] == testNodeSSD {
+		t.Fatal("backup template nodeSelector must not leak onto the instance pod")
+	}
+}
+
 func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
 	t.Parallel()
 
@@ -501,43 +554,102 @@ func TestBackupDeleteWithFinalizerCleansObjectStore(t *testing.T) {
 	}
 }
 
-func TestResolveBackupJobTTL(t *testing.T) {
+func TestBackupJobTTLSeconds(t *testing.T) {
 	t.Parallel()
 
 	dur := func(d time.Duration) *metav1.Duration { return &metav1.Duration{Duration: d} }
 	const defaultTTL = int32(24 * 60 * 60)
 
 	cases := []struct {
-		name       string
-		backupTTL  *metav1.Duration
-		clusterTTL *metav1.Duration
-		want       int32
+		name string
+		ttl  *metav1.Duration
+		want int32
 	}{
-		{"default when unset", nil, nil, defaultTTL},
-		{"cluster default", nil, dur(time.Hour), 3600},
-		{"backup overrides cluster", dur(30 * time.Minute), dur(time.Hour), 1800},
-		{"zero is honoured", dur(0), nil, 0},
-		{"negative falls back to default", dur(-time.Second), nil, defaultTTL},
+		{"default when unset", nil, defaultTTL},
+		{"one hour", dur(time.Hour), 3600},
+		{"zero is honoured", dur(0), 0},
+		{"negative falls back to default", dur(-time.Second), defaultTTL},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			backup := baseBackup()
-			backup.Spec.JobTTL = tc.backupTTL
-			cluster := baseBackupCluster()
-			cluster.Spec.Backup.JobTTL = tc.clusterTTL
-			if got := resolveBackupJobTTL(backup, cluster); got != tc.want {
-				t.Fatalf("resolveBackupJobTTL = %d, want %d", got, tc.want)
+			got := backupJobTTLSeconds(mysqlv1alpha1.BackupJobTemplate{TTL: tc.ttl})
+			if got != tc.want {
+				t.Fatalf("backupJobTTLSeconds = %d, want %d", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestBackupWorkerJobUsesResolvedTTL(t *testing.T) {
+func TestResolveBackupJobTemplate(t *testing.T) {
+	t.Parallel()
+
+	dur := func(d time.Duration) *metav1.Duration { return &metav1.Duration{Duration: d} }
+	cpu := func(s string) corev1.ResourceRequirements {
+		return corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(s)}}
+	}
+
+	t.Run("backup wins per field, cluster fills the rest", func(t *testing.T) {
+		backup := baseBackup()
+		backup.Spec.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
+			TTL:          dur(30 * time.Minute),
+			NodeSelector: map[string]string{"disk": testNodeSSD},
+			Labels:       map[string]string{"team": "backups", "shared": "backup"},
+		}
+		cluster := baseBackupCluster()
+		cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
+			TTL:               dur(time.Hour),
+			PriorityClassName: "high",
+			Resources:         cpu("250m"),
+			Labels:            map[string]string{"env": "prod", "shared": "cluster"},
+		}
+
+		got := resolveBackupJobTemplate(backup, cluster)
+
+		if got.TTL == nil || got.TTL.Duration != 30*time.Minute {
+			t.Fatalf("TTL = %v, want backup's 30m", got.TTL)
+		}
+		if got.NodeSelector["disk"] != testNodeSSD {
+			t.Fatalf("NodeSelector = %v, want backup's", got.NodeSelector)
+		}
+		if got.PriorityClassName != "high" {
+			t.Fatalf("PriorityClassName = %q, want cluster's high", got.PriorityClassName)
+		}
+		if !hasResourceRequirements(got.Resources) {
+			t.Fatalf("Resources not inherited from cluster: %v", got.Resources)
+		}
+		// Labels merge across levels; the Backup's key wins on conflict.
+		if got.Labels["team"] != "backups" || got.Labels["env"] != "prod" || got.Labels["shared"] != "backup" {
+			t.Fatalf("Labels = %v, want merged with backup winning on 'shared'", got.Labels)
+		}
+	})
+
+	t.Run("empty when neither sets a template", func(t *testing.T) {
+		got := resolveBackupJobTemplate(baseBackup(), baseBackupCluster())
+		if got.TTL != nil || got.Labels != nil || got.PriorityClassName != "" {
+			t.Fatalf("expected empty template, got %+v", got)
+		}
+		if ttl := backupJobTTLSeconds(got); ttl != int32(24*60*60) {
+			t.Fatalf("TTL default = %d, want 86400", ttl)
+		}
+	})
+}
+
+func TestBackupWorkerJobAppliesTemplate(t *testing.T) {
 	t.Parallel()
 
 	scheme := testScheme(t)
 	cluster := baseBackupCluster()
-	cluster.Spec.Backup.JobTTL = &metav1.Duration{Duration: 2 * time.Hour}
+	cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
+		TTL:               &metav1.Duration{Duration: 2 * time.Hour},
+		NodeSelector:      map[string]string{"disk": testNodeSSD},
+		PriorityClassName: "high",
+		Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+		},
+		Labels:      map[string]string{"team": "backups"},
+		Annotations: map[string]string{"note": testBackupNote},
+	}
 	backup := baseBackup()
 	reconciler := &BackupReconciler{
 		Client: fake.NewClientBuilder().
@@ -556,6 +668,56 @@ func TestBackupWorkerJobUsesResolvedTTL(t *testing.T) {
 	}
 	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != int32(2*60*60) {
 		t.Fatalf("job TTL = %v, want 7200", job.Spec.TTLSecondsAfterFinished)
+	}
+	pod := job.Spec.Template.Spec
+	if pod.NodeSelector["disk"] != testNodeSSD {
+		t.Fatalf("pod NodeSelector = %v, want disk=ssd", pod.NodeSelector)
+	}
+	if pod.PriorityClassName != "high" {
+		t.Fatalf("pod PriorityClassName = %q, want high", pod.PriorityClassName)
+	}
+	if len(pod.Tolerations) != 1 || pod.Tolerations[0].Key != "dedicated" {
+		t.Fatalf("pod Tolerations = %v, want dedicated", pod.Tolerations)
+	}
+	worker := pod.Containers[0]
+	if worker.Resources.Limits.Memory().String() != "2Gi" {
+		t.Fatalf("worker memory limit = %v, want 2Gi", worker.Resources.Limits.Memory())
+	}
+	// User labels are merged in, operator selectors preserved.
+	if job.Labels["team"] != "backups" || job.Labels["mysql.cnmsql.co/backup"] != backup.Name {
+		t.Fatalf("job Labels = %v, want user + operator labels", job.Labels)
+	}
+	if job.Annotations["note"] != testBackupNote {
+		t.Fatalf("job Annotations = %v, want note=nightly", job.Annotations)
+	}
+}
+
+func TestBackupWorkerJobUserLabelCannotClobberOperatorLabel(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
+		Labels: map[string]string{"mysql.cnmsql.co/backup": "hijacked"},
+	}
+	backup := baseBackup()
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod()).
+			Build(),
+		Scheme: scheme,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	job := &batchv1.Job{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample-backup"}, job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Labels["mysql.cnmsql.co/backup"] != backup.Name {
+		t.Fatalf("operator label clobbered: %v", job.Labels)
 	}
 }
 

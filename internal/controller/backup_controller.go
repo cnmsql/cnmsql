@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -145,8 +146,8 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if operatorImage == "" {
 		operatorImage = image
 	}
-	jobTTL := resolveBackupJobTTL(backup, cluster)
-	job := backupJob(backup, cluster, *store, keys, backupID, sourceInstance, image, operatorImage, jobName, jobTTL)
+	jobTemplate := resolveBackupJobTemplate(backup, cluster)
+	job := backupJob(backup, cluster, *store, keys, backupID, sourceInstance, image, operatorImage, jobName, jobTemplate)
 	if err := controllerutil.SetControllerReference(backup, job, r.Scheme); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -228,18 +229,74 @@ func backupJobName(backup *mysqlv1alpha1.Backup) string {
 // neither the Backup nor the cluster overrides it.
 const defaultBackupJobTTL = 24 * time.Hour
 
-// resolveBackupJobTTL resolves the finished-Job retention (ttlSecondsAfterFinished)
-// in seconds: the Backup's own spec.jobTTL wins, then the cluster-wide
-// spec.backup.jobTTL, then the 24h default. A negative duration is invalid and
-// falls back to the default; a zero duration is honoured (delete immediately).
-func resolveBackupJobTTL(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster) int32 {
-	if d := backup.Spec.JobTTL; d != nil && d.Duration >= 0 {
-		return int32(d.Seconds())
-	}
+// resolveBackupJobTemplate merges the per-Backup and cluster-wide job templates
+// field by field: the Backup's spec.jobTemplate wins per field, then the
+// cluster-wide spec.backup.jobTemplate. Labels and annotations are merged across
+// both levels (the Backup's keys win on conflict). It always returns a usable
+// template; the caller applies the built-in TTL default separately.
+func resolveBackupJobTemplate(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster) mysqlv1alpha1.BackupJobTemplate {
+	// Highest priority first: the Backup's own template, then the cluster default.
+	levels := []*mysqlv1alpha1.BackupJobTemplate{backup.Spec.JobTemplate}
 	if cluster.Spec.Backup != nil {
-		if d := cluster.Spec.Backup.JobTTL; d != nil && d.Duration >= 0 {
-			return int32(d.Seconds())
+		levels = append(levels, cluster.Spec.Backup.JobTemplate)
+	}
+
+	var out mysqlv1alpha1.BackupJobTemplate
+	for _, t := range levels {
+		if t == nil {
+			continue
 		}
+		if out.TTL == nil && t.TTL != nil {
+			out.TTL = t.TTL
+		}
+		if !hasResourceRequirements(out.Resources) && hasResourceRequirements(t.Resources) {
+			out.Resources = t.Resources
+		}
+		if out.NodeSelector == nil && t.NodeSelector != nil {
+			out.NodeSelector = t.NodeSelector
+		}
+		if out.Tolerations == nil && t.Tolerations != nil {
+			out.Tolerations = t.Tolerations
+		}
+		if out.Affinity == nil && t.Affinity != nil {
+			out.Affinity = t.Affinity
+		}
+		if out.PriorityClassName == "" && t.PriorityClassName != "" {
+			out.PriorityClassName = t.PriorityClassName
+		}
+		// Overlay the already-resolved (higher-priority) keys on top of this
+		// level's keys so the Backup's values win on conflict while lower-level
+		// keys are still carried through.
+		out.Labels = combineStringMaps(t.Labels, out.Labels)
+		out.Annotations = combineStringMaps(t.Annotations, out.Annotations)
+	}
+	return out
+}
+
+func hasResourceRequirements(r corev1.ResourceRequirements) bool {
+	return len(r.Requests) > 0 || len(r.Limits) > 0 || len(r.Claims) > 0
+}
+
+// combineStringMaps returns a new map with base's entries overlaid by overlay's
+// (overlay wins on conflict), mutating neither input. It returns nil when both
+// are empty.
+func combineStringMaps(base, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(overlay))
+	maps.Copy(out, base)
+	maps.Copy(out, overlay)
+	return out
+}
+
+// backupJobTTLSeconds resolves the finished-Job retention
+// (ttlSecondsAfterFinished) in seconds from the resolved template, falling back
+// to the 24h default. A negative duration is invalid and falls back to the
+// default; a zero duration is honoured (delete immediately).
+func backupJobTTLSeconds(tpl mysqlv1alpha1.BackupJobTemplate) int32 {
+	if d := tpl.TTL; d != nil && d.Duration >= 0 {
+		return int32(d.Seconds())
 	}
 	return int32(defaultBackupJobTTL.Seconds())
 }
@@ -305,31 +362,46 @@ func backupJob(
 	image string,
 	operatorImage string,
 	jobName string,
-	ttl int32,
+	tpl mysqlv1alpha1.BackupJobTemplate,
 ) *batchv1.Job {
 	backoffLimit := int32(1)
+	ttl := backupJobTTLSeconds(tpl)
 	sourceHost := sourceInstance + "." + backup.Namespace + ".svc"
 	env := backupObjectStoreEnv(store)
+
+	// Operator-owned labels take precedence over the template's, so a user can
+	// add labels but not clobber the ones the operator selects on.
+	operatorLabels := map[string]string{
+		"app.kubernetes.io/name":       "cnmsql",
+		"app.kubernetes.io/managed-by": "cnmsql",
+		clusterLabel:                   cluster.Name,
+		"mysql.cnmsql.co/backup":       backup.Name,
+	}
+	jobLabels := combineStringMaps(tpl.Labels, operatorLabels)
+	jobAnnotations := combineStringMaps(tpl.Annotations, nil)
+	podLabels := combineStringMaps(tpl.Labels, map[string]string{clusterLabel: cluster.Name})
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: backup.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":       "cnmsql",
-				"app.kubernetes.io/managed-by": "cnmsql",
-				clusterLabel:                   cluster.Name,
-				"mysql.cnmsql.co/backup":       backup.Name,
-			},
+			Name:        jobName,
+			Namespace:   backup.Namespace,
+			Labels:      jobLabels,
+			Annotations: jobAnnotations,
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-					clusterLabel: cluster.Name,
-				}},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      podLabels,
+					Annotations: jobAnnotations,
+				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:     corev1.RestartPolicyNever,
+					NodeSelector:      tpl.NodeSelector,
+					Tolerations:       tpl.Tolerations,
+					Affinity:          tpl.Affinity,
+					PriorityClassName: tpl.PriorityClassName,
 					InitContainers: []corev1.Container{{
 						// Copy the manager binary out of the operator image into
 						// the shared scratch volume; the instance image no longer
@@ -362,6 +434,7 @@ func backupJob(
 						},
 						Env:          env,
 						VolumeMounts: backupWorkerVolumeMounts(),
+						Resources:    tpl.Resources,
 					}},
 					Volumes: backupWorkerVolumes(cluster.Name),
 				},

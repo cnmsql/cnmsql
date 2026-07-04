@@ -164,6 +164,18 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 		SchedulerName:             cluster.Spec.SchedulerName,
 		SecurityContext:           podSecurityContext(cluster),
 	}
+	// During recovery the "bootstrap" init container restores a physical backup
+	// from object storage (xbstream), which can be far more memory-hungry than
+	// steady-state mysqld. Let operators size it via the cluster-level backup job
+	// template. Only resources apply here: the init container shares the instance
+	// pod, whose scheduling and priority are already owned by the cluster spec, so
+	// the template's nodeSelector/tolerations/affinity/priorityClassName do not.
+	if plan.Recovery != nil && cluster.Spec.Backup != nil && cluster.Spec.Backup.JobTemplate != nil {
+		if res := cluster.Spec.Backup.JobTemplate.Resources; hasResourceRequirements(res) {
+			// InitContainers[1] is "bootstrap"; [0] is "bootstrap-controller".
+			podSpec.InitContainers[1].Resources = res
+		}
+	}
 	for _, pullSecret := range cluster.Spec.ImagePullSecrets {
 		podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, corev1.LocalObjectReference{Name: pullSecret.Name})
 	}
