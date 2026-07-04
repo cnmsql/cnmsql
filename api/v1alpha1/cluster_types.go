@@ -64,6 +64,15 @@ const (
 	PrimaryUpdateStrategySupervised PrimaryUpdateStrategy = "supervised"
 )
 
+// Flavor selects the database engine a Cluster runs.
+// +kubebuilder:validation:Enum=mysql;mariadb
+type Flavor string
+
+const (
+	FlavorMySQL   Flavor = "mysql"
+	FlavorMariaDB Flavor = "mariadb"
+)
+
 // PrimaryUpdateMethod contains the method to use when upgrading the primary
 // server of the cluster as part of rolling updates.
 // +kubebuilder:validation:Enum=switchover;restart
@@ -84,6 +93,12 @@ type ClusterSpec struct {
 	// Description of this MySQL cluster.
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// Flavor selects the database engine flavor (mysql or mariadb).
+	// Immutable after creation. Defaults to mysql.
+	// +kubebuilder:default:=mysql
+	// +optional
+	Flavor Flavor `json:"flavor,omitempty"`
 
 	// Metadata that will be inherited by all objects related to the Cluster.
 	// +optional
@@ -961,6 +976,10 @@ type NodeMaintenanceWindow struct {
 
 // ClusterStatus defines the observed state of Cluster.
 type ClusterStatus struct {
+	// Flavor echoes the resolved engine flavor (spec.flavor, default mysql).
+	// +optional
+	Flavor Flavor `json:"flavor,omitempty"`
+
 	// Instances is the total number of instances reported.
 	// +optional
 	Instances int `json:"instances,omitempty"`
@@ -1286,6 +1305,7 @@ type ContinuousArchivingStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.instances,statuspath=.status.instances,selectorpath=.status.labelSelector
 // +kubebuilder:resource:scope=Namespaced,shortName=mysql;mysqlcluster,categories=all
+// +kubebuilder:printcolumn:name="Flavor",type=string,JSONPath=`.status.flavor`
 // +kubebuilder:printcolumn:name="Instances",type=integer,JSONPath=`.status.instances`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyInstances`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.phase`

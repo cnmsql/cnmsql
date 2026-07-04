@@ -20,6 +20,9 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.flavor
+      name: Flavor
+      type: string
     - jsonPath: .status.instances
       name: Instances
       type: integer
@@ -3128,6 +3131,15 @@ spec:
                   declaring an unreachable primary failed and triggering a failover.
                 format: int32
                 type: integer
+              flavor:
+                default: mysql
+                description: |-
+                  Flavor selects the database engine flavor (mysql or mariadb).
+                  Immutable after creation. Defaults to mysql.
+                enum:
+                - mysql
+                - mariadb
+                type: string
               imageCatalogRef:
                 description: |-
                   ImageCatalogRef resolves the image from an ImageCatalog or
@@ -4930,6 +4942,13 @@ spec:
                 items:
                   type: string
                 type: array
+              flavor:
+                description: Flavor echoes the resolved engine flavor (spec.flavor,
+                  default mysql).
+                enum:
+                - mysql
+                - mariadb
+                type: string
               groupReplication:
                 description: |-
                   GroupReplication reflects the live group membership and quorum, mirrored

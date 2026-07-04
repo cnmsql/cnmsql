@@ -101,9 +101,15 @@ still resolve to `mysql`; no expectation edits for MySQL paths). `gofmt`/`go vet
 
 ## Status log
 
-### 2026-07-04 — (unassigned)
-- state: blocked
+### 2026-07-04 — (implementation in progress)
+- state: in progress
 - did: plan authored.
-- next: unblock when M-MDB.1 is `done`, then Task A1.
-- blockers: M-MDB.1 (interface + selector must exist).
-- verify: not started
+- did: Task A completed — Flavor type with kubebuilder enum marker, spec.flavor field (default mysql, optional), status.flavor echo, print column on Cluster type, ResolvedFlavor() helper.
+- did: Task B completed — make generate manifests green, go build green, CRD includes flavor with default: mysql and print column.
+- did: Task C completed — flavor immutability in ValidateUpdate, cross-field validation (mariadb+GR rejected, flavor/series mismatch), webhook table tests (12 cases passing).
+- did: Task D completed — advisory Flavor on ImageCatalogSpec (non-gating).
+- did: Task E completed — all TODO(M-MDB.2) markers replaced. CNMSQL_FLAVOR env resolved from cluster.ResolvedFlavor() (with nil guard for init containers). Instance runner/join read flavor from env. pool.ControlConfig accepts hasAdminInterface bool (breaks engine→pool cycle). cluster_funcs.go threads engine.CheckUpgrade. status.flavor populated by controller reconciliation.
+- did: go test ./... all green, gofmt/go vet clean, lint 0 issues.
+- next: M-MDB.3 — MariaDB bootstrap, my.cnf rendering, GR-free semi-sync config.
+- blockers: none
+- verify: go test ./... — all green, zero expectation edits for MySQL paths.

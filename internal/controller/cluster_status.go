@@ -450,6 +450,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// independent of the observed pods.
 	latest.Status.LabelSelector = latest.GetInstancesSelector()
 	latest.Status.ObservedGeneration = latest.Generation
+	latest.Status.Flavor = latest.ResolvedFlavor()
 	latest.Status.Phase = observed.Phase
 	latest.Status.PhaseReason = observed.PhaseReason
 	latest.Status.ReadyInstances = observed.ReadyInstances

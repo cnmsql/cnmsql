@@ -171,8 +171,9 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 	)
 	// Do not start replication on the temporary server; we configure it and let
 	// the real server start it. The option was renamed slave→replica in 8.0.26.
-	// TODO(M-MDB.2): resolve from CNMSQL_FLAVOR env var.
-	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	// Read the engine flavor from the env var set by the controller
+	// (CNMSQL_FLAVOR), falling back to mysql.
+	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
 	if eng.UsesReplicaTerminology(ver) {
 		args = append(args, "--skip-replica-start")
 	} else {

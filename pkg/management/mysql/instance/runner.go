@@ -245,8 +245,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 
-	// TODO(M-MDB.2): resolve from CNMSQL_FLAVOR env var.
-	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	// Read the engine flavor from the env var set by the controller
+	// (CNMSQL_FLAVOR), falling back to mysql.
+	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
 
 	args := []string{}
 	if opts.ConfigFile != "" {
@@ -331,7 +332,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer signal.Stop(signals)
 
 	// Establish the privileged control connection.
-	controlCfg := pool.ControlConfig(ver, opts.Control)
+	controlCfg := pool.ControlConfig(eng.HasAdminInterface(ver), opts.Control)
 	db, err := openControl(ctx, controlCfg, opts.ReadyTimeout)
 	if err != nil {
 		_ = sup.Shutdown(ctx)

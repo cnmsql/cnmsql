@@ -41,6 +41,15 @@ spec:
           spec:
             description: spec defines the desired state of ImageCatalog
             properties:
+              flavor:
+                description: |-
+                  Flavor is the advisory engine flavor for the series in this catalog
+                  (mysql or mariadb). It is non-gating: a mismatch does not block
+                  resolution, but improves the admission error message.
+                enum:
+                - mysql
+                - mariadb
+                type: string
               images:
                 description: |-
                   Images is the list of MySQL series to container image mappings. Each
