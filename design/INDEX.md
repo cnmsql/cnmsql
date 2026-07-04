@@ -33,6 +33,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 | 022 | [Group Replication](022-group-replication.md) | done | M-GR | Second replication topology: quorum-based MySQL Group Replication behind an immutable `spec.replication.mode`. Operator observes group decisions (auto-failover handled by quorum); switchover via `set_as_primary`; GR-native fencing; quorum guards; phased M-GR.1–M-GR.7. |
 | 024 | [MySQL Major Version Upgrade](024-major-version-upgrade.md) | done | — | Safe orchestrated server upgrades along `8.0 → 8.4 → 9.x`. Catalog keyed by **series** not integer major (8.0≠8.4), admission guard (no downgrade/skip), config gating for removed sysvars/auth defaults, per-instance upgrade-complete signal, backup-gated replica-first rollout, GR comm-protocol finalization. |
 | 025 | [E2E Testing Overhaul](025-e2e-testing-overhaul.md) | proposed | M-E2E | Make the e2e suite rock solid on a single 8 vCPU/16 GiB runner: label-based test tiering (`core`/`feature`/`flavor`/`disruptive`/`heavy`/`flaky`), resource-budgeted execution partitions, per-spec **ephemeral Kind clusters** for operator-mutating specs (kills the shared-operator flake class + the transient-webhook retry machinery), deterministic fail-fast readiness (retire blanket 20m waits), build-outside-suite + ldflags hash (no `cmd/main.go` mutation), one-command `./hack/e2e.sh --focus/--k8s/--mysql/--tier`, CI lanes + runner hygiene + JUnit/must-gather artifacts, and flake governance. |
+| 026 | [MariaDB Support (Engine Flavors)](026-mariadb-support.md) | proposed | M-MDB | Second database engine behind an immutable `spec.flavor` (`mysql`\|`mariadb`). Introduces a `pkg/engine` abstraction owning every engine-divergent decision (versioning/series chains, replication SQL dialect, GTID model, semi-sync, bootstrap commands, physical-backup tool). MariaDB async/semi-sync clusters get the full feature set; Group Replication stays MySQL-only (MariaDB Galera is out of scope). Two-commit refactor keeps MySQL byte-identical, then adds MariaDB additively. |
 
 ## Quick Navigation by Topic
 
@@ -43,6 +44,8 @@ Quick-reference index of every design document. Use this to find relevant plans 
 **Status Authorization & Security:** 020 (status authz webhook)
 
 **Deployment Topology:** 021 (cluster-wide vs namespaced)
+
+**Engines / Flavors:** 026 (MariaDB support + `pkg/engine` abstraction)
 
 **Data Management:** 008 (backup/recovery) → 009 (binlog/PITR) → 010 (scheduled backup) → 011 (raw S3 recovery)
 
