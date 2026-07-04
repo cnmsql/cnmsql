@@ -119,8 +119,9 @@ spec:
   flavor: mariadb
   instances: 1
   imageCatalogRef:
+    kind: ImageCatalog
     name: mdb-upgrade-catalog
-    series: %s
+    series: "%s"
   upgrade:
     backupBeforeUpgrade: false
   storage:
