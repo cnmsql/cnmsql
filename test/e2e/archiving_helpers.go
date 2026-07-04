@@ -39,6 +39,50 @@ func mcExec(args ...string) (string, error) {
 	return kubectl(full...)
 }
 
+// isTransientObjectStoreError reports whether an mc failure is a transport blip
+// (the single-replica MinIO restarting or briefly unreachable) rather than a
+// definitive answer like "object does not exist". Callers retry on true.
+func isTransientObjectStoreError(out string, err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := out + err.Error()
+	for _, s := range []string{
+		"connection refused",
+		"dial tcp",
+		"no endpoints available",
+		"EOF",
+		"i/o timeout",
+		"context deadline exceeded",
+		"connection reset by peer",
+		"Server not initialized",
+		"503 Service Unavailable",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// dumpBackupWorkerLogs prints recent logs from the backup worker Job's Pod(s) for
+// the given Backup. When a backup reaches terminal phase=failed the worker's own
+// output is what explains why (object-store auth, xtrabackup, connectivity); the
+// operator log only reports that the Job failed. The worker Job is named
+// "<backup>-backup", so its Pods carry the job-name label set by the Job
+// controller.
+func dumpBackupWorkerLogs(backup string) {
+	selector := "job-name=" + backup + "-backup"
+	out, err := kubectl("logs", "-n", testNamespace, "-l", selector,
+		"--all-containers", "--tail=200", "--prefix")
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "\nFailed to collect backup worker logs (%s): %v\n%s\n",
+			selector, err, out)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\nbackup worker logs (%s):\n%s\n", selector, out)
+}
+
 // readArchiveIndex fetches and decodes the cluster-level binlog archive index
 // (`<cluster>/binlogs/_index.json`) from object storage. A missing index (the
 // archiver has not written one yet) surfaces as an error so callers can poll.
