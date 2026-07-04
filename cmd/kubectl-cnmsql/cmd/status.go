@@ -84,6 +84,7 @@ func printSummary(c *mysqlv1alpha1.Cluster) {
 	plugin.Section("Cluster Summary")
 	plugin.KeyVal("Name", c.Name)
 	plugin.KeyVal("Namespace", c.Namespace)
+	plugin.KeyVal("Flavor", string(c.ResolvedFlavor()))
 	plugin.KeyVal("Phase", orNone(c.Status.Phase))
 	if c.Status.PhaseReason != "" {
 		plugin.KeyVal("Phase Reason", c.Status.PhaseReason)

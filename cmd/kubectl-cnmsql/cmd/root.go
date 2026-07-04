@@ -35,7 +35,7 @@ func NewRootCommand() *cobra.Command {
 		Use:   "cnmsql",
 		Short: "Manage and inspect cnmsql clusters",
 		Long: "kubectl cnmsql is a kubectl plugin for managing " +
-			"cnmsql (Percona Server) clusters.\n\n" +
+			"cnmsql clusters.\n\n" +
 			"Most commands accept an optional CLUSTER argument that defaults to the " +
 			"sole cluster in the current namespace. Run a subcommand with --help " +
 			"for details and examples.",
@@ -71,6 +71,7 @@ func NewRootCommand() *cobra.Command {
 		newBackupCommand(),
 		newMaintenanceCommand(),
 		newDestroyCommand(),
+		newShellCommand(),
 	)
 	return root
 }

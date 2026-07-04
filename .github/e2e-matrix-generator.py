@@ -17,6 +17,7 @@
 #   - major-upgrade      major-upgrade                  latest MySQL   procs 1
 #   - node-failure       node-failure                   latest MySQL   procs 1
 #   - flavor-MySQL-<v>   flavor && !heavy               each MySQL     procs 2
+#   - flavor-MariaDB-<v> flavor && mariadb && !heavy   each MariaDB    procs 2
 #
 # k8s versions come from .github/kind_versions.json filtered by the e2e_test
 # range in .github/k8s_versions_scope.json (latest is used for every lane).
@@ -33,6 +34,7 @@ from typing import List
 KIND_VERSIONS_FILE = ".github/kind_versions.json"
 VERSION_SCOPE_FILE = ".github/k8s_versions_scope.json"
 MYSQL_VERSIONS_FILE = ".github/mysql_versions.json"
+MARIADB_VERSIONS_FILE = ".github/mariadb_versions.json"
 
 
 class VersionList(list):
@@ -79,8 +81,12 @@ KIND_K8S = VersionList(filter_version(load_json(KIND_VERSIONS_FILE), scope))
 mysql_rows = sorted(load_json(MYSQL_VERSIONS_FILE), key=_server_version_key, reverse=True)
 MYSQL = VersionList([row["version"] for row in mysql_rows])
 
+mariadb_rows = sorted(load_json(MARIADB_VERSIONS_FILE), key=_server_version_key, reverse=True)
+MARIADB = VersionList([row["version"] for row in mariadb_rows])
 
-def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, shared_setup=True):
+
+def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, shared_setup=True,
+         mariadb_version=""):
     """One matrix entry. The workflow maps these fields onto the env vars the
     suite and hack/e2e.sh consume (GINKGO_LABEL_FILTER, E2E_MYSQL_VERSION,
     GINKGO_PROCS, E2E_MAJOR_UPGRADE, E2E_SHARED_SETUP).
@@ -98,6 +104,7 @@ def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, share
         "procs": procs,
         "major_upgrade": major_upgrade,
         "shared_setup": shared_setup,
+        "mariadb_version": mariadb_version,
     }
 
 
@@ -119,6 +126,13 @@ def build_lanes():
     # Only version-sensitive specs run across the whole MySQL axis.
     for mysql_version in MYSQL:
         lanes.append(lane(f"flavor-MySQL-{mysql_version}", "flavor && !heavy", mysql_version, 2))
+    # MariaDB flavor lanes: run mariadb-labeled specs across the MariaDB series.
+    for mariadb_version in MARIADB:
+        lanes.append(lane(
+            f"flavor-MariaDB-{mariadb_version}",
+            "flavor && mariadb && !heavy",
+            "", 2, mariadb_version=mariadb_version,
+        ))
     return lanes
 
 

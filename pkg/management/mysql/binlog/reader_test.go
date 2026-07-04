@@ -76,6 +76,31 @@ func TestReaderServerUUID(t *testing.T) {
 	}
 }
 
+func TestReaderServerIdentityMariaDB(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// MariaDB has no server_uuid; the archiver reads server_id as the partition
+	// identity. The Reader must issue that query, not the MySQL default.
+	mock.ExpectQuery("server_id").WillReturnRows(
+		sqlmock.NewRows([]string{"@@GLOBAL.server_id"}).AddRow("42"),
+	)
+	id, err := NewReaderWithIdentityQuery(db, "SELECT @@GLOBAL.server_id").ServerUUID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "42" {
+		t.Fatalf("identity = %q, want 42", id)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestReaderFlushAndPurge(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New()

@@ -25,27 +25,47 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 )
 
+// defaultServerIdentityQuery reads the MySQL server_uuid. MariaDB has no
+// server_uuid, so callers on that flavor construct the Reader with server_id via
+// NewReaderWithIdentityQuery.
+const defaultServerIdentityQuery = "SELECT @@GLOBAL.server_uuid"
+
 // Reader queries the local mysqld for binary-log state and issues the
 // archiver's flush/purge statements. It is a thin executor over a pool
 // Connection so it stays unit-testable with sqlmock.
 type Reader struct {
 	conn pool.Connection
+	// identityQuery reads the stable per-instance value that partitions this
+	// instance's archive segment (MySQL server_uuid; MariaDB server_id).
+	identityQuery string
 }
 
-// NewReader builds a Reader bound to a mysqld connection.
+// NewReader builds a Reader bound to a mysqld connection, reading the MySQL
+// server_uuid as the archive-partition identity.
 func NewReader(conn pool.Connection) *Reader {
-	return &Reader{conn: conn}
+	return &Reader{conn: conn, identityQuery: defaultServerIdentityQuery}
 }
 
-// ServerUUID returns the server's server_uuid, which partitions this instance's
-// segment of the archive.
+// NewReaderWithIdentityQuery builds a Reader that reads its archive-partition
+// identity via the given query. MariaDB passes "SELECT @@GLOBAL.server_id"
+// because it has no server_uuid. An empty query falls back to the MySQL default.
+func NewReaderWithIdentityQuery(conn pool.Connection, identityQuery string) *Reader {
+	if identityQuery == "" {
+		identityQuery = defaultServerIdentityQuery
+	}
+	return &Reader{conn: conn, identityQuery: identityQuery}
+}
+
+// ServerUUID returns the server's stable archive-partition identity (MySQL
+// server_uuid; MariaDB server_id), which partitions this instance's segment of
+// the archive.
 func (r *Reader) ServerUUID(ctx context.Context) (string, error) {
 	var uuid sql.NullString
-	if err := r.conn.QueryRowContext(ctx, "SELECT @@GLOBAL.server_uuid").Scan(&uuid); err != nil {
-		return "", fmt.Errorf("binlog: reading server_uuid: %w", err)
+	if err := r.conn.QueryRowContext(ctx, r.identityQuery).Scan(&uuid); err != nil {
+		return "", fmt.Errorf("binlog: reading server identity: %w", err)
 	}
 	if !uuid.Valid || uuid.String == "" {
-		return "", fmt.Errorf("binlog: server_uuid is empty")
+		return "", fmt.Errorf("binlog: server identity is empty")
 	}
 	return uuid.String, nil
 }

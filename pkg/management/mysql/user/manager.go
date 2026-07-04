@@ -26,14 +26,22 @@ import (
 
 // Manager executes user and database management statements against a mysqld
 // connection. The statement text is produced by the pure builders in this
-// package, so Manager stays a thin, ordered executor.
+// package, so Manager stays a thin, ordered executor. The dialect selects
+// flavor-specific SQL (MariaDB drops REVOKE IF EXISTS).
 type Manager struct {
-	conn pool.Connection
+	conn    pool.Connection
+	dialect Dialect
 }
 
-// NewManager builds a Manager bound to a connection.
+// NewManager builds a Manager bound to a connection using the MySQL dialect.
 func NewManager(conn pool.Connection) *Manager {
-	return &Manager{conn: conn}
+	return &Manager{conn: conn, dialect: MySQLDialect}
+}
+
+// NewManagerWithDialect builds a Manager that speaks the given flavor's
+// user-management SQL. MariaDB passes MariaDBDialect.
+func NewManagerWithDialect(conn pool.Connection, d Dialect) *Manager {
+	return &Manager{conn: conn, dialect: d}
 }
 
 func (m *Manager) exec(ctx context.Context, stmt string) error {
@@ -46,6 +54,12 @@ func (m *Manager) exec(ctx context.Context, stmt string) error {
 func (m *Manager) execAll(ctx context.Context, stmts []string) error {
 	for _, stmt := range stmts {
 		if err := m.exec(ctx, stmt); err != nil {
+			// Without REVOKE IF EXISTS (MariaDB), a REVOKE of a grant the account
+			// does not hold errors; treat it as a no-op so re-application stays
+			// idempotent (MySQL gets the same idempotency from IF EXISTS).
+			if !m.dialect.RevokeIfExists && isRevoke(stmt) && isNonexistingGrant(err) {
+				continue
+			}
 			return err
 		}
 	}
@@ -57,7 +71,7 @@ func (m *Manager) CreateUser(ctx context.Context, req CreateUserRequest) error {
 	if IsReservedUser(req.Name) {
 		return fmt.Errorf("refusing to create reserved account %q", req.Name)
 	}
-	stmts, err := CreateUserStatements(req)
+	stmts, err := CreateUserStatementsWithDialect(req, m.dialect)
 	if err != nil {
 		return err
 	}
@@ -69,7 +83,7 @@ func (m *Manager) AlterUser(ctx context.Context, req AlterUserRequest) error {
 	if IsReservedUser(req.Name) {
 		return fmt.Errorf("refusing to alter reserved account %q", req.Name)
 	}
-	stmts, err := AlterUserStatements(req)
+	stmts, err := AlterUserStatementsWithDialect(req, m.dialect)
 	if err != nil {
 		return err
 	}

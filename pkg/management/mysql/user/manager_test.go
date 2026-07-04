@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 )
 
 func newManager(t *testing.T) (*Manager, sqlmock.Sqlmock) {
@@ -49,6 +50,57 @@ func TestManagerCreateUserExecutesAllStatements(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestManagerMariaDBToleratesNonexistingGrantRevoke(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	m := NewManagerWithDialect(db, MariaDBDialect)
+
+	mock.ExpectExec("CREATE USER IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("GRANT SELECT ON *.* TO 'app'@'%'")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	// MariaDB emits a plain REVOKE; a re-applied revoke of an absent grant
+	// returns ER_NONEXISTING_GRANT (1141), which must be tolerated as a no-op.
+	mock.ExpectExec(regexp.QuoteMeta("REVOKE INSERT ON mysql.* FROM 'app'@'%'")).
+		WillReturnError(&mysql.MySQLError{Number: 1141, Message: "no such grant"})
+
+	err = m.CreateUser(context.Background(), CreateUserRequest{
+		Name: "app", Host: "%", Password: "pw",
+		Privileges: []Privilege{{Privileges: []string{"SELECT"}, On: "*.*"}},
+		Revokes:    []Privilege{{Privileges: []string{"INSERT"}, On: "mysql.*"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateUser should tolerate non-existing grant: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestManagerMariaDBPropagatesOtherRevokeErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	m := NewManagerWithDialect(db, MariaDBDialect)
+
+	mock.ExpectExec("CREATE USER IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
+	// A non-grant error (e.g. access denied) must still surface.
+	mock.ExpectExec(regexp.QuoteMeta("REVOKE INSERT ON mysql.* FROM 'app'@'%'")).
+		WillReturnError(&mysql.MySQLError{Number: 1045, Message: "access denied"})
+
+	err = m.CreateUser(context.Background(), CreateUserRequest{
+		Name: "app", Host: "%", Password: "pw",
+		Revokes: []Privilege{{Privileges: []string{"INSERT"}, On: "mysql.*"}},
+	})
+	if err == nil {
+		t.Fatal("CreateUser should propagate a non-grant revoke error")
 	}
 }
 

@@ -30,6 +30,20 @@ var managerImage = func() string {
 // suite against that one version.
 var instanceImage = instanceImageFor(sampleVersion())
 
+// mariadbSampleVersion is the MariaDB version used by the MariaDB e2e specs.
+// Overridable with E2E_MARIADB_VERSION so CI can pin a specific MariaDB release.
+func mariadbSampleVersion() string {
+	if v := strings.TrimSpace(os.Getenv("E2E_MARIADB_VERSION")); v != "" {
+		return v
+	}
+	return "11.4"
+}
+
+// mariadbInstanceImage builds the full MariaDB instance image reference.
+func mariadbInstanceImageFor(version string) string {
+	return "ghcr.io/cnmsql/cnmsql-mariadb-instance:" + version
+}
+
 // instanceImageRepo is the GHCR repository the containers repo publishes the
 // slim instance images to. Override with E2E_INSTANCE_IMAGE_REPO to test against
 // a fork or a private mirror.

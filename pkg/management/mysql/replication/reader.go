@@ -54,14 +54,21 @@ func (m *Manager) GTIDExecuted(ctx context.Context) (string, error) {
 	return m.scalarString(ctx, m.repl.GTIDExecutedQuery())
 }
 
-// GTIDPurged returns the global gtid_purged set.
+// GTIDPurged returns the global gtid_purged set using the dialect's query. On
+// flavors without a purged-GTID concept (MariaDB) the query is empty and this
+// returns an empty set without touching the server.
 func (m *Manager) GTIDPurged(ctx context.Context) (string, error) {
-	return m.scalarString(ctx, "SELECT @@GLOBAL.gtid_purged")
+	query := m.repl.GTIDPurgedQuery()
+	if query == "" {
+		return "", nil
+	}
+	return m.scalarString(ctx, query)
 }
 
-// ServerUUID returns the server's UUID.
+// ServerUUID returns the server's stable identity (MySQL server_uuid; MariaDB
+// server_id) using the dialect's query.
 func (m *Manager) ServerUUID(ctx context.Context) (string, error) {
-	return m.scalarString(ctx, "SELECT @@GLOBAL.server_uuid")
+	return m.scalarString(ctx, m.repl.ServerIdentityQuery())
 }
 
 // ServerVersion returns the live mysqld version (@@GLOBAL.version, e.g.
@@ -103,7 +110,7 @@ type SemiSyncState struct {
 // SemiSyncStatus reads the semi-sync enabled flags. Missing variables (plugins
 // not installed) are reported as disabled rather than an error.
 func (m *Manager) SemiSyncStatus(ctx context.Context) (SemiSyncState, error) {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	source, err := m.optionalGlobalBool(ctx, naming.EnabledVarSource)
 	if err != nil {
 		return SemiSyncState{}, err

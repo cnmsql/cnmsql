@@ -41,6 +41,13 @@ type Dialect interface {
 	ShowReplicaStatus(v version.Version) string
 	ResetBinaryLogs(v version.Version) string
 	GTIDExecutedQuery() string
+	// GTIDPurgedQuery reads the purged-GTID set. Empty means the flavor has no
+	// such concept (MariaDB) and the caller should skip the read.
+	GTIDPurgedQuery() string
+	// ServerIdentityQuery reads the stable per-instance identity used to
+	// partition binary-log archive segments (MySQL server_uuid; MariaDB
+	// server_id, as MariaDB has no server_uuid).
+	ServerIdentityQuery() string
 	SeedReplicaPosition(pos string) string
 	SemiSyncNaming(v version.Version) version.SemiSyncNaming
 	HasSuperReadOnly() bool
@@ -71,6 +78,12 @@ func (mysqlDialect) ResetBinaryLogs(v version.Version) string {
 }
 func (mysqlDialect) GTIDExecutedQuery() string {
 	return "SELECT @@GLOBAL.gtid_executed"
+}
+func (mysqlDialect) GTIDPurgedQuery() string {
+	return "SELECT @@GLOBAL.gtid_purged"
+}
+func (mysqlDialect) ServerIdentityQuery() string {
+	return "SELECT @@GLOBAL.server_uuid"
 }
 func (mysqlDialect) SeedReplicaPosition(pos string) string {
 	return SetGTIDPurgedStatement(pos)

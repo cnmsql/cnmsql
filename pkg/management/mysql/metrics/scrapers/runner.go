@@ -29,6 +29,7 @@ import (
 // Default is the set of scrapers run on every collection. They are all
 // flavor-safe across the Percona MySQL versions we support; version gating in
 // Run skips any whose minimum version exceeds the connected server.
+// The two GR scrapers are automatically skipped on MariaDB servers.
 var Default = []Scraper{
 	ScrapeGlobalStatus{},
 	ScrapeGlobalVariables{},
@@ -39,6 +40,13 @@ var Default = []Scraper{
 	ScrapeQueryResponseTime{},
 	ScrapePerfReplicationGroupMemberStats{},
 	ScrapePerfReplicationApplierStatsByWorker{},
+}
+
+// mariaDBOnlySkips is the set of scraper names that are MySQL-only and must be
+// skipped on MariaDB. Group Replication P_S tables do not exist in MariaDB.
+var mariaDBOnlySkips = map[string]bool{
+	"perf_schema.replication_group_member_stats":       true,
+	"perf_schema.replication_applier_status_by_worker": true,
 }
 
 // Run detects the server flavor/version over db, then runs each scraper,
@@ -61,6 +69,9 @@ func Run(
 	var errs []error
 	for _, s := range enabled {
 		if s.Version() > inst.versionMajorMinor {
+			continue
+		}
+		if inst.flavor == FlavorMariaDB && mariaDBOnlySkips[s.Name()] {
 			continue
 		}
 		if err := s.Scrape(ctx, inst, ch, logger); err != nil {

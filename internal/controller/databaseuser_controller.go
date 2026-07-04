@@ -104,6 +104,16 @@ func (r *DatabaseUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, r.markUserNotApplied(ctx, du, "Invalid", errs.ToAggregate().Error())
 	}
 
+	// MariaDB cannot enforce a spec.revokes carve-out (no partial_revokes / no
+	// DENY until MariaDB 13.1). The admission webhook rejects this on create, but
+	// a DatabaseUser admitted before its Cluster existed reaches here; refuse to
+	// apply rather than leave the account over-privileged.
+	if cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB && len(du.Spec.Revokes) > 0 {
+		return ctrl.Result{}, r.markUserNotApplied(ctx, du, "UnsupportedOnMariaDB",
+			"spec.revokes is not supported on MariaDB clusters: MariaDB lacks partial_revokes and DENY "+
+				"(DENY is planned for MariaDB 13.1), so the system-schema carve-out cannot be enforced")
+	}
+
 	if primary == "" {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markUserNotApplied(ctx, du,
 			"PrimaryNotReady", "Waiting for the cluster primary to be available")

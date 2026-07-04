@@ -467,7 +467,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		if opts.Archiving.MysqlbinlogPath == "" {
 			opts.Archiving.MysqlbinlogPath = eng.Backup().BinlogClientBinary()
 		}
-		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db)
+		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery())
 		if err != nil {
 			_ = sup.Shutdown(ctx)
 			return err

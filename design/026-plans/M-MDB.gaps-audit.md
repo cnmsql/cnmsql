@@ -166,6 +166,51 @@ Still open (coverage/polish, not blockers): **G3.2** (MariaDB config goldens),
 (`mariadb_backup_binlog_info` fixture), **G5.4** (`xtrabackupOptions` passthrough
 for `mariabackup`).
 
+## Statement-sweep pass — 2026-07-04
+
+A second audit swept every SQL statement the operator emits (not just the M-MDB
+plan surface) for MariaDB divergences. Findings + fixes (`go build`/`vet`/
+`gofmt`/`go test ./...` all clean):
+
+### G-USER.1 🔴 `REVOKE IF EXISTS` — DONE (syntax); partial_revokes residual
+The `user` package (Database + DatabaseUser CRDs) was entirely flavor-blind and
+always emitted `REVOKE IF EXISTS`, which MariaDB rejects (no `IF EXISTS` on
+REVOKE).
+- **Fixed:** `user.Dialect` (`MySQLDialect`/`MariaDBDialect`);
+  `CreateUserStatementsWithDialect`/`AlterUserStatementsWithDialect` emit a plain
+  `REVOKE` on MariaDB. `user.Manager` tolerates `ER_NONEXISTING_GRANT` (1141) /
+  `ER_NONEXISTING_TABLE_GRANT` (1147) on the MariaDB revoke path so
+  re-application stays idempotent (MySQL gets that from `IF EXISTS`).
+  `instance.Controller` selects the dialect from `eng.Flavor()`.
+- **Residual (not a syntax bug):** MariaDB has **no `partial_revokes`**, so a
+  revoke that *narrows a global grant* (the `mysql.*` carve-out pattern) cannot
+  be enforced — the plain REVOKE errors with "non-existing grant" and is
+  tolerated as a no-op, leaving the account with the broader access. Options:
+  reject `spec.revokes` on MariaDB clusters at the webhook, or document it as a
+  hard flavor limitation. **Product decision pending** — flagged, not silently
+  swallowed.
+
+### G-STMT.1 🟠 `server_uuid` not dialect-routed — DONE
+MariaDB has no `server_uuid`; the archive index partitions segments by it.
+`ReplDialect`/`Dialect` gained `ServerIdentityQuery()` (MySQL `server_uuid`,
+MariaDB `server_id`). `replication.Manager.ServerUUID` and the archiver's
+`binlog.Reader` (`NewReaderWithIdentityQuery`, wired from
+`eng.Repl().ServerIdentityQuery()` in `runner.go`) now use it. Unblocks MariaDB
+continuous archiving at the identity layer (complements G5.2).
+
+### G-STMT.2 🟡 `gtid_purged` read + semi-sync status naming — DONE
+`ReplDialect`/`Dialect` gained `GTIDPurgedQuery()` (empty on MariaDB → the
+Manager skips the read instead of erroring). `SemiSyncStatus` now reads
+`m.repl.SemiSyncNaming(m.version)` (dialect) instead of the version-number
+`m.version.SemiSync()`, so MariaDB reads master/slave variable names rather than
+silently-absent source/replica ones.
+
+Confirmed already-correct / excluded during the sweep: `INSTALL PLUGIN` semi-sync
+(gated `eng.SemiSyncIsPlugin()`), `SET GLOBAL gtid_slave_pos` write path, `CHANGE
+MASTER TO … MASTER_USE_GTID`, Group Replication (engine capability; Galera is out
+of scope), `ListUsersQuery`/`mysql.user` columns (present in MariaDB's compat
+view).
+
 ## Suggested execution order
 
 1. **G4.1** (super_read_only) — 🔴 without it switchover/demote corrupt or error on

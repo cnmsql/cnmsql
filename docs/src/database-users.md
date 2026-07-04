@@ -204,6 +204,21 @@ Two important caveats:
   new accounts get created without exposing the operator's control plane. Add it
   when you need tenants to self-manage their own accounts.
 
+:::warning MariaDB: the carve-out is not available yet
+The safe-DBaaS-admin recipe relies on `partial_revokes`, which is a **MySQL**
+feature. **MariaDB has no equivalent** — and no `DENY` statement either (`DENY`,
+the eventual carve-out mechanism, is planned for **MariaDB 13.1** and is not yet
+released). There is no way to subtract `mysql.*` from a broad `*.*` grant on
+MariaDB, so cnmsql **rejects `spec.revokes` on MariaDB clusters** at admission
+(and again at reconcile, with reason `UnsupportedOnMariaDB`, for objects created
+before their cluster). Until DENY ships, a "DBaaS admin" on MariaDB is
+necessarily **more privileged** than the same account on MySQL.
+
+On MariaDB, scope grants to explicit schemas (`on: "mydb.*"`) so the account
+never touches `mysql.*` in the first place — this needs no carve-out and is the
+recommended pattern there.
+:::
+
 As a second layer, cnmsql rejects a `DatabaseUser` that asks for a named
 cluster-control privilege (the same idea as the dangerous-config-key denylist).
 Such an object stays unapplied with reason `Invalid`:

@@ -53,18 +53,21 @@ type ArchivingConfig struct {
 // startArchiver builds and runs the continuous binlog archiver loop against the
 // given control connection. It returns the loop (so its state can be surfaced in
 // status) and a channel that receives the loop's terminal error. It blocks only
-// long enough to read server_uuid; the loop itself runs in a goroutine.
+// long enough to read the server identity; the loop itself runs in a goroutine.
+// identityQuery selects the flavor's archive-partition identity (MySQL
+// server_uuid; MariaDB server_id).
 func startArchiver(
 	ctx context.Context,
 	cfg ArchivingConfig,
 	db *sql.DB,
+	identityQuery string,
 ) (*binlog.Loop, <-chan error, error) {
 	log := logf.FromContext(ctx).WithName("archiver")
 	store, err := objectstore.NewClientFromEnv()
 	if err != nil {
 		return nil, nil, err
 	}
-	reader := binlog.NewReader(db)
+	reader := binlog.NewReaderWithIdentityQuery(db, identityQuery)
 	serverUUID, err := reader.ServerUUID(ctx)
 	if err != nil {
 		return nil, nil, err

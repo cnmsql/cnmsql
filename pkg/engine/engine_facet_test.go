@@ -138,6 +138,12 @@ func TestMySQLReplDialect(t *testing.T) {
 	if got, want := r.GTIDExecutedQuery(), "SELECT @@GLOBAL.gtid_executed"; got != want {
 		t.Errorf("GTIDExecutedQuery() = %q, want %q", got, want)
 	}
+	if got, want := r.GTIDPurgedQuery(), "SELECT @@GLOBAL.gtid_purged"; got != want {
+		t.Errorf("GTIDPurgedQuery() = %q, want %q", got, want)
+	}
+	if got, want := r.ServerIdentityQuery(), "SELECT @@GLOBAL.server_uuid"; got != want {
+		t.Errorf("ServerIdentityQuery() = %q, want %q", got, want)
+	}
 }
 
 func TestMySQLSemiSyncFacet(t *testing.T) {
@@ -248,6 +254,14 @@ func TestMariaDBReplDialect(t *testing.T) {
 	}
 	if got, want := r.SeedReplicaPosition("0-1-100"), "SET GLOBAL gtid_slave_pos = '0-1-100'"; got != want {
 		t.Errorf("SeedReplicaPosition() = %q, want %q", got, want)
+	}
+	// MariaDB has no gtid_purged (empty → caller skips) and no server_uuid
+	// (server_id is the archive-partition identity).
+	if got := r.GTIDPurgedQuery(); got != "" {
+		t.Errorf("GTIDPurgedQuery() = %q, want empty", got)
+	}
+	if got, want := r.ServerIdentityQuery(), "SELECT @@GLOBAL.server_id"; got != want {
+		t.Errorf("ServerIdentityQuery() = %q, want %q", got, want)
 	}
 
 	// Semi-sync naming stays master/slave regardless of the (high) version number.

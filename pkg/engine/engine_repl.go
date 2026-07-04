@@ -33,6 +33,13 @@ type ReplDialect interface {
 	ShowReplicaStatus(v version.Version) string
 	ResetBinaryLogs(v version.Version) string
 	GTIDExecutedQuery() string
+	// GTIDPurgedQuery reads the purged-GTID set. Empty means the flavor has no
+	// such concept (MariaDB) and the caller should skip the read.
+	GTIDPurgedQuery() string
+	// ServerIdentityQuery reads the stable per-instance identity used to
+	// partition binary-log archive segments (MySQL server_uuid; MariaDB
+	// server_id, as MariaDB has no server_uuid).
+	ServerIdentityQuery() string
 	SeedReplicaPosition(pos string) string
 	SemiSyncNaming(v version.Version) version.SemiSyncNaming
 	HasSuperReadOnly() bool
@@ -68,6 +75,14 @@ func (mysqlReplDialect) ResetBinaryLogs(v version.Version) string {
 
 func (mysqlReplDialect) GTIDExecutedQuery() string {
 	return "SELECT @@GLOBAL.gtid_executed"
+}
+
+func (mysqlReplDialect) GTIDPurgedQuery() string {
+	return "SELECT @@GLOBAL.gtid_purged"
+}
+
+func (mysqlReplDialect) ServerIdentityQuery() string {
+	return "SELECT @@GLOBAL.server_uuid"
 }
 
 func (mysqlReplDialect) SeedReplicaPosition(pos string) string {
@@ -117,6 +132,19 @@ func (mariadbReplDialect) ResetBinaryLogs(version.Version) string {
 
 func (mariadbReplDialect) GTIDExecutedQuery() string {
 	return "SELECT @@gtid_current_pos"
+}
+
+// GTIDPurgedQuery is empty: MariaDB has no gtid_purged variable. The purged set
+// is not part of MariaDB's GTID model (it tracks gtid_binlog_pos /
+// gtid_slave_pos instead), so callers skip the read.
+func (mariadbReplDialect) GTIDPurgedQuery() string {
+	return ""
+}
+
+// ServerIdentityQuery reads server_id: MariaDB has no server_uuid, and server_id
+// is the stable, topology-unique per-instance identifier.
+func (mariadbReplDialect) ServerIdentityQuery() string {
+	return "SELECT @@GLOBAL.server_id"
 }
 
 func (mariadbReplDialect) SeedReplicaPosition(pos string) string {

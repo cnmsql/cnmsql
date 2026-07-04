@@ -122,7 +122,7 @@ func NewController(
 		conn:         conn,
 		repl:         replication.NewManagerWithDialect(conn, v, eng.Repl()),
 		gr:           groupreplication.NewManager(conn, v),
-		users:        user.NewManager(conn),
+		users:        user.NewManagerWithDialect(conn, userDialectFor(eng)),
 		version:      v,
 		versionStr:   versionStr,
 		expected:     expected,
@@ -131,6 +131,16 @@ func NewController(
 		writeManager: WriteInstanceManager,
 		reExecOnDisk: ReExecOnDiskForUpgrade,
 	}, nil
+}
+
+// userDialectFor selects the user-management SQL dialect for the engine's
+// flavor. MariaDB drops REVOKE IF EXISTS (and cannot express partial_revokes
+// carve-outs); every other flavor uses the MySQL dialect.
+func userDialectFor(eng engine.Engine) user.Dialect {
+	if eng.Flavor() == engine.FlavorMariaDB {
+		return user.MariaDBDialect
+	}
+	return user.MySQLDialect
 }
 
 // SetArchivingProvider registers a callback that supplies the continuous
