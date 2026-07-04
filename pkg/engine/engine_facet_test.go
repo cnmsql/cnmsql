@@ -373,6 +373,12 @@ func TestMariaDBDefaults(t *testing.T) {
 	if got, want := eng.DefaultAuthenticationPlugin(), "mysql_native_password"; got != want {
 		t.Errorf("DefaultAuthenticationPlugin() = %q, want %q", got, want)
 	}
+
+	// MariaDB rejects gtid_mode/enforce_gtid_consistency; it pins gtid_strict_mode.
+	gtid := eng.GTIDConfigSettings()
+	if len(gtid) != 1 || gtid[0] != [2]string{"gtid_strict_mode", "ON"} {
+		t.Errorf("GTIDConfigSettings() = %v, want [[gtid_strict_mode ON]]", gtid)
+	}
 }
 
 func TestMariaDBLifecycle(t *testing.T) {
@@ -441,6 +447,13 @@ func TestMySQLDefaults(t *testing.T) {
 
 	if got, want := eng.DefaultAuthenticationPlugin(), "caching_sha2_password"; got != want {
 		t.Errorf("DefaultAuthenticationPlugin() = %q, want %q", got, want)
+	}
+
+	// MySQL enables GTID via gtid_mode + enforce_gtid_consistency.
+	gtid := eng.GTIDConfigSettings()
+	want := [][2]string{{"gtid_mode", "ON"}, {"enforce_gtid_consistency", "ON"}}
+	if len(gtid) != len(want) || gtid[0] != want[0] || gtid[1] != want[1] {
+		t.Errorf("GTIDConfigSettings() = %v, want %v", gtid, want)
 	}
 }
 

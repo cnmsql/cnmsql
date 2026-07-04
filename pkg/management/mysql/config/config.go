@@ -135,6 +135,10 @@ type ServerConfig struct {
 	// when the engine provides a divergent set (MariaDB uses master/slave
 	// regardless of version; MySQL 8.0.26+ uses source/replica).
 	SemiSyncNaming *version.SemiSyncNaming
+	// GTIDSettings are the engine's GTID-enabling my.cnf pairs, used in place of
+	// the MySQL-only gtid_mode/enforce_gtid_consistency when engine-aware
+	// (SemiSyncNaming set). MariaDB rejects the MySQL variables outright.
+	GTIDSettings [][2]string
 }
 
 // GroupReplication is the fully-resolved input to rendering the
@@ -489,12 +493,25 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 		{"server-id", strconv.Itoa(c.ServerID)},
 		{"datadir", c.DataDir},
 		{"socket", c.Socket},
-		{"gtid_mode", "ON"},
-		{"enforce_gtid_consistency", "ON"},
-		{"log_bin", "binlog"},
-		{"relay_log", "relay-bin"},
-		{"binlog_format", binlogFormat},
 	}
+	// GTID mode is engine-divergent: MySQL uses gtid_mode/enforce_gtid_consistency,
+	// which MariaDB's server rejects as unknown variables. Engine-aware callers
+	// supply the flavor's pairs; version-only callers keep the MySQL defaults.
+	if engineCapabilities {
+		for _, kv := range c.GTIDSettings {
+			pairs = append(pairs, pair{kv[0], kv[1]})
+		}
+	} else {
+		pairs = append(pairs,
+			pair{"gtid_mode", "ON"},
+			pair{"enforce_gtid_consistency", "ON"},
+		)
+	}
+	pairs = append(pairs,
+		pair{"log_bin", "binlog"},
+		pair{"relay_log", "relay-bin"},
+		pair{"binlog_format", binlogFormat},
+	)
 
 	if c.Port != 0 {
 		pairs = append(pairs, pair{"port", strconv.Itoa(c.Port)})

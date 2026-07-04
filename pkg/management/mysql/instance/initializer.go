@@ -219,7 +219,8 @@ func (o *InitOptions) runInitialize(ctx context.Context) error {
 // runMysqldInitialize runs the engine-appropriate init binary with
 // flavor-specific arguments.
 func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
-	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysqld initialize", "binary", o.MysqldPath)
+	initBinary := o.initBinary()
+	logf.FromContext(ctx).WithName("instance-initdb").Info("Initializing data directory", "binary", initBinary)
 	args := []string{}
 	if o.ConfigFile != "" {
 		initConfig, err := o.writeInitConfig()
@@ -230,7 +231,7 @@ func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 		args = append(args, "--defaults-file="+initConfig)
 	}
 	args = append(args, o.initArgs()...)
-	return runStdio(ctx, o.initBinary(), args, "mysqld --initialize-insecure")
+	return runStdio(ctx, initBinary, args, initBinary+" initialize")
 }
 
 // initBinary returns the binary used to initialize a fresh data directory.

@@ -182,6 +182,7 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 	cfg.HasLogReplicaUpdates = clusterEng.HasLogReplicaUpdates(ver)
 	naming := clusterEng.SemiSync(ver)
 	cfg.SemiSyncNaming = &naming
+	cfg.GTIDSettings = clusterEng.GTIDConfigSettings()
 
 	return cfg.Render()
 }

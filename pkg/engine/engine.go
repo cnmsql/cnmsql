@@ -143,6 +143,13 @@ type Engine interface {
 	// and value for the given expiry seconds.
 	BinlogExpire(ver version.Version, seconds int) (name, value string)
 
+	// GTIDConfigSettings returns the ordered my.cnf key/value pairs that enable
+	// the engine's GTID mode. MySQL needs gtid_mode/enforce_gtid_consistency;
+	// MariaDB has no such variables (GTID is inherent with the binlog) and only
+	// pins gtid_strict_mode. Emitting the MySQL variables to mariadbd aborts
+	// startup with "unknown variable", so this must be flavor-selected.
+	GTIDConfigSettings() [][2]string
+
 	// DefaultAuthenticationPlugin returns the default server authentication
 	// plugin: caching_sha2_password for MySQL 8.0+, mysql_native_password for
 	// MariaDB.
@@ -269,6 +276,13 @@ func (mysqlEngine) BinlogExpire(ver version.Version, seconds int) (string, strin
 	return config.BinlogExpire(ver, seconds)
 }
 
+func (mysqlEngine) GTIDConfigSettings() [][2]string {
+	return [][2]string{
+		{"gtid_mode", "ON"},
+		{"enforce_gtid_consistency", "ON"},
+	}
+}
+
 func (mysqlEngine) DefaultAuthenticationPlugin() string {
 	return "caching_sha2_password"
 }
@@ -384,6 +398,15 @@ func (mariadbEngine) IsGroupReplicationManagedKey(normalized string) bool {
 
 func (mariadbEngine) BinlogExpire(ver version.Version, seconds int) (string, string) {
 	return config.BinlogExpire(ver, seconds)
+}
+
+func (mariadbEngine) GTIDConfigSettings() [][2]string {
+	// MariaDB has no gtid_mode/enforce_gtid_consistency: GTID is inherent once
+	// the binary log is enabled. gtid_strict_mode is the safety analog of
+	// enforce_gtid_consistency, refusing out-of-order GTIDs.
+	return [][2]string{
+		{"gtid_strict_mode", "ON"},
+	}
 }
 
 func (mariadbEngine) DefaultAuthenticationPlugin() string {

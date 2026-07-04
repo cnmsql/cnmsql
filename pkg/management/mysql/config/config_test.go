@@ -262,9 +262,15 @@ func TestRenderEngineCapabilityOverrides(t *testing.T) {
 	c.HasLogReplicaUpdates = false
 	c.HasSuperReadOnly = false
 	c.SemiSyncNaming = &mariadbNaming
+	c.GTIDSettings = [][2]string{{"gtid_strict_mode", "ON"}}
 
 	out := mustRender(t, c)
 
+	// MariaDB GTID: gtid_strict_mode, never the MySQL-only variables that
+	// mariadbd rejects as unknown at startup.
+	assertContains(t, out, "gtid_strict_mode = ON")
+	assertNotContains(t, out, "gtid_mode")
+	assertNotContains(t, out, "enforce_gtid_consistency")
 	// log_slave_updates spelling, not the MySQL 8.0 rename.
 	assertContains(t, out, "log_slave_updates = ON")
 	assertNotContains(t, out, "log_replica_updates")

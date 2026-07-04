@@ -135,3 +135,17 @@ command-arg tests unchanged; `gofmt`/`go vet` clean.
   `UpgradeArgs` currently a nil stub); MariaDB golden-file config tests (Task 4);
   manual smoke (Task D).
 - verify: `go build ./...`, `gofmt -l`, `go vet ./...` clean; full suite green.
+
+### 2026-07-04 — smoke fix: flavor-aware GTID config
+- did: first manual smoke of a `flavor: mariadb` instance reached the correct
+  init binary (`mariadb-install-db`) but aborted: mariadbd rejects the MySQL-only
+  `gtid_mode`/`enforce_gtid_consistency` as unknown variables. Added an engine
+  `GTIDConfigSettings()` config facet (MySQL → gtid_mode/enforce; MariaDB →
+  gtid_strict_mode) threaded through `renderMyCnf`; `managedSettings` now emits
+  the flavor's GTID pairs. Audited the rest of the rendered `[mysqld]` — no other
+  MySQL-only variable survives for MariaDB (admin interface, super_read_only,
+  log_replica_updates already gated; GR never emitted). Added a controller
+  `renderMyCnf` MariaDB integration test plus MySQL-unchanged guard.
+- next: re-run the manual smoke (should pass data-dir init; next expected wall is
+  bootstrap.go account seeding — still MySQL-specific SQL).
+- verify: `go build`, `gofmt -l`, `go vet` clean; full suite green.
