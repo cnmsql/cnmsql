@@ -171,6 +171,9 @@ func TestMySQLCapabilityFacet(t *testing.T) {
 			t.Errorf("UsesReplicaTerminology(%s) = %v, want %v", s, got, want)
 		}
 	}
+	if !eng.SupportsDynamicPrivileges() {
+		t.Error("MySQL SupportsDynamicPrivileges() = false, want true")
+	}
 }
 
 func TestMySQLConfigFacet(t *testing.T) {
@@ -263,6 +266,9 @@ func TestMariaDBFacets(t *testing.T) {
 	}
 	if eng.SemiSyncIsPlugin() {
 		t.Error("MariaDB SemiSyncIsPlugin() = true, want false")
+	}
+	if eng.SupportsDynamicPrivileges() {
+		t.Error("MariaDB SupportsDynamicPrivileges() = true, want false")
 	}
 
 	v := mustVersion(t, "11.4.0")

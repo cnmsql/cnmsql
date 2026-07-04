@@ -137,6 +137,13 @@ type Engine interface {
 	// terminology (MySQL 8.0.23+) vs MASTER/SLAVE. MariaDB never adopted it.
 	UsesReplicaTerminology(version.Version) bool
 
+	// SupportsDynamicPrivileges reports whether the engine family has MySQL-8.0
+	// dynamic privileges (BACKUP_ADMIN, *_ADMIN, CLONE_ADMIN, and the
+	// performance_schema tables that back them). MariaDB has no equivalent and
+	// rejects those GRANTs as a syntax error, so it is always false; callers
+	// still gate MySQL on the 8.0 version boundary separately.
+	SupportsDynamicPrivileges() bool
+
 	// --- config ---
 
 	// IsGroupReplicationManagedKey reports whether a normalized config key
@@ -270,6 +277,8 @@ func (mysqlEngine) UsesReplicaTerminology(v version.Version) bool {
 	return v.UsesReplicaTerminology()
 }
 
+func (mysqlEngine) SupportsDynamicPrivileges() bool { return true }
+
 // config
 
 func (mysqlEngine) IsGroupReplicationManagedKey(normalized string) bool {
@@ -400,6 +409,8 @@ func (mariadbEngine) UsesResetBinaryLogsAndGtids(version.Version) bool {
 func (mariadbEngine) UsesReplicaTerminology(version.Version) bool {
 	return false
 }
+
+func (mariadbEngine) SupportsDynamicPrivileges() bool { return false }
 
 // config
 

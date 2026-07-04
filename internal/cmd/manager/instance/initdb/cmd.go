@@ -64,10 +64,18 @@ func NewCommand() *cobra.Command {
 			if serverVersion == "" {
 				serverVersion = os.Getenv("MYSQL_VERSION")
 			}
-			// Dynamic privileges (admin interface, super_read_only) exist on
-			// MySQL 8.0+. When the version is unknown, assume modern.
-			dynamicPrivileges := true
-			if serverVersion != "" {
+
+			// The engine (selected from CNMSQL_FLAVOR, set by the controller)
+			// picks the flavor-appropriate init binary and data-dir arguments;
+			// it falls back to MySQL when the var is unset.
+			eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+
+			// Dynamic privileges (admin interface, super_read_only, BACKUP_ADMIN)
+			// exist on MySQL 8.0+. When the MySQL version is unknown, assume
+			// modern. MariaDB has no equivalent and rejects those GRANTs as a
+			// syntax error, so the engine forces this off regardless of version.
+			dynamicPrivileges := eng.SupportsDynamicPrivileges()
+			if dynamicPrivileges && serverVersion != "" {
 				ver, err := version.Parse(serverVersion)
 				if err != nil {
 					return err
@@ -83,11 +91,6 @@ func NewCommand() *cobra.Command {
 			if database != "" {
 				appPassword = os.Getenv("MYSQL_APP_PASSWORD")
 			}
-
-			// The engine (selected from CNMSQL_FLAVOR, set by the controller)
-			// picks the flavor-appropriate init binary and data-dir arguments;
-			// it falls back to MySQL when the var is unset.
-			eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
 
 			return instance.Initialize(cmd.Context(), instance.InitOptions{
 				MysqldPath: mysqldPath,
