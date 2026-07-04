@@ -26,6 +26,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
@@ -170,7 +171,9 @@ func (o *JoinOptions) configureReplication(ctx context.Context, ver version.Vers
 	)
 	// Do not start replication on the temporary server; we configure it and let
 	// the real server start it. The option was renamed slave→replica in 8.0.26.
-	if ver.UsesReplicaTerminology() {
+	// TODO(M-MDB.2): resolve from CNMSQL_FLAVOR env var.
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	if eng.UsesReplicaTerminology(ver) {
 		args = append(args, "--skip-replica-start")
 	} else {
 		args = append(args, "--skip-slave-start")

@@ -48,6 +48,9 @@ func ControlConfig(v version.Version, p ControlParams) Config {
 		MaxOpenConns: 1,
 	}
 
+	// TODO(M-MDB.2): replace with eng.HasAdminInterface(v) once the call site
+	// (instance/runner.go) passes the bool. pool cannot import engine directly
+	// because engine → replication → pool creates a cycle.
 	if v.HasAdminInterface() {
 		addr := p.AdminAddress
 		if addr == "" {

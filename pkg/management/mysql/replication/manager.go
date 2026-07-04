@@ -26,17 +26,69 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
+// Dialect is the replication SQL dialect a Manager executes: the verbs and
+// syntax for CHANGE MASTER/SOURCE, START/STOP/RESET replica, SHOW ... STATUS and
+// RESET MASTER/BINARY LOGS. It is declared here (not imported from engine) so the
+// replication package avoids an import cycle with engine, which imports this
+// package for the statement builders. engine.ReplDialect matches this shape
+// structurally, so engine.ForFlavor(...).Repl() can be passed to
+// NewManagerWithDialect.
+type Dialect interface {
+	ChangeSource(v version.Version, opts SourceOptions) string
+	StartReplica(v version.Version) string
+	StopReplica(v version.Version) string
+	ResetReplica(v version.Version, all bool) string
+	ShowReplicaStatus(v version.Version) string
+	ResetBinaryLogs(v version.Version) string
+}
+
+// mysqlDialect delegates to the version-aware statement builders in this
+// package. It is the default when no dialect is injected via
+// NewManagerWithDialect (which M-MDB.2 wires from engine.ForFlavor(...).Repl()).
+type mysqlDialect struct{}
+
+func (mysqlDialect) ChangeSource(v version.Version, opts SourceOptions) string {
+	return ChangeSourceStatement(v, opts)
+}
+func (mysqlDialect) StartReplica(v version.Version) string {
+	return StartReplicaStatement(v)
+}
+func (mysqlDialect) StopReplica(v version.Version) string {
+	return StopReplicaStatement(v)
+}
+func (mysqlDialect) ResetReplica(v version.Version, all bool) string {
+	return ResetReplicaStatement(v, all)
+}
+func (mysqlDialect) ShowReplicaStatus(v version.Version) string {
+	return ShowReplicaStatusStatement(v)
+}
+func (mysqlDialect) ResetBinaryLogs(v version.Version) string {
+	return ResetBinaryLogsStatement(v)
+}
+
 // Manager executes replication and role-transition statements against a mysqld
-// connection. The statement text is produced by the version-aware builders in
-// this package, so Manager stays a thin, ordered executor.
+// connection. The statement text is produced by a replDialect, whose default is
+// the version-aware builders in this package.
 type Manager struct {
 	conn    pool.Connection
 	version version.Version
+	repl    Dialect
 }
 
-// NewManager builds a Manager bound to a connection and server version.
+// NewManager builds a Manager bound to a connection and server version. The
+// replication dialect defaults to the built-in MySQL/Percona statement builders.
 func NewManager(conn pool.Connection, v version.Version) *Manager {
-	return &Manager{conn: conn, version: v}
+	return &Manager{conn: conn, version: v, repl: mysqlDialect{}}
+}
+
+// NewManagerWithDialect builds a Manager that executes statements through the
+// supplied Dialect (e.g. engine.ForFlavor(...).Repl()) instead of the default
+// MySQL/Percona builders. A nil dialect falls back to the MySQL default.
+func NewManagerWithDialect(conn pool.Connection, v version.Version, d Dialect) *Manager {
+	if d == nil {
+		d = mysqlDialect{}
+	}
+	return &Manager{conn: conn, version: v, repl: d}
 }
 
 func (m *Manager) exec(ctx context.Context, stmt string) error {
@@ -55,16 +107,16 @@ func (m *Manager) ConfigureSource(ctx context.Context, opts SourceOptions) error
 // configureSource runs STOP REPLICA, CHANGE REPLICATION SOURCE and, when start
 // is true, START REPLICA.
 func (m *Manager) configureSource(ctx context.Context, opts SourceOptions, start bool) error {
-	if err := m.exec(ctx, StopReplicaStatement(m.version)); err != nil {
+	if err := m.exec(ctx, m.repl.StopReplica(m.version)); err != nil {
 		return err
 	}
-	if err := m.exec(ctx, ChangeSourceStatement(m.version, opts)); err != nil {
+	if err := m.exec(ctx, m.repl.ChangeSource(m.version, opts)); err != nil {
 		return err
 	}
 	if !start {
 		return nil
 	}
-	return m.exec(ctx, StartReplicaStatement(m.version))
+	return m.exec(ctx, m.repl.StartReplica(m.version))
 }
 
 // ProvisionFromBackup configures a freshly restored replica: it resets the
@@ -77,7 +129,7 @@ func (m *Manager) configureSource(ctx context.Context, opts SourceOptions, start
 // resumes replication from the persisted source config on its next boot.
 // Starting here is redundant on the throwaway server, so we configure-only.
 func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, opts SourceOptions) error {
-	if err := m.exec(ctx, ResetBinaryLogsStatement(m.version)); err != nil {
+	if err := m.exec(ctx, m.repl.ResetBinaryLogs(m.version)); err != nil {
 		return err
 	}
 	if gtidPurged != "" {
@@ -93,12 +145,12 @@ func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, op
 // it on a freshly initialised joiner so the transactions initdb authored locally
 // are not seen as errant transactions (which would block a clone from a donor).
 func (m *Manager) ResetBinaryLogs(ctx context.Context) error {
-	return m.exec(ctx, ResetBinaryLogsStatement(m.version))
+	return m.exec(ctx, m.repl.ResetBinaryLogs(m.version))
 }
 
 // StartReplica starts the replication threads.
 func (m *Manager) StartReplica(ctx context.Context) error {
-	return m.exec(ctx, StartReplicaStatement(m.version))
+	return m.exec(ctx, m.repl.StartReplica(m.version))
 }
 
 // EnsureReplicaConfigured makes sure this server follows the requested source.
@@ -141,13 +193,13 @@ func (m *Manager) EnsureReplicaStarted(ctx context.Context) error {
 
 // StopReplica stops the replication threads.
 func (m *Manager) StopReplica(ctx context.Context) error {
-	return m.exec(ctx, StopReplicaStatement(m.version))
+	return m.exec(ctx, m.repl.StopReplica(m.version))
 }
 
 // ResetReplica clears replication configuration. With all=true it also removes
 // connection settings (RESET REPLICA ALL).
 func (m *Manager) ResetReplica(ctx context.Context, all bool) error {
-	return m.exec(ctx, ResetReplicaStatement(m.version, all))
+	return m.exec(ctx, m.repl.ResetReplica(m.version, all))
 }
 
 // SetReadOnly toggles read_only.

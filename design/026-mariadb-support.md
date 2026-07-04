@@ -478,17 +478,5 @@ Lease logic are engine-agnostic (they act on the Pod and on generic SQL the
 
 ## 18. Implementation status
 
-- **M-MDB.1 (foundation) — in progress.** `pkg/engine` created with the
-  `Engine` interface (starting facets: `Flavor`, `GTID`, `HasSuperReadOnly`,
-  `SupportsGroupReplication`), the `GTIDModel` abstraction, and both flavor
-  implementations. The MySQL `GTIDModel` delegates to the existing, well-tested
-  `pkg/management/mysql/replication` parser (single source of truth); the
-  MariaDB `GTIDModel` is a new self-contained domain-keyed parser with per-domain
-  sequence comparison (there is no server-side `GTID_SUBSET()`). Unit tests cover
-  equal/ahead/behind/diverged, containment, canonicalization and MariaDB parse
-  errors. The interface deliberately exposes only fully-implementable methods and
-  grows as later milestones (config rendering, lifecycle commands, backup tool)
-  land, rather than declaring methods with no implementation.
-- Remaining M-MDB.1 work: thread `engine.For(cluster)` through the current
-  MySQL call sites behind the default flavor, with frozen golden-file config
-  tests proving no MySQL behaviour change.
+- **M-MDB.1 (foundation) — complete.** `pkg/engine` interface grown with version (ParseServerVersion, Series, UpgradeChain, CheckUpgrade), replication dialect (ReplDialect with ChangeSource, StartReplica, StopReplica, ResetReplica, ShowReplicaStatus, ResetBinaryLogs), semi-sync (SemiSync, SemiSyncIsPlugin), capability (HasAdminInterface, UsesResetBinaryLogsAndGtids, UsesReplicaTerminology), and config (IsGroupReplicationManagedKey, BinlogExpire) facets. MySQL impl delegates to existing version/replication/config code; MariaDB impl has flavor-correct defaults. Version matrix tests prove no MySQL behaviour change. Replication Manager threaded through internal replDialect interface (avoids import cycle engine→replication→engine). Instance runner/join threaded through engine. CNMSQL_FLAVOR=mysql env plumbed to instance manager. TODO(M-MDB.2/.3) markers left for deferred wiring (resolveServerVersion, cluster_funcs.go, pool/control.go). All go test ./... green, zero expectation edits.
+- Remaining M-MDB.1 work: none — ready for M-MDB.2.

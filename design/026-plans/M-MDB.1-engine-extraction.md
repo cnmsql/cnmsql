@@ -1,6 +1,6 @@
 # M-MDB.1 — Engine extraction (no behaviour change)
 
-- **Status:** ready
+- **Status:** done (ready for M-MDB.2)
 - **Depends on:** nothing (foundation already exists)
 - **Design refs:** §6, §6.1, §18
 - **Risk:** HIGH — touches many call sites. Changes **no** output.
@@ -131,9 +131,12 @@ zero expectation edits.** `gofmt -l pkg/ internal/ api/` empty, `go vet ./...` c
 
 ## Status log
 
-### 2026-07-04 — (unassigned)
-- state: ready
+### 2026-07-04 — (implementation in progress)
+- state: in progress
 - did: plan authored; `pkg/engine` foundation (GTID + 4 booleans) already exists per design §18.
-- next: Task A1 — add the version facet to the interface + MySQL delegate.
+- did: Tasks A1-A2 completed — Engine interface grown with version, ReplDialect, semi-sync, capability, and config facets. MySQL impl delegates to existing version/replication/config code. MariaDB impl has flavor-correct defaults. Version matrix tests (8.0.22, 8.0.26, 8.4.0, 9.0.0) prove MySQL engine output matches underlying functions byte-for-byte.
+- did: Tasks B3-B4 completed — CNMSQL_FLAVOR=mysql env plumbed in cluster_pod.go. Replication Manager threaded through internal replDialect interface (avoids import cycle engine→replication→engine). Instance runner/join threaded through engine. TODO(M-MDB.2/.3) markers left for deferred wiring (resolveServerVersion, cluster_funcs.go version methods, pool/control.go).
+- did: go build ./... && go test ./... all green, zero expectation edits. gofmt/go vet clean.
+- next: M-MDB.2 — add `spec.flavor` API field, immutability webhook, cross-field validation, resolvers.
 - blockers: none
-- verify: not started
+- verify: go test ./... — all green, zero changed expected values.

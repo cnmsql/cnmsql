@@ -384,8 +384,10 @@ func initEnv(plan clusterPlan) []corev1.EnvVar {
 // are appended so the in-Pod archiver can ship binlogs. cluster may be nil for
 // the init container, which never archives.
 func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
+	// TODO(M-MDB.2): resolve env from cluster.ResolvedFlavor().
 	env := []corev1.EnvVar{
 		{Name: "MYSQL_VERSION", Value: plan.ServerVersion},
+		{Name: "CNMSQL_FLAVOR", Value: "mysql"},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
 		secretEnv("MYSQL_CONTROL_PASSWORD", plan.ControlSecretName),

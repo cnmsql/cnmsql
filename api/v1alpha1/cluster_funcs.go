@@ -280,6 +280,8 @@ func (cluster *Cluster) validateSeriesUpgrade(old *Cluster) field.ErrorList {
 				oldSeries.Major, oldSeries.Minor, newSeries.Major, newSeries.Minor)))
 		return allErrs
 	}
+	// TODO(M-MDB.2): use engine.CheckUpgrade so the flavor-specific chain is
+	// consulted (MariaDB has its own series chain).
 	if err := version.CheckUpgrade(oldSeries, newSeries); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("imageCatalogRef", "series"), cluster.Spec.ImageCatalogRef.Series, err.Error()))
@@ -290,6 +292,8 @@ func (cluster *Cluster) validateSeriesUpgrade(old *Cluster) field.ErrorList {
 // targetSeries returns the MySQL series the spec targets and whether it could be
 // determined. imageCatalogRef.series is authoritative; an imageName is parsed
 // best-effort from its tag, so a digest-pinned or non-version tag yields false.
+// TODO(M-MDB.2): pass an engine.Engine so the check respects the flavor's
+// upgrade chain (e.g. MariaDB 10.11 → 11.4, not the MySQL 8.0 → 8.4 chain).
 func (spec *ClusterSpec) targetSeries() (version.Version, bool) {
 	if spec.ImageCatalogRef != nil {
 		if v, err := version.Parse(spec.ImageCatalogRef.Series); err == nil {

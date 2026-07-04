@@ -18,7 +18,7 @@ package engine
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -109,7 +109,7 @@ func (p mariaPos) string() string {
 	for d := range p {
 		domains = append(domains, d)
 	}
-	sort.Slice(domains, func(i, j int) bool { return domains[i] < domains[j] })
+	slices.Sort(domains)
 	var b strings.Builder
 	for i, d := range domains {
 		if i > 0 {

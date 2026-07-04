@@ -34,6 +34,7 @@ import (
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/diskusage"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance/rolereconciler"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics"
@@ -244,6 +245,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 
+	// TODO(M-MDB.2): resolve from CNMSQL_FLAVOR env var.
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+
 	args := []string{}
 	if opts.ConfigFile != "" {
 		args = append(args, "--defaults-file="+opts.ConfigFile)
@@ -259,7 +263,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// clears it on the confirmed primary. This is not applied to the bootstrap
 	// temporary servers (initdb/join), which must be writable.
 	if opts.ClusterName != "" && opts.Namespace != "" {
-		if ver.HasSuperReadOnly() {
+		if eng.HasSuperReadOnly() {
 			args = append(args, "--super-read-only=ON")
 		} else {
 			args = append(args, "--read-only=ON")

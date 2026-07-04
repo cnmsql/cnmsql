@@ -157,7 +157,7 @@ func (m *Manager) scalarString(ctx context.Context, query string) (string, error
 // ReplicaState runs SHOW REPLICA/SLAVE STATUS and parses it, coping with the
 // column renames introduced in MySQL 8.0.22.
 func (m *Manager) ReplicaState(ctx context.Context) (*ReplicaState, error) {
-	query := ShowReplicaStatusStatement(m.version)
+	query := m.repl.ShowReplicaStatus(m.version)
 	rows, err := m.conn.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query %q: %w", query, err)

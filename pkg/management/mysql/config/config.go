@@ -312,6 +312,11 @@ func isGroupReplicationManagedKey(normalized string) bool {
 	return strings.HasPrefix(normalized, groupReplicationKeyPrefix) || normalized == "plugin_load_add"
 }
 
+// IsGroupReplicationManagedKey is the exported wrapper for the engine package.
+func IsGroupReplicationManagedKey(normalized string) bool {
+	return isGroupReplicationManagedKey(normalized)
+}
+
 // StripGroupReplication removes every operator-owned Group Replication line
 // (the group_replication_* namespace and plugin_load_add) from a rendered
 // my.cnf, leaving comments, the section header and all other settings intact.
@@ -636,6 +641,11 @@ func binlogExpire(ver version.Version, seconds int) (string, string) {
 	}
 	days := max((seconds+86399)/86400, 1)
 	return "expire_logs_days", strconv.Itoa(days)
+}
+
+// BinlogExpire is the exported wrapper for the engine package.
+func BinlogExpire(ver version.Version, seconds int) (string, string) {
+	return binlogExpire(ver, seconds)
 }
 
 type pair struct {

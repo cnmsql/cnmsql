@@ -486,6 +486,9 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 }
 
 func resolveServerVersion(image string) (string, error) {
+	// TODO(M-MDB.3): resolve through engine.DefaultServerVersion(series) so the
+	// MariaDB default (ghcr.io/.../cnmsql-mariadb-instance:11.4) is picked up
+	// when flavor=mariadb and no explicit imageName/imageCatalogRef is set.
 	tag := imageTag(image)
 	switch tag {
 	case "8.0":
