@@ -451,8 +451,19 @@ func TestMariaDBLifecycle(t *testing.T) {
 		t.Errorf("InitDataDirArgs[2] = %q", args[2])
 	}
 
-	if len(eng.UpgradeArgs()) != 0 {
-		t.Errorf("UpgradeArgs() should be empty for MariaDB")
+	args = eng.UpgradeArgs("/var/run/mysqld/mysqld.sock")
+	if len(args) != 2 {
+		t.Fatalf("UpgradeArgs() returned %d args, want 2", len(args))
+	}
+	if args[0] != "--force" {
+		t.Errorf("UpgradeArgs[0] = %q, want --force", args[0])
+	}
+	if args[1] != "--socket=/var/run/mysqld/mysqld.sock" {
+		t.Errorf("UpgradeArgs[1] = %q", args[1])
+	}
+
+	if eng.UpgradeBinary() != "mariadb-upgrade" {
+		t.Errorf("UpgradeBinary() = %q, want mariadb-upgrade", eng.UpgradeBinary())
 	}
 }
 
@@ -524,7 +535,10 @@ func TestMySQLLifecycle(t *testing.T) {
 		t.Errorf("InitDataDirArgs[1] = %q", args[1])
 	}
 
-	if len(eng.UpgradeArgs()) != 0 {
+	if len(eng.UpgradeArgs("")) != 0 {
 		t.Errorf("UpgradeArgs() should be empty for MySQL")
+	}
+	if eng.UpgradeBinary() != "" {
+		t.Errorf("UpgradeBinary() = %q, want empty", eng.UpgradeBinary())
 	}
 }

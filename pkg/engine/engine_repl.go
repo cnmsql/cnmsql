@@ -35,6 +35,7 @@ type ReplDialect interface {
 	GTIDExecutedQuery() string
 	SeedReplicaPosition(pos string) string
 	SemiSyncNaming(v version.Version) version.SemiSyncNaming
+	HasSuperReadOnly() bool
 }
 
 // --- MySQL replication dialect ---
@@ -76,6 +77,7 @@ func (mysqlReplDialect) SeedReplicaPosition(pos string) string {
 func (mysqlReplDialect) SemiSyncNaming(v version.Version) version.SemiSyncNaming {
 	return v.SemiSync()
 }
+func (mysqlReplDialect) HasSuperReadOnly() bool { return true }
 
 // --- MariaDB replication dialect ---
 
@@ -124,3 +126,4 @@ func (mariadbReplDialect) SeedReplicaPosition(pos string) string {
 func (mariadbReplDialect) SemiSyncNaming(version.Version) version.SemiSyncNaming {
 	return mariadbSemiSyncNaming()
 }
+func (mariadbReplDialect) HasSuperReadOnly() bool { return false }

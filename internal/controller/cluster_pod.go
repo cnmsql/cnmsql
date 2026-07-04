@@ -302,7 +302,7 @@ func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 	}
 }
 
-func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPlan, _ instancePlan) []string {
+func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, _ instancePlan) []string {
 	// Role is dynamic: the in-Pod reconciler watches the Cluster and drives the
 	// local mysqld to match status.targetPrimary / currentPrimary. The run
 	// command therefore carries no --role/--source-host; it gets the owning
@@ -320,20 +320,26 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, _ clusterPla
 		"--namespace=$(POD_NAMESPACE)",
 		"--control-user=" + controlUser,
 		"--backup-user=" + backupUser,
-		"--admin-address=" + mysqlconfig.DefaultAdminAddress,
-		fmt.Sprintf("--admin-port=%d", mysqlconfig.DefaultAdminPort),
+	}
+	if plan.Flavor == mysqlv1alpha1.FlavorMySQL {
+		args = append(args,
+			"--admin-address="+mysqlconfig.DefaultAdminAddress,
+			fmt.Sprintf("--admin-port=%d", mysqlconfig.DefaultAdminPort),
+		)
+	}
+	args = append(args,
 		"--web-addr=:8080",
 		"--health-addr=:8081",
-		"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
-		"--tls-key=" + topology.ServerTLSPath + "/tls.key",
-		"--tls-client-ca=" + topology.ClientCAPath + "/ca.crt",
+		"--tls-cert="+topology.ServerTLSPath+"/tls.crt",
+		"--tls-key="+topology.ServerTLSPath+"/tls.key",
+		"--tls-client-ca="+topology.ClientCAPath+"/ca.crt",
 		"--source-port=3306",
-		"--replication-user=" + replicationUser,
+		"--replication-user="+replicationUser,
 		"--source-ssl",
-		"--source-ssl-ca=" + topology.ClientCAPath + "/ca.crt",
-		"--source-ssl-cert=" + topology.ServerTLSPath + "/tls.crt",
-		"--source-ssl-key=" + topology.ServerTLSPath + "/tls.key",
-	}
+		"--source-ssl-ca="+topology.ClientCAPath+"/ca.crt",
+		"--source-ssl-cert="+topology.ServerTLSPath+"/tls.crt",
+		"--source-ssl-key="+topology.ServerTLSPath+"/tls.key",
+	)
 	args = append(args, r.topologyReconciler(cluster).PodPolicy(cluster).RunArgs...)
 	if monitoringTLSEnabled(cluster) {
 		// Serve metrics over the same mutual TLS as the control API: the pod

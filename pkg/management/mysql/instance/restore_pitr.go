@@ -39,14 +39,14 @@ const pitrSentinelFile = ".cnmsql-pitr-done"
 
 // maybeReplay runs the point-in-time replay unless a previous attempt already
 // completed it (sentinel present on the data directory).
-func (o *RestoreOptions) maybeReplay(ctx context.Context, bt engine.BackupTool) error {
+func (o *RestoreOptions) maybeReplay(ctx context.Context, bt engine.BackupTool, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 	sentinel := filepath.Join(o.DataDir, pitrSentinelFile)
 	if _, err := os.Stat(sentinel); err == nil {
 		log.Info("Point-in-time replay already completed; skipping", "sentinel", sentinel)
 		return nil
 	}
-	if err := o.replayBinlogs(ctx, bt); err != nil {
+	if err := o.replayBinlogs(ctx, bt, eng); err != nil {
 		return err
 	}
 	if err := os.WriteFile(sentinel, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o640); err != nil {
@@ -64,7 +64,7 @@ func (o *RestoreOptions) maybeReplay(ctx context.Context, bt engine.BackupTool) 
 // advances as each archived transaction is applied (mysqlbinlog emits
 // SET GTID_NEXT per transaction), so the recovered server ends at exactly the
 // target point with a coherent GTID history.
-func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool) error {
+func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr").WithValues(
 		"sourceCluster", o.SourceCluster, "bucket", o.ObjectStore.Bucket)
 
@@ -76,7 +76,7 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 	if err != nil {
 		return err
 	}
-	log.Info("Read base backup anchor GTID", "anchorGTID", anchor)
+	log.Info("Read base backup anchor GTID", "anchorGTID", anchor.GTIDSet)
 
 	// Load the cluster-level archive index: the ordered timeline of UUID segments.
 	indexKey := objectstore.ArchiveIndexKey(o.ObjectStore, o.SourceCluster)
@@ -85,9 +85,19 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		return fmt.Errorf("pitr: reading archive index %q: %w", indexKey, err)
 	}
 
-	plan, err := binlog.PlanReplay(&index, anchor, o.Target)
-	if err != nil {
-		return fmt.Errorf("pitr: planning replay: %w", err)
+	var plan binlog.ReplayPlan
+	if eng.Flavor() == engine.FlavorMariaDB {
+		plan, err = binlog.PlanReplayWithModel(&index, anchor.GTIDSet, o.Target, eng.GTID())
+		if err != nil {
+			return fmt.Errorf("pitr: planning MariaDB replay: %w", err)
+		}
+		plan.AnchorFile = anchor.File
+		plan.StartPosition = anchor.Position
+	} else {
+		plan, err = binlog.PlanReplay(&index, anchor.GTIDSet, o.Target)
+		if err != nil {
+			return fmt.Errorf("pitr: planning replay: %w", err)
+		}
 	}
 	if len(plan.Segments) == 0 {
 		log.Info("No archived binlogs to replay; data is already at the recovery target")
@@ -106,15 +116,15 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 	log.Info("Downloaded archived binlogs", "files", len(files),
 		"stopDatetime", plan.StopDatetime, "includeGTIDs", plan.IncludeGTIDs)
 
-	return o.applyReplay(ctx, bt, plan, files)
+	return o.applyReplay(ctx, bt, eng, plan, files)
 }
 
-// readAnchorGTID parses the base backup's binlog-info file for the GTID set the
-// restore landed at. It prefers the copy in the data directory (durable on the
-// PVC, so it survives an init-container restart that lost the scratch backup
-// dir) and falls back to the scratch dir. A missing file (older backup tool, or
-// no GTIDs yet) yields an empty anchor: replay from the start.
-func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (string, error) {
+// readAnchorGTID parses the base backup's binlog-info file and returns the
+// full binlog info (file, position, GTID set) the restore landed at. It prefers
+// the copy in the data directory (durable on the PVC, so it survives an
+// init-container restart that lost the scratch backup dir) and falls back to the
+// scratch dir.
+func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (engine.BinlogInfo, error) {
 	infoFile := bt.BinlogInfoFileName()
 	content, err := os.ReadFile(filepath.Join(o.DataDir, infoFile))
 	if os.IsNotExist(err) {
@@ -122,15 +132,11 @@ func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (string, error) {
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil
+			return engine.BinlogInfo{}, nil
 		}
-		return "", fmt.Errorf("pitr: reading %s: %w", infoFile, err)
+		return engine.BinlogInfo{}, fmt.Errorf("pitr: reading %s: %w", infoFile, err)
 	}
-	info, err := bt.ParseBinlogInfo(string(content))
-	if err != nil {
-		return "", fmt.Errorf("pitr: parsing %s: %w", infoFile, err)
-	}
-	return info.GTIDSet, nil
+	return bt.ParseBinlogInfo(string(content))
 }
 
 // downloadReplayFiles pulls every planned segment file into replayDir, returning
@@ -175,7 +181,7 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 // pattern as reconcileCredentials) so the client connects as root without a
 // password; GTID tracking is independent of the grant system.
 func (o *RestoreOptions) applyReplay(
-	ctx context.Context, bt engine.BackupTool, plan binlog.ReplayPlan, files []string,
+	ctx context.Context, bt engine.BackupTool, eng engine.Engine, plan binlog.ReplayPlan, files []string,
 ) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
@@ -207,11 +213,28 @@ func (o *RestoreOptions) applyReplay(
 	}
 	_ = db.Close()
 
+	isMariaDB := eng.Flavor() == engine.FlavorMariaDB
+	replayFiles := files
+	startPos := plan.StartPosition
+
+	// For MariaDB positional replay: find the anchor file in the downloaded files
+	// and skip everything before it.
+	if isMariaDB && plan.AnchorFile != "" {
+		for i, f := range files {
+			if filepath.Base(f) == plan.AnchorFile {
+				replayFiles = files[i:]
+				break
+			}
+		}
+	}
+
 	replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
-		Files:        files,
-		StopDatetime: plan.StopDatetime,
-		IncludeGTIDs: plan.IncludeGTIDs,
-		ExcludeGTIDs: plan.ExcludeGTIDs,
+		Files:         replayFiles,
+		StopDatetime:  plan.StopDatetime,
+		IncludeGTIDs:  plan.IncludeGTIDs,
+		ExcludeGTIDs:  plan.ExcludeGTIDs,
+		StartPosition: startPos,
+		MariaDB:       isMariaDB,
 	})
 	if err != nil {
 		return fmt.Errorf("pitr: building replay args: %w", err)

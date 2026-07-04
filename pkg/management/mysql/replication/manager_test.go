@@ -44,6 +44,8 @@ func (masterSlaveNamingDialect) SemiSyncNaming(version.Version) version.SemiSync
 	}
 }
 
+func (masterSlaveNamingDialect) HasSuperReadOnly() bool { return false }
+
 func newManager(t *testing.T, ver string) (*Manager, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -246,8 +248,25 @@ func TestDemoteOrdering(t *testing.T) {
 
 func TestSetSuperReadOnlyNoopOnLegacy(t *testing.T) {
 	m, mock := newManager(t, "5.7.7")
-	// No expectations registered: servers before 5.7.8 must not receive
-	// super_read_only.
+	// No expectations registered: MySQL servers before 5.7.8 must not receive
+	// super_read_only even though the MySQL dialect has the feature.
+	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
+		t.Fatalf("SetSuperReadOnly: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetSuperReadOnlyNoopOnMariaDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// MariaDB's dialect reports HasSuperReadOnly=false; super_read_only
+	// must not be emitted regardless of version.
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), masterSlaveNamingDialect{})
 	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
 		t.Fatalf("SetSuperReadOnly: %v", err)
 	}

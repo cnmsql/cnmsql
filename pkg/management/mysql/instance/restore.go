@@ -169,17 +169,7 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 	// sentinel on the (durable) data directory makes a retry skip a completed
 	// replay rather than re-applying already-executed GTIDs.
 	if opts.SourceCluster != "" {
-		// MariaDB PITR replay is not yet wired: the binlog client (mariadb-binlog)
-		// does not accept the MySQL --include-gtids/--exclude-gtids bounding this
-		// path emits, and MariaDB GTID positions use a different format. Fail loudly
-		// and early rather than exec an unsupported command. Tracked as a follow-up;
-		// base-backup restore (without --source-cluster) works on MariaDB.
-		if eng.Flavor() == engine.FlavorMariaDB {
-			return fmt.Errorf(
-				"restore: point-in-time recovery is not yet supported for MariaDB; " +
-					"restore from a base backup without --source-cluster")
-		}
-		if err := opts.maybeReplay(ctx, bt); err != nil {
+		if err := opts.maybeReplay(ctx, bt, eng); err != nil {
 			return fmt.Errorf("replaying archived binlogs: %w", err)
 		}
 	}

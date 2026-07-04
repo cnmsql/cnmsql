@@ -83,7 +83,7 @@ func (m *Manager) ReadOnly(ctx context.Context) (ReadOnlyState, error) {
 	}
 	state.ReadOnly = parseBool(ro)
 
-	if m.version.HasSuperReadOnly() {
+	if m.repl.HasSuperReadOnly() && m.version.HasSuperReadOnly() {
 		sro, err := m.scalarString(ctx, "SELECT @@GLOBAL.super_read_only")
 		if err != nil {
 			return state, err

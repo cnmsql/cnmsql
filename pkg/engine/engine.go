@@ -48,11 +48,12 @@ const (
 	FlavorMySQL   Flavor = "mysql"
 	FlavorMariaDB Flavor = "mariadb"
 
-	defaultMySQLImage    = "ghcr.io/cnmsql/cnmsql-instance:8.0"
-	defaultMariaDBImage  = "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"
-	defaultMySQLdBinary  = "mysqld"
-	mariadbServerdBinary = "mariadbd"
-	mariadbInitBinary    = "mariadb-install-db"
+	defaultMySQLImage       = "ghcr.io/cnmsql/cnmsql-instance:8.0"
+	defaultMariaDBImage     = "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"
+	defaultMySQLdBinary     = "mysqld"
+	mariadbServerdBinary    = "mariadbd"
+	mariadbInitBinary       = "mariadb-install-db"
+	mariadbUpgradeBinaryStr = "mariadb-upgrade"
 )
 
 // Engine is the contract every flavor implements. Implementations are
@@ -184,7 +185,15 @@ type Engine interface {
 
 	// UpgradeArgs returns the arguments passed to the upgrade binary to
 	// migrate system tables across a major/minor version boundary.
-	UpgradeArgs() []string
+	// Socket is the path to the server's unix socket for the upgrade
+	// binary to connect to the running server.
+	UpgradeArgs(socket string) []string
+
+	// UpgradeBinary returns the name of the binary used to upgrade system
+	// tables across version boundaries. Returns empty when the server
+	// self-upgrades (MySQL: mysqld --upgrade=AUTO). MariaDB requires the
+	// separate mariadb-upgrade binary.
+	UpgradeBinary() string
 
 	// ServerdCommand returns the name of the server daemon binary
 	// ("mysqld" for MySQL, "mariadbd" for MariaDB).
@@ -318,8 +327,12 @@ func (mysqlEngine) InitDataDirArgs(datadir string) []string {
 	return []string{"--initialize-insecure", "--datadir=" + datadir}
 }
 
-func (mysqlEngine) UpgradeArgs() []string {
+func (mysqlEngine) UpgradeArgs(_ string) []string {
 	return nil
+}
+
+func (mysqlEngine) UpgradeBinary() string {
+	return ""
 }
 
 func (mysqlEngine) ServerdCommand() string {
@@ -462,8 +475,12 @@ func (mariadbEngine) InitDataDirArgs(datadir string) []string {
 	}
 }
 
-func (mariadbEngine) UpgradeArgs() []string {
-	return nil
+func (mariadbEngine) UpgradeArgs(socket string) []string {
+	return []string{"--force", "--socket=" + socket}
+}
+
+func (mariadbEngine) UpgradeBinary() string {
+	return mariadbUpgradeBinaryStr
 }
 
 func (mariadbEngine) ServerdCommand() string {

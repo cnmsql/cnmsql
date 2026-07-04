@@ -19,6 +19,7 @@ package binlog
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -44,6 +45,161 @@ var (
 	// rather than nesting. Recovery refuses to straddle it.
 	ErrForkedTimeline = errors.New("binlog: archive timeline is forked or has a gap")
 )
+
+// gtidOps abstracts GTID-set operations needed for replay planning. MySQL uses
+// replication.GTIDSet (UUID-keyed intervals); MariaDB uses string-based
+// domain-server-seq operations backed by the engine's GTIDModel.
+type gtidOps interface {
+	Parse(raw string) error
+	Contains(other gtidOps) bool
+	Union(other gtidOps)
+	IsEmpty() bool
+	String() string
+	Clone() gtidOps
+}
+
+// mysqlGTIDSet wraps replication.GTIDSet to satisfy gtidOps.
+type mysqlGTIDSet struct {
+	s replication.GTIDSet
+}
+
+func (m *mysqlGTIDSet) Parse(raw string) error {
+	if raw == "" {
+		m.s = replication.GTIDSet{}
+		return nil
+	}
+	parsed, err := replication.ParseGTIDSet(raw)
+	if err != nil {
+		return err
+	}
+	m.s = parsed
+	return nil
+}
+
+func (m *mysqlGTIDSet) Contains(other gtidOps) bool {
+	o, ok := other.(*mysqlGTIDSet)
+	if !ok {
+		return false
+	}
+	if o.s.IsEmpty() {
+		return true
+	}
+	return m.s.Contains(o.s)
+}
+
+func (m *mysqlGTIDSet) Union(other gtidOps) {
+	o, ok := other.(*mysqlGTIDSet)
+	if !ok {
+		return
+	}
+	m.s = m.s.Clone()
+	m.s.Union(o.s)
+}
+
+func (m *mysqlGTIDSet) IsEmpty() bool { return m.s.IsEmpty() }
+
+func (m *mysqlGTIDSet) String() string { return m.s.String() }
+
+func (m *mysqlGTIDSet) Clone() gtidOps {
+	return &mysqlGTIDSet{s: m.s.Clone()}
+}
+
+// mariadbGTIDSet implements gtidOps via string-based GTIDModel operations.
+// MariaDB GTID format is "domain-server-seq,..." triples; Contains/Union use the
+// engine's GTID model, and the ordering check is approximated via Canonical+Compare
+// (domain reordering, seq comparison).
+type mariadbGTIDSet struct {
+	raw   string
+	model MariaDBGTIDModel
+}
+
+// MariaDBGTIDModel is the subset of engine.GTIDModel the replay planner needs.
+// It is declared here to avoid importing engine into the binlog package.
+type MariaDBGTIDModel interface {
+	Contains(superset, subset string) (bool, error)
+	IsEmpty(raw string) (bool, error)
+	Canonical(raw string) (string, error)
+}
+
+func (m *mariadbGTIDSet) Parse(raw string) error {
+	// Validate eagerly so malformed anchor/segment/target positions fail loudly
+	// at plan time, matching the MySQL path (Contains/IsEmpty swallow errors).
+	if raw != "" {
+		if _, err := m.model.Canonical(raw); err != nil {
+			return err
+		}
+	}
+	m.raw = raw
+	return nil
+}
+
+func (m *mariadbGTIDSet) Contains(other gtidOps) bool {
+	o, ok := other.(*mariadbGTIDSet)
+	if !ok {
+		return false
+	}
+	if o.raw == "" {
+		return true
+	}
+	if m.raw == "" {
+		return false
+	}
+	ok, _ = m.model.Contains(m.raw, o.raw)
+	return ok
+}
+
+func (m *mariadbGTIDSet) Union(other gtidOps) {
+	o, ok := other.(*mariadbGTIDSet)
+	if !ok {
+		return
+	}
+	if m.raw == "" {
+		m.raw = o.raw
+		return
+	}
+	if o.raw == "" {
+		return
+	}
+	m.raw = m.unionStrings(m.raw, o.raw)
+}
+
+func (m *mariadbGTIDSet) unionStrings(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return strings.TrimSpace(a + "," + b)
+}
+
+func (m *mariadbGTIDSet) IsEmpty() bool {
+	isEmpty, _ := m.model.IsEmpty(m.raw)
+	return isEmpty
+}
+
+func (m *mariadbGTIDSet) String() string {
+	if m.raw == "" {
+		return ""
+	}
+	canonical, err := m.model.Canonical(m.raw)
+	if err != nil {
+		return m.raw
+	}
+	return canonical
+}
+
+func (m *mariadbGTIDSet) Clone() gtidOps {
+	return &mariadbGTIDSet{raw: m.raw, model: m.model}
+}
+
+func newMariadbGTIDSet(model MariaDBGTIDModel) gtidOps {
+	return &mariadbGTIDSet{model: model}
+}
+
+func newMysqlGTIDSet() gtidOps {
+	return &mysqlGTIDSet{}
+}
 
 // RecoveryTarget is the resolved point-in-time recovery bound. At most one of
 // Time/GTID is set; an empty target (or Immediate) means replay to the latest
@@ -72,6 +228,10 @@ type ReplaySegment struct {
 // to hand mysqlbinlog. It de-duplicates against the base backup via ExcludeGTIDs
 // and bounds the upper end via IncludeGTIDs (targetGTID) or StopDatetime
 // (targetTime); both empty means replay everything from the anchor to latest.
+//
+// For MariaDB, ExcludeGTIDs and IncludeGTIDs are empty and replay instead uses
+// AnchorFile/StartPosition (the binlog file and byte offset from the backup's
+// binlog-info file) to skip already-applied transactions.
 type ReplayPlan struct {
 	// Segments are the timeline segments to replay, oldest first.
 	Segments []ReplaySegment
@@ -82,6 +242,12 @@ type ReplayPlan struct {
 	IncludeGTIDs string
 	// StopDatetime bounds a targetTime recovery ("YYYY-MM-DD HH:MM:SS").
 	StopDatetime string
+	// AnchorFile is the binlog basename from the backup's binlog-info file; used
+	// for MariaDB positional replay to identify the starting file in the first
+	// segment.
+	AnchorFile string
+	// StartPosition is the byte offset to start replaying from in AnchorFile.
+	StartPosition int64
 }
 
 // PlanReplay turns the cluster archive index, the base backup's anchor GTID, and
@@ -93,28 +259,44 @@ type ReplayPlan struct {
 // skipped (nothing new to apply). The plan never advances past a target the
 // archive cannot satisfy: it returns ErrTargetBeforeBackup / ErrTargetBeyondArchive
 // / ErrForkedTimeline instead.
+//
+// PlanReplay uses MySQL GTID semantics; for MariaDB use PlanReplayWithModel.
 func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget) (ReplayPlan, error) {
+	return planReplayWithOps(idx, anchorGTID, target, newMysqlGTIDSet)
+}
+
+// PlanReplayWithModel is PlanReplay using the given MariaDB GTID model for domain-
+// server-seq set operations instead of MySQL UUID-keyed interval arithmetic.
+func PlanReplayWithModel(
+	idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget, model MariaDBGTIDModel,
+) (ReplayPlan, error) {
+	newSet := func() gtidOps { return newMariadbGTIDSet(model) }
+	return planReplayWithOps(idx, anchorGTID, target, newSet)
+}
+
+type newGTIDSetFunc func() gtidOps
+
+func planReplayWithOps(
+	idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget, newSet newGTIDSetFunc,
+) (ReplayPlan, error) {
 	if idx == nil {
 		return ReplayPlan{}, fmt.Errorf("binlog: archive index is required")
 	}
 
-	anchor, err := parseGTIDSetOrEmpty(anchorGTID)
-	if err != nil {
+	anchor := newSet()
+	if err := anchor.Parse(anchorGTID); err != nil {
 		return ReplayPlan{}, fmt.Errorf("binlog: parsing anchor GTID: %w", err)
 	}
 
-	// frontier accumulates everything we will have applied (anchor + replayed
-	// segments); it both drives the skip optimization and reconstructs coverage.
 	frontier := anchor.Clone()
 
 	plan := ReplayPlan{ExcludeGTIDs: anchor.String()}
 	for i := range idx.Segments {
 		seg := &idx.Segments[i]
-		segSet, err := parseGTIDSetOrEmpty(seg.GTIDSet)
-		if err != nil {
+		segSet := newSet()
+		if err := segSet.Parse(seg.GTIDSet); err != nil {
 			return ReplayPlan{}, fmt.Errorf("binlog: parsing segment %q GTID set: %w", seg.ServerUUID, err)
 		}
-		// Skip segments whose every transaction is already on the frontier.
 		if !segSet.IsEmpty() && frontier.Contains(segSet) {
 			continue
 		}
@@ -125,12 +307,9 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 		frontier.Union(segSet)
 	}
 
-	// Coherence guard: the index's declared coverage must be reconstructable from
-	// the anchor plus the segments. If it isn't, a segment is missing or the
-	// timeline forked — refuse rather than silently recover a partial history.
 	if idx.CoveredGTIDSet != "" {
-		covered, err := parseGTIDSetOrEmpty(idx.CoveredGTIDSet)
-		if err != nil {
+		covered := newSet()
+		if err := covered.Parse(idx.CoveredGTIDSet); err != nil {
 			return ReplayPlan{}, fmt.Errorf("binlog: parsing index coverage: %w", err)
 		}
 		if !frontier.Contains(covered) {
@@ -138,42 +317,30 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 		}
 	}
 
-	if err := applyTarget(&plan, frontier, anchor, target); err != nil {
+	if err := applyTargetWithOps(&plan, frontier, anchor, target, newSet); err != nil {
 		return ReplayPlan{}, err
 	}
 	return plan, nil
 }
 
-// applyTarget bounds the plan's upper end and validates the target is reachable.
-func applyTarget(plan *ReplayPlan, frontier, anchor replication.GTIDSet, target RecoveryTarget) error {
+func applyTargetWithOps(
+	plan *ReplayPlan, frontier, anchor gtidOps, target RecoveryTarget, newSet newGTIDSetFunc,
+) error {
 	switch {
 	case target.GTID != "":
-		want, err := replication.ParseGTIDSet(target.GTID)
-		if err != nil {
+		want := newSet()
+		if err := want.Parse(target.GTID); err != nil {
 			return fmt.Errorf("binlog: parsing target GTID: %w", err)
 		}
-		// The target must include everything the base backup already has, else
-		// it is a point before the backup and unreachable by forward replay.
 		if !want.Contains(anchor) {
 			return ErrTargetBeforeBackup
 		}
-		// The archive (anchor + segments) must cover the whole target set.
 		if !frontier.Contains(want) {
 			return ErrTargetBeyondArchive
 		}
 		plan.IncludeGTIDs = want.String()
 	case target.Time != nil:
 		plan.StopDatetime = target.Time.UTC().Format(stopDatetimeLayout)
-	default:
-		// Immediate / latest: replay everything from the anchor to the frontier.
 	}
 	return nil
-}
-
-// parseGTIDSetOrEmpty parses a GTID set string, treating "" as the empty set.
-func parseGTIDSetOrEmpty(raw string) (replication.GTIDSet, error) {
-	if raw == "" {
-		return replication.GTIDSet{}, nil
-	}
-	return replication.ParseGTIDSet(raw)
 }

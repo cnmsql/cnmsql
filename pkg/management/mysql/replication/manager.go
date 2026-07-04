@@ -43,6 +43,7 @@ type Dialect interface {
 	GTIDExecutedQuery() string
 	SeedReplicaPosition(pos string) string
 	SemiSyncNaming(v version.Version) version.SemiSyncNaming
+	HasSuperReadOnly() bool
 }
 
 // mysqlDialect delegates to the version-aware statement builders in this
@@ -77,6 +78,7 @@ func (mysqlDialect) SeedReplicaPosition(pos string) string {
 func (mysqlDialect) SemiSyncNaming(v version.Version) version.SemiSyncNaming {
 	return v.SemiSync()
 }
+func (mysqlDialect) HasSuperReadOnly() bool { return true }
 
 // Manager executes replication and role-transition statements against a mysqld
 // connection. The statement text is produced by a replDialect, whose default is
@@ -220,9 +222,12 @@ func (m *Manager) SetReadOnly(ctx context.Context, on bool) error {
 	return m.exec(ctx, SetReadOnlyStatement(on))
 }
 
-// SetSuperReadOnly toggles super_read_only when supported by the server.
+// SetSuperReadOnly toggles super_read_only when supported by the server. The
+// flavor must have the feature at all (MariaDB does not, and its dialect reports
+// false) and the running version must be recent enough (MySQL gained
+// super_read_only in 5.7.8).
 func (m *Manager) SetSuperReadOnly(ctx context.Context, on bool) error {
-	if !m.version.HasSuperReadOnly() {
+	if !m.repl.HasSuperReadOnly() || !m.version.HasSuperReadOnly() {
 		return nil
 	}
 	return m.exec(ctx, SetSuperReadOnlyStatement(on))

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -350,6 +351,20 @@ func Run(ctx context.Context, opts RunOptions) error {
 	log.Info("Connected to mysqld control interface")
 	defer func() { _ = db.Close() }()
 
+	// If the flavor requires an explicit upgrade step (MariaDB: mariadb-upgrade),
+	// run it now while mysqld is serving but before the version marker is
+	// overwritten — and only when the data directory actually crossed a version
+	// boundary. This mirrors MySQL's --upgrade=AUTO, which self-upgrades only when
+	// needed; running mariadb-upgrade on every boot would re-check every table and
+	// delay readiness. Skipped when adopting (the replaced image already upgraded
+	// the running server).
+	if !adopting && needsUpgrade(opts.DataDir, ver) {
+		if err := runUpgrade(ctx, eng, opts.Socket); err != nil {
+			_ = sup.Shutdown(ctx)
+			return err
+		}
+	}
+
 	// Record the version now serving this data directory so the next start can
 	// validate its transition (guardDataDirUpgrade). Non-fatal: a missing marker
 	// only means the next start cannot apply the guard and defers to admission.
@@ -449,6 +464,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer cancelArchive()
 	if opts.Archiving != nil && opts.Archiving.Enabled {
 		log.Info("Enabling continuous binlog archiving")
+		if opts.Archiving.MysqlbinlogPath == "" {
+			opts.Archiving.MysqlbinlogPath = eng.Backup().BinlogClientBinary()
+		}
 		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db)
 		if err != nil {
 			_ = sup.Shutdown(ctx)
@@ -801,6 +819,41 @@ func shutdownMysqld(
 	default:
 		log.Info("Mysqld stopped gracefully")
 	}
+}
+
+// needsUpgrade reports whether the data directory was last served by an older
+// server version than the one now starting — i.e. an upgrade boundary was
+// crossed and the flavor's upgrade step should run. A fresh data directory (no
+// marker) needs no upgrade: its system tables were created at the current
+// version. A marker read error is treated as "no upgrade": the guard already ran
+// and the server is serving, so err on the side of not blocking startup.
+func needsUpgrade(dataDir string, current version.Version) bool {
+	from, ok, err := readVersionMarker(dataDir)
+	if err != nil || !ok {
+		return false
+	}
+	// AtLeast is >=, so !from.AtLeast(current) means from < current: an upgrade.
+	return !from.AtLeast(current.Major, current.Minor, current.Patch)
+}
+
+// runUpgrade executes the flavor-specific upgrade binary when the server does
+// not self-upgrade on start (MariaDB: mariadb-upgrade). MySQL returns empty
+// UpgradeBinary() and is a no-op.
+func runUpgrade(ctx context.Context, eng engine.Engine, socket string) error {
+	log := logf.FromContext(ctx).WithName("upgrade")
+	binary := eng.UpgradeBinary()
+	if binary == "" {
+		return nil
+	}
+	args := eng.UpgradeArgs(socket)
+	log.Info("Running system table upgrade", "binary", binary, "args", args)
+	cmd := exec.CommandContext(ctx, binary, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s failed: %w\n%s", binary, err, string(out))
+	}
+	log.Info("System table upgrade completed")
+	return nil
 }
 
 // openControl opens the control connection, retrying until ready.

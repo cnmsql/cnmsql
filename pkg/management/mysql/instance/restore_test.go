@@ -26,15 +26,12 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
-// TestRestoreRejectsMariaDBPITR guards the deferral: MariaDB point-in-time
-// recovery is not yet wired (mariadb-binlog rejects the MySQL --include-gtids/
-// --exclude-gtids this path emits), so Restore must fail loudly rather than exec
-// an unsupported command. Base restore (no --source-cluster) is unaffected.
-func TestRestoreRejectsMariaDBPITR(t *testing.T) {
+// TestMariaDBPITRNotBlocked verifies that MariaDB point-in-time recovery is no
+// longer blocked at the guard; it proceeds to the replay planner which may fail
+// on a later step (e.g. missing bucket) but not with the old "not yet supported" error.
+func TestMariaDBPITRNotBlocked(t *testing.T) {
 	t.Setenv("CNMSQL_FLAVOR", "mariadb")
 	dataDir := t.TempDir()
-	// Mark the data dir initialised so base restore is skipped and Restore
-	// reaches the PITR branch.
 	if err := os.WriteFile(filepath.Join(dataDir, bootstrapSentinel), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +44,11 @@ func TestRestoreRejectsMariaDBPITR(t *testing.T) {
 		BackupDir:     t.TempDir(),
 		SourceCluster: "prod",
 	})
-	if err == nil || !strings.Contains(err.Error(), "not yet supported for MariaDB") {
-		t.Fatalf("want MariaDB PITR rejection, got %v", err)
+	if err == nil {
+		t.Fatal("expected error (missing binlog-info), got nil")
+	}
+	if strings.Contains(err.Error(), "not yet supported for MariaDB") {
+		t.Fatalf("MariaDB PITR should no longer be blocked; got %v", err)
 	}
 }
 

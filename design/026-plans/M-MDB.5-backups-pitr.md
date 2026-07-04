@@ -77,10 +77,12 @@ behind the engine's `BackupTool` facet. The object-store layout, streaming to S3
 
 - [ ] `BackupTool` facet: mariabackup/mbstream + prepare/copy-back + binlog-info file name.
 - [ ] `backup.go`/`restore.go`/`join.go` no longer hard-code the tool; select via engine.
-- [~] PITR replay selects `mariadb-binlog | mariadb`, but GTID-bounded replay is
-      **deferred**: `mariadb-binlog` rejects the MySQL `--include-gtids`/
-      `--exclude-gtids` flags and MariaDB GTID positions differ. MariaDB PITR now
-      fails loudly (see status log); MariaDB base-backup restore works.
+- [x] PITR replay selects `mariadb-binlog | mariadb`; GTID-bounded replay is
+      implemented via a flavor-aware planner (`PlanReplayWithModel` +
+      domain-server-seq GTID model) and positional replay (`--start-position`
+      from `mariadb_backup_binlog_info`) instead of `--include-gtids`/
+      `--exclude-gtids`. Needs validation against a live MariaDB. (See status log
+      2026-07-04 — PITR replay.)
 - [x] MySQL backup args byte-identical (existing tests green, unedited).
 - [ ] `spec.backup.xtrabackupOptions` still applies (documented as flavor's tool flags).
 
@@ -116,4 +118,25 @@ behind the engine's `BackupTool` facet. The object-store layout, streaming to S3
   unsupported command. Base-backup restore (no PITR) works. Follow-up: implement
   MariaDB-native binlog replay (position-based bounding + `mariadb_backup_binlog_info`
   parsing) — likely its own task.
+- verify: `go build`, `go vet`, `gofmt -l` clean; full suite green.
+
+### 2026-07-04 — MariaDB PITR replay implemented (+ review)
+- did:
+  - Abstracted the replay planner's GTID-set arithmetic behind a `gtidOps`
+    interface. MySQL keeps UUID-interval `replication.GTIDSet`; MariaDB gets a
+    domain-server-seq model (`PlanReplayWithModel`, backed by `engine.GTID()`),
+    so no MySQL GTID assumptions leak onto the MariaDB path.
+  - Positional replay for MariaDB: the plan carries `AnchorFile` + `StartPosition`
+    read from `mariadb_backup_binlog_info`; `ReplayArgs` emits `--start-position`
+    and suppresses `--include-gtids`/`--exclude-gtids` when `MariaDB` is set.
+    `readAnchorGTID` now returns the full `BinlogInfo` (file/pos/GTID).
+  - Removed the loud "not yet supported for MariaDB" guard; the restore-rejection
+    test became a not-blocked assertion.
+  - Review fixes: (1) `mariadbGTIDSet.Parse` now validates eagerly via the model
+    so malformed anchor/segment positions fail loudly like MySQL, instead of
+    being swallowed by `Contains`/`IsEmpty`; (2) unrelated to this file but in the
+    same pass — restored the MySQL `super_read_only` version gate (G4.1) and gated
+    `mariadb-upgrade` on an actual version boundary (G3.1).
+- deferred: validation against a live MariaDB (GTID position round-trip, replay
+  ordering) — M-MDB.6 smoke.
 - verify: `go build`, `go vet`, `gofmt -l` clean; full suite green.
