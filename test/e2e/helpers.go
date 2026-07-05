@@ -464,6 +464,21 @@ func mariadbExec(pod, user, password, database, sql string) (string, error) {
 	return kubectl(args...)
 }
 
+// mariadbExecCols is mariadbExec without -N (--skip-column-names). It is needed
+// for vertical (\G) queries whose output is parsed by column name: under -N the
+// client omits the "Column_name:" labels in \G output, leaving bare values, so a
+// caller that greps for e.g. "Slave_IO_Running: Yes" would never match. Use this
+// (not mariadbExec) whenever the assertion depends on the column labels.
+func mariadbExecCols(pod, user, password, database, sql string) (string, error) {
+	args := []string{"exec", pod, "-n", testNamespace, "-c", "mysql", "--",
+		"env", "MYSQL_PWD=" + password, "mariadb", "-u" + user}
+	if database != "" {
+		args = append(args, database)
+	}
+	args = append(args, "-e", sql)
+	return kubectl(args...)
+}
+
 // createUserViaControlAPI POSTs a user-create request to an instance's mTLS
 // control API using a one-shot curl Pod that mounts the cluster client cert and
 // CA (the same material the operator authenticates with). The DB container image

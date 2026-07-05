@@ -72,11 +72,11 @@ func mariadbUptime(g Gomega, pod, password string) int {
 
 // mariadbReplicationHealthy verifies that replication is functional by checking
 // SHOW SLAVE STATUS on the given replica pod. Returns 1 if both IO and SQL
-// threads are running, 0 otherwise. Uses \G for vertical format since mariadbExec
-// passes -N (no column headers), which would discard column names in tabular
-// output.
+// threads are running, 0 otherwise. Uses \G for vertical format and
+// mariadbExecCols (not mariadbExec) because the check greps the "Column_name:"
+// labels, which the -N flag strips from \G output.
 func mariadbReplicationHealthy(g Gomega, pod, rootPass string) int {
-	out, err := mariadbExec(pod, "root", rootPass, "",
+	out, err := mariadbExecCols(pod, "root", rootPass, "",
 		"SHOW SLAVE STATUS\\G")
 	g.Expect(err).NotTo(HaveOccurred())
 	if out == "" || !strings.Contains(out, "Slave_IO_Running: Yes") ||
