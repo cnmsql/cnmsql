@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 )
 
-var _ = Describe("MariaDB major-version upgrade admission", Ordered, Label("feature", "mariadb"), func() {
+var _ = Describe("MariaDB major-version upgrade admission", Ordered, Label("flavor", "mariadb"), func() {
 	const cluster = "mdb-upgrade-guard"
 
 	BeforeAll(func() {

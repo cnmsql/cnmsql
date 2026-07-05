@@ -502,6 +502,7 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
 	mock.ExpectQuery("SELECT @@GLOBAL.super_read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	mock.ExpectExec("SET SESSION SQL_LOG_BIN=0").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = OFF").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL read_only = OFF").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSTALL PLUGIN rpl_semi_sync_source").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -510,6 +511,7 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 	mock.ExpectExec("SET GLOBAL rpl_semi_sync_replica_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_wait_for_replica_count = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_timeout = 10000").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET SESSION SQL_LOG_BIN=1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -517,6 +519,22 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 		SemiSyncWaitCount:     1,
 		SemiSyncTimeoutMillis: 10000,
 	}, engine.MustForFlavor(engine.FlavorMySQL))
+	if err != nil {
+		t.Fatalf("configureSemiSync: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestConfigureSemiSyncNoopForBuiltinEngine(t *testing.T) {
+	c, mock := newController(t, nil)
+	ctx := context.Background()
+
+	err := configureSemiSync(ctx, c.repl, RunOptions{
+		SemiSyncWaitCount:     1,
+		SemiSyncTimeoutMillis: 10000,
+	}, engine.MustForFlavor(engine.FlavorMariaDB))
 	if err != nil {
 		t.Fatalf("configureSemiSync: %v", err)
 	}

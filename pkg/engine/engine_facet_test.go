@@ -267,10 +267,10 @@ func TestMariaDBReplDialect(t *testing.T) {
 		t.Errorf("ServerIdentityQuery() = %q, want %q", got, want)
 	}
 
-	// Semi-sync naming stays master/slave regardless of the (high) version number.
-	if naming := r.SemiSyncNaming(v); naming.EnabledVarSource != "rpl_semi_sync_master_enabled" ||
-		naming.EnabledVarReplica != "rpl_semi_sync_slave_enabled" {
-		t.Errorf("SemiSyncNaming() = %+v, want master/slave spelling", naming)
+	// Semi-sync naming uses source/replica spelling.
+	if naming := r.SemiSyncNaming(v); naming.EnabledVarSource != "rpl_semi_sync_source_enabled" ||
+		naming.EnabledVarReplica != "rpl_semi_sync_replica_enabled" {
+		t.Errorf("SemiSyncNaming() = %+v, want source/replica spelling", naming)
 	}
 }
 
@@ -316,13 +316,13 @@ func TestMariaDBFacets(t *testing.T) {
 		t.Error("MariaDB IsGroupReplicationManagedKey(plugin_load_add) = true, want false")
 	}
 
-	// SemiSync uses master/slave naming regardless of version.
+	// SemiSync uses source/replica naming.
 	n := eng.SemiSync(v)
-	if n.EnabledVarSource != "rpl_semi_sync_master_enabled" {
-		t.Errorf("MariaDB SemiSync EnabledVarSource = %q, want rpl_semi_sync_master_enabled", n.EnabledVarSource)
+	if n.EnabledVarSource != "rpl_semi_sync_source_enabled" {
+		t.Errorf("MariaDB SemiSync EnabledVarSource = %q, want rpl_semi_sync_source_enabled", n.EnabledVarSource)
 	}
-	if n.EnabledVarReplica != "rpl_semi_sync_slave_enabled" {
-		t.Errorf("MariaDB SemiSync EnabledVarReplica = %q, want rpl_semi_sync_slave_enabled", n.EnabledVarReplica)
+	if n.EnabledVarReplica != "rpl_semi_sync_replica_enabled" {
+		t.Errorf("MariaDB SemiSync EnabledVarReplica = %q, want rpl_semi_sync_replica_enabled", n.EnabledVarReplica)
 	}
 }
 

@@ -27,24 +27,23 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
-// masterSlaveNamingDialect is a mysqlDialect that reports MariaDB's master/slave
-// semi-sync naming. It stands in for engine.ForFlavor(FlavorMariaDB).Repl(),
-// which the replication package cannot import (engine imports replication). It
-// proves the semi-sync setters read naming from the dialect, not the raw
-// version — mariadbd rejects the source/replica spelling a high version number
-// would otherwise select.
-type masterSlaveNamingDialect struct{ mysqlDialect }
+// sourceReplicaNamingDialect is a mysqlDialect that reports MariaDB's
+// source/replica semi-sync naming. It stands in for
+// engine.ForFlavor(FlavorMariaDB).Repl(), which the replication package cannot
+// import (engine imports replication). It proves the semi-sync setters read
+// naming from the dialect, not the raw version.
+type sourceReplicaNamingDialect struct{ mysqlDialect }
 
-func (masterSlaveNamingDialect) SemiSyncNaming(version.Version) version.SemiSyncNaming {
+func (sourceReplicaNamingDialect) SemiSyncNaming(version.Version) version.SemiSyncNaming {
 	return version.SemiSyncNaming{
-		EnabledVarSource:  "rpl_semi_sync_master_enabled",
-		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
-		WaitForCountVar:   "rpl_semi_sync_master_wait_for_slave_count",
-		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		EnabledVarSource:  "rpl_semi_sync_source_enabled",
+		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
+		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
+		TimeoutVar:        "rpl_semi_sync_source_timeout",
 	}
 }
 
-func (masterSlaveNamingDialect) HasSuperReadOnly() bool { return false }
+func (sourceReplicaNamingDialect) HasSuperReadOnly() bool { return false }
 
 func newManager(t *testing.T, ver string) (*Manager, sqlmock.Sqlmock) {
 	t.Helper()
@@ -266,7 +265,7 @@ func TestSetSuperReadOnlyNoopOnMariaDB(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	// MariaDB's dialect reports HasSuperReadOnly=false; super_read_only
 	// must not be emitted regardless of version.
-	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), masterSlaveNamingDialect{})
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), sourceReplicaNamingDialect{})
 	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
 		t.Fatalf("SetSuperReadOnly: %v", err)
 	}
@@ -282,13 +281,13 @@ func TestSemiSyncRuntimeVariablesUseDialectNaming(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	// Version 11.4 would select source/replica naming via version.SemiSync();
-	// the dialect must override it with MariaDB's master/slave spelling.
-	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), masterSlaveNamingDialect{})
+	// the dialect must also report source/replica spelling (MariaDB 10.5+).
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), sourceReplicaNamingDialect{})
 
-	mock.ExpectExec("SET GLOBAL rpl_semi_sync_master_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("SET GLOBAL rpl_semi_sync_slave_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("SET GLOBAL rpl_semi_sync_master_wait_for_slave_count = 2").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("SET GLOBAL rpl_semi_sync_master_timeout = 5000").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_replica_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_wait_for_replica_count = 2").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_timeout = 5000").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	if err := m.EnableSemiSync(context.Background()); err != nil {
 		t.Fatalf("EnableSemiSync: %v", err)

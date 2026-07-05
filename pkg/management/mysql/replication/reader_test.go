@@ -181,7 +181,7 @@ func TestReadOnlySkipsSuperOnMariaDB(t *testing.T) {
 	mock.ExpectQuery("SELECT @@GLOBAL.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0"))
 
-	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), masterSlaveNamingDialect{})
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), sourceReplicaNamingDialect{})
 	state, err := m.ReadOnly(context.Background())
 	if err != nil {
 		t.Fatalf("ReadOnly: %v", err)

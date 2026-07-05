@@ -125,6 +125,11 @@ func (m *Manager) exec(ctx context.Context, stmt string) error {
 	return nil
 }
 
+// Exec runs an arbitrary SQL statement against the underlying connection.
+func (m *Manager) Exec(ctx context.Context, stmt string) error {
+	return m.exec(ctx, stmt)
+}
+
 // ConfigureSource points the replica at the given source and starts
 // replication: STOP REPLICA, CHANGE REPLICATION SOURCE, START REPLICA.
 func (m *Manager) ConfigureSource(ctx context.Context, opts SourceOptions) error {

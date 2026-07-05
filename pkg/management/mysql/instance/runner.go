@@ -157,6 +157,11 @@ func (o *RunOptions) applyDefaults() {
 func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunOptions, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("semi-sync")
 
+	if !eng.SemiSyncIsPlugin() {
+		log.Info("Skipping semi-sync runtime configuration (engine built-in)")
+		return nil
+	}
+
 	roState, err := repl.ReadOnly(ctx)
 	if err != nil {
 		return err
@@ -171,6 +176,16 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 			return repl.SetSuperReadOnly(ctx, true)
 		}
 		return nil
+	}
+
+	// Suppress binary logging so that session-level statements such as INSTALL
+	// PLUGIN and SET GLOBAL (which are not replication events) do not create
+	// local GTIDs on replicas. Replicas that generate their own GTID entries
+	// under their own server_id can never apply the primary's GTID stream
+	// because MariaDB gtid_strict_mode rejects out-of-order sequence numbers.
+	log.Info("Suppressing binary logging for semi-sync configuration")
+	if err := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=0"); err != nil {
+		return err
 	}
 
 	log.Info("Clearing read_only for semi-sync plugin installation")
@@ -215,6 +230,15 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 		}
 		return nil
 	}()
+
+	if binlogErr := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=1"); binlogErr != nil {
+		if err == nil {
+			err = binlogErr
+		} else {
+			log.Error(binlogErr, "Failed to re-enable binary logging after semi-sync configuration")
+		}
+	}
+
 	if restoreErr := restoreReadOnly(); restoreErr != nil {
 		if err == nil {
 			err = restoreErr

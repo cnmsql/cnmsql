@@ -70,16 +70,18 @@ func mariadbUptime(g Gomega, pod, password string) int {
 	return uptime
 }
 
-// mariadbSemiSyncWaitCount reads the primary's semi-sync acknowledgement count
-// (rpl_semi_sync_master_wait_for_slave_count) through the mariadb client.
-func mariadbSemiSyncWaitCount(g Gomega, pod, rootPass string) int {
+// mariadbReplicationHealthy verifies that replication is functional by checking
+// SHOW SLAVE STATUS on the given replica pod. Returns 1 if both IO and SQL
+// threads are running, 0 otherwise. Uses \G for vertical format since mariadbExec
+// passes -N (no column headers), which would discard column names in tabular
+// output.
+func mariadbReplicationHealthy(g Gomega, pod, rootPass string) int {
 	out, err := mariadbExec(pod, "root", rootPass, "",
-		"SHOW VARIABLES LIKE 'rpl_semi_sync%wait_for%count';")
+		"SHOW SLAVE STATUS\\G")
 	g.Expect(err).NotTo(HaveOccurred())
-	fields := strings.Fields(out)
-	g.Expect(len(fields)).To(BeNumerically(">=", 2),
-		"semi-sync wait count variable not found in %q", out)
-	count, err := strconv.Atoi(fields[len(fields)-1])
-	g.Expect(err).NotTo(HaveOccurred(), "could not parse wait count from %q", out)
-	return count
+	if out == "" || !strings.Contains(out, "Slave_IO_Running: Yes") ||
+		!strings.Contains(out, "Slave_SQL_Running: Yes") {
+		return 0
+	}
+	return 1
 }

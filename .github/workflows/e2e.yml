@@ -79,6 +79,7 @@ jobs:
       # Lane fields map straight onto the knobs the suite + hack/e2e.sh consume.
       K8S_VERSION: ${{ matrix.k8s_version }}
       E2E_MYSQL_VERSION: ${{ matrix.mysql_version }}
+      E2E_MARIADB_VERSION: ${{ matrix.mariadb_version }}
       E2E_MAJOR_UPGRADE: ${{ matrix.major_upgrade }}
       GINKGO_LABEL_FILTER: ${{ matrix.label_filter }}
       GINKGO_PROCS: ${{ matrix.procs }}

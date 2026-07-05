@@ -125,7 +125,9 @@ func doSuiteSetup() {
 	}
 
 	if mdVer := os.Getenv("E2E_MARIADB_VERSION"); mdVer != "" {
-		loadInstanceImage(mariadbInstanceImageFor(mdVer))
+		for _, image := range neededMariaDBImages(mdVer) {
+			loadInstanceImage(image)
+		}
 	} else {
 		for _, version := range neededInstanceVersions() {
 			loadInstanceImage(instanceImageFor(version))
@@ -220,6 +222,37 @@ func neededInstanceVersions() []string {
 			if !seen[v] {
 				out = append(out, v)
 			}
+		}
+	}
+	return out
+}
+
+// mariadbUpgradeSeries are the adjacent MariaDB series the dedicated
+// mariadb-major-upgrade job rolls through, oldest-first — the same series the
+// admission guard (mariadb_upgrade_test.go) validates hops across. Co-loaded into
+// the single Kind cluster so it can perform a real in-place series upgrade without
+// each Pod pulling from the registry mid-roll.
+var mariadbUpgradeSeries = []string{"10.6", "10.11", "11.4", "12.3"}
+
+// neededMariaDBImages is the deduplicated set of MariaDB instance images the
+// suite loads when E2E_MARIADB_VERSION is set: the sample series, plus — in the
+// dedicated major-upgrade job (E2E_MAJOR_UPGRADE) — every adjacent series so a
+// single Kind cluster can roll through them. MySQL images are never loaded on a
+// MariaDB lane; the suite runs one flavor's images at a time.
+func neededMariaDBImages(sample string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(version string) {
+		image := mariadbInstanceImageFor(version)
+		if !seen[image] {
+			seen[image] = true
+			out = append(out, image)
+		}
+	}
+	add(sample)
+	if os.Getenv("E2E_MAJOR_UPGRADE") == trueEnvValue {
+		for _, v := range mariadbUpgradeSeries {
+			add(v)
 		}
 	}
 	return out

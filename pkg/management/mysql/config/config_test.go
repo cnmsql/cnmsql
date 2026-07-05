@@ -242,16 +242,12 @@ func TestRenderSemiSync(t *testing.T) {
 // controller takes for MariaDB, whose 11.4 version string would otherwise be
 // (mis)read with MySQL semantics.
 func TestRenderEngineCapabilityOverrides(t *testing.T) {
-	// MariaDB keeps master/slave semi-sync naming at every version.
+	// MariaDB uses source/replica semi-sync naming.
 	mariadbNaming := version.SemiSyncNaming{
-		EnabledVarSource:  "rpl_semi_sync_master_enabled",
-		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
-		WaitForCountVar:   "rpl_semi_sync_master_wait_for_slave_count",
-		TimeoutVar:        "rpl_semi_sync_master_timeout",
-		PluginSource:      "rpl_semi_sync_master",
-		PluginReplica:     "rpl_semi_sync_slave",
-		LibSource:         "semisync_master.so",
-		LibReplica:        "semisync_slave.so",
+		EnabledVarSource:  "rpl_semi_sync_source_enabled",
+		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
+		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
+		TimeoutVar:        "rpl_semi_sync_source_timeout",
 	}
 
 	c := baseConfig()
@@ -280,9 +276,9 @@ func TestRenderEngineCapabilityOverrides(t *testing.T) {
 	// A replica is read_only, but MariaDB has no super_read_only.
 	assertContains(t, out, "read_only = ON")
 	assertNotContains(t, out, "super_read_only")
-	// Semi-sync uses master/slave naming, not source/replica.
-	assertContains(t, out, "loose-rpl_semi_sync_master_enabled = 1")
-	assertNotContains(t, out, "rpl_semi_sync_source_enabled")
+	// Semi-sync uses source/replica naming.
+	assertContains(t, out, "loose-rpl_semi_sync_source_enabled = 1")
+	assertNotContains(t, out, "rpl_semi_sync_master_enabled")
 }
 
 func TestRenderAdminInterfaceModern(t *testing.T) {

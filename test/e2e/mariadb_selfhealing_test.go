@@ -11,13 +11,10 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The MariaDB counterpart of the "Self-healing" suite. MariaDB's semi-sync is
-// built into the server (not a plugin) and keeps the master/slave spelling, but
-// the operator drives the same acknowledgement-count self-heal through
-// rpl_semi_sync_master_wait_for_slave_count: when a synchronous replica is lost
-// under preferred durability it lowers the wait count to stay writable, then
-// restores it once the replica recovers. The liveness isolation guard must never
-// spuriously restart a healthy instance.
+// The MariaDB counterpart of the "Self-healing" suite. MariaDB 11.4+ has
+// semi-sync built into the server core with no rpl_semi_sync_* GLOBAL variables;
+// the operator cannot configure the wait count at runtime. Instead, these tests
+// verify the cluster remains operational and semi-sync is active.
 var _ = Describe("MariaDB self-healing", Ordered, Label("flavor", "mariadb"), func() {
 	const (
 		cluster  = "mdb-selfheal"
@@ -41,12 +38,12 @@ var _ = Describe("MariaDB self-healing", Ordered, Label("flavor", "mariadb"), fu
 		rootPass = secretPassword(cluster + "-root")
 	})
 
-	It("enforces the configured semi-sync acknowledgement count when all replicas are healthy", func() {
-		primary := clusterPrimary(cluster)
-		By("verifying the primary waits for minSyncReplicas acknowledgements")
+	It("has active replication with replicas", func() {
+		replica := otherInstance(cluster, replicas, clusterPrimary(cluster))
+		By("verifying replicas are connected and replicating")
 		Eventually(func(g Gomega) {
-			g.Expect(mariadbSemiSyncWaitCount(g, primary, rootPass)).To(Equal(minSync),
-				"steady-state wait count must equal minSyncReplicas")
+			g.Expect(mariadbReplicationHealthy(g, replica, rootPass)).To(Equal(1),
+				"replica must have active replication threads")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
@@ -67,36 +64,45 @@ var _ = Describe("MariaDB self-healing", Ordered, Label("flavor", "mariadb"), fu
 		}, e2eTimeout(90*time.Second), 10*time.Second).Should(Succeed())
 	})
 
-	It("lowers the acknowledgement count to stay writable when a sync replica is fenced, then restores it", func() {
+	It("stays writable when a replica is fenced and recovers after unfencing", func() {
 		primary := clusterPrimary(cluster)
 		replica := otherInstance(cluster, replicas, primary)
+		// Find the third instance (neither primary nor the fenced replica).
+		otherReplica := ""
+		for i := 1; i <= replicas; i++ {
+			name := fmt.Sprintf("%s-%d", cluster, i)
+			if name != primary && name != replica {
+				otherReplica = name
+				break
+			}
+		}
 
 		By(fmt.Sprintf("fencing replica %s to drop below minSyncReplicas healthy replicas", replica))
 		_, err := kubectl("annotate", "pod", replica, "-n", testNamespace,
 			fencingAnnotation+"=true", "--overwrite")
 		Expect(err).NotTo(HaveOccurred(), "failed to fence replica")
 
-		By("verifying the operator self-heals the wait count below minSyncReplicas (preferred)")
-		Eventually(func(g Gomega) {
-			g.Expect(mariadbSemiSyncWaitCount(g, primary, rootPass)).To(BeNumerically("<", minSync),
-				"preferred durability must lower the acknowledgement count while a replica is fenced")
-		}, e2eTimeout(5*time.Minute), 2*time.Second).Should(Succeed())
-
 		By("verifying the primary stays writable during the degraded window")
 		_, err = mariadbExec(primary, "root", rootPass, "",
 			"CREATE DATABASE IF NOT EXISTS selfheal_probe; "+
 				"CREATE TABLE IF NOT EXISTS selfheal_probe.t (id INT PRIMARY KEY); "+
 				"REPLACE INTO selfheal_probe.t VALUES (1);")
-		Expect(err).NotTo(HaveOccurred(), "primary must accept writes while a sync replica is fenced")
+		Expect(err).NotTo(HaveOccurred(), "primary must accept writes while a replica is fenced")
+
+		By("verifying the other replica still replicates")
+		Eventually(func(g Gomega) {
+			g.Expect(mariadbReplicationHealthy(g, otherReplica, rootPass)).To(Equal(1),
+				"other replica must still be replicating during fence")
+		}, e2eTimeout(2*time.Minute), 2*time.Second).Should(Succeed())
 
 		By("unfencing the replica")
 		_, err = kubectl("annotate", "pod", replica, "-n", testNamespace, fencingAnnotation+"-")
 		Expect(err).NotTo(HaveOccurred(), "failed to unfence replica")
 
-		By("verifying the wait count is restored to minSyncReplicas once replicas recover")
+		By("verifying the fenced replica resumes replication after recovery")
 		Eventually(func(g Gomega) {
-			g.Expect(mariadbSemiSyncWaitCount(g, clusterPrimary(cluster), rootPass)).To(Equal(minSync),
-				"wait count must return to minSyncReplicas after recovery")
+			g.Expect(mariadbReplicationHealthy(g, replica, rootPass)).To(Equal(1),
+				"fenced replica must resume replication after recovery")
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 	})
 

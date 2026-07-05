@@ -408,7 +408,7 @@ func (mariadbEngine) Repl() ReplDialect {
 	return mariadbReplDialect{}
 }
 
-// semi-sync — MariaDB uses master/slave naming and semi-sync is built-in (no
+// semi-sync — MariaDB uses source/replica naming and semi-sync is built-in (no
 // INSTALL PLUGIN).
 
 func (mariadbEngine) SemiSync(version.Version) version.SemiSyncNaming {
@@ -417,17 +417,17 @@ func (mariadbEngine) SemiSync(version.Version) version.SemiSyncNaming {
 
 // mariadbSemiSyncNaming is the single source of truth for MariaDB's semi-sync
 // system-variable names, shared by the engine's config facet (SemiSync) and its
-// replication dialect (SemiSyncNaming). MariaDB keeps the master/slave spelling
-// at every version. Semi-sync is built into the MariaDB server: there is no
-// INSTALL PLUGIN and no shared library, so Plugin*/Lib* are intentionally left
-// empty — reading them without gating on SemiSyncIsPlugin() (which is false) is
-// a bug.
+// replication dialect (SemiSyncNaming). MariaDB 10.5+ uses the source/replica
+// spelling; older versions kept the master/slave legacy names as aliases.
+// Semi-sync is built into the MariaDB server: there is no INSTALL PLUGIN and no
+// shared library, so Plugin*/Lib* are intentionally left empty — reading them
+// without gating on SemiSyncIsPlugin() (which is false) is a bug.
 func mariadbSemiSyncNaming() version.SemiSyncNaming {
 	return version.SemiSyncNaming{
-		EnabledVarSource:  "rpl_semi_sync_master_enabled",
-		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
-		WaitForCountVar:   "rpl_semi_sync_master_wait_for_slave_count",
-		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		EnabledVarSource:  "rpl_semi_sync_source_enabled",
+		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
+		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
+		TimeoutVar:        "rpl_semi_sync_source_timeout",
 	}
 }
 
