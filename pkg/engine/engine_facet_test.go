@@ -289,8 +289,8 @@ func TestMariaDBFacets(t *testing.T) {
 	if eng.SupportsDynamicPrivileges() {
 		t.Error("MariaDB SupportsDynamicPrivileges() = true, want false")
 	}
-	if got := eng.TLSReloadStatement(); got != "FLUSH SSL" {
-		t.Errorf("MariaDB TLSReloadStatement() = %q, want FLUSH SSL", got)
+	if got := eng.TLSReloadStatement(); got != "FLUSH LOCAL SSL" {
+		t.Errorf("MariaDB TLSReloadStatement() = %q, want FLUSH LOCAL SSL", got)
 	}
 
 	v := mustVersion(t, "11.4.0")

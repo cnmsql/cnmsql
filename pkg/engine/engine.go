@@ -154,7 +154,8 @@ type Engine interface {
 	// TLSReloadStatement returns the SQL that makes a running server reload its
 	// TLS key material from disk without a restart. MySQL uses
 	// "ALTER INSTANCE RELOAD TLS"; MariaDB has no such statement and reloads
-	// with "FLUSH SSL" (10.4+).
+	// with "FLUSH LOCAL SSL" (10.4+), the LOCAL form keeping the reload out of the
+	// binary log so it never enters the replication timeline.
 	TLSReloadStatement() string
 
 	// --- config ---
@@ -459,7 +460,14 @@ func (mariadbEngine) SupportsDynamicPrivileges() bool { return false }
 
 // TLSReloadStatement: MariaDB has no ALTER INSTANCE RELOAD TLS; FLUSH SSL
 // (10.4+) re-reads the server's TLS key material from disk without a restart.
-func (mariadbEngine) TLSReloadStatement() string { return "FLUSH SSL" }
+// The LOCAL modifier keeps it out of the binary log: a plain FLUSH SSL is
+// binlogged, so on a read-only replica it would write a transaction in domain 0
+// under that replica's own server_id and diverge it from the primary's GTID
+// stream (gtid_strict_mode then rejects the primary's next GTID as out-of-order).
+// TLS reload is a node-local operation and must never enter the replication
+// timeline. MySQL's ALTER INSTANCE RELOAD TLS is not binlogged, so this only
+// affects MariaDB.
+func (mariadbEngine) TLSReloadStatement() string { return "FLUSH LOCAL SSL" }
 
 // config
 
