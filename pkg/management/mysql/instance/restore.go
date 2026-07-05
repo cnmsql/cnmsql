@@ -315,6 +315,15 @@ func (o *RestoreOptions) reconcileCredentials(ctx context.Context) error {
 		"--socket="+o.Socket,
 		"--skip-networking",
 		"--skip-grant-tables",
+		// Suppress the binary log for the credential reset. The config file enables
+		// log_bin, so without this the ALTER USER / FLUSH statements would be written
+		// to the binlog and advance the restored server's GTID state past the base
+		// backup anchor. On MariaDB those transactions land in domain 0 under the
+		// restored server_id and collide with the real archived transactions replayed
+		// during point-in-time recovery (gtid_strict_mode then rejects them as
+		// out-of-order). The credential reset must change only the on-disk grant
+		// tables, never the replication timeline.
+		"--skip-log-bin",
 	)
 
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))
