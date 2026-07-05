@@ -233,6 +233,23 @@ func readBinlogInfoWithTool(backupDir string, bt engine.BackupTool) (engine.Binl
 	return bt.ParseBinlogInfo(string(content))
 }
 
+// persistBinlogInfo copies the backup tool's binlog-info file from the scratch
+// backup dir into the durable data dir so point-in-time replay can recover the
+// base-backup anchor GTID after an init-container restart wipes the scratch dir.
+// A missing source file is not an error: an empty-position backup writes none.
+func persistBinlogInfo(bt engine.BackupTool, backupDir, dataDir string) error {
+	name := bt.BinlogInfoFileName()
+	src := filepath.Join(backupDir, name)
+	content, err := os.ReadFile(src) //nolint:gosec // path derived from operator-provided backup dir
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.WriteFile(filepath.Join(dataDir, name), content, 0o600)
+}
+
 // runCommand runs an external command, forwarding output to the process stdio.
 func runCommand(ctx context.Context, binary string, args []string) error {
 	cmd := exec.CommandContext(ctx, binary, args...)

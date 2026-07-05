@@ -258,6 +258,17 @@ func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool
 		return fmt.Errorf("copy-back: %w", err)
 	}
 
+	// 4b. Persist the backup's binlog-info file into the (durable) data directory.
+	// copy-back leaves this metadata file behind in the scratch backup dir, but
+	// point-in-time replay reads it to learn the base-backup anchor GTID, and an
+	// init-container restart wipes the scratch dir while the data dir survives on
+	// the PVC. Without a durable copy, a retried replay reads an empty anchor and
+	// replays from genesis. Absence is fine: an empty-position backup (fresh
+	// primary) writes no such file, which readAnchorGTID treats as an empty anchor.
+	if err := persistBinlogInfo(bt, opts.BackupDir, opts.DataDir); err != nil {
+		return fmt.Errorf("persisting backup binlog info: %w", err)
+	}
+
 	// 5. Reset the restored internal accounts to this cluster's credentials so the
 	// instance manager (and the backup tool) can authenticate against the recovered
 	// data. Skipped when no root password is provided.

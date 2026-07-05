@@ -42,6 +42,42 @@ func TestReadBinlogInfoMissingFile(t *testing.T) {
 	}
 }
 
+// TestPersistBinlogInfo verifies the backup's binlog-info file is copied into the
+// data dir so a retried PITR can recover the anchor, and that a missing source
+// file (empty-position backup) is a silent no-op.
+func TestPersistBinlogInfo(t *testing.T) {
+	bt := engine.MustForFlavor(engine.FlavorMariaDB).Backup()
+	name := bt.BinlogInfoFileName()
+
+	t.Run("copies into data dir", func(t *testing.T) {
+		backupDir, dataDir := t.TempDir(), t.TempDir()
+		want := "binlog.000004\t328\t0-1-42\n"
+		if err := os.WriteFile(filepath.Join(backupDir, name), []byte(want), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := persistBinlogInfo(bt, backupDir, dataDir); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(dataDir, name))
+		if err != nil {
+			t.Fatalf("expected durable copy in data dir: %v", err)
+		}
+		if string(got) != want {
+			t.Fatalf("copied content = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("missing source is a no-op", func(t *testing.T) {
+		dataDir := t.TempDir()
+		if err := persistBinlogInfo(bt, t.TempDir(), dataDir); err != nil {
+			t.Fatalf("missing source must not error, got: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dataDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("expected no file written, got err=%v", err)
+		}
+	})
+}
+
 func TestReadBinlogInfoPresent(t *testing.T) {
 	bt := engine.MustForFlavor(engine.FlavorMariaDB).Backup()
 
