@@ -23,7 +23,7 @@ import (
 	"io"
 	"os/exec"
 
-	"github.com/go-logr/logr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // DefaultMysqlbinlog is the mysqlbinlog binary name resolved from PATH.
@@ -35,7 +35,7 @@ const DefaultMysqlbinlog = "mysqlbinlog"
 // stderr is turned into structured log lines, per the project logging decision.
 // When mariaDB is true, mariadb-binlog output is parsed (domain-server-seq
 // triples) and the process name in log lines reflects that.
-func MysqlbinlogScanner(binPath string, mariaDB bool, logger logr.Logger) Scanner {
+func MysqlbinlogScanner(binPath string, mariaDB bool) Scanner {
 	if binPath == "" {
 		binPath = DefaultMysqlbinlog
 	}
@@ -44,7 +44,7 @@ func MysqlbinlogScanner(binPath string, mariaDB bool, logger logr.Logger) Scanne
 		procName = "mariadb-binlog"
 	}
 	return func(ctx context.Context, path string) (ScanResult, error) {
-		return runBinlogClient(ctx, binPath, procName, path, logger,
+		return runBinlogClient(ctx, binPath, procName, path,
 			func(r io.Reader) (ScanResult, error) {
 				return Scan(r, ScanOpts{MariaDB: mariaDB})
 			})
@@ -55,11 +55,11 @@ func MysqlbinlogScanner(binPath string, mariaDB bool, logger logr.Logger) Scanne
 // byte offset of every GTID transaction, in file order. It is the positional
 // counterpart of the GTID-set scan, used to bound MariaDB point-in-time recovery
 // (which mariadb-binlog cannot filter by GTID) at exact transaction boundaries.
-func MariadbTxnBoundaries(ctx context.Context, binPath, path string, logger logr.Logger) ([]TxnBoundary, error) {
+func MariadbTxnBoundaries(ctx context.Context, binPath, path string) ([]TxnBoundary, error) {
 	if binPath == "" {
 		binPath = DefaultMysqlbinlog
 	}
-	return runBinlogClient(ctx, binPath, "mariadb-binlog", path, logger, scanMariaDBBoundaries)
+	return runBinlogClient(ctx, binPath, "mariadb-binlog", path, scanMariaDBBoundaries)
 }
 
 // runBinlogClient shells out to the binlog client over one file and feeds its
@@ -67,10 +67,11 @@ func MariadbTxnBoundaries(ctx context.Context, binPath, path string, logger logr
 // pipe never blocks, and stdout is fully consumed even on a parse error so Wait
 // succeeds.
 func runBinlogClient[T any](
-	ctx context.Context, binPath, procName, path string, logger logr.Logger,
+	ctx context.Context, binPath, procName, path string,
 	parse func(io.Reader) (T, error),
 ) (T, error) {
 	var zero T
+	logger := logf.FromContext(ctx)
 	args, err := ReadArgs(path)
 	if err != nil {
 		return zero, err

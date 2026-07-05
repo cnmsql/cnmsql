@@ -291,7 +291,7 @@ func (o *RestoreOptions) replayMariadbPositional(
 
 	boundaries := make([][]binlog.TxnBoundary, len(files))
 	for i, f := range files {
-		b, err := binlog.MariadbTxnBoundaries(ctx, o.MysqlbinlogPath, f, log.WithName("mariadb-binlog"))
+		b, err := binlog.MariadbTxnBoundaries(ctx, o.MysqlbinlogPath, f)
 		if err != nil {
 			return fmt.Errorf("pitr: scanning binlog boundaries in %s: %w", f, err)
 		}

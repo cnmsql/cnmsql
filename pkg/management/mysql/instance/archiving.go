@@ -96,7 +96,7 @@ func startArchiver(
 		InstanceName: cfg.InstanceName,
 		ServerUUID:   serverUUID,
 		BinlogDir:    cfg.BinlogDir,
-		Scan:         binlog.MysqlbinlogScanner(cfg.MysqlbinlogPath, cfg.MariaDB, log.WithName("binlog-scanner")),
+		Scan:         binlog.MysqlbinlogScanner(cfg.MysqlbinlogPath, cfg.MariaDB),
 		NewSet:       cfg.newGTIDSet(),
 	})
 	if err != nil {

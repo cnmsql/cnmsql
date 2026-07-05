@@ -462,7 +462,7 @@ func MariaSeqForDomain(pos string, domain uint32) uint64 {
 	if cleaned == "" {
 		return 0
 	}
-	for _, triple := range strings.Split(cleaned, ",") {
+	for triple := range strings.SplitSeq(cleaned, ",") {
 		parts := strings.Split(triple, "-")
 		if len(parts) != 3 {
 			continue
