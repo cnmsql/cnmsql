@@ -176,6 +176,35 @@ func TestPlanMariadbPositional(t *testing.T) {
 			target:     99,
 			wantErr:    ErrTargetBeyondArchive,
 		},
+		{
+			// Real failover archive (mdb-stress-pitr): server 1 archives 0-1-1..14
+			// and 0-1-15..26; server 2's binlog re-logs 0-1-15..26 (log_slave_updates)
+			// then continues 0-2-27..57, plus a trailing file past the target. The
+			// overlap must not be replayed twice, and the trailing file not at all.
+			name: "failover with re-logged overlap",
+			files: []string{
+				"1_binlog.000001", "1_binlog.000002",
+				"2_binlog.000001", "2_binlog.000002", "2_binlog.000003",
+			},
+			boundaries: [][]TxnBoundary{
+				// 1/binlog.000001: 0-1-1..14 (all at/below the anchor)
+				{{0, 1, 4}, {0, 14, 2800}},
+				// 1/binlog.000002: 0-1-15..26
+				{{0, 15, 339}, {0, 26, 76000}},
+				// 2/binlog.000001: rotation only, no transactions
+				{},
+				// 2/binlog.000002: re-log 0-1-15..26 then 0-2-27..57
+				{{0, 15, 339}, {0, 26, 60000}, {0, 27, 61000}, {0, 57, 284000}},
+				// 2/binlog.000003: 0-2-58..62 (past the target)
+				{{0, 58, 339}, {0, 62, 34000}},
+			},
+			anchor: 14,
+			target: 57,
+			want: []ReplayChunk{
+				{Files: []string{"1_binlog.000002"}, StartPosition: 339},
+				{Files: []string{"2_binlog.000002"}, StartPosition: 61000},
+			},
+		},
 	}
 
 	for _, tc := range tests {
