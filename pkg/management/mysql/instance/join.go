@@ -213,12 +213,21 @@ func (o *JoinOptions) configureReplication(
 	return mgr.ProvisionFromBackup(ctx, gtidPurged, o.Source)
 }
 
-// readBinlogInfoWithTool reads and parses the backup tool's binlog-info file.
+// readBinlogInfoWithTool reads and parses the backup tool's binlog-info file. A
+// missing file is not an error: mariabackup only writes mariadb_backup_binlog_info
+// when the source has a non-empty binlog GTID position, so a primary whose data
+// was authored out of the binlog (initdb, --skip-log-bin bootstrap) produces a
+// backup without one. That means an empty replica start position, which
+// ProvisionFromBackup handles by skipping the seed and following the source from
+// the beginning.
 func readBinlogInfoWithTool(backupDir string, bt engine.BackupTool) (engine.BinlogInfo, error) {
 	infoFile := bt.BinlogInfoFileName()
 	path := filepath.Join(backupDir, infoFile)
 	content, err := os.ReadFile(path) //nolint:gosec // path derived from operator-provided backup dir
 	if err != nil {
+		if os.IsNotExist(err) {
+			return engine.BinlogInfo{}, nil
+		}
 		return engine.BinlogInfo{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 	return bt.ParseBinlogInfo(string(content))
