@@ -15,6 +15,12 @@ The design is GTID first: object names and binlog file numbers are operational
 details, while recovery correctness is measured by whether the archived GTID set
 covers the target.
 
+:::note MariaDB
+This page uses MySQL GTID syntax. On a MariaDB cluster, a `targetGTID` uses the
+`domain-server-seq` form (for example `0-1-16`), and recovery to a GTID is
+supported for a single replication domain. See [MariaDB Flavor](mariadb.md#point-in-time-recovery-to-a-gtid).
+:::
+
 ```mermaid
 flowchart LR
     subgraph Source["Source Cluster"]

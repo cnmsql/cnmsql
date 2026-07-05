@@ -14,6 +14,13 @@ This mirrors the CloudNativePG model: the operator controls a database image
 with the instance manager built in instead of relying directly on upstream
 database images.
 
+:::note MariaDB
+This page describes the MySQL images. To run MariaDB instead, set
+`spec.flavor: mariadb` and use the MariaDB instance image. The selection
+mechanics are the same; the versions and image name differ. See
+[MariaDB Flavor](mariadb.md).
+:::
+
 ## Supported majors
 
 The current version matrix is:

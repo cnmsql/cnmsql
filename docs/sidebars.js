@@ -30,6 +30,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'mariadb',
+      label: 'MariaDB Flavor',
+    },
+    {
+      type: 'doc',
       id: 'storage',
       label: 'Storage',
     },
