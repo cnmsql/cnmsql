@@ -19,6 +19,7 @@ package binlog
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -257,6 +258,20 @@ type ReplayPlan struct {
 	AnchorFile string
 	// StartPosition is the byte offset to start replaying from in AnchorFile.
 	StartPosition int64
+
+	// MariaDBPositional selects the byte-offset-bounded MariaDB replay: because
+	// mariadb-binlog cannot filter by GTID, a targetGTID recovery is executed as
+	// positionally-bounded chunks computed from the domain's anchor/target
+	// sequence numbers (see PlanMariadbPositional). The fields below are only
+	// meaningful when it is true.
+	MariaDBPositional bool
+	// MariaDBDomain is the single replication domain the target/anchor live in.
+	MariaDBDomain uint32
+	// MariaDBAnchorSeq is the sequence the base backup already contains (replay
+	// starts just after it); zero when the backup predates the domain.
+	MariaDBAnchorSeq uint64
+	// MariaDBTargetSeq is the sequence to recover up to, inclusive.
+	MariaDBTargetSeq uint64
 }
 
 // PlanReplay turns the cluster archive index, the base backup's anchor GTID, and
@@ -383,6 +398,172 @@ func planReplayWithoutFrontier(
 		plan.StopDatetime = target.Time.UTC().Format(stopDatetimeLayout)
 	}
 	return plan, nil
+}
+
+// ReplayChunk is one bounded mariadb-binlog invocation: an ordered file list with
+// optional positional bounds. StartPosition applies to the first file only;
+// StopPosition (when set) requires a single file (mysqlbinlog's constraint).
+type ReplayChunk struct {
+	Files         []string
+	StartPosition int64
+	StopPosition  int64
+}
+
+// SingleDomainMariaGTID parses a MariaDB GTID position that references exactly one
+// replication domain, returning its domain id and sequence number. Positional PITR
+// bounds a single linear domain timeline at one byte offset, so a multi-domain
+// target — which would need per-domain offsets in one interleaved stream — is
+// rejected. An empty position returns ok=false with no error (no bound to apply).
+func SingleDomainMariaGTID(pos string) (domain uint32, seq uint64, ok bool, err error) {
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\r', '\t':
+			return -1
+		default:
+			return r
+		}
+	}, pos)
+	if cleaned == "" {
+		return 0, 0, false, nil
+	}
+	triples := strings.Split(cleaned, ",")
+	if len(triples) != 1 {
+		return 0, 0, false, fmt.Errorf("binlog: multi-domain MariaDB GTID %q is not supported for positional recovery", pos)
+	}
+	parts := strings.Split(triples[0], "-")
+	if len(parts) != 3 {
+		return 0, 0, false, fmt.Errorf("binlog: invalid MariaDB GTID %q: want domain-server-seq", pos)
+	}
+	d, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("binlog: invalid MariaDB GTID domain in %q: %w", pos, err)
+	}
+	s, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("binlog: invalid MariaDB GTID sequence in %q: %w", pos, err)
+	}
+	return uint32(d), s, true, nil
+}
+
+// MariaSeqForDomain returns the sequence number a MariaDB GTID position has
+// reached in the given domain, or 0 if the domain is absent or the position is
+// empty/unparseable. It is lenient by design: the anchor may be empty (backup at
+// genesis) or, in principle, multi-domain, and a missing domain simply means the
+// backup contains nothing in it yet.
+func MariaSeqForDomain(pos string, domain uint32) uint64 {
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\r', '\t':
+			return -1
+		default:
+			return r
+		}
+	}, pos)
+	if cleaned == "" {
+		return 0
+	}
+	for _, triple := range strings.Split(cleaned, ",") {
+		parts := strings.Split(triple, "-")
+		if len(parts) != 3 {
+			continue
+		}
+		d, err := strconv.ParseUint(parts[0], 10, 32)
+		if err != nil || uint32(d) != domain {
+			continue
+		}
+		if seq, err := strconv.ParseUint(parts[2], 10, 64); err == nil {
+			return seq
+		}
+	}
+	return 0
+}
+
+// PlanMariadbPositional turns per-file transaction boundaries into the ordered,
+// positionally-bounded chunks that replay the domain's transactions with sequence
+// in (anchorSeq, targetSeq]. files and boundaries are parallel, in timeline order.
+//
+// mariadb-binlog cannot filter by GTID, so replay is bounded by byte offsets:
+//   - start = the offset of the first transaction with seq > anchorSeq (skips what
+//     the base backup already contains);
+//   - stop  = the offset of the first transaction with seq > targetSeq (so replay
+//     includes the target transaction and nothing after it).
+//
+// Because a stop offset requires a single file, the plan is at most two chunks: the
+// files up to the target file (replayed fully from the start offset), then the
+// target file bounded by the stop offset. When the target is the last archived
+// transaction there is no stop bound and a single start-bounded chunk is returned.
+func PlanMariadbPositional(
+	files []string, boundaries [][]TxnBoundary, domain uint32, anchorSeq, targetSeq uint64,
+) ([]ReplayChunk, error) {
+	if len(files) != len(boundaries) {
+		return nil, fmt.Errorf("binlog: files/boundaries length mismatch (%d vs %d)", len(files), len(boundaries))
+	}
+
+	maxSeq, hasAny := maxSeqInDomain(boundaries, domain)
+	if !hasAny || maxSeq < targetSeq {
+		return nil, ErrTargetBeyondArchive
+	}
+
+	startFile, startPos, startFound := locateFirstAfter(boundaries, domain, anchorSeq)
+	if !startFound {
+		// Nothing past the anchor is archived: the base backup already covers it.
+		return nil, nil
+	}
+
+	stopFile, stopPos, stopFound := locateFirstAfter(boundaries, domain, targetSeq)
+	if !stopFound {
+		// Target is the last archived transaction: replay from the start to the end
+		// with no upper bound.
+		return []ReplayChunk{{
+			Files:         append([]string(nil), files[startFile:]...),
+			StartPosition: startPos,
+		}}, nil
+	}
+
+	if stopFile < startFile || (stopFile == startFile && stopPos <= startPos) {
+		return nil, ErrTargetBeforeBackup
+	}
+
+	if stopFile == startFile {
+		return []ReplayChunk{{
+			Files:         []string{files[startFile]},
+			StartPosition: startPos,
+			StopPosition:  stopPos,
+		}}, nil
+	}
+
+	return []ReplayChunk{
+		{Files: append([]string(nil), files[startFile:stopFile]...), StartPosition: startPos},
+		{Files: []string{files[stopFile]}, StopPosition: stopPos},
+	}, nil
+}
+
+// locateFirstAfter returns the file index and start offset of the first
+// transaction (in domain, timeline order) whose sequence exceeds seq.
+func locateFirstAfter(boundaries [][]TxnBoundary, domain uint32, seq uint64) (int, int64, bool) {
+	for i, list := range boundaries {
+		for _, b := range list {
+			if b.Domain == domain && b.Seq > seq {
+				return i, b.StartPos, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// maxSeqInDomain returns the highest sequence archived for the domain.
+func maxSeqInDomain(boundaries [][]TxnBoundary, domain uint32) (uint64, bool) {
+	var max uint64
+	var found bool
+	for _, list := range boundaries {
+		for _, b := range list {
+			if b.Domain == domain && (!found || b.Seq > max) {
+				max = b.Seq
+				found = true
+			}
+		}
+	}
+	return max, found
 }
 
 func applyTargetWithOps(

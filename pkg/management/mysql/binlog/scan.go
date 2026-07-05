@@ -68,6 +68,11 @@ var gtidNextRe = regexp.MustCompile(`(?i)SET\s+@@SESSION\.GTID_NEXT\s*=\s*'([0-9
 //	#240612 10:00:00 server id 1  end_log_pos 197 ...  GTID ...
 var eventHeaderRe = regexp.MustCompile(`^#(\d{6})\s+(\d{1,2}:\d{2}:\d{2})\s+server id\b`)
 
+// endLogPosRe captures the end_log_pos of an event header — the byte offset at
+// which the event ends and the next one begins. Used to derive positional PITR
+// bounds from a transaction's GTID.
+var endLogPosRe = regexp.MustCompile(`end_log_pos (\d+)`)
+
 // prevGTIDsLabelRe detects the Previous-GTIDs event header; the GTID set is on
 // the following "# <set>" comment line.
 var prevGTIDsLabelRe = regexp.MustCompile(`(?i)\bPrevious-?GTIDs\b`)
@@ -264,6 +269,54 @@ func scanMariaDB(r io.Reader) (ScanResult, error) {
 
 	res.GTIDSet = accum.string()
 	return res, nil
+}
+
+// TxnBoundary is one MariaDB transaction's GTID together with StartPos, the byte
+// offset at which its GTID event begins in the binlog file. That offset is exactly
+// what mariadb-binlog's --start-position / --stop-position bound at: replay that
+// starts at StartPos includes the transaction; replay that stops at StartPos
+// excludes it (and everything after).
+type TxnBoundary struct {
+	Domain   uint32
+	Seq      uint64
+	StartPos int64
+}
+
+// scanMariaDBBoundaries parses mariadb-binlog output and returns, in file order,
+// the start byte offset of every GTID transaction. A transaction's start equals
+// the end_log_pos of the event immediately preceding its GTID event, so we track
+// the running end position and record it when a GTID event appears. Binlog data
+// begins at offset 4 (after the magic), which seeds the running position.
+func scanMariaDBBoundaries(r io.Reader) ([]TxnBoundary, error) {
+	var out []TxnBoundary
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	var prevEnd int64 = 4
+	for scanner.Scan() {
+		line := scanner.Text()
+		if eventHeaderRe.FindStringSubmatch(line) == nil {
+			continue
+		}
+		// A per-transaction GTID event starts at the previous event's end offset.
+		// The "Gtid list" header carries no transaction GTID and never matches
+		// mariadbGTIDEventRe, so it only advances prevEnd.
+		if g := mariadbGTIDEventRe.FindStringSubmatch(line); g != nil {
+			domain, _ := strconv.ParseUint(g[1], 10, 32)
+			seq, _ := strconv.ParseUint(g[3], 10, 64)
+			out = append(out, TxnBoundary{Domain: uint32(domain), Seq: seq, StartPos: prevEnd})
+		}
+		if p := endLogPosRe.FindStringSubmatch(line); p != nil {
+			if v, err := strconv.ParseInt(p[1], 10, 64); err == nil {
+				prevEnd = v
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("binlog: scanning mariadb-binlog output for positions: %w", err)
+	}
+	return out, nil
 }
 
 // canonicalGTIDSet re-parses and re-renders a GTID set so manifests store a

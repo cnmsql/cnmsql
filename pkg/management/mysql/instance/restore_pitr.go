@@ -94,6 +94,22 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		}
 		plan.AnchorFile = anchor.File
 		plan.StartPosition = anchor.Position
+		// mariadb-binlog cannot filter by GTID, so a targetGTID recovery is bounded
+		// positionally: resolve the target (and the anchor already applied by the
+		// base backup) to a single domain's sequence numbers, and let the executor
+		// derive byte offsets by scanning the downloaded binlogs.
+		if o.Target.GTID != "" {
+			domain, targetSeq, ok, err := binlog.SingleDomainMariaGTID(o.Target.GTID)
+			if err != nil {
+				return fmt.Errorf("pitr: %w", err)
+			}
+			if ok {
+				plan.MariaDBPositional = true
+				plan.MariaDBDomain = domain
+				plan.MariaDBTargetSeq = targetSeq
+				plan.MariaDBAnchorSeq = binlog.MariaSeqForDomain(anchor.GTIDSet, domain)
+			}
+		}
 	} else {
 		plan, err = binlog.PlanReplay(&index, anchor.GTIDSet, o.Target)
 		if err != nil {
@@ -215,6 +231,13 @@ func (o *RestoreOptions) applyReplay(
 	_ = db.Close()
 
 	isMariaDB := eng.Flavor() == engine.FlavorMariaDB
+
+	// A MariaDB targetGTID recovery is bounded by byte offsets (mariadb-binlog has
+	// no --include-gtids), computed by scanning the downloaded binlogs.
+	if isMariaDB && plan.MariaDBPositional {
+		return o.replayMariadbPositional(ctx, bt, plan, files)
+	}
+
 	replayFiles := files
 	startPos := plan.StartPosition
 
@@ -222,11 +245,20 @@ func (o *RestoreOptions) applyReplay(
 	// and skip everything before it. Downloaded files are stored as
 	// <serverUUID>_<binlogName>, so we match on the suffix.
 	if isMariaDB && plan.AnchorFile != "" {
+		found := false
 		for i, f := range files {
 			if strings.HasSuffix(f, "_"+plan.AnchorFile) || filepath.Base(f) == plan.AnchorFile {
 				replayFiles = files[i:]
+				found = true
 				break
 			}
+		}
+		if !found {
+			// The anchor binlog was rotated/purged before archiving, so its byte
+			// offset means nothing in any downloaded file. Applying it to a
+			// different file lands mid-event and corrupts the stream, so start from
+			// the beginning instead.
+			startPos = 0
 		}
 	}
 
@@ -243,14 +275,65 @@ func (o *RestoreOptions) applyReplay(
 	}
 
 	log.Info("Replaying archived binlogs into restored data", "files", len(files))
-	return o.pipeReplay(ctx, bt, replayArgs)
+	return o.runReplayChunk(ctx, bt, replayArgs)
 }
 
-// pipeReplay runs the binlog client piped into the SQL client, decoding the
-// archived binlogs and applying them to the temporary server. Both child
-// processes' stderr is captured as structured logs; the binlog stream itself is
-// a data path and never logged.
-func (o *RestoreOptions) pipeReplay(ctx context.Context, bt engine.BackupTool, replayArgs []string) error {
+// replayMariadbPositional executes a MariaDB targetGTID recovery as byte-offset-
+// bounded chunks. It scans each downloaded binlog for its transaction boundaries,
+// plans the ordered chunks that cover (anchorSeq, targetSeq], and streams each
+// chunk into the already-running temporary mysqld. Because a stop offset requires a
+// single file, the last chunk is the target file bounded by --stop-position; the
+// server's GTID state advances across chunks so the result ends exactly at target.
+func (o *RestoreOptions) replayMariadbPositional(
+	ctx context.Context, bt engine.BackupTool, plan binlog.ReplayPlan, files []string,
+) error {
+	log := logf.FromContext(ctx).WithName("instance-pitr")
+
+	boundaries := make([][]binlog.TxnBoundary, len(files))
+	for i, f := range files {
+		b, err := binlog.MariadbTxnBoundaries(ctx, o.MysqlbinlogPath, f, log.WithName("mariadb-binlog"))
+		if err != nil {
+			return fmt.Errorf("pitr: scanning binlog boundaries in %s: %w", f, err)
+		}
+		boundaries[i] = b
+	}
+
+	chunks, err := binlog.PlanMariadbPositional(
+		files, boundaries, plan.MariaDBDomain, plan.MariaDBAnchorSeq, plan.MariaDBTargetSeq)
+	if err != nil {
+		return fmt.Errorf("pitr: planning MariaDB positional replay: %w", err)
+	}
+	if len(chunks) == 0 {
+		log.Info("No MariaDB transactions to replay past the anchor; data is already at the recovery target")
+		return nil
+	}
+
+	for i, chunk := range chunks {
+		replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
+			Files:         chunk.Files,
+			StartPosition: chunk.StartPosition,
+			StopPosition:  chunk.StopPosition,
+			MariaDB:       true,
+		})
+		if err != nil {
+			return fmt.Errorf("pitr: building replay args for chunk %d: %w", i, err)
+		}
+		log.Info("Replaying MariaDB binlog chunk", "chunk", i, "files", len(chunk.Files),
+			"startPosition", chunk.StartPosition, "stopPosition", chunk.StopPosition)
+		if err := o.runReplayChunk(ctx, bt, replayArgs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runReplayChunk runs the binlog client piped into the SQL client for one bounded
+// set of files, decoding the archived binlogs and applying them to the temporary
+// server. It is invoked once per replay chunk (MariaDB positional recovery streams
+// several in sequence against the same server); both child processes' stderr is
+// captured as structured logs, while the binlog stream itself is a data path and
+// never logged.
+func (o *RestoreOptions) runReplayChunk(ctx context.Context, bt engine.BackupTool, replayArgs []string) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
 	pr, pw := io.Pipe()
