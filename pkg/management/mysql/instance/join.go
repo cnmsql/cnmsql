@@ -252,7 +252,8 @@ func persistBinlogInfo(bt engine.BackupTool, backupDir, dataDir string) error {
 	// name so readAnchorGTID (which tries the same candidates) finds it in the data
 	// dir. MariaBackup < 11.1 writes the legacy xtrabackup_binlog_info name.
 	for _, name := range bt.BinlogInfoFileNames() {
-		content, err := os.ReadFile(filepath.Join(backupDir, name)) //nolint:gosec // path derived from operator-provided backup dir
+		//nolint:gosec // path derived from operator-provided backup dir
+		content, err := os.ReadFile(filepath.Join(backupDir, name))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

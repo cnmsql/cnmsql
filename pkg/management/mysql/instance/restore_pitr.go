@@ -420,7 +420,7 @@ func (o *RestoreOptions) replayMariadbPositional(
 			// "<serverUUID>_" prefix the downloader assigns; a different server's
 			// like-named binlog carries an unrelated sequence range and must not count.
 			srvPrefix := strings.TrimSuffix(filepath.Base(files[ai]), plan.AnchorFile)
-			for i := 0; i < ai; i++ {
+			for i := range ai {
 				if !strings.HasPrefix(filepath.Base(files[i]), srvPrefix) {
 					continue
 				}

@@ -167,7 +167,7 @@ func (c *Controller) resolveAnchorGTID(ctx context.Context, stderr string) (stri
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -184,7 +184,8 @@ func (c *Controller) resolveAnchorGTID(ctx context.Context, stderr string) (stri
 		if !resolved.Valid {
 			// NULL: not a resolvable position. Deterministic, so do not retry.
 			return "", fmt.Errorf(
-				"backup: BINLOG_GTID_POS(%q, %d) returned NULL; the backup's binlog position is not resolvable (purged, rotated, or invalid)",
+				"backup: BINLOG_GTID_POS(%q, %d) returned NULL; "+
+					"the backup's binlog position is not resolvable (purged, rotated, or invalid)",
 				file, pos)
 		}
 		// Valid — possibly the empty genesis position, possibly a real GTID set.

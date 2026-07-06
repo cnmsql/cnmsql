@@ -36,8 +36,9 @@ func TestParseMariabackupBinlogPos(t *testing.T) {
 			wantFile: "binlog.000004", wantPos: 831, wantGTID: "", wantOK: true,
 		},
 		{
-			name:     "11.1 with GTID clause",
-			stderr:   "mariabackup: MySQL binlog position: filename 'binlog.000004', position '831', GTID of the last change '0-1-2'\n",
+			name: "11.1 with GTID clause",
+			stderr: "mariabackup: MySQL binlog position: filename 'binlog.000004', " +
+				"position '831', GTID of the last change '0-1-2'\n",
 			wantFile: "binlog.000004", wantPos: 831, wantGTID: "0-1-2", wantOK: true,
 		},
 		{

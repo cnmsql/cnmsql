@@ -67,7 +67,8 @@ func EnsureArchiveID(dataDir string) (string, error) {
 // or empty file, so a caller that only wants to record an existing identity (e.g. a
 // backup annotating its source incarnation) never mints a spurious token.
 func ReadArchiveID(dataDir string) (string, error) {
-	content, err := os.ReadFile(filepath.Join(dataDir, archiveIDFileName)) //nolint:gosec // path derived from operator-provided data dir
+	//nolint:gosec // path derived from operator-provided data dir
+	content, err := os.ReadFile(filepath.Join(dataDir, archiveIDFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil

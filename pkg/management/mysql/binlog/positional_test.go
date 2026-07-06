@@ -137,6 +137,7 @@ func TestPlanMariadbPositional(t *testing.T) {
 		{{0, 10, 100}, {0, 11, 200}, {0, 12, 300}},
 	}
 
+	//nolint:prealloc // crossServer is appended below
 	tests := []struct {
 		name       string
 		files      []string
