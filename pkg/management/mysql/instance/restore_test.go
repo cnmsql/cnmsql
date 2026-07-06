@@ -18,6 +18,7 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,19 +109,36 @@ func TestFindAnchorIndex(t *testing.T) {
 		"uuid-b_binlog.000001",
 	}
 	tests := []struct {
-		name   string
-		anchor string
-		want   int
+		name         string
+		anchor       string
+		anchorServer string
+		want         int
+		wantAmbig    bool
 	}{
-		{name: "matches suffix", anchor: "binlog.000002", want: 1},
-		// Two servers both number from 000001; the first timeline occurrence wins.
-		{name: "collision picks first in timeline order", anchor: "binlog.000001", want: 0},
+		{name: "matches suffix under one server", anchor: "binlog.000002", want: 1},
+		// Two servers both number from 000001: a GTID-less anchor cannot pick one.
+		{name: "collision across servers is ambiguous", anchor: "binlog.000001", wantAmbig: true},
+		// A recorded anchor server disambiguates the collision to its own file.
+		{name: "recorded server picks first", anchor: "binlog.000001", anchorServer: "uuid-a", want: 0},
+		{name: "recorded server picks second", anchor: "binlog.000001", anchorServer: "uuid-b", want: 2},
+		// Recorded server whose anchor file was purged: absent, not ambiguous.
+		{name: "recorded server absent", anchor: "binlog.000001", anchorServer: "uuid-c", want: -1},
 		{name: "absent", anchor: "binlog.000009", want: -1},
 		// A bare (unprefixed) name is never how the downloader stores files.
 		{name: "no substring match", anchor: "uuid-a_binlog.000001", want: -1},
 	}
 	for _, tc := range tests {
-		if got := findAnchorIndex(files, tc.anchor); got != tc.want {
+		got, err := findAnchorIndex(files, tc.anchor, tc.anchorServer)
+		if tc.wantAmbig {
+			if !errors.Is(err, ErrAmbiguousAnchor) {
+				t.Errorf("%s: findAnchorIndex(_, %q) err = %v, want ErrAmbiguousAnchor", tc.name, tc.anchor, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: findAnchorIndex(_, %q) unexpected err = %v", tc.name, tc.anchor, err)
+		}
+		if got != tc.want {
 			t.Errorf("%s: findAnchorIndex(_, %q) = %d, want %d", tc.name, tc.anchor, got, tc.want)
 		}
 	}

@@ -19,6 +19,7 @@ package binlog
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -258,6 +259,12 @@ type ReplayPlan struct {
 	AnchorFile string
 	// StartPosition is the byte offset to start replaying from in AnchorFile.
 	StartPosition int64
+	// AnchorServerUUID is the archive identity of the incarnation the base backup was
+	// taken from, recorded in the backup metadata. It disambiguates AnchorFile when a
+	// re-clone/failover left several incarnations numbering their binlogs from 000001,
+	// so the anchor's bare filename matches more than one downloaded segment. Empty
+	// when unknown (legacy backups), which falls back to fail-closed detection.
+	AnchorServerUUID string
 
 	// MariaDBPositional selects the byte-offset-bounded MariaDB replay: because
 	// mariadb-binlog cannot filter by GTID, a targetGTID recovery is executed as
@@ -398,6 +405,95 @@ func planReplayWithoutFrontier(
 		plan.StopDatetime = target.Time.UTC().Format(stopDatetimeLayout)
 	}
 	return plan, nil
+}
+
+// SelectMariadbSegments chooses the minimal set of index segments whose per-domain
+// sequence ranges cover (anchorSeq, targetSeq], so recovery downloads only the
+// binlogs it needs instead of every segment. It replaces the MySQL frontier-
+// containment check on the MariaDB positional path, where a single-point GTID set
+// cannot express the gaps a re-init clone leaves in one server's history.
+//
+// Each segment's range in the target domain is [start, end], where
+// start = MariaSeqForDomain(seg.StartGTIDSet) and end = MariaSeqForDomain(seg.GTIDSet).
+// A single incarnation is contiguous per domain, so one interval per segment suffices.
+// The cover is greedy: from the highest sequence covered so far, extend with the
+// segment that reaches furthest among those that start no later than one past it
+// (contiguity, so the union stays gap-free). The first pick is lenient — if no
+// segment starts at or below anchorSeq+1, the archive simply begins later than the
+// anchor, so the earliest-starting segment is taken (mirrors PlanMariadbPositional's
+// leading-edge leniency).
+//
+// A hole the union cannot bridge is fatal: ErrForkedTimeline if some segment reaches
+// the target but a gap precedes it, ErrTargetBeyondArchive if no segment reaches the
+// target at all. Segments with no transactions in the domain (or missing StartGTIDSet,
+// treated as genesis for back-compat with pre-range archives) are handled leniently.
+func SelectMariadbSegments(
+	segments []objectstore.ArchiveSegment, domain uint32, anchorSeq, targetSeq uint64,
+) ([]ReplaySegment, error) {
+	if targetSeq <= anchorSeq {
+		return nil, nil
+	}
+
+	type interval struct {
+		seg        *objectstore.ArchiveSegment
+		start, end uint64
+	}
+	var ivs []interval
+	var maxEnd uint64
+	for i := range segments {
+		end := MariaSeqForDomain(segments[i].GTIDSet, domain)
+		if end == 0 {
+			continue // nothing archived in this domain
+		}
+		start := MariaSeqForDomain(segments[i].StartGTIDSet, domain)
+		if start == 0 {
+			start = 1 // unknown start (pre-range archive): treat as from genesis
+		}
+		ivs = append(ivs, interval{seg: &segments[i], start: start, end: end})
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+	if maxEnd < targetSeq {
+		return nil, ErrTargetBeyondArchive
+	}
+
+	used := make([]bool, len(ivs))
+	current := anchorSeq
+	var out []ReplaySegment
+	for current < targetSeq {
+		best := -1
+		for i, v := range ivs {
+			if used[i] || v.end <= current || v.start > current+1 {
+				continue
+			}
+			if best < 0 || v.end > ivs[best].end {
+				best = i
+			}
+		}
+		if best < 0 && len(out) == 0 {
+			// Leading edge: no segment starts at or below the anchor. The archive
+			// begins later than the backup; take the earliest-starting segment.
+			for i, v := range ivs {
+				if used[i] || v.end <= current {
+					continue
+				}
+				if best < 0 || v.start < ivs[best].start {
+					best = i
+				}
+			}
+		}
+		if best < 0 {
+			return nil, ErrForkedTimeline
+		}
+		used[best] = true
+		current = ivs[best].end
+		out = append(out, ReplaySegment{
+			ServerUUID: ivs[best].seg.ServerUUID,
+			Files:      append([]string(nil), ivs[best].seg.Binlogs...),
+		})
+	}
+	return out, nil
 }
 
 // ReplayChunk is one bounded mariadb-binlog invocation: an ordered file list with
@@ -544,6 +640,15 @@ func PlanMariadbPositional(
 		return nil, ErrTargetBeforeBackup
 	}
 
+	// Replay must proceed in ascending sequence order, but the caller passes files
+	// grouped by segment (server). Across a failover — and especially a re-init clone,
+	// where one server's segment covers a gap in another's — segment order is not
+	// sequence order. Sort a working copy by each file's first domain sequence so
+	// contiguous runs from different segments stitch together; files with no
+	// transactions in this domain sort last (the loop skips them anyway). For inputs
+	// already in sequence order (the single-server case) this is a no-op.
+	files, boundaries = sortByDomainSeq(files, boundaries, domain)
+
 	applied := anchorSeq
 	firstReplayed := true
 	var chunks []ReplayChunk
@@ -565,6 +670,16 @@ func PlanMariadbPositional(
 		}
 
 		overlap := minSeq <= applied // re-logs sequences already applied (failover re-log)
+
+		// A hole between runs: this file's first new sequence is more than one past
+		// what we've applied, and it is not the leading edge (nothing replayed yet,
+		// where starting above the anchor just means the archive begins later). No
+		// downloaded file supplies the missing sequences, so replay cannot proceed
+		// monotonically. B2 (segment selection) should have caught this before
+		// download; fail closed here as a backstop.
+		if !firstReplayed && !overlap && minSeq > applied+1 {
+			return nil, ErrForkedTimeline
+		}
 
 		if fileMax >= targetSeq {
 			// This file carries the target. It is its own chunk: a stop offset needs a
@@ -607,6 +722,34 @@ func PlanMariadbPositional(
 	// backup already covers the target.
 	flush()
 	return chunks, nil
+}
+
+// sortByDomainSeq returns copies of the parallel files/boundaries slices reordered
+// by each file's first (minimum) sequence in the domain, stably. Files carrying no
+// transaction in the domain sort last. The inputs are left unmodified.
+func sortByDomainSeq(files []string, boundaries [][]TxnBoundary, domain uint32) ([]string, [][]TxnBoundary) {
+	order := make([]int, len(files))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		minA, _, okA := domainFileStats(boundaries[order[a]], domain)
+		minB, _, okB := domainFileStats(boundaries[order[b]], domain)
+		if okA != okB {
+			return okA // files with domain transactions before those without
+		}
+		if !okA {
+			return false
+		}
+		return minA < minB
+	})
+	sf := make([]string, len(files))
+	sb := make([][]TxnBoundary, len(files))
+	for newIdx, oldIdx := range order {
+		sf[newIdx] = files[oldIdx]
+		sb[newIdx] = boundaries[oldIdx]
+	}
+	return sf, sb
 }
 
 // domainFileStats returns the minimum and maximum sequence a single file's

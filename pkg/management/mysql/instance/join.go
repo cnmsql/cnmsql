@@ -138,6 +138,14 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		return fmt.Errorf("copy-back: %w", err)
 	}
 
+	// The cloned data dir carries the source's archive identity (MariaDB token /
+	// MySQL auto.cnf); replace it so this replica archives under its own incarnation
+	// and never collides with the source's objects. For MySQL this must run before
+	// the temporary server below starts, so mysqld mints a fresh server_uuid.
+	if err := resetArchiveIdentity(opts.DataDir, eng.Flavor()); err != nil {
+		return fmt.Errorf("resetting archive identity: %w", err)
+	}
+
 	// 3. Read the backup's GTID position.
 	binlogInfo, err := readBinlogInfoWithTool(opts.BackupDir, bt)
 	if err != nil {

@@ -24,7 +24,7 @@ import (
 
 func TestBackupStreamUnconfiguredErrors(t *testing.T) {
 	c := &Controller{}
-	if err := c.BackupStream(context.Background(), io.Discard); err == nil {
+	if _, err := c.BackupStream(context.Background(), io.Discard); err == nil {
 		t.Fatal("expected an error when backup streaming is not configured")
 	}
 }

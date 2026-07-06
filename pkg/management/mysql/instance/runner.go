@@ -494,6 +494,15 @@ func Run(ctx context.Context, opts RunOptions) error {
 		if eng.Flavor() == engine.FlavorMariaDB {
 			opts.Archiving.MariaDB = true
 			opts.Archiving.MariaDBGTIDModel = eng.GTID()
+			// Partition the archive by a persisted per-incarnation token rather than
+			// @@server_id (config-assigned, reused across a re-init). Ensures one exists
+			// for clusters that predate this token (created lazily on first start).
+			id, err := EnsureArchiveID(opts.Archiving.BinlogDir)
+			if err != nil {
+				_ = sup.Shutdown(ctx)
+				return fmt.Errorf("resolving archive identity: %w", err)
+			}
+			opts.Archiving.ArchiveIdentity = id
 		}
 		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery())
 		if err != nil {

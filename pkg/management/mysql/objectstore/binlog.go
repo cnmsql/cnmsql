@@ -139,6 +139,10 @@ type ArchiveStatus struct {
 	LastArchivedBinlog string `json:"lastArchivedBinlog,omitempty"`
 	// LastArchivedGTID is the last GTID covered by this segment's archive.
 	LastArchivedGTID string `json:"lastArchivedGTID,omitempty"`
+	// FirstGTID is the first GTID this segment archived, set once and never
+	// overwritten. It becomes the segment's StartGTIDSet in the index, giving
+	// recovery the segment's per-domain range start.
+	FirstGTID string `json:"firstGTID,omitempty"`
 	// CoveredGTIDSet is the cumulative GTID set this segment has archived.
 	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
 	// UpdatedAt is when the status was last rewritten.
@@ -154,8 +158,15 @@ type ArchiveSegment struct {
 	InstanceName string `json:"instanceName,omitempty"`
 	// Binlogs is the ordered list of file basenames archived in this segment.
 	Binlogs []string `json:"binlogs,omitempty"`
-	// GTIDSet is the full GTID set the segment contributes.
+	// GTIDSet is the full GTID set the segment contributes (its last/covered
+	// position).
 	GTIDSet string `json:"gtidSet,omitempty"`
+	// StartGTIDSet is the segment's first archived GTID position. With GTIDSet it
+	// bounds the segment's per-domain sequence range [start, end], which recovery
+	// uses to stitch a gap-free replay from segments that individually have gaps
+	// (e.g. after a re-init clone that reset the binlog history). A single
+	// incarnation is contiguous per domain, so one interval per domain suffices.
+	StartGTIDSet string `json:"startGTIDSet,omitempty"`
 	// HandoffGTID is the GTID frontier at which authority passed from this
 	// segment to the next (the successor primary's first authoritative GTID).
 	// Empty on the active, last segment.

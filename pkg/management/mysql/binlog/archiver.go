@@ -183,6 +183,11 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		result.CoveredGTIDSet = covered.String()
 		result.LastArchivedTime = meta.ArchivedAt
 
+		// Record the segment's first GTID once: it anchors the segment's per-domain
+		// range start for recovery's gap-stitching.
+		if status.FirstGTID == "" && meta.FirstGTID != "" {
+			status.FirstGTID = meta.FirstGTID
+		}
 		status.LastArchivedBinlog = result.LastArchivedBinlog
 		status.LastArchivedGTID = result.LastArchivedGTID
 		status.CoveredGTIDSet = result.CoveredGTIDSet
@@ -325,6 +330,9 @@ func (a *Archiver) updateIndex(ctx context.Context, bucket string, status object
 		seg = &index.Segments[len(index.Segments)-1]
 	}
 	seg.GTIDSet = status.CoveredGTIDSet
+	if seg.StartGTIDSet == "" {
+		seg.StartGTIDSet = status.FirstGTID
+	}
 	seg.EndedAt = a.now()
 
 	// Accumulate the binlog file names in this segment so that recovery's

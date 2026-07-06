@@ -39,6 +39,20 @@ type BackupMetadata struct {
 	SizeBytes int64 `json:"sizeBytes"`
 	// SHA256 is the hex-encoded checksum of the uploaded archive.
 	SHA256 string `json:"sha256,omitempty"`
+	// AnchorGTID is the GTID position of the base backup's consistent point,
+	// resolved on the source at backup time (MariaDB: via BINLOG_GTID_POS over the
+	// exact binlog coordinates mariabackup recorded). It gives point-in-time
+	// recovery a fully-specified anchor even when the in-archive binlog-info file
+	// carries only file+position (MariaDB 10.11). Empty for MySQL (whose
+	// binlog-info already carries the GTID) and for legacy backups.
+	AnchorGTID string `json:"anchorGTID,omitempty"`
+	// AnchorServerUUID is the archive-partition identity of the incarnation the base
+	// backup was taken from (MariaDB's persisted per-incarnation token). It lets a
+	// GTID-less point-in-time recovery disambiguate the anchor binlog when a
+	// re-clone/failover left several incarnations numbering their binlogs from
+	// 000001, so the anchor's bare filename would otherwise match more than one
+	// server. Empty for MySQL and for legacy backups.
+	AnchorServerUUID string `json:"anchorServerUUID,omitempty"`
 	// StartedAt and CompletedAt bound the backup transfer.
 	StartedAt   time.Time `json:"startedAt"`
 	CompletedAt time.Time `json:"completedAt"`

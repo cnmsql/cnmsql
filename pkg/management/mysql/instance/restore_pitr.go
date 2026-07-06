@@ -18,6 +18,7 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -78,7 +79,26 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 	if err != nil {
 		return err
 	}
-	log.Info("Read base backup anchor GTID", "anchorGTID", anchor.GTIDSet)
+	// The backup metadata carries two anchor facts the in-archive binlog-info file
+	// cannot: the fully-specified anchor GTID (a MariaDB 10.11 backup's binlog-info
+	// has only file+position; the GTID was resolved at backup time via
+	// BINLOG_GTID_POS) and the archive identity of the incarnation the backup was
+	// taken from. Load it once so both are available.
+	var anchorServer string
+	if o.MetadataKey != "" {
+		var metadata objectstore.BackupMetadata
+		if err := o.Store.GetJSON(ctx, o.Bucket, o.MetadataKey, &metadata); err != nil {
+			return fmt.Errorf("pitr: reading backup metadata %q: %w", o.MetadataKey, err)
+		}
+		anchorServer = metadata.AnchorServerUUID
+		// Prefer the metadata GTID when the in-archive anchor has none, so the ordinary
+		// GTID-based planner path applies instead of the positional fallback.
+		if anchor.GTIDSet == "" && metadata.AnchorGTID != "" {
+			anchor.GTIDSet = metadata.AnchorGTID
+			log.Info("Using backup-time resolved anchor GTID from metadata", "anchorGTID", anchor.GTIDSet)
+		}
+	}
+	log.Info("Read base backup anchor GTID", "anchorGTID", anchor.GTIDSet, "anchorServer", anchorServer)
 
 	// Load the cluster-level archive index: the ordered timeline of UUID segments.
 	indexKey := objectstore.ArchiveIndexKey(o.ObjectStore, o.SourceCluster)
@@ -95,6 +115,7 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		}
 		plan.AnchorFile = anchor.File
 		plan.StartPosition = anchor.Position
+		plan.AnchorServerUUID = anchorServer
 		// mariadb-binlog cannot filter by GTID, so a targetGTID recovery is bounded
 		// positionally: resolve the target (and the anchor already applied by the
 		// base backup) to a single domain's sequence numbers, and let the executor
@@ -109,6 +130,21 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 				plan.MariaDBDomain = domain
 				plan.MariaDBTargetSeq = targetSeq
 				plan.MariaDBAnchorSeq = binlog.MariaSeqForDomain(anchor.GTIDSet, domain)
+				// When the index carries per-segment GTID ranges, prune the download to
+				// the minimal set of segments whose union covers (anchorSeq, targetSeq],
+				// failing closed on a gap. A GTID-less archive (no segment GTIDSet) has no
+				// ranges to select on, so keep every segment and let the boundary-scanning
+				// replay planner be the authority. MariaDBAnchorSeq may be 0 here (10.11
+				// backup with no GTID); selection from 0 over-includes rather than
+				// under-includes, and the replay planner trims with the derived anchor.
+				if segmentsHaveGTIDRanges(index.Segments) {
+					selected, err := binlog.SelectMariadbSegments(
+						index.Segments, domain, plan.MariaDBAnchorSeq, targetSeq)
+					if err != nil {
+						return fmt.Errorf("pitr: selecting MariaDB segments: %w", err)
+					}
+					plan.Segments = selected
+				}
 			}
 		}
 	} else {
@@ -197,17 +233,66 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 	return nil
 }
 
+// segmentsHaveGTIDRanges reports whether the archive index carries per-segment GTID
+// coverage, i.e. at least one segment has a non-empty GTIDSet. A GTID-less archive
+// (10.11 mariabackup, or files with no GTID events) has none, so range-based segment
+// selection cannot apply and every segment must be kept for boundary-scan replay.
+func segmentsHaveGTIDRanges(segments []objectstore.ArchiveSegment) bool {
+	for i := range segments {
+		if segments[i].GTIDSet != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrAmbiguousAnchor is returned when a GTID-less base backup's anchor file name
+// matches downloaded binlogs from more than one server. Every server numbers its
+// binlogs from 000001, so a bare name like "binlog.000004" can name two different
+// files across a failover; without a GTID (or identity) to disambiguate, replaying
+// from the wrong one would re-apply or skip transactions, so recovery fails closed.
+var ErrAmbiguousAnchor = errors.New(
+	"pitr: base backup anchor file name matches binlogs from more than one server; cannot disambiguate a GTID-less anchor")
+
 // findAnchorIndex returns the index of the downloaded binlog that is the base
 // backup's anchor file, or -1 if none is present. downloadReplayFiles names every
 // file "<serverUUID>_<binlogName>", so the anchor's bare name matches on the
 // "_<name>" suffix.
-func findAnchorIndex(files []string, anchorFile string) int {
+//
+// When anchorServer is set (the backup metadata recorded the incarnation the backup
+// was taken from) the match is pinned to that server's file directly, which resolves
+// the cross-incarnation collision a re-clone/failover produces. When it is empty
+// (legacy backups) and the name matches files under more than one distinct
+// "<serverUUID>_" prefix, it returns ErrAmbiguousAnchor rather than guessing.
+func findAnchorIndex(files []string, anchorFile, anchorServer string) (int, error) {
+	first := -1
+	firstServer := ""
 	for i, f := range files {
-		if strings.HasSuffix(f, "_"+anchorFile) {
-			return i
+		base := filepath.Base(f)
+		if !strings.HasSuffix(base, "_"+anchorFile) {
+			continue
+		}
+		server := strings.TrimSuffix(base, "_"+anchorFile)
+		if anchorServer != "" {
+			// A recorded anchor server names exactly the incarnation to replay from;
+			// ignore like-named files from any other incarnation.
+			if server == anchorServer {
+				return i, nil
+			}
+			continue
+		}
+		if first < 0 {
+			first, firstServer = i, server
+			continue
+		}
+		if server != firstServer {
+			return -1, ErrAmbiguousAnchor
 		}
 	}
-	return -1
+	// With a recorded anchor server that matched nothing, the anchor incarnation's
+	// binlog was purged/rotated before archiving; report absent so the caller applies
+	// its rotated-anchor fallback rather than failing closed.
+	return first, nil
 }
 
 // applyReplay starts a temporary socket-only mysqld over the restored data
@@ -262,7 +347,11 @@ func (o *RestoreOptions) applyReplay(
 	// For MariaDB positional replay: find the anchor file in the downloaded files
 	// and skip everything before it.
 	if isMariaDB && plan.AnchorFile != "" {
-		if ai := findAnchorIndex(files, plan.AnchorFile); ai >= 0 {
+		ai, err := findAnchorIndex(files, plan.AnchorFile, plan.AnchorServerUUID)
+		if err != nil {
+			return err
+		}
+		if ai >= 0 {
 			replayFiles = files[ai:]
 		} else {
 			// The anchor binlog was rotated/purged before archiving, so its byte
@@ -316,7 +405,11 @@ func (o *RestoreOptions) replayMariadbPositional(
 	// scanning the anchor file's transaction boundaries.
 	anchorSeq := plan.MariaDBAnchorSeq
 	if anchorSeq == 0 && plan.AnchorFile != "" {
-		if ai := findAnchorIndex(files, plan.AnchorFile); ai >= 0 {
+		ai, err := findAnchorIndex(files, plan.AnchorFile, plan.AnchorServerUUID)
+		if err != nil {
+			return err
+		}
+		if ai >= 0 {
 			anchorSeq = binlog.AnchorSeqFromBoundaries(boundaries[ai], plan.MariaDBDomain, plan.StartPosition)
 			// The base backup also contains every transaction in the source server's
 			// earlier binlogs. Those carry lower sequences than the anchor file, so

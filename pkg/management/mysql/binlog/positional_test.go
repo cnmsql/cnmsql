@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 // TestScanMariaDBBoundaries checks that each GTID transaction's start offset is
@@ -232,6 +234,52 @@ func TestPlanMariadbPositional(t *testing.T) {
 		},
 	}
 
+	crossServer := []struct {
+		name       string
+		files      []string
+		boundaries [][]TxnBoundary
+		anchor     uint64
+		target     uint64
+		want       []ReplayChunk
+		wantErr    error
+	}{
+		{
+			// Union recovery: no single server spans 1..30, but A has 1-10 & 21-30 and
+			// M has 11-20. Files arrive grouped by segment (A's then M's), i.e. NOT in
+			// sequence order; the planner must sort them and stitch a monotonic replay.
+			name: "cross-server union stitches gap-free",
+			files: []string{
+				"A_binlog.000001", "A_binlog.000002", "M_binlog.000001",
+			},
+			boundaries: [][]TxnBoundary{
+				{{0, 1, 100}, {0, 10, 1000}},  // A 1-10
+				{{0, 21, 100}, {0, 30, 1000}}, // A 21-30
+				{{0, 11, 100}, {0, 20, 1000}}, // M 11-20
+			},
+			anchor: 0,
+			target: 30,
+			want: []ReplayChunk{
+				{Files: []string{"A_binlog.000001", "M_binlog.000001", "A_binlog.000002"}, StartPosition: 100},
+			},
+		},
+		{
+			// A genuine hole (11-20 missing entirely) must fail closed, not replay
+			// 21-30 straight after 10 (which mariadb-binlog rejects as out of order).
+			name: "true gap fails closed",
+			files: []string{
+				"A_binlog.000001", "A_binlog.000002",
+			},
+			boundaries: [][]TxnBoundary{
+				{{0, 1, 100}, {0, 10, 1000}},  // A 1-10
+				{{0, 21, 100}, {0, 30, 1000}}, // A 21-30 (11-20 missing)
+			},
+			anchor:  0,
+			target:  30,
+			wantErr: ErrForkedTimeline,
+		},
+	}
+	tests = append(tests, crossServer...)
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := PlanMariadbPositional(tc.files, tc.boundaries, 0, tc.anchor, tc.target)
@@ -246,6 +294,132 @@ func TestPlanMariadbPositional(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("chunks = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectMariadbSegments(t *testing.T) {
+	t.Parallel()
+
+	seg := func(uuid, start, end string, files ...string) objectstore.ArchiveSegment {
+		return objectstore.ArchiveSegment{
+			ServerUUID:   uuid,
+			StartGTIDSet: start,
+			GTIDSet:      end,
+			Binlogs:      files,
+		}
+	}
+
+	tests := []struct {
+		name     string
+		segments []objectstore.ArchiveSegment
+		anchor   uint64
+		target   uint64
+		wantUUID []string
+		wantErr  error
+	}{
+		{
+			// One incarnation spanning the whole range: only it is downloaded.
+			name:     "single segment covers everything",
+			segments: []objectstore.ArchiveSegment{seg("A", "0-1-1", "0-1-30", "b1")},
+			anchor:   0, target: 20,
+			wantUUID: []string{"A"},
+		},
+		{
+			// Two failover segments; the target is in the first, so the second
+			// (past the target) is pruned from the download.
+			name: "prunes segment past the target",
+			segments: []objectstore.ArchiveSegment{
+				seg("A", "0-1-1", "0-1-20", "a1"),
+				seg("B", "0-1-15", "0-2-40", "b1"),
+			},
+			anchor: 0, target: 18,
+			wantUUID: []string{"A"},
+		},
+		{
+			// Union recovery: A has 1-10 & 21-30, M fills 11-20. All three needed.
+			name: "union across three segments",
+			segments: []objectstore.ArchiveSegment{
+				seg("A1", "0-1-1", "0-1-10", "a1"),
+				seg("A2", "0-1-21", "0-1-30", "a2"),
+				seg("M", "0-1-11", "0-1-20", "m1"),
+			},
+			anchor: 0, target: 30,
+			wantUUID: []string{"A1", "M", "A2"},
+		},
+		{
+			// A real hole (11-20 missing) the union cannot bridge: fail closed.
+			name: "gap fails closed",
+			segments: []objectstore.ArchiveSegment{
+				seg("A1", "0-1-1", "0-1-10", "a1"),
+				seg("A2", "0-1-21", "0-1-30", "a2"),
+			},
+			anchor: 0, target: 30,
+			wantErr: ErrForkedTimeline,
+		},
+		{
+			// Target beyond everything archived in the domain.
+			name:     "target beyond archive",
+			segments: []objectstore.ArchiveSegment{seg("A", "0-1-1", "0-1-10", "a1")},
+			anchor:   0, target: 99,
+			wantErr: ErrTargetBeyondArchive,
+		},
+		{
+			// Anchor already at/after the target: nothing to download.
+			name:     "nothing past anchor",
+			segments: []objectstore.ArchiveSegment{seg("A", "0-1-1", "0-1-30", "a1")},
+			anchor:   30, target: 30,
+			wantUUID: nil,
+		},
+		{
+			// Anchor mid-range picks up only the segment carrying the remainder.
+			name: "anchor mid-range skips covered segment",
+			segments: []objectstore.ArchiveSegment{
+				seg("A", "0-1-1", "0-1-10", "a1"),
+				seg("B", "0-1-11", "0-1-20", "b1"),
+			},
+			anchor: 10, target: 20,
+			wantUUID: []string{"B"},
+		},
+		{
+			// Pre-range archive (no StartGTIDSet): start defaults to genesis so the
+			// segment is always contiguity-eligible — reproduces old inclusive behavior.
+			name:     "missing start gtid set treated as genesis",
+			segments: []objectstore.ArchiveSegment{seg("A", "", "0-1-30", "a1")},
+			anchor:   0, target: 20,
+			wantUUID: []string{"A"},
+		},
+		{
+			// Segments in a different domain contribute nothing to this domain's cover.
+			name: "other-domain segment ignored",
+			segments: []objectstore.ArchiveSegment{
+				seg("A", "0-1-1", "0-1-30", "a1"),
+				seg("X", "1-1-1", "1-1-50", "x1"),
+			},
+			anchor: 0, target: 25,
+			wantUUID: []string{"A"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SelectMariadbSegments(tc.segments, 0, tc.anchor, tc.target)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var gotUUID []string
+			for _, s := range got {
+				gotUUID = append(gotUUID, s.ServerUUID)
+			}
+			if !reflect.DeepEqual(gotUUID, tc.wantUUID) {
+				t.Fatalf("selected = %v, want %v", gotUUID, tc.wantUUID)
 			}
 		})
 	}

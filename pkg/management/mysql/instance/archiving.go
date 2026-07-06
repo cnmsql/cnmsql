@@ -53,6 +53,11 @@ type ArchivingConfig struct {
 	// MariaDBGTIDModel provides MariaDB GTID operations for the archiver's
 	// cumulative set tracking. Nil for MySQL.
 	MariaDBGTIDModel binlog.MariaDBGTIDModel
+	// ArchiveIdentity, when set, is the archive-partition key instead of the server's
+	// server_uuid/server_id. MariaDB passes its persisted per-incarnation token so a
+	// re-inited server (which reuses the config-assigned server_id) does not collide
+	// with the previous incarnation's objects. Empty means query the server identity.
+	ArchiveIdentity string
 }
 
 // newGTIDSet returns a factory for the binlog accumulation set. For MariaDB it
@@ -84,9 +89,13 @@ func startArchiver(
 		return nil, nil, err
 	}
 	reader := binlog.NewReaderWithIdentityQuery(db, identityQuery)
-	serverUUID, err := reader.ServerUUID(ctx)
-	if err != nil {
-		return nil, nil, err
+	serverUUID := cfg.ArchiveIdentity
+	if serverUUID == "" {
+		var err error
+		serverUUID, err = reader.ServerUUID(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	archiver, err := binlog.NewArchiver(binlog.ArchiverOptions{

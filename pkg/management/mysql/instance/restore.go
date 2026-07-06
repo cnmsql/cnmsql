@@ -161,6 +161,11 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 		return err
 	} else if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
 		return fmt.Errorf("marking restored data directory as bootstrapped: %w", err)
+	} else if err := resetArchiveIdentity(opts.DataDir, eng.Flavor()); err != nil {
+		// The restored data dir is a new archive incarnation: it must not inherit the
+		// backup source's identity (MariaDB token / MySQL auto.cnf), or its reset
+		// binlog numbering would collide with the source's objects in the archive.
+		return fmt.Errorf("resetting archive identity: %w", err)
 	}
 
 	// 6. Point-in-time recovery: replay archived binlogs onto the restored data

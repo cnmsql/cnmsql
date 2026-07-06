@@ -179,6 +179,15 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
 		return fmt.Errorf("marking data directory as bootstrapped: %w", err)
 	}
+	// MariaDB partitions the binlog archive by a persisted per-incarnation token
+	// rather than @@server_id (which is config-assigned and reused across a re-init).
+	// A fresh --initialize starts a new incarnation, so mint the token here. MySQL
+	// needs no action: --initialize already generated a unique auto.cnf/server_uuid.
+	if opts.Engine != nil && opts.Engine.Flavor() == engine.FlavorMariaDB {
+		if _, err := EnsureArchiveID(opts.DataDir); err != nil {
+			return fmt.Errorf("initializing archive identity: %w", err)
+		}
+	}
 	log.Info("Completed data directory initialization")
 	return nil
 }
