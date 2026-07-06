@@ -105,6 +105,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'pitr-internals',
+      label: 'Binlog and PITR Internals',
+    },
+    {
+      type: 'doc',
       id: 'backup-retention-deletion',
       label: 'Backup Retention and Deletion',
     },
