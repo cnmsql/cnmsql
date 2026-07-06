@@ -478,6 +478,28 @@ func MariaSeqForDomain(pos string, domain uint32) uint64 {
 	return 0
 }
 
+// AnchorSeqFromBoundaries derives the domain sequence a base backup already
+// contains from a byte-position anchor: the highest sequence whose transaction
+// begins before pos in the anchor file's boundaries. A transaction whose GTID
+// event starts before the backup's recorded binlog position committed before the
+// backup, so it is captured by the physical copy; pos itself is a transaction
+// boundary (the offset after the last committed transaction), so StartPos == pos
+// is the first transaction past the backup and must be excluded.
+//
+// This is the fallback for MariaDB backups whose mariadb_backup_binlog_info
+// carries only file+position and no GTID column (as 10.11 mariabackup writes):
+// without it the positional planner treats the empty GTID anchor as sequence 0
+// and rewinds replay to genesis, re-applying transactions already in the backup.
+func AnchorSeqFromBoundaries(boundaries []TxnBoundary, domain uint32, pos int64) uint64 {
+	var seq uint64
+	for _, b := range boundaries {
+		if b.Domain == domain && b.StartPos < pos && b.Seq > seq {
+			seq = b.Seq
+		}
+	}
+	return seq
+}
+
 // PlanMariadbPositional turns per-file transaction boundaries into the ordered,
 // positionally-bounded chunks that replay the domain's transactions with sequence
 // in (anchorSeq, targetSeq] exactly once. files and boundaries are parallel, in

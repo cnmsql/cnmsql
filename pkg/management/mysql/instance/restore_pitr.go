@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,20 +141,24 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 // full binlog info (file, position, GTID set) the restore landed at. It prefers
 // the copy in the data directory (durable on the PVC, so it survives an
 // init-container restart that lost the scratch backup dir) and falls back to the
-// scratch dir.
+// scratch dir. Each candidate filename is tried in both directories, since
+// MariaBackup's binlog-info file name is version-dependent (mariadb_backup_binlog_info
+// on 11.1+, xtrabackup_binlog_info before).
 func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (engine.BinlogInfo, error) {
-	infoFile := bt.BinlogInfoFileName()
-	content, err := os.ReadFile(filepath.Join(o.DataDir, infoFile))
-	if os.IsNotExist(err) {
-		content, err = os.ReadFile(filepath.Join(o.BackupDir, infoFile))
-	}
-	if err != nil {
-		if os.IsNotExist(err) {
-			return engine.BinlogInfo{}, nil
+	for _, dir := range []string{o.DataDir, o.BackupDir} {
+		for _, name := range bt.BinlogInfoFileNames() {
+			content, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return engine.BinlogInfo{}, fmt.Errorf("pitr: reading %s: %w", name, err)
+			}
+			return bt.ParseBinlogInfo(string(content))
 		}
-		return engine.BinlogInfo{}, fmt.Errorf("pitr: reading %s: %w", infoFile, err)
 	}
-	return bt.ParseBinlogInfo(string(content))
+	// No binlog-info file under any name: an empty-position backup (fresh primary).
+	return engine.BinlogInfo{}, nil
 }
 
 // downloadReplayFiles pulls every planned segment file into replayDir, returning
@@ -190,6 +195,19 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 		return fmt.Errorf("pitr: downloading %s: %w", key, err)
 	}
 	return nil
+}
+
+// findAnchorIndex returns the index of the downloaded binlog that is the base
+// backup's anchor file, or -1 if none is present. downloadReplayFiles names every
+// file "<serverUUID>_<binlogName>", so the anchor's bare name matches on the
+// "_<name>" suffix.
+func findAnchorIndex(files []string, anchorFile string) int {
+	for i, f := range files {
+		if strings.HasSuffix(f, "_"+anchorFile) {
+			return i
+		}
+	}
+	return -1
 }
 
 // applyReplay starts a temporary socket-only mysqld over the restored data
@@ -242,18 +260,11 @@ func (o *RestoreOptions) applyReplay(
 	startPos := plan.StartPosition
 
 	// For MariaDB positional replay: find the anchor file in the downloaded files
-	// and skip everything before it. Downloaded files are stored as
-	// <serverUUID>_<binlogName>, so we match on the suffix.
+	// and skip everything before it.
 	if isMariaDB && plan.AnchorFile != "" {
-		found := false
-		for i, f := range files {
-			if strings.HasSuffix(f, "_"+plan.AnchorFile) || filepath.Base(f) == plan.AnchorFile {
-				replayFiles = files[i:]
-				found = true
-				break
-			}
-		}
-		if !found {
+		if ai := findAnchorIndex(files, plan.AnchorFile); ai >= 0 {
+			replayFiles = files[ai:]
+		} else {
 			// The anchor binlog was rotated/purged before archiving, so its byte
 			// offset means nothing in any downloaded file. Applying it to a
 			// different file lands mid-event and corrupts the stream, so start from
@@ -298,8 +309,39 @@ func (o *RestoreOptions) replayMariadbPositional(
 		boundaries[i] = b
 	}
 
+	// When the base backup's binlog-info file carried no GTID (10.11 mariabackup
+	// writes only file+position), MariaDBAnchorSeq is 0 and the planner would rewind
+	// replay to genesis, re-applying transactions already in the backup (duplicate
+	// keys, etc.). Recover the anchor sequence from the recorded binlog position by
+	// scanning the anchor file's transaction boundaries.
+	anchorSeq := plan.MariaDBAnchorSeq
+	if anchorSeq == 0 && plan.AnchorFile != "" {
+		if ai := findAnchorIndex(files, plan.AnchorFile); ai >= 0 {
+			anchorSeq = binlog.AnchorSeqFromBoundaries(boundaries[ai], plan.MariaDBDomain, plan.StartPosition)
+			// The base backup also contains every transaction in the source server's
+			// earlier binlogs. Those carry lower sequences than the anchor file, so
+			// normally they don't change the result — except when the backup was taken
+			// just after a log rotation, leaving no transaction before StartPosition in
+			// the anchor file itself. Without folding them in, anchorSeq would stay 0
+			// and replay would rewind to genesis. Same-server files are matched by the
+			// "<serverUUID>_" prefix the downloader assigns; a different server's
+			// like-named binlog carries an unrelated sequence range and must not count.
+			srvPrefix := strings.TrimSuffix(filepath.Base(files[ai]), plan.AnchorFile)
+			for i := 0; i < ai; i++ {
+				if !strings.HasPrefix(filepath.Base(files[i]), srvPrefix) {
+					continue
+				}
+				if s := binlog.AnchorSeqFromBoundaries(boundaries[i], plan.MariaDBDomain, math.MaxInt64); s > anchorSeq {
+					anchorSeq = s
+				}
+			}
+			log.Info("Derived MariaDB anchor sequence from backup binlog position",
+				"anchorFile", plan.AnchorFile, "position", plan.StartPosition, "anchorSeq", anchorSeq)
+		}
+	}
+
 	chunks, err := binlog.PlanMariadbPositional(
-		files, boundaries, plan.MariaDBDomain, plan.MariaDBAnchorSeq, plan.MariaDBTargetSeq)
+		files, boundaries, plan.MariaDBDomain, anchorSeq, plan.MariaDBTargetSeq)
 	if err != nil {
 		return fmt.Errorf("pitr: planning MariaDB positional replay: %w", err)
 	}

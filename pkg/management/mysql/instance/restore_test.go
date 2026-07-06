@@ -97,3 +97,31 @@ func TestCredentialReconcileStatementsLegacy(t *testing.T) {
 		t.Fatalf("expected legacy SET PASSWORD syntax:\n%s", out)
 	}
 }
+
+func TestFindAnchorIndex(t *testing.T) {
+	// downloadReplayFiles names every file "<serverUUID>_<binlogName>", so the
+	// anchor's bare name must match on the "_<name>" suffix — never on a substring
+	// or a bare (unprefixed) name that the downloader never produces.
+	files := []string{
+		"uuid-a_binlog.000001",
+		"uuid-a_binlog.000002",
+		"uuid-b_binlog.000001",
+	}
+	tests := []struct {
+		name   string
+		anchor string
+		want   int
+	}{
+		{name: "matches suffix", anchor: "binlog.000002", want: 1},
+		// Two servers both number from 000001; the first timeline occurrence wins.
+		{name: "collision picks first in timeline order", anchor: "binlog.000001", want: 0},
+		{name: "absent", anchor: "binlog.000009", want: -1},
+		// A bare (unprefixed) name is never how the downloader stores files.
+		{name: "no substring match", anchor: "uuid-a_binlog.000001", want: -1},
+	}
+	for _, tc := range tests {
+		if got := findAnchorIndex(files, tc.anchor); got != tc.want {
+			t.Errorf("%s: findAnchorIndex(_, %q) = %d, want %d", tc.name, tc.anchor, got, tc.want)
+		}
+	}
+}

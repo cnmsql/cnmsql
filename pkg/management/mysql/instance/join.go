@@ -221,16 +221,18 @@ func (o *JoinOptions) configureReplication(
 // ProvisionFromBackup handles by skipping the seed and following the source from
 // the beginning.
 func readBinlogInfoWithTool(backupDir string, bt engine.BackupTool) (engine.BinlogInfo, error) {
-	infoFile := bt.BinlogInfoFileName()
-	path := filepath.Join(backupDir, infoFile)
-	content, err := os.ReadFile(path) //nolint:gosec // path derived from operator-provided backup dir
-	if err != nil {
-		if os.IsNotExist(err) {
-			return engine.BinlogInfo{}, nil
+	for _, name := range bt.BinlogInfoFileNames() {
+		path := filepath.Join(backupDir, name)
+		content, err := os.ReadFile(path) //nolint:gosec // path derived from operator-provided backup dir
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return engine.BinlogInfo{}, fmt.Errorf("reading %s: %w", path, err)
 		}
-		return engine.BinlogInfo{}, fmt.Errorf("reading %s: %w", path, err)
+		return bt.ParseBinlogInfo(string(content))
 	}
-	return bt.ParseBinlogInfo(string(content))
+	return engine.BinlogInfo{}, nil
 }
 
 // persistBinlogInfo copies the backup tool's binlog-info file from the scratch
@@ -238,16 +240,21 @@ func readBinlogInfoWithTool(backupDir string, bt engine.BackupTool) (engine.Binl
 // base-backup anchor GTID after an init-container restart wipes the scratch dir.
 // A missing source file is not an error: an empty-position backup writes none.
 func persistBinlogInfo(bt engine.BackupTool, backupDir, dataDir string) error {
-	name := bt.BinlogInfoFileName()
-	src := filepath.Join(backupDir, name)
-	content, err := os.ReadFile(src) //nolint:gosec // path derived from operator-provided backup dir
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	// Copy whichever candidate name the backup tool actually wrote, preserving that
+	// name so readAnchorGTID (which tries the same candidates) finds it in the data
+	// dir. MariaBackup < 11.1 writes the legacy xtrabackup_binlog_info name.
+	for _, name := range bt.BinlogInfoFileNames() {
+		content, err := os.ReadFile(filepath.Join(backupDir, name)) //nolint:gosec // path derived from operator-provided backup dir
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
 		}
-		return err
+		return os.WriteFile(filepath.Join(dataDir, name), content, 0o600)
 	}
-	return os.WriteFile(filepath.Join(dataDir, name), content, 0o600)
+	// No binlog-info file under any name: an empty-position backup writes none.
+	return nil
 }
 
 // runCommand runs an external command, forwarding output to the process stdio.

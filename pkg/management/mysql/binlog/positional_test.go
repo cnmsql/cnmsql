@@ -99,6 +99,31 @@ func TestMariaSeqForDomain(t *testing.T) {
 	}
 }
 
+func TestAnchorSeqFromBoundaries(t *testing.T) {
+	t.Parallel()
+	// {Domain, Seq, StartPos}
+	bounds := []TxnBoundary{{0, 1, 325}, {0, 2, 500}, {0, 3, 831}, {1, 9, 900}}
+	tests := []struct {
+		name   string
+		domain uint32
+		pos    int64
+		want   uint64
+	}{
+		{name: "position after seq 2 excludes seq 3 at boundary", domain: 0, pos: 831, want: 2},
+		{name: "position past everything", domain: 0, pos: 2000, want: 3},
+		{name: "position at genesis before any txn", domain: 0, pos: 4, want: 0},
+		{name: "position mid-stream", domain: 0, pos: 600, want: 2},
+		{name: "other domain isolated", domain: 1, pos: 2000, want: 9},
+		{name: "domain absent", domain: 5, pos: 2000, want: 0},
+	}
+	for _, tc := range tests {
+		if got := AnchorSeqFromBoundaries(bounds, tc.domain, tc.pos); got != tc.want {
+			t.Errorf("%s: AnchorSeqFromBoundaries(_, %d, %d) = %d, want %d",
+				tc.name, tc.domain, tc.pos, got, tc.want)
+		}
+	}
+}
+
 func TestPlanMariadbPositional(t *testing.T) {
 	t.Parallel()
 

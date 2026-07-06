@@ -78,6 +78,50 @@ func TestPersistBinlogInfo(t *testing.T) {
 	})
 }
 
+// TestReadBinlogInfoLegacyName verifies the reader accepts the legacy
+// xtrabackup_binlog_info name that MariaBackup < 11.1 (e.g. 10.11) writes.
+// Without this the anchor is silently empty and PITR replays from genesis.
+func TestReadBinlogInfoLegacyName(t *testing.T) {
+	bt := engine.MustForFlavor(engine.FlavorMariaDB).Backup()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "xtrabackup_binlog_info"),
+		[]byte("binlog.000002\t831\t0-1-2\n"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := readBinlogInfoWithTool(dir, bt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.GTIDSet != "0-1-2" || info.File != "binlog.000002" || info.Position != 831 {
+		t.Fatalf("legacy-name anchor not read: %+v", info)
+	}
+}
+
+// TestPersistBinlogInfoLegacyName verifies a legacy-named backup file is copied
+// into the data dir preserving its name, so the durable retry path finds it.
+func TestPersistBinlogInfoLegacyName(t *testing.T) {
+	bt := engine.MustForFlavor(engine.FlavorMariaDB).Backup()
+	backupDir, dataDir := t.TempDir(), t.TempDir()
+	want := "binlog.000002\t831\t0-1-2\n"
+	if err := os.WriteFile(filepath.Join(backupDir, "xtrabackup_binlog_info"), []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistBinlogInfo(bt, backupDir, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dataDir, "xtrabackup_binlog_info"))
+	if err != nil {
+		t.Fatalf("expected legacy-named durable copy: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("copied content = %q, want %q", got, want)
+	}
+}
+
 func TestReadBinlogInfoPresent(t *testing.T) {
 	bt := engine.MustForFlavor(engine.FlavorMariaDB).Backup()
 

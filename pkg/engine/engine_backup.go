@@ -86,7 +86,14 @@ type BackupTool interface {
 	StreamBinary() string
 	BinlogClientBinary() string
 	SQLClientBinary() string
+	// BinlogInfoFileName is the canonical binlog-info filename to write.
 	BinlogInfoFileName() string
+	// BinlogInfoFileNames lists the binlog-info filenames to try when reading, in
+	// preference order. MariaBackup renamed this file from xtrabackup_binlog_info
+	// to mariadb_backup_binlog_info in MariaDB 11.1, so a MariaDB backup taken on an
+	// older server (e.g. 10.11) carries the legacy name; readers must accept both or
+	// they silently see an empty anchor and replay from genesis.
+	BinlogInfoFileNames() []string
 
 	BackupArgs(opts BackupOpts) ([]string, error)
 	ExtractArgs(targetDir string) ([]string, error)
@@ -128,11 +135,12 @@ func (baseBackupTool) ParseBinlogInfo(content string) (BinlogInfo, error) {
 
 type mysqlBackupTool struct{ baseBackupTool }
 
-func (mysqlBackupTool) BackupBinary() string       { return mysqlBackupBinary }
-func (mysqlBackupTool) StreamBinary() string       { return mysqlStreamBinary }
-func (mysqlBackupTool) BinlogClientBinary() string { return mysqlBinlogClient }
-func (mysqlBackupTool) SQLClientBinary() string    { return mysqlSQLClient }
-func (mysqlBackupTool) BinlogInfoFileName() string { return mysqlBinlogInfoFile }
+func (mysqlBackupTool) BackupBinary() string          { return mysqlBackupBinary }
+func (mysqlBackupTool) StreamBinary() string          { return mysqlStreamBinary }
+func (mysqlBackupTool) BinlogClientBinary() string    { return mysqlBinlogClient }
+func (mysqlBackupTool) SQLClientBinary() string       { return mysqlSQLClient }
+func (mysqlBackupTool) BinlogInfoFileName() string    { return mysqlBinlogInfoFile }
+func (mysqlBackupTool) BinlogInfoFileNames() []string { return []string{mysqlBinlogInfoFile} }
 
 type mariadbBackupTool struct{ baseBackupTool }
 
@@ -141,3 +149,9 @@ func (mariadbBackupTool) StreamBinary() string       { return mariadbStreamBinar
 func (mariadbBackupTool) BinlogClientBinary() string { return mariadbBinlogClient }
 func (mariadbBackupTool) SQLClientBinary() string    { return mariadbSQLClient }
 func (mariadbBackupTool) BinlogInfoFileName() string { return mariadbBinlogInfoFile }
+
+// MariaBackup < 11.1 writes xtrabackup_binlog_info; 11.1+ writes
+// mariadb_backup_binlog_info. Prefer the modern name, fall back to the legacy one.
+func (mariadbBackupTool) BinlogInfoFileNames() []string {
+	return []string{mariadbBinlogInfoFile, mysqlBinlogInfoFile}
+}
