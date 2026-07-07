@@ -6,6 +6,7 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -305,5 +306,6 @@ func TestClusterStatusValidatorGroupReplication(t *testing.T) {
 func schemeForTests() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = mysqlv1alpha1.AddToScheme(s)
+	_ = corev1.AddToScheme(s)
 	return s
 }

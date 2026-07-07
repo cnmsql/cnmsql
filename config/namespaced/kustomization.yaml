@@ -151,3 +151,4 @@ replacements:
     fieldPaths:
     - .webhooks.0.namespaceSelector.matchExpressions.0.values.0
     - .webhooks.1.namespaceSelector.matchExpressions.0.values.0
+    - .webhooks.2.namespaceSelector.matchExpressions.0.values.0

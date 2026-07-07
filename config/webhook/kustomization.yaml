@@ -9,4 +9,10 @@ patches:
     version: v1
     kind: ValidatingWebhookConfiguration
     name: validating-webhook-configuration
+- path: patches/pod_instance_selector.yaml
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
 
