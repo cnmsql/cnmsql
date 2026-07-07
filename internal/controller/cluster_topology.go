@@ -99,12 +99,24 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 	// while the whole cluster is ready, so the primary is never taken down with a
 	// replica still unavailable.
 	if ordinal, ok := instanceOrdinal(cluster, primaryName); ok && observed.Ready {
-		rolled, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), true)
+		// observed.Ready is the pre-pass snapshot: a replica rolled in an earlier pass
+		// keeps its Ready condition through graceful termination, so it still reads
+		// Ready here. Re-verify every replica live before taking the primary down —
+		// otherwise the primary and a still-terminating replica are down at once and
+		// the group loses quorum (the exact race instanceFullyReady guards for the
+		// replica-to-replica step, applied here to the primary-last step).
+		replicasReady, err := r.replicasFullyReady(ctx, cluster, plan, observed, primaryName)
 		if err != nil {
 			return false, err
 		}
-		if rolled {
-			return false, nil
+		if replicasReady {
+			rolled, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), true)
+			if err != nil {
+				return false, err
+			}
+			if rolled {
+				return false, nil
+			}
 		}
 	}
 	return true, nil
@@ -252,6 +264,29 @@ func (r *ClusterReconciler) instanceFullyReady(ctx context.Context, cluster *mys
 	}
 	if cluster.IsGroupReplication() {
 		return memberOnline(observed.GroupReplication, inst.Name), nil
+	}
+	return true, nil
+}
+
+// replicasFullyReady reports whether every non-primary instance is fully ready,
+// re-reading each Pod live (via instanceFullyReady) rather than trusting the
+// pre-pass observation. It gates the primary-last roll: a replica rolled in an
+// earlier pass keeps its Ready condition while its Pod terminates gracefully, so
+// the stale snapshot alone would let the primary be deleted with that replica
+// still down, dropping the group below quorum.
+func (r *ClusterReconciler) replicasFullyReady(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed observedCluster, primaryName string) (bool, error) {
+	for i := 1; i <= plan.Instances; i++ {
+		inst := plan.instanceFor(cluster, i)
+		if inst.Name == primaryName {
+			continue
+		}
+		ready, err := r.instanceFullyReady(ctx, cluster, observed, inst)
+		if err != nil {
+			return false, err
+		}
+		if !ready {
+			return false, nil
+		}
 	}
 	return true, nil
 }

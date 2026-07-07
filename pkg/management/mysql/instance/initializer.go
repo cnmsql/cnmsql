@@ -319,16 +319,24 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 		// both off on the command line so the temporary server is writable
 		// regardless of the member's eventual role.
 		"--read-only=OFF",
-		// Suppress the binary log for the bootstrap SQL. The config file enables
-		// log_bin, so without this the CREATE USER / ALTER USER statements would be
-		// written to the binlog as the cluster's very first transactions. Those then
-		// get archived and, during a later point-in-time recovery, replayed into a
-		// temporary server started with --skip-grant-tables, where account-management
-		// statements fail with ER_OPTION_PREVENTS_STATEMENT (ERROR 1290). Bootstrap
-		// must lay down the accounts on disk only, never on the replication timeline.
-		// (reconcileCredentials guards the same way for the restore-side reset.)
-		"--skip-log-bin",
 	)
+	// Suppress the binary log for the bootstrap SQL. The config file enables
+	// log_bin, so without this the CREATE USER / ALTER USER statements would be
+	// written to the binlog as the cluster's very first transactions. Those then
+	// get archived and, during a later point-in-time recovery, replayed into a
+	// temporary server started with --skip-grant-tables, where account-management
+	// statements fail with ER_OPTION_PREVENTS_STATEMENT (ERROR 1290). Bootstrap
+	// must lay down the accounts on disk only, never on the replication timeline.
+	// (reconcileCredentials guards the same way for the restore-side reset.)
+	//
+	// MariaDB only: PITR replay is a MariaDB-only path, so only MariaDB needs the
+	// bootstrap statements kept off the timeline. MySQL must NOT get this flag: its
+	// rendered config always sets log_replica_updates=ON, which MySQL 8.0 refuses to
+	// honor without binary logging, aborting the temporary server at startup (and
+	// MySQL never runs the --skip-grant-tables replay this guards against anyway).
+	if o.Engine != nil && o.Engine.Flavor() == engine.FlavorMariaDB {
+		args = append(args, "--skip-log-bin")
+	}
 	if o.Engine == nil || o.Engine.HasSuperReadOnly() {
 		args = append(args, "--super-read-only=OFF")
 	}
