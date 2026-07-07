@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -73,7 +74,7 @@ func writeVersionMarker(dataDir, ver string) error {
 // on-disk version, so it catches a downgrade or skipped series that bypassed
 // admission (a disabled webhook, a hand-edited object, a restored backup). A
 // fresh data directory (no marker) or an empty dataDir is always allowed.
-func guardDataDirUpgrade(dataDir, targetVersion string) error {
+func guardDataDirUpgrade(dataDir, targetVersion string, eng engine.Engine) error {
 	if dataDir == "" {
 		return nil
 	}
@@ -88,7 +89,7 @@ func guardDataDirUpgrade(dataDir, targetVersion string) error {
 	if err != nil {
 		return fmt.Errorf("parsing target MySQL version %q: %w", targetVersion, err)
 	}
-	if err := version.CheckUpgrade(from, to); err != nil {
+	if err := eng.CheckUpgrade(from, to); err != nil {
 		return fmt.Errorf("refusing to start mysqld on this data directory: %w", err)
 	}
 	return nil

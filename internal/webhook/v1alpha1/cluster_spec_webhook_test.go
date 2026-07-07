@@ -119,7 +119,7 @@ func TestClusterSpecValidator(t *testing.T) {
 			name: "mariadb flavor with mariadb series is allowed",
 			op:   admissionv1.Create,
 			new: func() *mysqlv1alpha1.Cluster {
-				c := catalogCluster("10.6")
+				c := catalogCluster("10.11")
 				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
 				return c
 			}(),
@@ -151,7 +151,7 @@ func TestClusterSpecValidator(t *testing.T) {
 			name: "mariadb does not support group replication",
 			op:   admissionv1.Create,
 			new: func() *mysqlv1alpha1.Cluster {
-				c := catalogCluster("10.6")
+				c := catalogCluster("10.11")
 				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
 				c.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
 					Mode: mysqlv1alpha1.ReplicationModeGroupReplication,

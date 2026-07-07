@@ -226,11 +226,11 @@ Each row maps to a subsystem section.
 | `super_read_only` | yes | **no** — only `read_only` + kill non-super writers | 10, 15 |
 | Semi-sync vars | `rpl_semi_sync_source_*` (8.0.26+) | `rpl_semi_sync_master_*` (built-in, no INSTALL PLUGIN) | 10 |
 | Admin interface | `admin_address`/`admin_port` (8.0.14+) | none — use `extra_port` or reserved SUPER slot | 13 |
-| Binlog expiry var | `binlog_expire_logs_seconds` | `binlog_expire_logs_seconds` (10.6+) else `expire_logs_days` | 11 |
+| Binlog expiry var | `binlog_expire_logs_seconds` | `binlog_expire_logs_seconds` (10.11+) else `expire_logs_days` | 11 |
 | Quorum topology | Group Replication | Galera (out of scope) | 12 |
 | Physical backup | `xtrabackup` + `xbstream` | `mariabackup` + `mbstream` | 11 |
 | Clone plugin | `mysql_clone.so` (GR recovery) | none | 12 |
-| Series chain | 8.0 → 8.4 → 9.0 | 10.6 → 10.11 → 11.4 → 12.x | 9 |
+| Series chain | 8.0 → 8.4 → 9.0 | 10.11 → 11.4 → 12.x | 9 |
 | Exporter | mysqld_exporter | mysqld_exporter (works against MariaDB) | 14 |
 
 ## 8. Instance-manager bootstrap & lifecycle
@@ -267,7 +267,7 @@ MySQL's `version.UpgradeSeriesChain` becomes `engine.UpgradeChain()`:
 
 - **mysql:** `8.0 → 8.4 → 9.0` (unchanged).
 - **mariadb:** the ordered set of **LTS series** we qualify, e.g.
-  `10.6 → 10.11 → 11.4 → 12.3`. Each entry is a discrete `major.minor` LTS line
+  `10.11 → 11.4 → 12.3`. Each entry is a discrete `major.minor` LTS line
   (the images track LTS releases — MariaDB 12.3 is an LTS, hence the built
   image); there is **no** MySQL-9.x-style "rolling line collapses to one series"
   rule. `Series()` for MariaDB is the plain `major.minor` of the version.
@@ -378,7 +378,7 @@ they move bytes and GTID strings, both engine-opaque. The only binlog concerns:
   Behind `BackupTool` / `ReplDialect`. GTID-addressed replay uses the MariaDB
   position format via `GTIDModel`.
 - **Binlog expiry** var name (`binlogExpire`) moves onto the engine (MariaDB
-  10.6+ has `binlog_expire_logs_seconds`; older falls back to `expire_logs_days`,
+   10.11+ has `binlog_expire_logs_seconds`; older falls back to `expire_logs_days`,
   same rounding logic already present).
 
 `spec.backup.xtrabackupOptions` stays the field name for back-compat but is

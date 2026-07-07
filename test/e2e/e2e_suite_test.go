@@ -232,7 +232,7 @@ func neededInstanceVersions() []string {
 // admission guard (mariadb_upgrade_test.go) validates hops across. Co-loaded into
 // the single Kind cluster so it can perform a real in-place series upgrade without
 // each Pod pulling from the registry mid-roll.
-var mariadbUpgradeSeries = []string{"10.6", "10.11", "11.4", "12.3"}
+var mariadbUpgradeSeries = []string{"10.11", "11.4", "12.3"}
 
 // neededMariaDBImages is the deduplicated set of MariaDB instance images the
 // suite loads when E2E_MARIADB_VERSION is set: the sample series, plus — in the

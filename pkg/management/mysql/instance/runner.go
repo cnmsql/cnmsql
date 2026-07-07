@@ -349,7 +349,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		// bypassed the admission guard: refuse to start before mysqld touches the
 		// (irreversibly upgraded) data dictionary. Skipped when adopting, where the
 		// version is unchanged.
-		if err := guardDataDirUpgrade(opts.DataDir, opts.Version); err != nil {
+		if err := guardDataDirUpgrade(opts.DataDir, opts.Version, eng); err != nil {
 			log.Error(err, "Refusing to start mysqld: unsupported MySQL version transition")
 			return err
 		}

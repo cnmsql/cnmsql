@@ -22,21 +22,18 @@ var _ = Describe("MariaDB major-version upgrade admission", Ordered, Label("flav
 	})
 
 	It("rejects a skipped series and allows a single hop", func() {
-		By("creating a MariaDB cluster pinned to series 10.6")
-		applyManifest(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "10.6"))
+		By("creating a MariaDB cluster pinned to series 10.11")
+		applyManifest(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "10.11"))
 		DeferCleanup(func() { deleteCluster(cluster) })
 
-		By("rejecting a skip straight to 11.4")
-		expectApplyRejected(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "11.4"), "10.11")
-
 		By("rejecting a skip straight to 12.3")
-		expectApplyRejected(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "12.3"), "10.11")
+		expectApplyRejected(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "12.3"), "11.4")
 
-		By("allowing the adjacent hop to 10.11")
-		applyManifest(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "10.11"))
-
-		By("allowing the next hop to 11.4")
+		By("allowing the adjacent hop to 11.4")
 		applyManifest(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "11.4"))
+
+		By("allowing the next hop to 12.3")
+		applyManifest(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "12.3"))
 
 		By("allowing the final hop to 12.3")
 		applyManifest(cluster, mariadbCatalogClusterManifest(cluster, testNamespace, "12.3"))
@@ -98,15 +95,13 @@ metadata:
   namespace: %s
 spec:
   images:
-    - series: "10.6"
-      image: %s
     - series: "10.11"
       image: %s
     - series: "11.4"
       image: %s
     - series: "12.3"
       image: %s
-`, name, ns, mariadbImage, mariadbImage, mariadbImage, mariadbImage)
+`, name, ns, mariadbImage, mariadbImage, mariadbImage)
 }
 
 func mariadbCatalogClusterManifest(name, ns, series string) string {

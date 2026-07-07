@@ -19,18 +19,21 @@ package instance
 import (
 	"testing"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 func TestGuardDataDirUpgrade(t *testing.T) {
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+
 	t.Run("allows a fresh data directory with no marker", func(t *testing.T) {
-		if err := guardDataDirUpgrade(t.TempDir(), "8.4.3"); err != nil {
+		if err := guardDataDirUpgrade(t.TempDir(), "8.4.3", eng); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("allows an empty data dir", func(t *testing.T) {
-		if err := guardDataDirUpgrade("", "8.4.3"); err != nil {
+		if err := guardDataDirUpgrade("", "8.4.3", eng); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -54,7 +57,7 @@ func TestGuardDataDirUpgrade(t *testing.T) {
 			if err := writeVersionMarker(dir, tc.marker); err != nil {
 				t.Fatalf("writeVersionMarker: %v", err)
 			}
-			err := guardDataDirUpgrade(dir, tc.target)
+			err := guardDataDirUpgrade(dir, tc.target, eng)
 			if tc.wantErr && err == nil {
 				t.Errorf("guardDataDirUpgrade(%s -> %s): expected error", tc.marker, tc.target)
 			}

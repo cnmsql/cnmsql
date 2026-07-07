@@ -345,7 +345,6 @@ func TestMariaDBVersionFacet(t *testing.T) {
 		runtime string
 		series  version.Version
 	}{
-		{"10.6.0", version.Version{Major: 10, Minor: 6}},
 		{"10.11.3", version.Version{Major: 10, Minor: 11}},
 		{"11.4.0", version.Version{Major: 11, Minor: 4}},
 		{"11.4.3", version.Version{Major: 11, Minor: 4}},
@@ -361,7 +360,6 @@ func TestMariaDBVersionFacet(t *testing.T) {
 	// Upgrade chain.
 	chain := eng.UpgradeChain()
 	expectedChain := []version.Version{
-		{Major: 10, Minor: 6},
 		{Major: 10, Minor: 11},
 		{Major: 11, Minor: 4},
 		{Major: 12, Minor: 3},
@@ -380,13 +378,12 @@ func TestMariaDBVersionFacet(t *testing.T) {
 		from, to string
 		wantErr  bool
 	}{
-		{"10.6.1", "10.11.0", false},
 		{"10.11.0", "11.4.0", false},
 		{"11.4.0", "12.3.0", false},
-		{"10.6.1", "11.4.0", true},  // skips 10.11
-		{"11.4.0", "10.11.0", true}, // downgrade
-		{"5.7.0", "10.6.0", true},   // unknown source
-		{"10.6.0", "10.6.5", false}, // patch bump within series
+		{"10.11.0", "12.3.0", true},   // skips 11.4
+		{"11.4.0", "10.11.0", true},   // downgrade
+		{"5.7.0", "10.11.0", true},    // unknown source
+		{"10.11.0", "10.11.5", false}, // patch bump within series
 	}
 	for _, tc := range upgradeTests {
 		fv, tv := mustVersion(t, tc.from), mustVersion(t, tc.to)
@@ -412,7 +409,6 @@ func TestMariaDBDefaults(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"10.6", "10.6.18", false},
 		{"10.11", "10.11.8", false},
 		{"11.4", "11.4.3", false},
 		{"12.3", "12.3.0", false},

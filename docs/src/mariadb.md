@@ -62,7 +62,6 @@ The supported series, in upgrade order, are:
 
 | Series | Notes |
 |--------|-------|
-| 10.6   | Oldest supported LTS. |
 | 10.11  | LTS. |
 | 11.4   | LTS. Default image when none is specified. |
 | 12.3   | Newest supported series. |
@@ -187,7 +186,7 @@ For the full recovery architecture, RPO/RTO model, and target options, see
 MariaDB has its own single-hop upgrade chain:
 
 ```text
-10.6 → 10.11 → 11.4 → 12.3
+10.11 → 11.4 → 12.3
 ```
 
 In-place major upgrades follow this chain one hop at a time, the same way MySQL

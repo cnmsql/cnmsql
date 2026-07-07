@@ -367,11 +367,10 @@ func (mariadbEngine) GTID() GTIDModel                { return mariadbGTID{} }
 func (mariadbEngine) HasSuperReadOnly() bool         { return false }
 func (mariadbEngine) SupportsGroupReplication() bool { return false }
 
-// versioning — MariaDB has its own series chain (10.6 → 10.11 → 11.4 → 12.3)
+// versioning — MariaDB has its own series chain (10.11 → 11.4 → 12.3)
 // and normalizes @@version strings that carry a "-MariaDB-" suffix.
 
 var mariadbUpgradeChain = []version.Version{
-	{Major: 10, Minor: 6},
 	{Major: 10, Minor: 11},
 	{Major: 11, Minor: 4},
 	{Major: 12, Minor: 3},
@@ -577,8 +576,6 @@ func mysqlDefaultServerVersion(tag string) (string, error) {
 // concrete default server version.
 func mariadbDefaultServerVersion(tag string) (string, error) {
 	switch tag {
-	case "10.6":
-		return "10.6.18", nil
 	case "10.11":
 		return "10.11.8", nil
 	case "11.4":
