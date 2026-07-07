@@ -98,7 +98,19 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 	// Every replica is provisioned and up to date. Roll the primary last, but only
 	// while the whole cluster is ready, so the primary is never taken down with a
 	// replica still unavailable.
-	if ordinal, ok := instanceOrdinal(cluster, primaryName); ok && observed.Ready {
+	ordinal, ok := instanceOrdinal(cluster, primaryName)
+	if !ok {
+		return true, nil
+	}
+	pendingRoll, err := r.instancePendingRoll(ctx, cluster, plan, plan.instanceFor(cluster, ordinal))
+	if err != nil {
+		return false, err
+	}
+	if !pendingRoll {
+		// Nothing left to do: the primary is on the current template.
+		return true, nil
+	}
+	if observed.Ready {
 		// observed.Ready is the pre-pass snapshot: a replica rolled in an earlier pass
 		// keeps its Ready condition through graceful termination, so it still reads
 		// Ready here. Re-verify every replica live before taking the primary down —
@@ -110,16 +122,14 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 			return false, err
 		}
 		if replicasReady {
-			rolled, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), true)
-			if err != nil {
+			if _, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), true); err != nil {
 				return false, err
-			}
-			if rolled {
-				return false, nil
 			}
 		}
 	}
-	return true, nil
+	// The primary still owes a roll (replicas not all live-ready, the cluster is not
+	// ready, or the roll was just issued): work remains, so we are not provisioned.
+	return false, nil
 }
 
 // gateInstance decides whether reconciliation may proceed to instance i (i > 1).
@@ -289,6 +299,35 @@ func (r *ClusterReconciler) replicasFullyReady(ctx context.Context, cluster *mys
 		}
 	}
 	return true, nil
+}
+
+// instancePendingRoll reports whether the instance's live Pod carries a stale pod
+// template hash — a template change (config, seed, scale, restart) that a later
+// pass must apply by recreating the Pod. It reads the Pod without mutating it
+// (mirroring the hash comparison ensurePod makes), so the caller can gate
+// provisioned-completion on a primary roll that is still deferred: the primary is
+// rolled last, and while its replicas are not all live-ready the roll cannot yet
+// proceed, but the work is not done and reconcileInstances must not report
+// provisioned.
+func (r *ClusterReconciler) instancePendingRoll(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) (bool, error) {
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if pod.DeletionTimestamp != nil {
+		// Already being recreated: the roll is in flight, not pending a decision.
+		return false, nil
+	}
+	labels := labelsFor(cluster, inst.Name, roleOf(inst))
+	spec := r.podSpec(cluster, plan, inst)
+	annotations, err := r.podAnnotations(cluster, plan, inst, labels, spec)
+	if err != nil {
+		return false, err
+	}
+	return pod.Annotations[podTemplateHashAnnotation] != annotations[podTemplateHashAnnotation], nil
 }
 
 // memberOnline reports whether the named instance is ONLINE in the group view.
