@@ -383,7 +383,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// delay readiness. Skipped when adopting (the replaced image already upgraded
 	// the running server).
 	if !adopting && needsUpgrade(opts.DataDir, ver) {
-		if err := runUpgrade(ctx, eng, opts.Socket); err != nil {
+		if err := runUpgrade(ctx, eng, opts.Socket, opts.Control.User, opts.Control.Password); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
@@ -877,15 +877,16 @@ func needsUpgrade(dataDir string, current version.Version) bool {
 // runUpgrade executes the flavor-specific upgrade binary when the server does
 // not self-upgrade on start (MariaDB: mariadb-upgrade). MySQL returns empty
 // UpgradeBinary() and is a no-op.
-func runUpgrade(ctx context.Context, eng engine.Engine, socket string) error {
+func runUpgrade(ctx context.Context, eng engine.Engine, socket, user, password string) error {
 	log := logf.FromContext(ctx).WithName("upgrade")
 	binary := eng.UpgradeBinary()
 	if binary == "" {
 		return nil
 	}
-	args := eng.UpgradeArgs(socket)
+	args := eng.UpgradeArgs(socket, user)
 	log.Info("Running system table upgrade", "binary", binary, "args", args)
 	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = append(os.Environ(), "MYSQL_PWD="+password)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s failed: %w\n%s", binary, err, string(out))

@@ -199,8 +199,9 @@ type Engine interface {
 	// UpgradeArgs returns the arguments passed to the upgrade binary to
 	// migrate system tables across a major/minor version boundary.
 	// Socket is the path to the server's unix socket for the upgrade
-	// binary to connect to the running server.
-	UpgradeArgs(socket string) []string
+	// binary to connect to the running server. User is the privileged
+	// MySQL user for the upgrade connection.
+	UpgradeArgs(socket, user string) []string
 
 	// UpgradeBinary returns the name of the binary used to upgrade system
 	// tables across version boundaries. Returns empty when the server
@@ -346,7 +347,7 @@ func (mysqlEngine) InitDataDirArgs(datadir string) []string {
 	return []string{"--initialize-insecure", "--datadir=" + datadir}
 }
 
-func (mysqlEngine) UpgradeArgs(_ string) []string {
+func (mysqlEngine) UpgradeArgs(_, _ string) []string {
 	return nil
 }
 
@@ -508,8 +509,8 @@ func (mariadbEngine) InitDataDirArgs(datadir string) []string {
 	}
 }
 
-func (mariadbEngine) UpgradeArgs(socket string) []string {
-	return []string{"--force", "--socket=" + socket}
+func (mariadbEngine) UpgradeArgs(socket, user string) []string {
+	return []string{"--force", "--socket=" + socket, "-u" + user}
 }
 
 func (mariadbEngine) UpgradeBinary() string {
