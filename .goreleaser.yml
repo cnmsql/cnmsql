@@ -55,3 +55,4 @@ changelog:
 
 release:
   prerelease: auto
+  mode: replace

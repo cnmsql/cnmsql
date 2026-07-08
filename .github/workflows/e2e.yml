@@ -64,6 +64,32 @@ jobs:
         esac
         python3 .github/e2e-matrix-generator.py -m "$mode"
 
+  register-pending:
+    name: Register lane statuses
+    needs: generate-jobs
+    # Only PR dispatches carry a head SHA to attach statuses to; the nightly
+    # schedule has none. Runs the moment the matrix is known so every lane shows
+    # pending up front, instead of trickling in as each lane's runner is scheduled.
+    if: needs.generate-jobs.outputs.kindEnabled == 'true' && github.event.inputs.pr_sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+    - name: Mark every lane pending
+      run: |
+        echo '${{ needs.generate-jobs.outputs.kindMatrix }}' \
+          | jq -r '.include[].id' \
+          | while read -r lane; do
+              gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \
+                -f state="pending" \
+                -f context="E2E / $lane" \
+                -f description="Waiting for a runner" \
+                -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                --silent
+            done
+      env:
+        GH_TOKEN: ${{ github.token }}
+
   e2e:
     name: ${{ matrix.id }}
     needs: generate-jobs
@@ -95,7 +121,9 @@ jobs:
         persist-credentials: false
         ref: ${{ github.event.inputs.pr_sha || github.ref }}
 
-    - name: Create pending status
+    # Lanes are marked pending up front by the register-pending job; this step
+    # flips this lane from "waiting for a runner" to "running" once it starts.
+    - name: Mark this lane running
       if: github.event.inputs.pr_sha != ''
       run: |
         gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \

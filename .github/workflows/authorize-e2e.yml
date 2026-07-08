@@ -1,4 +1,4 @@
-name: Authorize /test command
+name: Authorize e2e commands
 
 on:
   issue_comment:
@@ -23,15 +23,21 @@ jobs:
     - name: Check authorization
       id: check
       run: |
-        if [[ ! "${{ github.event.comment.body }}" =~ /test ]]; then
-          echo "Comment does not contain /test — skipping"
+        # /e2e-not-needed clears the gate without running; /test dispatches the
+        # run. Match /e2e-not-needed first so its /e2e prefix is not read as /test.
+        if [[ "$COMMENT_BODY" =~ (^|[[:space:]])/e2e-not-needed([[:space:]]|$) ]]; then
+          cmd="not-needed"
+        elif [[ "$COMMENT_BODY" =~ (^|[[:space:]])/test([[:space:]]|$) ]]; then
+          cmd="test"
+        else
+          echo "Comment has no recognized e2e command — skipping"
           exit 0
         fi
 
         case "${{ github.event.comment.author_association }}" in
           OWNER|MEMBER|COLLABORATOR) ;;
           *)
-            echo "Only maintainers can trigger e2e tests, got ${{ github.event.comment.author_association }} — skipping"
+            echo "Only maintainers can run e2e commands, got ${{ github.event.comment.author_association }} — skipping"
             exit 0
             ;;
         esac
@@ -39,16 +45,30 @@ jobs:
         PR_JSON=$(gh pr view "${{ github.event.issue.number }}" -R "${{ github.repository }}" \
           --json headRefOid,headRefName,isCrossRepository)
         {
+          echo "command=$cmd"
           echo "pr_sha=$(jq -r .headRefOid <<<"$PR_JSON")"
           echo "head_ref=$(jq -r .headRefName <<<"$PR_JSON")"
           echo "cross=$(jq -r .isCrossRepository <<<"$PR_JSON")"
         } >> "$GITHUB_OUTPUT"
-        echo "Authorized /test for PR #${{ github.event.issue.number }}"
+        echo "Authorized /$cmd for PR #${{ github.event.issue.number }}"
+      env:
+        GH_TOKEN: ${{ github.token }}
+        # Passed via env (not inlined) since a comment body is attacker-controlled.
+        COMMENT_BODY: ${{ github.event.comment.body }}
+
+    - name: Mark e2e as not needed
+      if: steps.check.outputs.command == 'not-needed' && steps.check.outputs.pr_sha != ''
+      run: |
+        gh api "repos/${{ github.repository }}/statuses/${{ steps.check.outputs.pr_sha }}" \
+          -f state="success" \
+          -f context="e2e" \
+          -f description="Marked not needed by /e2e-not-needed" \
+          -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" --silent
       env:
         GH_TOKEN: ${{ github.token }}
 
     - name: Resolve the e2e gate and dispatch the run
-      if: steps.check.outputs.pr_sha != ''
+      if: steps.check.outputs.command == 'test' && steps.check.outputs.pr_sha != ''
       run: |
         PR_SHA="${{ steps.check.outputs.pr_sha }}"
         RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

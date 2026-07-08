@@ -26,6 +26,7 @@ jobs:
         go-version-file: go.mod
 
     - name: Generate release notes
+      id: git-cliff
       uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4.8.0
       with:
         config: cliff.toml
@@ -39,7 +40,7 @@ jobs:
       with:
         distribution: goreleaser
         version: "~> v2"
-        args: release --clean --release-notes=RELEASE_NOTES.md
+        args: release --clean --release-notes=${{ steps.git-cliff.outputs.changelog }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
