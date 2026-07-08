@@ -8,7 +8,7 @@
   <a href="https://github.com/cnmsql/cnmsql/actions/workflows/lint.yml"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/lint.yml/badge.svg" alt="Lint" /></a>
   <a href="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml?query=event%3Aschedule"><img src="https://github.com/cnmsql/cnmsql/actions/workflows/e2e.yml/badge.svg?branch=main&event=schedule" alt="Nightly E2E Tests" /></a>
   <a href="https://github.com/cnmsql/cnmsql/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
-  <a href="https://goreportcard.com/report/github.com/cnmsql/cnmsql"><img src="https://goreportcard.com/badge/github.com/cnmsql/cnmsql" alt="Go Report Card" /></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/cnmsql/cnmsql"><img src="https://api.scorecard.dev/projects/github.com/cnmsql/cnmsql/badge" alt="OpenSSF Scorecard" /></a>
   <a href="https://cnmsql.co"><img src="https://img.shields.io/badge/docs-cloudnative--mysql.io-blue" alt="Documentation" /></a>
 </p>
 
