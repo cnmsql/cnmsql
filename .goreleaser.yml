@@ -44,6 +44,26 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# Keyless signing of the checksums file with cosign. Uses the GitHub Actions
+# OIDC identity (no long-lived keys); the certificate is recorded in the public
+# Rekor transparency log. Verify with:
+#   cosign verify-blob --certificate checksums.txt.pem \
+#     --signature checksums.txt.sig \
+#     --certificate-identity-regexp 'https://github.com/cnmsql/cnmsql/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     checksums.txt
+signs:
+- cmd: cosign
+  certificate: "${artifact}.pem"
+  args:
+  - sign-blob
+  - "--output-certificate=${certificate}"
+  - "--output-signature=${signature}"
+  - "${artifact}"
+  - --yes
+  artifacts: checksum
+  output: true
+
 snapshot:
   version_template: "{{ .Tag }}-next"
 
