@@ -80,6 +80,34 @@ type ScheduledBackupSpec struct {
 	// cluster-wide spec.backup.jobTemplate.
 	// +optional
 	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
+
+	// SuccessfulBackupsHistoryLimit caps how many completed Backup objects this
+	// schedule keeps. The newest that many are retained and older completed Backups
+	// are garbage-collected. Unset means no count limit. The single newest completed
+	// Backup is always kept regardless, so a schedule never prunes its last recovery
+	// point. Deleting a Backup honours its reclaimPolicy: a Delete-policy Backup also
+	// reclaims its object-store archive, a Retain-policy one leaves the archive (see
+	// spec.backup.retentionPolicy on the Cluster for object-store retention).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	SuccessfulBackupsHistoryLimit *int32 `json:"successfulBackupsHistoryLimit,omitempty"`
+
+	// FailedBackupsHistoryLimit caps how many failed Backup objects this schedule
+	// keeps. The newest that many are retained and older failed Backups are
+	// garbage-collected. Unset means no count limit.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	FailedBackupsHistoryLimit *int32 `json:"failedBackupsHistoryLimit,omitempty"`
+
+	// RetentionPolicy is a time window (e.g. "30d", "8w", "3m"; days, weeks, months,
+	// where a month is 30 days) after which this schedule's terminal Backup objects
+	// are garbage-collected. It uses the same syntax as the Cluster
+	// spec.backup.retentionPolicy. A terminal Backup is pruned when it exceeds the
+	// history limit OR ages past this window, whichever applies. Unset means no time
+	// limit. The newest completed Backup is always kept.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*[dwm]$`
+	RetentionPolicy string `json:"retentionPolicy,omitempty"`
 }
 
 // ScheduledBackupStatus defines the observed state of ScheduledBackup.

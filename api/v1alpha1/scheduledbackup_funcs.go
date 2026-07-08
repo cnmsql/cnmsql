@@ -141,5 +141,34 @@ func (s *ScheduledBackup) Validate() field.ErrorList {
 			schedulePath, s.Spec.Schedule,
 			fmt.Sprintf("must be a valid 6-field cron expression (seconds included): %v", err)))
 	}
+	if s.Spec.RetentionPolicy != "" {
+		if _, err := ParseRetentionPolicy(s.Spec.RetentionPolicy); err != nil {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec").Child("retentionPolicy"),
+				s.Spec.RetentionPolicy, err.Error()))
+		}
+	}
 	return allErrs
+}
+
+// HasRetention reports whether any Backup-object garbage-collection knob is set.
+// When none is set the scheduler never prunes the Backups it creates.
+func (s *ScheduledBackup) HasRetention() bool {
+	return s.Spec.SuccessfulBackupsHistoryLimit != nil ||
+		s.Spec.FailedBackupsHistoryLimit != nil ||
+		s.Spec.RetentionPolicy != ""
+}
+
+// RetentionWindow returns the configured Backup-object retention window. It
+// returns 0 when no window is set (or the value is unparseable, which validation
+// already rejects), meaning the time-based axis is disabled.
+func (s *ScheduledBackup) RetentionWindow() time.Duration {
+	if s.Spec.RetentionPolicy == "" {
+		return 0
+	}
+	window, err := ParseRetentionPolicy(s.Spec.RetentionPolicy)
+	if err != nil {
+		return 0
+	}
+	return window
 }

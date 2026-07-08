@@ -171,3 +171,28 @@ var _ = Describe("ScheduledBackup schedule validation", func() {
 		Expect(sb.Validate()).NotTo(BeEmpty())
 	})
 })
+
+var _ = Describe("ScheduledBackup retention", func() {
+	It("accepts a valid retention window", func() {
+		sb := &ScheduledBackup{Spec: ScheduledBackupSpec{Schedule: "0 0 0 * * *", RetentionPolicy: "30d"}}
+		Expect(sb.Validate()).To(BeEmpty())
+		Expect(sb.RetentionWindow()).To(Equal(30 * 24 * time.Hour))
+	})
+
+	It("rejects an unparseable retention window", func() {
+		sb := &ScheduledBackup{Spec: ScheduledBackupSpec{Schedule: "0 0 0 * * *", RetentionPolicy: "30x"}}
+		Expect(sb.Validate()).NotTo(BeEmpty())
+	})
+
+	It("reports no retention when every knob is unset", func() {
+		sb := &ScheduledBackup{Spec: ScheduledBackupSpec{Schedule: "0 0 0 * * *"}}
+		Expect(sb.HasRetention()).To(BeFalse())
+		Expect(sb.RetentionWindow()).To(BeZero())
+	})
+
+	It("reports retention when any knob is set", func() {
+		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{RetentionPolicy: "1w"}}).HasRetention()).To(BeTrue())
+		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{SuccessfulBackupsHistoryLimit: ptr.To(int32(3))}}).HasRetention()).To(BeTrue())
+		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{FailedBackupsHistoryLimit: ptr.To(int32(1))}}).HasRetention()).To(BeTrue())
+	})
+})
