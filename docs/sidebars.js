@@ -30,6 +30,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'mariadb',
+      label: 'MariaDB Flavor',
+    },
+    {
+      type: 'doc',
       id: 'storage',
       label: 'Storage',
     },
@@ -97,6 +102,11 @@ const sidebars = {
       type: 'doc',
       id: 'pitr',
       label: 'Point-In-Time Recovery',
+    },
+    {
+      type: 'doc',
+      id: 'pitr-internals',
+      label: 'Binlog and PITR Internals',
     },
     {
       type: 'doc',

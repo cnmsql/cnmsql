@@ -19,7 +19,7 @@ package async
 import (
 	"github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -51,10 +51,14 @@ func (r *Reconciler) ObservedFailover(*v1alpha1.Cluster, *v1alpha1.Cluster) (str
 // here would let a diverged replica be elected primary at exactly the moment the
 // guard matters most.
 func detectDivergedReplicas(input topology.ObservationInput) []string {
+	eng, err := engine.ForFlavor(engine.Flavor(input.EngineFlavor))
+	if err != nil {
+		return stillPresent(input.PriorDivergedInstances, input.InstanceNames)
+	}
+	gtidModel := eng.GTID()
+
 	primaryGTID := input.GTIDByInstance[input.PrimaryName]
 	if primaryGTID == "" {
-		// Cannot compare without the primary's GTID; keep whatever was flagged
-		// before so divergence survives the loss of the primary.
 		return stillPresent(input.PriorDivergedInstances, input.InstanceNames)
 	}
 	prior := map[string]bool{}
@@ -68,15 +72,13 @@ func detectDivergedReplicas(input topology.ObservationInput) []string {
 		}
 		gtid := input.GTIDByInstance[name]
 		if gtid == "" {
-			// Unreachable replica: cannot re-prove convergence, so keep a prior flag.
 			if prior[name] {
 				diverged = append(diverged, name)
 			}
 			continue
 		}
-		contained, err := replication.GTIDContains(primaryGTID, gtid)
+		contained, err := gtidModel.Contains(primaryGTID, gtid)
 		if err != nil {
-			// Inconclusive comparison: do not clear a prior flag.
 			if prior[name] {
 				diverged = append(diverged, name)
 			}

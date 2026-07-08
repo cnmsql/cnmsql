@@ -24,7 +24,7 @@ import (
 
 func TestBackupStreamUnconfiguredErrors(t *testing.T) {
 	c := &Controller{}
-	if err := c.BackupStream(context.Background(), io.Discard); err == nil {
+	if _, err := c.BackupStream(context.Background(), io.Discard); err == nil {
 		t.Fatal("expected an error when backup streaming is not configured")
 	}
 }
@@ -39,8 +39,8 @@ func TestSetBackupConfigDefaults(t *testing.T) {
 	if c.backup == nil {
 		t.Fatal("backup config not set")
 	}
-	if c.backup.XtrabackupPath != "xtrabackup" {
-		t.Errorf("xtrabackup path default = %q", c.backup.XtrabackupPath)
+	if c.backup.XtrabackupPath != "" {
+		t.Errorf("xtrabackup path should be empty when unset, got %q", c.backup.XtrabackupPath)
 	}
 	if c.backup.WorkDir == "" {
 		t.Error("work dir default not applied")

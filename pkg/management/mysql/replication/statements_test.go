@@ -204,3 +204,82 @@ func TestSemiSyncInstallVersionAware(t *testing.T) {
 		t.Errorf("legacy replica plugin = %q", got)
 	}
 }
+
+func TestMariaDBChangeSourceStatement(t *testing.T) {
+	stmt := MariaDBChangeSourceStatement(SourceOptions{
+		Host:         "primary.svc",
+		Port:         3306,
+		User:         "repl",
+		Password:     "secret",
+		ConnectRetry: 10,
+		RetryCount:   5,
+		AutoPosition: true,
+	})
+
+	// MariaDB keeps MASTER_* terminology at every version and seeds GTID
+	// auto-positioning with MASTER_USE_GTID=slave_pos.
+	for _, want := range []string{
+		"CHANGE MASTER TO",
+		"MASTER_HOST='primary.svc'",
+		"MASTER_PORT=3306",
+		"MASTER_USER='repl'",
+		"MASTER_PASSWORD='secret'",
+		"MASTER_CONNECT_RETRY=10",
+		"MASTER_RETRY_COUNT=5",
+		"MASTER_USE_GTID=slave_pos",
+	} {
+		if !strings.Contains(stmt, want) {
+			t.Errorf("expected %q in:\n%s", want, stmt)
+		}
+	}
+
+	// MySQL-only spellings must never appear: mariadbd rejects them.
+	for _, banned := range []string{
+		"CHANGE REPLICATION SOURCE TO",
+		"SOURCE_HOST",
+		"MASTER_AUTO_POSITION",
+		"SOURCE_AUTO_POSITION",
+	} {
+		if strings.Contains(stmt, banned) {
+			t.Errorf("unexpected %q in:\n%s", banned, stmt)
+		}
+	}
+}
+
+func TestMariaDBChangeSourceStatementMTLS(t *testing.T) {
+	stmt := MariaDBChangeSourceStatement(SourceOptions{
+		Host:    "primary.svc",
+		User:    "repl",
+		SSLCA:   "/tls/ca.crt",
+		SSLCert: "/tls/tls.crt",
+		SSLKey:  "/tls/tls.key",
+	})
+	for _, want := range []string{
+		"MASTER_SSL=1",
+		"MASTER_SSL_CA='/tls/ca.crt'",
+		"MASTER_SSL_CERT='/tls/tls.crt'",
+		"MASTER_SSL_KEY='/tls/tls.key'",
+	} {
+		if !strings.Contains(stmt, want) {
+			t.Errorf("expected %q in:\n%s", want, stmt)
+		}
+	}
+}
+
+func TestMariaDBChangeSourceStatementOmitsGTIDWhenNoAutoPosition(t *testing.T) {
+	stmt := MariaDBChangeSourceStatement(SourceOptions{Host: "h", User: "u"})
+	if strings.Contains(stmt, "MASTER_USE_GTID") {
+		t.Errorf("MASTER_USE_GTID must be omitted without AutoPosition:\n%s", stmt)
+	}
+}
+
+func TestMariaDBChangeSourceStatementEscapesPassword(t *testing.T) {
+	stmt := MariaDBChangeSourceStatement(SourceOptions{
+		Host:     "h",
+		User:     "u",
+		Password: "a'b\\c",
+	})
+	if !strings.Contains(stmt, `MASTER_PASSWORD='a\'b\\c'`) {
+		t.Errorf("password not escaped correctly:\n%s", stmt)
+	}
+}

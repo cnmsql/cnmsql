@@ -82,13 +82,14 @@ func topologyAvailabilityState(observed observedCluster) topology.AvailabilitySt
 	}
 }
 
-func topologyObservationInput(observed observedCluster, gr *mysqlv1alpha1.GroupReplicationStatus, priorDiverged []string) topology.ObservationInput {
+func topologyObservationInput(observed observedCluster, cluster *mysqlv1alpha1.Cluster, gr *mysqlv1alpha1.GroupReplicationStatus, priorDiverged []string) topology.ObservationInput {
 	in := topology.ObservationInput{
 		PrimaryName:            observed.PrimaryName,
 		InstanceNames:          observed.InstanceNames,
 		StatusByInstance:       observed.StatusByInstance,
 		GTIDByInstance:         observed.GTIDByInstance,
 		ConfiguredMembers:      observed.Plan.Instances,
+		EngineFlavor:           string(cluster.ResolvedFlavor()),
 		PriorDivergedInstances: priorDiverged,
 	}
 	if gr != nil {

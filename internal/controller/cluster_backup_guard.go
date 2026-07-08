@@ -25,8 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // backupDestinationCheck reports the outcome of the empty-archive safety check.
@@ -139,17 +139,29 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 	}
 
 	// The only cheap, anchor-free check: a targetGTID must be within the
-	// archive's cumulative coverage.
+	// archive's cumulative coverage. The MariaDB scanner (binlog.scanMariaDB)
+	// populates CoveredGTIDSet, so this check normally applies to MariaDB too.
+	// It is skipped only for a MariaDB archive whose CoveredGTIDSet is empty —
+	// written before GTID extraction existed — where we trust that the
+	// continuous archiver shipped the files and let the recovery Pod discover
+	// the archive contents during replay.
 	if plan.Recovery.TargetGTID != "" {
-		contained, err := replication.GTIDContains(index.CoveredGTIDSet, plan.Recovery.TargetGTID)
+		eng, err := engine.ForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
 		if err != nil {
 			return recoveryTargetCheck{Blocked: fmt.Sprintf(
-				"Invalid recovery targetGTID or archive coverage: %v", err)}
+				"Unknown engine flavor %q: %v", cluster.ResolvedFlavor(), err)}
 		}
-		if !contained {
-			return recoveryTargetCheck{Blocked: fmt.Sprintf(
-				"Recovery targetGTID %q is beyond the archived binlog coverage %q; the archive cannot replay to it",
-				plan.Recovery.TargetGTID, index.CoveredGTIDSet)}
+		if index.CoveredGTIDSet != "" || eng.Flavor() != engine.FlavorMariaDB {
+			contained, err := eng.GTID().Contains(index.CoveredGTIDSet, plan.Recovery.TargetGTID)
+			if err != nil {
+				return recoveryTargetCheck{Blocked: fmt.Sprintf(
+					"Invalid recovery targetGTID or archive coverage: %v", err)}
+			}
+			if !contained {
+				return recoveryTargetCheck{Blocked: fmt.Sprintf(
+					"Recovery targetGTID %q is beyond the archived binlog coverage %q; the archive cannot replay to it",
+					plan.Recovery.TargetGTID, index.CoveredGTIDSet)}
+			}
 		}
 	}
 	return recoveryTargetCheck{}

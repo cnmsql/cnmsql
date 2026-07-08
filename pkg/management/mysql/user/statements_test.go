@@ -83,6 +83,34 @@ func TestCreateUserRevokesFollowGrants(t *testing.T) {
 	}
 }
 
+func TestRevokeStatementsMariaDBOmitsIfExists(t *testing.T) {
+	// MariaDB has no IF EXISTS on REVOKE; the builder must emit a plain REVOKE.
+	create, err := CreateUserStatementsWithDialect(CreateUserRequest{
+		Name: "admin", Host: "%", Password: "p",
+		Privileges: []Privilege{{Privileges: []string{"SELECT"}, On: "*.*"}},
+		Revokes:    []Privilege{{Privileges: []string{"INSERT"}, On: "mysql.*"}},
+	}, MariaDBDialect)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "REVOKE INSERT ON mysql.* FROM 'admin'@'%'"; create[2] != want {
+		t.Errorf("mariadb revoke = %q, want %q", create[2], want)
+	}
+
+	// MySQL default still carries IF EXISTS (byte-identical guard).
+	mysql, err := CreateUserStatementsWithDialect(CreateUserRequest{
+		Name: "admin", Host: "%", Password: "p",
+		Privileges: []Privilege{{Privileges: []string{"SELECT"}, On: "*.*"}},
+		Revokes:    []Privilege{{Privileges: []string{"INSERT"}, On: "mysql.*"}},
+	}, MySQLDialect)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "REVOKE IF EXISTS INSERT ON mysql.* FROM 'admin'@'%'"; mysql[2] != want {
+		t.Errorf("mysql revoke = %q, want %q", mysql[2], want)
+	}
+}
+
 func TestAlterUserRevokesFollowGrants(t *testing.T) {
 	privs := []Privilege{{Privileges: []string{"SELECT"}, On: "*.*"}}
 	revokes := []Privilege{{Privileges: []string{"UPDATE"}, On: "mysql.*"}}

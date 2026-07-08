@@ -124,8 +124,14 @@ func doSuiteSetup() {
 		By("skipping manager image build/load (E2E_SKIP_IMAGE_BUILD=true; prebuilt by hack/e2e.sh)")
 	}
 
-	for _, version := range neededInstanceVersions() {
-		pullAndLoadInstanceImage(version)
+	if mdVer := os.Getenv("E2E_MARIADB_VERSION"); mdVer != "" {
+		for _, image := range neededMariaDBImages(mdVer) {
+			loadInstanceImage(image)
+		}
+	} else {
+		for _, version := range neededInstanceVersions() {
+			loadInstanceImage(instanceImageFor(version))
+		}
 	}
 
 	configureKubectlKubeRC()
@@ -173,8 +179,11 @@ func restoreManagerKustomization() {
 // Kind cluster, so a Cluster pinned to that image boots without each Pod pulling
 // from the registry.
 func pullAndLoadInstanceImage(version string) {
-	image := instanceImageFor(version)
+	loadInstanceImage(instanceImageFor(version))
+}
 
+// loadInstanceImage pulls the full image reference and loads it into Kind.
+func loadInstanceImage(image string) {
 	By(fmt.Sprintf("pulling the instance image (%s)", image))
 	cmd := exec.Command("docker", "pull", image)
 	_, err := utils.Run(cmd)
@@ -189,6 +198,8 @@ func pullAndLoadInstanceImage(version string) {
 // loads: the sample Cluster version plus every archiving-matrix version. The
 // dedicated major-upgrade job additionally co-loads every supported series so a
 // single Kind cluster can perform real adjacent-series rolls.
+// When E2E_MARIADB_VERSION is set, MySQL images are skipped and only MariaDB
+// instance images are loaded.
 func neededInstanceVersions() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -200,6 +211,48 @@ func neededInstanceVersions() []string {
 		if !seen[v] {
 			seen[v] = true
 			out = append(out, v)
+		}
+	}
+
+	// Search for older instance images in the GHCR registry. The containers repo
+	// may have removed old tags; don't fail the suite when a pull fails — specs
+	// that need them can still pull through the cluster's container runtime.
+	if os.Getenv("E2E_ALL_MYSQL_VERSIONS") == trueEnvValue {
+		for _, v := range []string{"8.0", "8.4", "9.x"} {
+			if !seen[v] {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+// mariadbUpgradeSeries are the adjacent MariaDB series the dedicated
+// mariadb-major-upgrade job rolls through, oldest-first — the same series the
+// admission guard (mariadb_upgrade_test.go) validates hops across. Co-loaded into
+// the single Kind cluster so it can perform a real in-place series upgrade without
+// each Pod pulling from the registry mid-roll.
+var mariadbUpgradeSeries = []string{"10.11", "11.4", "12.3"}
+
+// neededMariaDBImages is the deduplicated set of MariaDB instance images the
+// suite loads when E2E_MARIADB_VERSION is set: the sample series, plus — in the
+// dedicated major-upgrade job (E2E_MAJOR_UPGRADE) — every adjacent series so a
+// single Kind cluster can roll through them. MySQL images are never loaded on a
+// MariaDB lane; the suite runs one flavor's images at a time.
+func neededMariaDBImages(sample string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(version string) {
+		image := mariadbInstanceImageFor(version)
+		if !seen[image] {
+			seen[image] = true
+			out = append(out, image)
+		}
+	}
+	add(sample)
+	if os.Getenv("E2E_MAJOR_UPGRADE") == trueEnvValue {
+		for _, v := range mariadbUpgradeSeries {
+			add(v)
 		}
 	}
 	return out

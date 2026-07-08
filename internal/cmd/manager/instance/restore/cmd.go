@@ -121,8 +121,8 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "xtrabackup", "Path to the xtrabackup binary")
-	cmd.Flags().StringVar(&xbstreamPath, "xbstream", "xbstream", "Path to the xbstream binary")
+	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary (defaults to the engine's tool: xtrabackup / mariabackup)")
+	cmd.Flags().StringVar(&xbstreamPath, "xbstream", "", "Override the stream extractor (defaults to the engine's tool: xbstream / mbstream)")
 	cmd.Flags().StringVar(&backupDir, "backup-dir", "", "Scratch directory to extract the archive into")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")
 	cmd.Flags().StringVar(&bucket, "bucket", "", "Source object-store bucket")
@@ -143,8 +143,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&targetTime, "target-time", "", "Replay archived binlogs up to this RFC3339 timestamp")
 	cmd.Flags().StringVar(&targetGTID, "target-gtid", "", "Replay archived binlogs up to this GTID set")
 	cmd.Flags().BoolVar(&targetImmediate, "target-immediate", false, "Stop replay as soon as a consistent state is reached")
-	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "mysqlbinlog", "Path to the mysqlbinlog binary used to decode archived binlogs")
-	cmd.Flags().StringVar(&mysqlPath, "mysql", "mysql", "Path to the mysql client binary used to apply the replay")
+	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Override the binlog decode client (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")
+	cmd.Flags().StringVar(&mysqlPath, "mysql", "", "Override the SQL client used to apply the replay (defaults to the engine's tool: mysql / mariadb)")
 
 	return cmd
 }

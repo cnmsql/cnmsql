@@ -23,7 +23,7 @@ import (
 	"io"
 	"os/exec"
 
-	"github.com/go-logr/logr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // DefaultMysqlbinlog is the mysqlbinlog binary name resolved from PATH.
@@ -33,51 +33,82 @@ const DefaultMysqlbinlog = "mysqlbinlog"
 // file's GTID range and timestamps. binPath defaults to DefaultMysqlbinlog when
 // empty. mysqlbinlog stdout is a data path that is parsed by Scan; only its
 // stderr is turned into structured log lines, per the project logging decision.
-func MysqlbinlogScanner(binPath string, logger logr.Logger) Scanner {
+// When mariaDB is true, mariadb-binlog output is parsed (domain-server-seq
+// triples) and the process name in log lines reflects that.
+func MysqlbinlogScanner(binPath string, mariaDB bool) Scanner {
 	if binPath == "" {
 		binPath = DefaultMysqlbinlog
 	}
-	return func(ctx context.Context, path string) (ScanResult, error) {
-		args, err := ReadArgs(path)
-		if err != nil {
-			return ScanResult{}, err
-		}
-		cmd := exec.CommandContext(ctx, binPath, args...)
-
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return ScanResult{}, fmt.Errorf("binlog: mysqlbinlog stdout pipe: %w", err)
-		}
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			return ScanResult{}, fmt.Errorf("binlog: mysqlbinlog stderr pipe: %w", err)
-		}
-		if err := cmd.Start(); err != nil {
-			return ScanResult{}, fmt.Errorf("binlog: starting mysqlbinlog: %w", err)
-		}
-
-		// Drain stderr into structured logs concurrently so the pipe never blocks.
-		stderrDone := make(chan struct{})
-		go func() {
-			defer close(stderrDone)
-			sc := bufio.NewScanner(stderr)
-			for sc.Scan() {
-				logger.Info("Process output", "process", "mysqlbinlog", "stream", "stderr", "line", sc.Text())
-			}
-		}()
-
-		res, scanErr := Scan(stdout)
-		// Ensure stdout is fully drained even on a parse error, so Wait succeeds.
-		_, _ = io.Copy(io.Discard, stdout)
-		<-stderrDone
-
-		waitErr := cmd.Wait()
-		if waitErr != nil {
-			return ScanResult{}, fmt.Errorf("binlog: mysqlbinlog %s: %w", path, waitErr)
-		}
-		if scanErr != nil {
-			return ScanResult{}, scanErr
-		}
-		return res, nil
+	procName := "mysqlbinlog"
+	if mariaDB {
+		procName = "mariadb-binlog"
 	}
+	return func(ctx context.Context, path string) (ScanResult, error) {
+		return runBinlogClient(ctx, binPath, procName, path,
+			func(r io.Reader) (ScanResult, error) {
+				return Scan(r, ScanOpts{MariaDB: mariaDB})
+			})
+	}
+}
+
+// MariadbTxnBoundaries runs mariadb-binlog over one file and returns the start
+// byte offset of every GTID transaction, in file order. It is the positional
+// counterpart of the GTID-set scan, used to bound MariaDB point-in-time recovery
+// (which mariadb-binlog cannot filter by GTID) at exact transaction boundaries.
+func MariadbTxnBoundaries(ctx context.Context, binPath, path string) ([]TxnBoundary, error) {
+	if binPath == "" {
+		binPath = DefaultMysqlbinlog
+	}
+	return runBinlogClient(ctx, binPath, "mariadb-binlog", path, scanMariaDBBoundaries)
+}
+
+// runBinlogClient shells out to the binlog client over one file and feeds its
+// stdout (a data path) to parse. stderr is drained into structured logs so the
+// pipe never blocks, and stdout is fully consumed even on a parse error so Wait
+// succeeds.
+func runBinlogClient[T any](
+	ctx context.Context, binPath, procName, path string,
+	parse func(io.Reader) (T, error),
+) (T, error) {
+	var zero T
+	logger := logf.FromContext(ctx)
+	args, err := ReadArgs(path)
+	if err != nil {
+		return zero, err
+	}
+	cmd := exec.CommandContext(ctx, binPath, args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return zero, fmt.Errorf("binlog: %s stdout pipe: %w", procName, err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return zero, fmt.Errorf("binlog: %s stderr pipe: %w", procName, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return zero, fmt.Errorf("binlog: starting %s: %w", procName, err)
+	}
+
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			logger.Info("Process output", "process", procName, "stream", "stderr", "line", sc.Text())
+		}
+	}()
+
+	res, parseErr := parse(stdout)
+	_, _ = io.Copy(io.Discard, stdout)
+	<-stderrDone
+
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return zero, fmt.Errorf("binlog: %s %s: %w", procName, path, waitErr)
+	}
+	if parseErr != nil {
+		return zero, parseErr
+	}
+	return res, nil
 }

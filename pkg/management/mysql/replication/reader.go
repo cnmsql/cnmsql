@@ -48,19 +48,27 @@ type ReadOnlyState struct {
 	SuperReadOnly bool
 }
 
-// GTIDExecuted returns the global gtid_executed set.
+// GTIDExecuted returns the global gtid_executed set using the dialect's query
+// (MySQL: @@GLOBAL.gtid_executed, MariaDB: @@gtid_current_pos).
 func (m *Manager) GTIDExecuted(ctx context.Context) (string, error) {
-	return m.scalarString(ctx, "SELECT @@GLOBAL.gtid_executed")
+	return m.scalarString(ctx, m.repl.GTIDExecutedQuery())
 }
 
-// GTIDPurged returns the global gtid_purged set.
+// GTIDPurged returns the global gtid_purged set using the dialect's query. On
+// flavors without a purged-GTID concept (MariaDB) the query is empty and this
+// returns an empty set without touching the server.
 func (m *Manager) GTIDPurged(ctx context.Context) (string, error) {
-	return m.scalarString(ctx, "SELECT @@GLOBAL.gtid_purged")
+	query := m.repl.GTIDPurgedQuery()
+	if query == "" {
+		return "", nil
+	}
+	return m.scalarString(ctx, query)
 }
 
-// ServerUUID returns the server's UUID.
+// ServerUUID returns the server's stable identity (MySQL server_uuid; MariaDB
+// server_id) using the dialect's query.
 func (m *Manager) ServerUUID(ctx context.Context) (string, error) {
-	return m.scalarString(ctx, "SELECT @@GLOBAL.server_uuid")
+	return m.scalarString(ctx, m.repl.ServerIdentityQuery())
 }
 
 // ServerVersion returns the live mysqld version (@@GLOBAL.version, e.g.
@@ -82,7 +90,7 @@ func (m *Manager) ReadOnly(ctx context.Context) (ReadOnlyState, error) {
 	}
 	state.ReadOnly = parseBool(ro)
 
-	if m.version.HasSuperReadOnly() {
+	if m.repl.HasSuperReadOnly() && m.version.HasSuperReadOnly() {
 		sro, err := m.scalarString(ctx, "SELECT @@GLOBAL.super_read_only")
 		if err != nil {
 			return state, err
@@ -102,7 +110,7 @@ type SemiSyncState struct {
 // SemiSyncStatus reads the semi-sync enabled flags. Missing variables (plugins
 // not installed) are reported as disabled rather than an error.
 func (m *Manager) SemiSyncStatus(ctx context.Context) (SemiSyncState, error) {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	source, err := m.optionalGlobalBool(ctx, naming.EnabledVarSource)
 	if err != nil {
 		return SemiSyncState{}, err
@@ -157,7 +165,7 @@ func (m *Manager) scalarString(ctx context.Context, query string) (string, error
 // ReplicaState runs SHOW REPLICA/SLAVE STATUS and parses it, coping with the
 // column renames introduced in MySQL 8.0.22.
 func (m *Manager) ReplicaState(ctx context.Context) (*ReplicaState, error) {
-	query := ShowReplicaStatusStatement(m.version)
+	query := m.repl.ShowReplicaStatus(m.version)
 	rows, err := m.conn.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query %q: %w", query, err)

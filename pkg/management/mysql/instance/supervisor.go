@@ -39,10 +39,6 @@ const waitDelay = 10 * time.Second
 // defaultMysqldBinary is the mysqld binary name assumed when none is configured.
 const defaultMysqldBinary = "mysqld"
 
-// defaultXtrabackupBinary is the xtrabackup binary name assumed when none is
-// configured.
-const defaultXtrabackupBinary = "xtrabackup"
-
 // ProcessSupervisor runs and supervises a single child process (mysqld),
 // forwarding its output and managing graceful shutdown and restart. It is the
 // PID1 the instance pod runs.

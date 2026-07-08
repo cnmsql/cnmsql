@@ -18,21 +18,10 @@ package pool
 
 import (
 	"testing"
-
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
-func mustVersion(t *testing.T, v string) version.Version {
-	t.Helper()
-	parsed, err := version.Parse(v)
-	if err != nil {
-		t.Fatalf("version.Parse(%q): %v", v, err)
-	}
-	return parsed
-}
-
 func TestControlConfigUsesAdminInterfaceWhenAvailable(t *testing.T) {
-	cfg := ControlConfig(mustVersion(t, "8.0.36"), ControlParams{
+	cfg := ControlConfig(true, ControlParams{
 		User:   "manager",
 		Socket: "/var/run/mysqld/mysqld.sock",
 	})
@@ -49,7 +38,7 @@ func TestControlConfigUsesAdminInterfaceWhenAvailable(t *testing.T) {
 }
 
 func TestControlConfigCustomAdminEndpoint(t *testing.T) {
-	cfg := ControlConfig(mustVersion(t, "8.4.0"), ControlParams{
+	cfg := ControlConfig(true, ControlParams{
 		User:         "manager",
 		AdminAddress: "127.0.0.5",
 		AdminPort:    40000,
@@ -60,7 +49,7 @@ func TestControlConfigCustomAdminEndpoint(t *testing.T) {
 }
 
 func TestControlConfigFallsBackToSocketOnLegacy(t *testing.T) {
-	cfg := ControlConfig(mustVersion(t, "5.7.44"), ControlParams{
+	cfg := ControlConfig(false, ControlParams{
 		User:   "manager",
 		Socket: "/var/run/mysqld/mysqld.sock",
 	})
@@ -77,7 +66,7 @@ func TestControlConfigFallsBackToSocketOnLegacy(t *testing.T) {
 }
 
 func TestControlConfigDSNIsValid(t *testing.T) {
-	cfg := ControlConfig(mustVersion(t, "8.0.36"), ControlParams{User: "manager"})
+	cfg := ControlConfig(true, ControlParams{User: "manager"})
 	if _, err := cfg.DSN(); err != nil {
 		t.Errorf("control config produced invalid DSN: %v", err)
 	}

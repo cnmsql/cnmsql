@@ -208,6 +208,10 @@ func main() {
 					setupLog.Error(err, "Failed to set up webhook", "webhook", "cluster-status")
 					return err
 				}
+				if err := webhookv1alpha1.SetupDatabaseUserWebhookWithManager(mgr); err != nil {
+					setupLog.Error(err, "Failed to set up webhook", "webhook", "databaseuser")
+					return err
+				}
 			}
 			// +kubebuilder:scaffold:builder
 

@@ -26,17 +26,96 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
+// Dialect is the replication SQL dialect a Manager executes: the verbs and
+// syntax for CHANGE MASTER/SOURCE, START/STOP/RESET replica, SHOW ... STATUS,
+// RESET MASTER/BINARY LOGS, GTID-position queries and replica-position seeding.
+// It is declared here (not imported from engine) so the replication package
+// avoids an import cycle with engine, which imports this package for the
+// statement builders. engine.ReplDialect matches this shape structurally, so
+// engine.ForFlavor(...).Repl() can be passed to NewManagerWithDialect.
+type Dialect interface {
+	ChangeSource(v version.Version, opts SourceOptions) string
+	StartReplica(v version.Version) string
+	StopReplica(v version.Version) string
+	ResetReplica(v version.Version, all bool) string
+	ShowReplicaStatus(v version.Version) string
+	ResetBinaryLogs(v version.Version) string
+	GTIDExecutedQuery() string
+	// GTIDPurgedQuery reads the purged-GTID set. Empty means the flavor has no
+	// such concept (MariaDB) and the caller should skip the read.
+	GTIDPurgedQuery() string
+	// ServerIdentityQuery reads the stable per-instance identity used to
+	// partition binary-log archive segments (MySQL server_uuid; MariaDB
+	// server_id, as MariaDB has no server_uuid).
+	ServerIdentityQuery() string
+	SeedReplicaPosition(pos string) string
+	SemiSyncNaming(v version.Version) version.SemiSyncNaming
+	HasSuperReadOnly() bool
+}
+
+// mysqlDialect delegates to the version-aware statement builders in this
+// package. It is the default when no dialect is injected via
+// NewManagerWithDialect (which M-MDB.2 wires from engine.ForFlavor(...).Repl()).
+type mysqlDialect struct{}
+
+func (mysqlDialect) ChangeSource(v version.Version, opts SourceOptions) string {
+	return ChangeSourceStatement(v, opts)
+}
+func (mysqlDialect) StartReplica(v version.Version) string {
+	return StartReplicaStatement(v)
+}
+func (mysqlDialect) StopReplica(v version.Version) string {
+	return StopReplicaStatement(v)
+}
+func (mysqlDialect) ResetReplica(v version.Version, all bool) string {
+	return ResetReplicaStatement(v, all)
+}
+func (mysqlDialect) ShowReplicaStatus(v version.Version) string {
+	return ShowReplicaStatusStatement(v)
+}
+func (mysqlDialect) ResetBinaryLogs(v version.Version) string {
+	return ResetBinaryLogsStatement(v)
+}
+func (mysqlDialect) GTIDExecutedQuery() string {
+	return "SELECT @@GLOBAL.gtid_executed"
+}
+func (mysqlDialect) GTIDPurgedQuery() string {
+	return "SELECT @@GLOBAL.gtid_purged"
+}
+func (mysqlDialect) ServerIdentityQuery() string {
+	return "SELECT @@GLOBAL.server_uuid"
+}
+func (mysqlDialect) SeedReplicaPosition(pos string) string {
+	return SetGTIDPurgedStatement(pos)
+}
+func (mysqlDialect) SemiSyncNaming(v version.Version) version.SemiSyncNaming {
+	return v.SemiSync()
+}
+func (mysqlDialect) HasSuperReadOnly() bool { return true }
+
 // Manager executes replication and role-transition statements against a mysqld
-// connection. The statement text is produced by the version-aware builders in
-// this package, so Manager stays a thin, ordered executor.
+// connection. The statement text is produced by a replDialect, whose default is
+// the version-aware builders in this package.
 type Manager struct {
 	conn    pool.Connection
 	version version.Version
+	repl    Dialect
 }
 
-// NewManager builds a Manager bound to a connection and server version.
+// NewManager builds a Manager bound to a connection and server version. The
+// replication dialect defaults to the built-in MySQL/Percona statement builders.
 func NewManager(conn pool.Connection, v version.Version) *Manager {
-	return &Manager{conn: conn, version: v}
+	return &Manager{conn: conn, version: v, repl: mysqlDialect{}}
+}
+
+// NewManagerWithDialect builds a Manager that executes statements through the
+// supplied Dialect (e.g. engine.ForFlavor(...).Repl()) instead of the default
+// MySQL/Percona builders. A nil dialect falls back to the MySQL default.
+func NewManagerWithDialect(conn pool.Connection, v version.Version, d Dialect) *Manager {
+	if d == nil {
+		d = mysqlDialect{}
+	}
+	return &Manager{conn: conn, version: v, repl: d}
 }
 
 func (m *Manager) exec(ctx context.Context, stmt string) error {
@@ -44,6 +123,11 @@ func (m *Manager) exec(ctx context.Context, stmt string) error {
 		return fmt.Errorf("executing %q: %w", stmt, err)
 	}
 	return nil
+}
+
+// Exec runs an arbitrary SQL statement against the underlying connection.
+func (m *Manager) Exec(ctx context.Context, stmt string) error {
+	return m.exec(ctx, stmt)
 }
 
 // ConfigureSource points the replica at the given source and starts
@@ -55,33 +139,34 @@ func (m *Manager) ConfigureSource(ctx context.Context, opts SourceOptions) error
 // configureSource runs STOP REPLICA, CHANGE REPLICATION SOURCE and, when start
 // is true, START REPLICA.
 func (m *Manager) configureSource(ctx context.Context, opts SourceOptions, start bool) error {
-	if err := m.exec(ctx, StopReplicaStatement(m.version)); err != nil {
+	if err := m.exec(ctx, m.repl.StopReplica(m.version)); err != nil {
 		return err
 	}
-	if err := m.exec(ctx, ChangeSourceStatement(m.version, opts)); err != nil {
+	if err := m.exec(ctx, m.repl.ChangeSource(m.version, opts)); err != nil {
 		return err
 	}
 	if !start {
 		return nil
 	}
-	return m.exec(ctx, StartReplicaStatement(m.version))
+	return m.exec(ctx, m.repl.StartReplica(m.version))
 }
 
 // ProvisionFromBackup configures a freshly restored replica: it resets the
-// binary logs and GTID history, sets gtid_purged to the backup's GTID set so
-// auto-positioning resumes from the backup point, then points the replica at
-// the source. gtidPurged may be empty for a non-GTID backup.
+// binary logs and GTID history, seeds the replica position (SET GLOBAL
+// gtid_purged for MySQL, gtid_slave_pos for MariaDB) so replication resumes
+// from the backup point, then points the replica at the source. gtidPurged
+// may be empty for a non-GTID backup.
 //
 // It deliberately does NOT start replication: this runs on the throwaway
 // temporary server (started with --skip-slave-start), and the real instance
 // resumes replication from the persisted source config on its next boot.
 // Starting here is redundant on the throwaway server, so we configure-only.
 func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, opts SourceOptions) error {
-	if err := m.exec(ctx, ResetBinaryLogsStatement(m.version)); err != nil {
+	if err := m.exec(ctx, m.repl.ResetBinaryLogs(m.version)); err != nil {
 		return err
 	}
 	if gtidPurged != "" {
-		if err := m.exec(ctx, SetGTIDPurgedStatement(gtidPurged)); err != nil {
+		if err := m.exec(ctx, m.repl.SeedReplicaPosition(gtidPurged)); err != nil {
 			return err
 		}
 	}
@@ -93,12 +178,12 @@ func (m *Manager) ProvisionFromBackup(ctx context.Context, gtidPurged string, op
 // it on a freshly initialised joiner so the transactions initdb authored locally
 // are not seen as errant transactions (which would block a clone from a donor).
 func (m *Manager) ResetBinaryLogs(ctx context.Context) error {
-	return m.exec(ctx, ResetBinaryLogsStatement(m.version))
+	return m.exec(ctx, m.repl.ResetBinaryLogs(m.version))
 }
 
 // StartReplica starts the replication threads.
 func (m *Manager) StartReplica(ctx context.Context) error {
-	return m.exec(ctx, StartReplicaStatement(m.version))
+	return m.exec(ctx, m.repl.StartReplica(m.version))
 }
 
 // EnsureReplicaConfigured makes sure this server follows the requested source.
@@ -141,13 +226,13 @@ func (m *Manager) EnsureReplicaStarted(ctx context.Context) error {
 
 // StopReplica stops the replication threads.
 func (m *Manager) StopReplica(ctx context.Context) error {
-	return m.exec(ctx, StopReplicaStatement(m.version))
+	return m.exec(ctx, m.repl.StopReplica(m.version))
 }
 
 // ResetReplica clears replication configuration. With all=true it also removes
 // connection settings (RESET REPLICA ALL).
 func (m *Manager) ResetReplica(ctx context.Context, all bool) error {
-	return m.exec(ctx, ResetReplicaStatement(m.version, all))
+	return m.exec(ctx, m.repl.ResetReplica(m.version, all))
 }
 
 // SetReadOnly toggles read_only.
@@ -155,9 +240,12 @@ func (m *Manager) SetReadOnly(ctx context.Context, on bool) error {
 	return m.exec(ctx, SetReadOnlyStatement(on))
 }
 
-// SetSuperReadOnly toggles super_read_only when supported by the server.
+// SetSuperReadOnly toggles super_read_only when supported by the server. The
+// flavor must have the feature at all (MariaDB does not, and its dialect reports
+// false) and the running version must be recent enough (MySQL gained
+// super_read_only in 5.7.8).
 func (m *Manager) SetSuperReadOnly(ctx context.Context, on bool) error {
-	if !m.version.HasSuperReadOnly() {
+	if !m.repl.HasSuperReadOnly() || !m.version.HasSuperReadOnly() {
 		return nil
 	}
 	return m.exec(ctx, SetSuperReadOnlyStatement(on))
@@ -180,9 +268,12 @@ func (m *Manager) Promote(ctx context.Context) error {
 			return err
 		}
 	}
-	// super_read_only must be cleared before read_only.
-	if err := m.SetSuperReadOnly(ctx, false); err != nil {
-		return err
+	// super_read_only must be cleared before read_only. Skip on engines
+	// (e.g. MariaDB) that do not support the variable.
+	if m.repl.HasSuperReadOnly() {
+		if err := m.SetSuperReadOnly(ctx, false); err != nil {
+			return err
+		}
 	}
 	return m.SetReadOnly(ctx, false)
 }
@@ -210,7 +301,7 @@ func (m *Manager) InstallSemiSyncReplica(ctx context.Context) error {
 
 // EnableSemiSync turns the source and replica semi-sync plugins on at runtime.
 func (m *Manager) EnableSemiSync(ctx context.Context) error {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	if err := m.exec(ctx, SetGlobalStatement(naming.EnabledVarSource, "1")); err != nil {
 		return err
 	}
@@ -223,13 +314,13 @@ func (m *Manager) EnableSemiSync(ctx context.Context) error {
 // variable). The operator lowers this below minSyncReplicas while replicas are
 // unhealthy under "preferred" data durability, then restores it as they recover.
 func (m *Manager) SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	return m.exec(ctx, SetGlobalStatement(naming.WaitForCountVar, strconv.Itoa(count)))
 }
 
 // SetSemiSyncTimeoutMillis sets the source wait timeout at runtime.
 func (m *Manager) SetSemiSyncTimeoutMillis(ctx context.Context, timeoutMillis int) error {
-	naming := m.version.SemiSync()
+	naming := m.repl.SemiSyncNaming(m.version)
 	return m.exec(ctx, SetGlobalStatement(naming.TimeoutVar, strconv.Itoa(timeoutMillis)))
 }
 

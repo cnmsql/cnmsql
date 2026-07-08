@@ -115,6 +115,71 @@ func TestClusterSpecValidator(t *testing.T) {
 			new:     imageCluster("percona/percona-server:8.4"),
 			allowed: false,
 		},
+		{
+			name: "mariadb flavor with mariadb series is allowed",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("10.11")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+				return c
+			}(),
+			allowed: true,
+		},
+		{
+			name: "flavor is immutable (mysql to mariadb rejected)",
+			op:   admissionv1.Update,
+			old:  catalogCluster("8.0"),
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("8.0")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+				return c
+			}(),
+			allowed: false,
+		},
+		{
+			name: "flavor empty to mysql allowed (same resolved value)",
+			op:   admissionv1.Update,
+			old:  catalogCluster("8.0"),
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("8.0")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMySQL
+				return c
+			}(),
+			allowed: true,
+		},
+		{
+			name: "mariadb does not support group replication",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("10.11")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+				c.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
+					Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
+				}
+				return c
+			}(),
+			allowed: false,
+		},
+		{
+			name: "mariadb cannot use MySQL series",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("8.0")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+				return c
+			}(),
+			allowed: false,
+		},
+		{
+			name: "mysql cannot use MariaDB series",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("10.11")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMySQL
+				return c
+			}(),
+			allowed: false,
+		},
 	}
 
 	for _, tc := range cases {

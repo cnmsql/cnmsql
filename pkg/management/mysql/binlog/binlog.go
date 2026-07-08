@@ -111,6 +111,7 @@ func ReadArgs(file string, extraArgs ...string) ([]string, error) {
 //   - StopDatetime bounds a targetTime recovery ("YYYY-MM-DD HH:MM:SS").
 //   - ExcludeGTIDs/IncludeGTIDs filter by GTID for targetGTID recovery and to
 //     skip already-applied transactions.
+//   - StartPosition starts replay at a byte offset in the first file (MariaDB).
 type ReplayOptions struct {
 	// Files are the binary-log files to replay, in order.
 	Files []string
@@ -118,11 +119,15 @@ type ReplayOptions struct {
 	StopDatetime string
 	// StopPosition, when set with a single file, stops at that byte offset.
 	StopPosition int64
+	// StartPosition starts replay at this byte offset in the first file (MariaDB).
+	StartPosition int64
 	// IncludeGTIDs replays only these GTIDs (mysqlbinlog --include-gtids).
 	IncludeGTIDs string
 	// ExcludeGTIDs skips these GTIDs (mysqlbinlog --exclude-gtids); used to drop
 	// transactions already present in the restored base backup.
 	ExcludeGTIDs string
+	// MariaDB disables GTID-based bounds and uses positional/time bounds instead.
+	MariaDB bool
 	// ExtraArgs are appended verbatim before the file list.
 	ExtraArgs []string
 }
@@ -142,11 +147,16 @@ func ReplayArgs(o ReplayOptions) ([]string, error) {
 		}
 		args = append(args, "--stop-position="+strconv.FormatInt(o.StopPosition, 10))
 	}
-	if o.IncludeGTIDs != "" {
-		args = append(args, "--include-gtids="+o.IncludeGTIDs)
+	if o.StartPosition > 0 {
+		args = append(args, "--start-position="+strconv.FormatInt(o.StartPosition, 10))
 	}
-	if o.ExcludeGTIDs != "" {
-		args = append(args, "--exclude-gtids="+o.ExcludeGTIDs)
+	if !o.MariaDB {
+		if o.IncludeGTIDs != "" {
+			args = append(args, "--include-gtids="+o.IncludeGTIDs)
+		}
+		if o.ExcludeGTIDs != "" {
+			args = append(args, "--exclude-gtids="+o.ExcludeGTIDs)
+		}
 	}
 	args = append(args, o.ExtraArgs...)
 	return append(args, o.Files...), nil

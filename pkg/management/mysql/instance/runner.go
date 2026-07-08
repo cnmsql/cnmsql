@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/diskusage"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance/rolereconciler"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics"
@@ -152,8 +154,13 @@ func (o *RunOptions) applyDefaults() {
 	}
 }
 
-func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunOptions) error {
+func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunOptions, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("semi-sync")
+
+	if !eng.SemiSyncIsPlugin() {
+		log.Info("Skipping semi-sync runtime configuration (engine built-in)")
+		return nil
+	}
 
 	roState, err := repl.ReadOnly(ctx)
 	if err != nil {
@@ -171,6 +178,16 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 		return nil
 	}
 
+	// Suppress binary logging so that session-level statements such as INSTALL
+	// PLUGIN and SET GLOBAL (which are not replication events) do not create
+	// local GTIDs on replicas. Replicas that generate their own GTID entries
+	// under their own server_id can never apply the primary's GTID stream
+	// because MariaDB gtid_strict_mode rejects out-of-order sequence numbers.
+	log.Info("Suppressing binary logging for semi-sync configuration")
+	if err := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=0"); err != nil {
+		return err
+	}
+
 	log.Info("Clearing read_only for semi-sync plugin installation")
 	if roState.SuperReadOnly {
 		if err := repl.SetSuperReadOnly(ctx, false); err != nil {
@@ -184,12 +201,16 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 	}
 
 	err = func() error {
-		log.Info("Installing semi-sync replication plugins")
-		if err := repl.InstallSemiSyncSource(ctx); err != nil {
-			return err
-		}
-		if err := repl.InstallSemiSyncReplica(ctx); err != nil {
-			return err
+		if eng.SemiSyncIsPlugin() {
+			log.Info("Installing semi-sync replication plugins")
+			if err := repl.InstallSemiSyncSource(ctx); err != nil {
+				return err
+			}
+			if err := repl.InstallSemiSyncReplica(ctx); err != nil {
+				return err
+			}
+		} else {
+			log.Info("Skipping semi-sync plugin install (engine built-in)")
 		}
 		log.Info("Enabling semi-sync replication")
 		if err := repl.EnableSemiSync(ctx); err != nil {
@@ -209,6 +230,15 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 		}
 		return nil
 	}()
+
+	if binlogErr := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=1"); binlogErr != nil {
+		if err == nil {
+			err = binlogErr
+		} else {
+			log.Error(binlogErr, "Failed to re-enable binary logging after semi-sync configuration")
+		}
+	}
+
 	if restoreErr := restoreReadOnly(); restoreErr != nil {
 		if err == nil {
 			err = restoreErr
@@ -244,6 +274,15 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 
+	// Read the engine flavor from the env var set by the controller
+	// (CNMSQL_FLAVOR), falling back to mysql.
+	eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+
+	// Override the default server binary for non-MySQL flavors.
+	if opts.MysqldPath == defaultMysqldBinary {
+		opts.MysqldPath = eng.ServerdCommand()
+	}
+
 	args := []string{}
 	if opts.ConfigFile != "" {
 		args = append(args, "--defaults-file="+opts.ConfigFile)
@@ -259,7 +298,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// clears it on the confirmed primary. This is not applied to the bootstrap
 	// temporary servers (initdb/join), which must be writable.
 	if opts.ClusterName != "" && opts.Namespace != "" {
-		if ver.HasSuperReadOnly() {
+		if eng.HasSuperReadOnly() {
 			args = append(args, "--super-read-only=ON")
 		} else {
 			args = append(args, "--read-only=ON")
@@ -310,7 +349,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		// bypassed the admission guard: refuse to start before mysqld touches the
 		// (irreversibly upgraded) data dictionary. Skipped when adopting, where the
 		// version is unchanged.
-		if err := guardDataDirUpgrade(opts.DataDir, opts.Version); err != nil {
+		if err := guardDataDirUpgrade(opts.DataDir, opts.Version, eng); err != nil {
 			log.Error(err, "Refusing to start mysqld: unsupported MySQL version transition")
 			return err
 		}
@@ -327,7 +366,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer signal.Stop(signals)
 
 	// Establish the privileged control connection.
-	controlCfg := pool.ControlConfig(ver, opts.Control)
+	controlCfg := pool.ControlConfig(eng.HasAdminInterface(ver), opts.Control)
 	db, err := openControl(ctx, controlCfg, opts.ReadyTimeout)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
@@ -336,6 +375,20 @@ func Run(ctx context.Context, opts RunOptions) error {
 	log.Info("Connected to mysqld control interface")
 	defer func() { _ = db.Close() }()
 
+	// If the flavor requires an explicit upgrade step (MariaDB: mariadb-upgrade),
+	// run it now while mysqld is serving but before the version marker is
+	// overwritten — and only when the data directory actually crossed a version
+	// boundary. This mirrors MySQL's --upgrade=AUTO, which self-upgrades only when
+	// needed; running mariadb-upgrade on every boot would re-check every table and
+	// delay readiness. Skipped when adopting (the replaced image already upgraded
+	// the running server).
+	if !adopting && needsUpgrade(opts.DataDir, ver) {
+		if err := runUpgrade(ctx, eng, opts.Socket, opts.Control.User, opts.Control.Password); err != nil {
+			_ = sup.Shutdown(ctx)
+			return err
+		}
+	}
+
 	// Record the version now serving this data directory so the next start can
 	// validate its transition (guardDataDirUpgrade). Non-fatal: a missing marker
 	// only means the next start cannot apply the guard and defers to admission.
@@ -343,7 +396,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		log.Error(err, "Could not record MySQL version marker")
 	}
 
-	controller, err := NewController(opts.InstanceName, db, opts.Version, opts.Role, sup)
+	controller, err := NewController(opts.InstanceName, db, opts.Version, opts.Role, sup, eng)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		return err
@@ -370,7 +423,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// configured, and serving its role. Semi-sync plugins are already installed and
 	// enabled, and re-applying them would clear read_only on a serving instance.
 	if opts.SemiSyncEnabled && !adopting {
-		if err := configureSemiSync(ctx, controller.repl, opts); err != nil {
+		if err := configureSemiSync(ctx, controller.repl, opts, eng); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
@@ -435,7 +488,23 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer cancelArchive()
 	if opts.Archiving != nil && opts.Archiving.Enabled {
 		log.Info("Enabling continuous binlog archiving")
-		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db)
+		if opts.Archiving.MysqlbinlogPath == "" {
+			opts.Archiving.MysqlbinlogPath = eng.Backup().BinlogClientBinary()
+		}
+		if eng.Flavor() == engine.FlavorMariaDB {
+			opts.Archiving.MariaDB = true
+			opts.Archiving.MariaDBGTIDModel = eng.GTID()
+			// Partition the archive by a persisted per-incarnation token rather than
+			// @@server_id (config-assigned, reused across a re-init). Ensures one exists
+			// for clusters that predate this token (created lazily on first start).
+			id, err := EnsureArchiveID(opts.Archiving.BinlogDir)
+			if err != nil {
+				_ = sup.Shutdown(ctx)
+				return fmt.Errorf("resolving archive identity: %w", err)
+			}
+			opts.Archiving.ArchiveIdentity = id
+		}
+		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery())
 		if err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
@@ -456,10 +525,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 			_ = sup.Shutdown(ctx)
 			return fmt.Errorf("loading TLS certificates: %w", err)
 		}
+		reloadStmt := eng.TLSReloadStatement()
 		cm.OnReload = func(ctx context.Context) error {
 			log.Info("Reloading mysqld TLS certificates")
-			if _, err := db.ExecContext(ctx, "ALTER INSTANCE RELOAD TLS"); err != nil {
-				return fmt.Errorf("ALTER INSTANCE RELOAD TLS: %w", err)
+			if _, err := db.ExecContext(ctx, reloadStmt); err != nil {
+				return fmt.Errorf("%s: %w", reloadStmt, err)
 			}
 			return nil
 		}
@@ -787,6 +857,42 @@ func shutdownMysqld(
 	default:
 		log.Info("Mysqld stopped gracefully")
 	}
+}
+
+// needsUpgrade reports whether the data directory was last served by an older
+// server version than the one now starting — i.e. an upgrade boundary was
+// crossed and the flavor's upgrade step should run. A fresh data directory (no
+// marker) needs no upgrade: its system tables were created at the current
+// version. A marker read error is treated as "no upgrade": the guard already ran
+// and the server is serving, so err on the side of not blocking startup.
+func needsUpgrade(dataDir string, current version.Version) bool {
+	from, ok, err := readVersionMarker(dataDir)
+	if err != nil || !ok {
+		return false
+	}
+	// AtLeast is >=, so !from.AtLeast(current) means from < current: an upgrade.
+	return !from.AtLeast(current.Major, current.Minor, current.Patch)
+}
+
+// runUpgrade executes the flavor-specific upgrade binary when the server does
+// not self-upgrade on start (MariaDB: mariadb-upgrade). MySQL returns empty
+// UpgradeBinary() and is a no-op.
+func runUpgrade(ctx context.Context, eng engine.Engine, socket, user, password string) error {
+	log := logf.FromContext(ctx).WithName("upgrade")
+	binary := eng.UpgradeBinary()
+	if binary == "" {
+		return nil
+	}
+	args := eng.UpgradeArgs(socket, user)
+	log.Info("Running system table upgrade", "binary", binary, "args", args)
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = append(os.Environ(), "MYSQL_PWD="+password)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s failed: %w\n%s", binary, err, string(out))
+	}
+	log.Info("System table upgrade completed")
+	return nil
 }
 
 // openControl opens the control connection, retrying until ready.

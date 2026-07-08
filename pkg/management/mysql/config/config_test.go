@@ -19,6 +19,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // version80 is the baseline 8.0 server version used across these tests.
@@ -232,6 +234,51 @@ func TestRenderSemiSync(t *testing.T) {
 	assertContains(t, out, "loose-rpl_semi_sync_replica_enabled = 1")
 	assertContains(t, out, "loose-rpl_semi_sync_source_wait_for_replica_count = 1")
 	assertContains(t, out, "loose-rpl_semi_sync_source_timeout = 5000")
+}
+
+// TestRenderEngineCapabilityOverrides covers the engine-aware rendering path:
+// when SemiSyncNaming is set, managedSettings uses the ServerConfig capability
+// fields instead of the version-derived MySQL defaults. This is the path the
+// controller takes for MariaDB, whose 11.4 version string would otherwise be
+// (mis)read with MySQL semantics.
+func TestRenderEngineCapabilityOverrides(t *testing.T) {
+	// MariaDB uses source/replica semi-sync naming.
+	mariadbNaming := version.SemiSyncNaming{
+		EnabledVarSource:  "rpl_semi_sync_source_enabled",
+		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
+		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
+		TimeoutVar:        "rpl_semi_sync_source_timeout",
+	}
+
+	c := baseConfig()
+	c.Version = "11.4.3" // MySQL-derived defaults would diverge from these flags.
+	c.Role = RoleReplica
+	c.SemiSync = SemiSync{Enabled: true, WaitForReplicaCount: 1, TimeoutMillis: 5000}
+	c.HasAdminInterface = false
+	c.HasLogReplicaUpdates = false
+	c.HasSuperReadOnly = false
+	c.SemiSyncNaming = &mariadbNaming
+	c.GTIDSettings = [][2]string{{"gtid_strict_mode", "ON"}}
+
+	out := mustRender(t, c)
+
+	// MariaDB GTID: gtid_strict_mode, never the MySQL-only variables that
+	// mariadbd rejects as unknown at startup.
+	assertContains(t, out, "gtid_strict_mode = ON")
+	assertNotContains(t, out, "gtid_mode")
+	assertNotContains(t, out, "enforce_gtid_consistency")
+	// log_slave_updates spelling, not the MySQL 8.0 rename.
+	assertContains(t, out, "log_slave_updates = ON")
+	assertNotContains(t, out, "log_replica_updates")
+	// No admin interface, even though 11.4 > MySQL's 8.0.14 gate.
+	assertNotContains(t, out, "admin_address")
+	assertNotContains(t, out, "admin_port")
+	// A replica is read_only, but MariaDB has no super_read_only.
+	assertContains(t, out, "read_only = ON")
+	assertNotContains(t, out, "super_read_only")
+	// Semi-sync uses source/replica naming.
+	assertContains(t, out, "loose-rpl_semi_sync_source_enabled = 1")
+	assertNotContains(t, out, "rpl_semi_sync_master_enabled")
 }
 
 func TestRenderAdminInterfaceModern(t *testing.T) {

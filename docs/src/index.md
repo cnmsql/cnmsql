@@ -50,7 +50,9 @@ Declare your desired state via Kubernetes custom resources. The operator continu
 
 | Category | Capabilities |
 |----------|-------------|
+| **Engines** | Percona Server for MySQL or MariaDB, selected per cluster with `spec.flavor` |
 | **MySQL versions** | Percona Server 8.0, 8.4, and 9.x |
+| **MariaDB versions** | MariaDB 10.11, 11.4, and 12.3 |
 | **Replication** | GTID-based asynchronous and semi-synchronous replication, plus MySQL Group Replication with quorum-based consensus, planned switchover, and automatic failover |
 | **Traffic routing** | Three role-aware Services: read-write, read-only (replicas), and read (any ready) |
 | **Backups** | Physical backups via Percona XtraBackup to S3-compatible storage |
@@ -84,29 +86,30 @@ All resources live under the `mysql.cnmsql.co/v1alpha1` API group. See the [API 
 1. **[Quickstart](./quickstart.md)**: install the operator via Helm, pull pre-built images, create your first cluster, connect, scale, and take a backup.
 2. **[Cluster Lifecycle](./cluster-lifecycle.md)**: understand how a `Cluster` CR becomes running MySQL instances.
 3. **[Instance Images](./instance-images.md)**: choose MySQL versions and understand the slim image layout.
+4. **[MariaDB Flavor](./mariadb.md)**: run a cluster on MariaDB instead of MySQL, and the behavior that differs.
 
 ## Core Operations
 
-4. **[Replication and Failover](./replication-failover.md)**: GTID replication model, planned switchover, automatic failover, and rejoin.
-5. **[Group Replication](./group-replication.md)**: quorum-based consensus, automatic primary election, and event-driven observation.
-6. **[Security Model](./security-model.md)**: mTLS, TLS, RBAC, per-instance identity, and the threat model.
-7. **[Multi-Tenancy](./multi-tenancy.md)**: isolate tenants with Cluster-per-namespace or schema-per-tenant patterns.
-8. **[Operator Upgrades](./operator-upgrades.md)**: rolling and in-place operator/instance-manager upgrades.
+5. **[Replication and Failover](./replication-failover.md)**: GTID replication model, planned switchover, automatic failover, and rejoin.
+6. **[Group Replication](./group-replication.md)**: quorum-based consensus, automatic primary election, and event-driven observation.
+7. **[Security Model](./security-model.md)**: mTLS, TLS, RBAC, per-instance identity, and the threat model.
+8. **[Multi-Tenancy](./multi-tenancy.md)**: isolate tenants with Cluster-per-namespace or schema-per-tenant patterns.
+9. **[Operator Upgrades](./operator-upgrades.md)**: rolling and in-place operator/instance-manager upgrades.
 
 ## Backup and Recovery
 
-9. **[Physical Backup and Recovery](./backup-recovery.md)**: one-shot XtraBackup archives and restore.
-10. **[Scheduled Backups](./scheduled-backups.md)**: cron-driven backup schedules.
-11. **[Point-In-Time Recovery](./pitr.md)**: continuous binlog archiving and timestamped recovery.
-12. **[Backup Retention and Deletion](./backup-retention-deletion.md)**: cleanup semantics and planned GC.
-13. **[Object Store Configuration](./object-store.md)**: S3-compatible providers, credentials, and TLS.
+10. **[Physical Backup and Recovery](./backup-recovery.md)**: one-shot XtraBackup archives and restore.
+11. **[Scheduled Backups](./scheduled-backups.md)**: cron-driven backup schedules.
+12. **[Point-In-Time Recovery](./pitr.md)**: continuous binlog archiving and timestamped recovery.
+13. **[Backup Retention and Deletion](./backup-retention-deletion.md)**: cleanup semantics and planned GC.
+14. **[Object Store Configuration](./object-store.md)**: S3-compatible providers, credentials, and TLS.
 
 ## Day-2 Operations
 
-14. **[Operations Runbooks](./operations.md)**: scaling, switchover, fencing, restart, reload, maintenance.
-15. **[Monitoring](./monitoring.md)**: Prometheus metrics, PodMonitor, kubectl plugin inspection.
-16. **[Troubleshooting](./troubleshooting.md)**: symptom-driven guide for common issues.
+15. **[Operations Runbooks](./operations.md)**: scaling, switchover, fencing, restart, reload, maintenance.
+16. **[Monitoring](./monitoring.md)**: Prometheus metrics, PodMonitor, kubectl plugin inspection.
+17. **[Troubleshooting](./troubleshooting.md)**: symptom-driven guide for common issues.
 
 ## Reference
 
-17. **[API Reference](./api-reference.md)**: complete field reference for every CRD.
+18. **[API Reference](./api-reference.md)**: complete field reference for every CRD.

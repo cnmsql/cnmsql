@@ -28,6 +28,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 // ReconcileSwitchover validates and bounds a planned async primary change. The
@@ -105,7 +106,11 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 		return topology.FailoverResult{}, nil
 	}
 	knownDiverged := append(slices.Clone(observed.Diverged), cluster.Status.DivergedInstances...)
-	candidate, _ := SelectFailoverCandidate(observed, knownDiverged)
+	eng, err := engine.ForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
+	if err != nil {
+		return topology.FailoverResult{}, fmt.Errorf("unknown engine flavor %q", cluster.ResolvedFlavor())
+	}
+	candidate, _ := SelectFailoverCandidate(observed, knownDiverged, eng.GTID())
 	if candidate == "" {
 		// No provably-safe replica: do nothing and let failover handle the primary
 		// once it becomes unreachable.

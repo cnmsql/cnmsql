@@ -18,25 +18,22 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/xtrabackup"
 )
-
-// binlogInfoFile is the XtraBackup artifact holding the base backup's binlog
-// position and GTID set — the anchor the replay starts from. copy-back leaves a
-// copy in the data directory, so it survives an init-container restart even
-// though the scratch backup dir (an emptyDir) does not.
-const binlogInfoFile = "xtrabackup_binlog_info"
 
 // pitrSentinelFile marks, on the durable data directory, that point-in-time
 // replay has completed. It makes the replay reentrant: a retry skips it instead
@@ -45,14 +42,14 @@ const pitrSentinelFile = ".cnmsql-pitr-done"
 
 // maybeReplay runs the point-in-time replay unless a previous attempt already
 // completed it (sentinel present on the data directory).
-func (o *RestoreOptions) maybeReplay(ctx context.Context) error {
+func (o *RestoreOptions) maybeReplay(ctx context.Context, bt engine.BackupTool, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 	sentinel := filepath.Join(o.DataDir, pitrSentinelFile)
 	if _, err := os.Stat(sentinel); err == nil {
 		log.Info("Point-in-time replay already completed; skipping", "sentinel", sentinel)
 		return nil
 	}
-	if err := o.replayBinlogs(ctx); err != nil {
+	if err := o.replayBinlogs(ctx, bt, eng); err != nil {
 		return err
 	}
 	if err := os.WriteFile(sentinel, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o640); err != nil {
@@ -70,7 +67,7 @@ func (o *RestoreOptions) maybeReplay(ctx context.Context) error {
 // advances as each archived transaction is applied (mysqlbinlog emits
 // SET GTID_NEXT per transaction), so the recovered server ends at exactly the
 // target point with a coherent GTID history.
-func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
+func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr").WithValues(
 		"sourceCluster", o.SourceCluster, "bucket", o.ObjectStore.Bucket)
 
@@ -78,11 +75,30 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
 		return fmt.Errorf("pitr: object store bucket is required for binlog replay")
 	}
 
-	anchor, err := o.readAnchorGTID()
+	anchor, err := o.readAnchorGTID(bt)
 	if err != nil {
 		return err
 	}
-	log.Info("Read base backup anchor GTID", "anchorGTID", anchor)
+	// The backup metadata carries two anchor facts the in-archive binlog-info file
+	// cannot: the fully-specified anchor GTID (a MariaDB 10.11 backup's binlog-info
+	// has only file+position; the GTID was resolved at backup time via
+	// BINLOG_GTID_POS) and the archive identity of the incarnation the backup was
+	// taken from. Load it once so both are available.
+	var anchorServer string
+	if o.MetadataKey != "" {
+		var metadata objectstore.BackupMetadata
+		if err := o.Store.GetJSON(ctx, o.Bucket, o.MetadataKey, &metadata); err != nil {
+			return fmt.Errorf("pitr: reading backup metadata %q: %w", o.MetadataKey, err)
+		}
+		anchorServer = metadata.AnchorServerUUID
+		// Prefer the metadata GTID when the in-archive anchor has none, so the ordinary
+		// GTID-based planner path applies instead of the positional fallback.
+		if anchor.GTIDSet == "" && metadata.AnchorGTID != "" {
+			anchor.GTIDSet = metadata.AnchorGTID
+			log.Info("Using backup-time resolved anchor GTID from metadata", "anchorGTID", anchor.GTIDSet)
+		}
+	}
+	log.Info("Read base backup anchor GTID", "anchorGTID", anchor.GTIDSet, "anchorServer", anchorServer)
 
 	// Load the cluster-level archive index: the ordered timeline of UUID segments.
 	indexKey := objectstore.ArchiveIndexKey(o.ObjectStore, o.SourceCluster)
@@ -91,9 +107,51 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
 		return fmt.Errorf("pitr: reading archive index %q: %w", indexKey, err)
 	}
 
-	plan, err := binlog.PlanReplay(&index, anchor, o.Target)
-	if err != nil {
-		return fmt.Errorf("pitr: planning replay: %w", err)
+	var plan binlog.ReplayPlan
+	if eng.Flavor() == engine.FlavorMariaDB {
+		plan, err = binlog.PlanReplayWithModel(&index, anchor.GTIDSet, o.Target, eng.GTID())
+		if err != nil {
+			return fmt.Errorf("pitr: planning MariaDB replay: %w", err)
+		}
+		plan.AnchorFile = anchor.File
+		plan.StartPosition = anchor.Position
+		plan.AnchorServerUUID = anchorServer
+		// mariadb-binlog cannot filter by GTID, so a targetGTID recovery is bounded
+		// positionally: resolve the target (and the anchor already applied by the
+		// base backup) to a single domain's sequence numbers, and let the executor
+		// derive byte offsets by scanning the downloaded binlogs.
+		if o.Target.GTID != "" {
+			domain, targetSeq, ok, err := binlog.SingleDomainMariaGTID(o.Target.GTID)
+			if err != nil {
+				return fmt.Errorf("pitr: %w", err)
+			}
+			if ok {
+				plan.MariaDBPositional = true
+				plan.MariaDBDomain = domain
+				plan.MariaDBTargetSeq = targetSeq
+				plan.MariaDBAnchorSeq = binlog.MariaSeqForDomain(anchor.GTIDSet, domain)
+				// When the index carries per-segment GTID ranges, prune the download to
+				// the minimal set of segments whose union covers (anchorSeq, targetSeq],
+				// failing closed on a gap. A GTID-less archive (no segment GTIDSet) has no
+				// ranges to select on, so keep every segment and let the boundary-scanning
+				// replay planner be the authority. MariaDBAnchorSeq may be 0 here (10.11
+				// backup with no GTID); selection from 0 over-includes rather than
+				// under-includes, and the replay planner trims with the derived anchor.
+				if segmentsHaveGTIDRanges(index.Segments) {
+					selected, err := binlog.SelectMariadbSegments(
+						index.Segments, domain, plan.MariaDBAnchorSeq, targetSeq)
+					if err != nil {
+						return fmt.Errorf("pitr: selecting MariaDB segments: %w", err)
+					}
+					plan.Segments = selected
+				}
+			}
+		}
+	} else {
+		plan, err = binlog.PlanReplay(&index, anchor.GTIDSet, o.Target)
+		if err != nil {
+			return fmt.Errorf("pitr: planning replay: %w", err)
+		}
 	}
 	if len(plan.Segments) == 0 {
 		log.Info("No archived binlogs to replay; data is already at the recovery target")
@@ -112,30 +170,31 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context) error {
 	log.Info("Downloaded archived binlogs", "files", len(files),
 		"stopDatetime", plan.StopDatetime, "includeGTIDs", plan.IncludeGTIDs)
 
-	return o.applyReplay(ctx, plan, files)
+	return o.applyReplay(ctx, bt, eng, plan, files)
 }
 
-// readAnchorGTID parses the base backup's xtrabackup_binlog_info for the GTID
-// set the restore landed at. It prefers the copy in the data directory (durable
-// on the PVC, so it survives an init-container restart that lost the scratch
-// backup dir) and falls back to the scratch dir. A missing file (older
-// XtraBackup, or no GTIDs yet) yields an empty anchor: replay from the start.
-func (o *RestoreOptions) readAnchorGTID() (string, error) {
-	content, err := os.ReadFile(filepath.Join(o.DataDir, binlogInfoFile))
-	if os.IsNotExist(err) {
-		content, err = os.ReadFile(filepath.Join(o.BackupDir, binlogInfoFile))
-	}
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
+// readAnchorGTID parses the base backup's binlog-info file and returns the
+// full binlog info (file, position, GTID set) the restore landed at. It prefers
+// the copy in the data directory (durable on the PVC, so it survives an
+// init-container restart that lost the scratch backup dir) and falls back to the
+// scratch dir. Each candidate filename is tried in both directories, since
+// MariaBackup's binlog-info file name is version-dependent (mariadb_backup_binlog_info
+// on 11.1+, xtrabackup_binlog_info before).
+func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (engine.BinlogInfo, error) {
+	for _, dir := range []string{o.DataDir, o.BackupDir} {
+		for _, name := range bt.BinlogInfoFileNames() {
+			content, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return engine.BinlogInfo{}, fmt.Errorf("pitr: reading %s: %w", name, err)
+			}
+			return bt.ParseBinlogInfo(string(content))
 		}
-		return "", fmt.Errorf("pitr: reading %s: %w", binlogInfoFile, err)
 	}
-	info, err := xtrabackup.ParseBinlogInfo(string(content))
-	if err != nil {
-		return "", fmt.Errorf("pitr: parsing %s: %w", binlogInfoFile, err)
-	}
-	return info.GTIDSet, nil
+	// No binlog-info file under any name: an empty-position backup (fresh primary).
+	return engine.BinlogInfo{}, nil
 }
 
 // downloadReplayFiles pulls every planned segment file into replayDir, returning
@@ -174,12 +233,76 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 	return nil
 }
 
+// segmentsHaveGTIDRanges reports whether the archive index carries per-segment GTID
+// coverage, i.e. at least one segment has a non-empty GTIDSet. A GTID-less archive
+// (10.11 mariabackup, or files with no GTID events) has none, so range-based segment
+// selection cannot apply and every segment must be kept for boundary-scan replay.
+func segmentsHaveGTIDRanges(segments []objectstore.ArchiveSegment) bool {
+	for i := range segments {
+		if segments[i].GTIDSet != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrAmbiguousAnchor is returned when a GTID-less base backup's anchor file name
+// matches downloaded binlogs from more than one server. Every server numbers its
+// binlogs from 000001, so a bare name like "binlog.000004" can name two different
+// files across a failover; without a GTID (or identity) to disambiguate, replaying
+// from the wrong one would re-apply or skip transactions, so recovery fails closed.
+var ErrAmbiguousAnchor = errors.New(
+	"pitr: base backup anchor file name matches binlogs from more than one server; cannot disambiguate a GTID-less anchor")
+
+// findAnchorIndex returns the index of the downloaded binlog that is the base
+// backup's anchor file, or -1 if none is present. downloadReplayFiles names every
+// file "<serverUUID>_<binlogName>", so the anchor's bare name matches on the
+// "_<name>" suffix.
+//
+// When anchorServer is set (the backup metadata recorded the incarnation the backup
+// was taken from) the match is pinned to that server's file directly, which resolves
+// the cross-incarnation collision a re-clone/failover produces. When it is empty
+// (legacy backups) and the name matches files under more than one distinct
+// "<serverUUID>_" prefix, it returns ErrAmbiguousAnchor rather than guessing.
+func findAnchorIndex(files []string, anchorFile, anchorServer string) (int, error) {
+	first := -1
+	firstServer := ""
+	for i, f := range files {
+		base := filepath.Base(f)
+		if !strings.HasSuffix(base, "_"+anchorFile) {
+			continue
+		}
+		server := strings.TrimSuffix(base, "_"+anchorFile)
+		if anchorServer != "" {
+			// A recorded anchor server names exactly the incarnation to replay from;
+			// ignore like-named files from any other incarnation.
+			if server == anchorServer {
+				return i, nil
+			}
+			continue
+		}
+		if first < 0 {
+			first, firstServer = i, server
+			continue
+		}
+		if server != firstServer {
+			return -1, ErrAmbiguousAnchor
+		}
+	}
+	// With a recorded anchor server that matched nothing, the anchor incarnation's
+	// binlog was purged/rotated before archiving; report absent so the caller applies
+	// its rotated-anchor fallback rather than failing closed.
+	return first, nil
+}
+
 // applyReplay starts a temporary socket-only mysqld over the restored data
-// directory and pipes `mysqlbinlog <files> | mysql` into it, bounded by the
-// recovery target. The temp server runs with --skip-grant-tables (same pattern
-// as reconcileCredentials) so the mysql client connects as root without a
+// directory and pipes the binlog client output into the SQL client, bounded by
+// the recovery target. The temp server runs with --skip-grant-tables (same
+// pattern as reconcileCredentials) so the client connects as root without a
 // password; GTID tracking is independent of the grant system.
-func (o *RestoreOptions) applyReplay(ctx context.Context, plan binlog.ReplayPlan, files []string) error {
+func (o *RestoreOptions) applyReplay(
+	ctx context.Context, bt engine.BackupTool, eng engine.Engine, plan binlog.ReplayPlan, files []string,
+) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
 	args := []string{}
@@ -210,64 +333,188 @@ func (o *RestoreOptions) applyReplay(ctx context.Context, plan binlog.ReplayPlan
 	}
 	_ = db.Close()
 
+	isMariaDB := eng.Flavor() == engine.FlavorMariaDB
+
+	// A MariaDB targetGTID recovery is bounded by byte offsets (mariadb-binlog has
+	// no --include-gtids), computed by scanning the downloaded binlogs.
+	if isMariaDB && plan.MariaDBPositional {
+		return o.replayMariadbPositional(ctx, bt, plan, files)
+	}
+
+	replayFiles := files
+	startPos := plan.StartPosition
+
+	// For MariaDB positional replay: find the anchor file in the downloaded files
+	// and skip everything before it.
+	if isMariaDB && plan.AnchorFile != "" {
+		ai, err := findAnchorIndex(files, plan.AnchorFile, plan.AnchorServerUUID)
+		if err != nil {
+			return err
+		}
+		if ai >= 0 {
+			replayFiles = files[ai:]
+		} else {
+			// The anchor binlog was rotated/purged before archiving, so its byte
+			// offset means nothing in any downloaded file. Applying it to a
+			// different file lands mid-event and corrupts the stream, so start from
+			// the beginning instead.
+			startPos = 0
+		}
+	}
+
 	replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
-		Files:        files,
-		StopDatetime: plan.StopDatetime,
-		IncludeGTIDs: plan.IncludeGTIDs,
-		ExcludeGTIDs: plan.ExcludeGTIDs,
+		Files:         replayFiles,
+		StopDatetime:  plan.StopDatetime,
+		IncludeGTIDs:  plan.IncludeGTIDs,
+		ExcludeGTIDs:  plan.ExcludeGTIDs,
+		StartPosition: startPos,
+		MariaDB:       isMariaDB,
 	})
 	if err != nil {
 		return fmt.Errorf("pitr: building replay args: %w", err)
 	}
 
 	log.Info("Replaying archived binlogs into restored data", "files", len(files))
-	return o.pipeReplay(ctx, replayArgs)
+	return o.runReplayChunk(ctx, bt, replayArgs)
 }
 
-// pipeReplay runs `mysqlbinlog <replayArgs> | mysql --socket ...`, decoding the
-// archived binlogs and applying them to the temporary server. Both child
-// processes' stderr is captured as structured logs; the binlog stream itself is
-// a data path and never logged.
-func (o *RestoreOptions) pipeReplay(ctx context.Context, replayArgs []string) error {
+// replayMariadbPositional executes a MariaDB targetGTID recovery as byte-offset-
+// bounded chunks. It scans each downloaded binlog for its transaction boundaries,
+// plans the ordered chunks that cover (anchorSeq, targetSeq], and streams each
+// chunk into the already-running temporary mysqld. Because a stop offset requires a
+// single file, the last chunk is the target file bounded by --stop-position; the
+// server's GTID state advances across chunks so the result ends exactly at target.
+func (o *RestoreOptions) replayMariadbPositional(
+	ctx context.Context, bt engine.BackupTool, plan binlog.ReplayPlan, files []string,
+) error {
+	log := logf.FromContext(ctx).WithName("instance-pitr")
+
+	boundaries := make([][]binlog.TxnBoundary, len(files))
+	for i, f := range files {
+		b, err := binlog.MariadbTxnBoundaries(ctx, o.MysqlbinlogPath, f)
+		if err != nil {
+			return fmt.Errorf("pitr: scanning binlog boundaries in %s: %w", f, err)
+		}
+		boundaries[i] = b
+	}
+
+	// When the base backup's binlog-info file carried no GTID (10.11 mariabackup
+	// writes only file+position), MariaDBAnchorSeq is 0 and the planner would rewind
+	// replay to genesis, re-applying transactions already in the backup (duplicate
+	// keys, etc.). Recover the anchor sequence from the recorded binlog position by
+	// scanning the anchor file's transaction boundaries.
+	anchorSeq := plan.MariaDBAnchorSeq
+	if anchorSeq == 0 && plan.AnchorFile != "" {
+		ai, err := findAnchorIndex(files, plan.AnchorFile, plan.AnchorServerUUID)
+		if err != nil {
+			return err
+		}
+		if ai >= 0 {
+			anchorSeq = binlog.AnchorSeqFromBoundaries(boundaries[ai], plan.MariaDBDomain, plan.StartPosition)
+			// The base backup also contains every transaction in the source server's
+			// earlier binlogs. Those carry lower sequences than the anchor file, so
+			// normally they don't change the result — except when the backup was taken
+			// just after a log rotation, leaving no transaction before StartPosition in
+			// the anchor file itself. Without folding them in, anchorSeq would stay 0
+			// and replay would rewind to genesis. Same-server files are matched by the
+			// "<serverUUID>_" prefix the downloader assigns; a different server's
+			// like-named binlog carries an unrelated sequence range and must not count.
+			srvPrefix := strings.TrimSuffix(filepath.Base(files[ai]), plan.AnchorFile)
+			for i := range ai {
+				if !strings.HasPrefix(filepath.Base(files[i]), srvPrefix) {
+					continue
+				}
+				if s := binlog.AnchorSeqFromBoundaries(boundaries[i], plan.MariaDBDomain, math.MaxInt64); s > anchorSeq {
+					anchorSeq = s
+				}
+			}
+			log.Info("Derived MariaDB anchor sequence from backup binlog position",
+				"anchorFile", plan.AnchorFile, "position", plan.StartPosition, "anchorSeq", anchorSeq)
+		}
+	}
+
+	chunks, err := binlog.PlanMariadbPositional(
+		files, boundaries, plan.MariaDBDomain, anchorSeq, plan.MariaDBTargetSeq)
+	if err != nil {
+		return fmt.Errorf("pitr: planning MariaDB positional replay: %w", err)
+	}
+	if len(chunks) == 0 {
+		log.Info("No MariaDB transactions to replay past the anchor; data is already at the recovery target")
+		return nil
+	}
+
+	for i, chunk := range chunks {
+		replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
+			Files:         chunk.Files,
+			StartPosition: chunk.StartPosition,
+			StopPosition:  chunk.StopPosition,
+			MariaDB:       true,
+		})
+		if err != nil {
+			return fmt.Errorf("pitr: building replay args for chunk %d: %w", i, err)
+		}
+		log.Info("Replaying MariaDB binlog chunk", "chunk", i, "files", len(chunk.Files),
+			"startPosition", chunk.StartPosition, "stopPosition", chunk.StopPosition)
+		if err := o.runReplayChunk(ctx, bt, replayArgs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runReplayChunk runs the binlog client piped into the SQL client for one bounded
+// set of files, decoding the archived binlogs and applying them to the temporary
+// server. It is invoked once per replay chunk (MariaDB positional recovery streams
+// several in sequence against the same server); both child processes' stderr is
+// captured as structured logs, while the binlog stream itself is a data path and
+// never logged.
+func (o *RestoreOptions) runReplayChunk(ctx context.Context, bt engine.BackupTool, replayArgs []string) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
 	pr, pw := io.Pipe()
 
-	decode := exec.CommandContext(ctx, o.MysqlbinlogPath, replayArgs...)
+	decodeBin := o.MysqlbinlogPath
+	if decodeBin == "" {
+		decodeBin = bt.BinlogClientBinary()
+	}
+	decode := exec.CommandContext(ctx, decodeBin, replayArgs...)
 	decode.Stdout = pw
-	_, decodeErr := newProcessLogWriters(log.WithName("mysqlbinlog"))
+	_, decodeErr := newProcessLogWriters(log.WithName(decodeBin))
 	decode.Stderr = decodeErr
 
-	apply := exec.CommandContext(ctx, o.MysqlPath,
+	sqlBin := o.MysqlPath
+	if sqlBin == "" {
+		sqlBin = bt.SQLClientBinary()
+	}
+	apply := exec.CommandContext(ctx, sqlBin,
 		"--socket="+o.Socket, "--user=root", "--binary-mode")
 	apply.Stdin = pr
 	// MYSQL_PWD keeps the (empty here) password off the argv; harmless under
 	// --skip-grant-tables but keeps the invocation consistent.
 	apply.Env = append(os.Environ(), "MYSQL_PWD="+o.RootPassword)
-	applyOut, applyErr := newProcessLogWriters(log.WithName("mysql"))
+	applyOut, applyErr := newProcessLogWriters(log.WithName(sqlBin))
 	apply.Stdout = applyOut
 	apply.Stderr = applyErr
 
 	if err := apply.Start(); err != nil {
 		_ = pr.CloseWithError(err)
-		return fmt.Errorf("pitr: starting mysql: %w", err)
+		return fmt.Errorf("pitr: starting %s: %w", sqlBin, err)
 	}
 	if err := decode.Start(); err != nil {
 		_ = pw.CloseWithError(err)
-		return fmt.Errorf("pitr: starting mysqlbinlog: %w", err)
+		return fmt.Errorf("pitr: starting %s: %w", decodeBin, err)
 	}
 
 	decErr := decode.Wait()
-	// Closing the writer signals EOF (or the decode error) to the mysql client.
 	_ = pw.CloseWithError(decErr)
 	appErr := apply.Wait()
 	_ = pr.CloseWithError(appErr)
 
 	if decErr != nil {
-		return fmt.Errorf("pitr: mysqlbinlog: %w", decErr)
+		return fmt.Errorf("pitr: %s: %w", decodeBin, decErr)
 	}
 	if appErr != nil {
-		return fmt.Errorf("pitr: mysql apply: %w", appErr)
+		return fmt.Errorf("pitr: %s apply: %w", sqlBin, appErr)
 	}
 	return nil
 }

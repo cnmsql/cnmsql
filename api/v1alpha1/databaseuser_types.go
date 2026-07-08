@@ -102,6 +102,11 @@ type DatabaseUserSpec struct {
 	// with partial_revokes=ON on the cluster, this carves the system schemas out
 	// of a broad "*.*" grant so a cross-database admin cannot modify the grant
 	// tables and self-escalate. Revokes are applied after Grants, in order.
+	//
+	// Not supported on MariaDB: it has neither partial_revokes nor DENY (DENY is
+	// planned for MariaDB 13.1), so the carve-out cannot be enforced. A
+	// DatabaseUser with revokes on a MariaDB cluster is rejected at admission and
+	// stays unapplied (reason UnsupportedOnMariaDB).
 	// +optional
 	Revokes []DatabaseUserRevoke `json:"revokes,omitempty"`
 

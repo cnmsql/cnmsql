@@ -154,11 +154,34 @@ func TestReadOnlySkipsSuperOnLegacy(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Only read_only is queried before super_read_only exists.
+	// Only read_only is queried before super_read_only exists (MySQL < 5.7.8).
 	mock.ExpectQuery("SELECT @@GLOBAL.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0"))
 
 	m := NewManager(db, mustParse(t, "5.7.7"))
+	state, err := m.ReadOnly(context.Background())
+	if err != nil {
+		t.Fatalf("ReadOnly: %v", err)
+	}
+	if state.ReadOnly || state.SuperReadOnly {
+		t.Errorf("unexpected read-only state: %+v", state)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestReadOnlySkipsSuperOnMariaDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT @@GLOBAL.read_only").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0"))
+
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), sourceReplicaNamingDialect{})
 	state, err := m.ReadOnly(context.Background())
 	if err != nil {
 		t.Fatalf("ReadOnly: %v", err)

@@ -197,6 +197,74 @@ func TestArchivePendingIsIdempotent(t *testing.T) {
 	}
 }
 
+// firstGTIDScan is a scanner that reports a per-file FirstGTID alongside its set,
+// so the index's StartGTIDSet plumbing can be exercised.
+func firstGTIDScan(first, sets map[string]string) Scanner {
+	return func(_ context.Context, path string) (ScanResult, error) {
+		name := filepath.Base(path)
+		return ScanResult{
+			FirstGTID: first[name],
+			GTIDSet:   sets[name],
+			LastGTID:  sets[name],
+		}, nil
+	}
+}
+
+// TestArchivePendingSetsStartGTIDOnce checks that the segment's StartGTIDSet is
+// fixed at the first archived file's FirstGTID and never advances as later files
+// extend the segment — it is the segment's per-domain range start for recovery.
+func TestArchivePendingSetsStartGTIDOnce(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeBinlog(t, dir, "binlog.000001", "one")
+	writeBinlog(t, dir, "binlog.000002", "active")
+
+	first1 := testUUID + ":1"
+	store := newMemStore()
+	scan := firstGTIDScan(
+		map[string]string{"binlog.000001": first1},
+		map[string]string{"binlog.000001": testUUID + ":1-10"},
+	)
+	a := newTestArchiver(t, store, dir, scan)
+	indexKey := objectstore.ArchiveIndexKey(a.objectStore, "demo")
+
+	logs := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})
+	if _, err := a.ArchivePending(context.Background(), logs); err != nil {
+		t.Fatal(err)
+	}
+	var idx objectstore.ArchiveIndex
+	if err := store.GetJSON(context.Background(), "backups", indexKey, &idx); err != nil {
+		t.Fatal(err)
+	}
+	if got := idx.Segments[0].StartGTIDSet; got != first1 {
+		t.Fatalf("StartGTIDSet = %q, want %q", got, first1)
+	}
+
+	// binlog.000002 rotates and archives with a later FirstGTID; the segment's
+	// StartGTIDSet must stay pinned to the first file while GTIDSet advances.
+	writeBinlog(t, dir, "binlog.000003", "active")
+	scan2 := firstGTIDScan(
+		map[string]string{"binlog.000001": first1, "binlog.000002": testUUID + ":11"},
+		map[string]string{"binlog.000001": testUUID + ":1-10", "binlog.000002": testUUID + ":11-20"},
+	)
+	a2 := newTestArchiver(t, store, dir, scan2)
+	logs2 := MarkActive([]BinaryLog{
+		{Name: "binlog.000001"}, {Name: "binlog.000002"}, {Name: "binlog.000003"},
+	})
+	if _, err := a2.ArchivePending(context.Background(), logs2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.GetJSON(context.Background(), "backups", indexKey, &idx); err != nil {
+		t.Fatal(err)
+	}
+	if got := idx.Segments[0].StartGTIDSet; got != first1 {
+		t.Fatalf("StartGTIDSet after 2nd pass = %q, want %q (set once)", got, first1)
+	}
+	if got := idx.Segments[0].GTIDSet; got != testUUID+":1-20" {
+		t.Fatalf("GTIDSet after 2nd pass = %q, want %s:1-20", got, testUUID)
+	}
+}
+
 func TestArchivePendingDetectsCollision(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

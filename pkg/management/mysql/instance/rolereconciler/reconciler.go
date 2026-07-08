@@ -24,6 +24,7 @@ package rolereconciler
 
 import (
 	"context"
+	"os"
 	"slices"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/groupreplication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
@@ -313,13 +315,16 @@ func (r *Reconciler) sourceFor(primary string) replication.SourceOptions {
 func caughtUp(status *webserver.Status) bool {
 	repl := status.Replication
 	if repl == nil {
-		// Not configured as a replica: nothing to wait for.
 		return true
 	}
 	if !repl.SQLRunning {
 		return false
 	}
-	applied, err := replication.GTIDContains(status.GTIDExecuted, repl.RetrievedGTIDSet)
+	eng, err := engine.ForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+	if err != nil {
+		return false
+	}
+	applied, err := eng.GTID().Contains(status.GTIDExecuted, repl.RetrievedGTIDSet)
 	if err != nil || !applied {
 		return false
 	}

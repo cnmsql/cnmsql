@@ -419,7 +419,7 @@ func TestSelectFailoverCandidateSkipsFenced(t *testing.T) {
 		// demo-2 has the most complete GTID but is fenced, so demo-3 is promoted.
 		FencedInstances: []string{testReplica2},
 	}
-	if got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
+	if got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3 (demo-2 is fenced)", got, reason)
 	}
 }

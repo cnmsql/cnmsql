@@ -17,9 +17,41 @@ limitations under the License.
 package instance
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
+
+// TestMariaDBPITRNotBlocked verifies that MariaDB point-in-time recovery is no
+// longer blocked at the guard; it proceeds to the replay planner which may fail
+// on a later step (e.g. missing bucket) but not with the old "not yet supported" error.
+func TestMariaDBPITRNotBlocked(t *testing.T) {
+	t.Setenv("CNMSQL_FLAVOR", "mariadb")
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, bootstrapSentinel), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Restore(context.Background(), RestoreOptions{
+		Store:         &objectstore.Client{},
+		Bucket:        "b",
+		ArchiveKey:    "k",
+		DataDir:       dataDir,
+		BackupDir:     t.TempDir(),
+		SourceCluster: "prod",
+	})
+	if err == nil {
+		t.Fatal("expected error (missing binlog-info), got nil")
+	}
+	if strings.Contains(err.Error(), "not yet supported for MariaDB") {
+		t.Fatalf("MariaDB PITR should no longer be blocked; got %v", err)
+	}
+}
 
 func TestCredentialReconcileStatements(t *testing.T) {
 	stmts := credentialReconcileStatements(
@@ -64,5 +96,50 @@ func TestCredentialReconcileStatementsLegacy(t *testing.T) {
 	out := strings.Join(stmts, "\n")
 	if !strings.Contains(out, "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('rootpw')") {
 		t.Fatalf("expected legacy SET PASSWORD syntax:\n%s", out)
+	}
+}
+
+func TestFindAnchorIndex(t *testing.T) {
+	// downloadReplayFiles names every file "<serverUUID>_<binlogName>", so the
+	// anchor's bare name must match on the "_<name>" suffix — never on a substring
+	// or a bare (unprefixed) name that the downloader never produces.
+	files := []string{
+		"uuid-a_binlog.000001",
+		"uuid-a_binlog.000002",
+		"uuid-b_binlog.000001",
+	}
+	tests := []struct {
+		name         string
+		anchor       string
+		anchorServer string
+		want         int
+		wantAmbig    bool
+	}{
+		{name: "matches suffix under one server", anchor: "binlog.000002", want: 1},
+		// Two servers both number from 000001: a GTID-less anchor cannot pick one.
+		{name: "collision across servers is ambiguous", anchor: "binlog.000001", wantAmbig: true},
+		// A recorded anchor server disambiguates the collision to its own file.
+		{name: "recorded server picks first", anchor: "binlog.000001", anchorServer: "uuid-a", want: 0},
+		{name: "recorded server picks second", anchor: "binlog.000001", anchorServer: "uuid-b", want: 2},
+		// Recorded server whose anchor file was purged: absent, not ambiguous.
+		{name: "recorded server absent", anchor: "binlog.000001", anchorServer: "uuid-c", want: -1},
+		{name: "absent", anchor: "binlog.000009", want: -1},
+		// A bare (unprefixed) name is never how the downloader stores files.
+		{name: "no substring match", anchor: "uuid-a_binlog.000001", want: -1},
+	}
+	for _, tc := range tests {
+		got, err := findAnchorIndex(files, tc.anchor, tc.anchorServer)
+		if tc.wantAmbig {
+			if !errors.Is(err, ErrAmbiguousAnchor) {
+				t.Errorf("%s: findAnchorIndex(_, %q) err = %v, want ErrAmbiguousAnchor", tc.name, tc.anchor, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: findAnchorIndex(_, %q) unexpected err = %v", tc.name, tc.anchor, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: findAnchorIndex(_, %q) = %d, want %d", tc.name, tc.anchor, got, tc.want)
+		}
 	}
 }

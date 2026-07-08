@@ -123,6 +123,22 @@ type ServerConfig struct {
 	GroupReplication GroupReplication
 	// UserParameters are operator-validated user my.cnf settings.
 	UserParameters map[string]string
+	// HasAdminInterface reports whether to render admin_address/admin_port.
+	// Set from the engine to avoid flavor-dependent version.Version methods.
+	HasAdminInterface bool
+	// HasSuperReadOnly reports whether super_read_only is available.
+	HasSuperReadOnly bool
+	// HasLogReplicaUpdates reports whether log_replica_updates (MySQL 8.0+)
+	// is preferred over log_slave_updates.
+	HasLogReplicaUpdates bool
+	// SemiSyncNaming overrides the version-derived semi-sync variable names
+	// when the engine provides a divergent set (MariaDB uses master/slave
+	// regardless of version; MySQL 8.0.26+ uses source/replica).
+	SemiSyncNaming *version.SemiSyncNaming
+	// GTIDSettings are the engine's GTID-enabling my.cnf pairs, used in place of
+	// the MySQL-only gtid_mode/enforce_gtid_consistency when engine-aware
+	// (SemiSyncNaming set). MariaDB rejects the MySQL variables outright.
+	GTIDSettings [][2]string
 }
 
 // GroupReplication is the fully-resolved input to rendering the
@@ -312,6 +328,11 @@ func isGroupReplicationManagedKey(normalized string) bool {
 	return strings.HasPrefix(normalized, groupReplicationKeyPrefix) || normalized == "plugin_load_add"
 }
 
+// IsGroupReplicationManagedKey is the exported wrapper for the engine package.
+func IsGroupReplicationManagedKey(normalized string) bool {
+	return isGroupReplicationManagedKey(normalized)
+}
+
 // StripGroupReplication removes every operator-owned Group Replication line
 // (the group_replication_* namespace and plugin_load_add) from a rendered
 // my.cnf, leaving comments, the section header and all other settings intact.
@@ -447,8 +468,22 @@ func filterRemovedParams(params map[string]string, ver version.Version) map[stri
 }
 
 // managedSettings returns the ordered operator-managed key/value pairs for the
-// given version.
+// given version. When SemiSyncNaming is set (engine-aware callers), the config
+// struct's capability fields are used; otherwise the version-derived defaults
+// are used for backward compatibility.
 func (c *ServerConfig) managedSettings(ver version.Version) []pair {
+	engineCapabilities := c.SemiSyncNaming != nil
+
+	hasAdminInterface := ver.HasAdminInterface()
+	hasLogReplicaUpdates := ver.HasLogReplicaUpdates()
+	hasSuperReadOnly := ver.HasSuperReadOnly()
+	semiSyncNaming := ver.SemiSync()
+	if engineCapabilities {
+		hasAdminInterface = c.HasAdminInterface
+		hasLogReplicaUpdates = c.HasLogReplicaUpdates
+		hasSuperReadOnly = c.HasSuperReadOnly
+		semiSyncNaming = *c.SemiSyncNaming
+	}
 	binlogFormat := c.BinlogFormat
 	if binlogFormat == "" {
 		binlogFormat = "ROW"
@@ -458,12 +493,25 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 		{"server-id", strconv.Itoa(c.ServerID)},
 		{"datadir", c.DataDir},
 		{"socket", c.Socket},
-		{"gtid_mode", "ON"},
-		{"enforce_gtid_consistency", "ON"},
-		{"log_bin", "binlog"},
-		{"relay_log", "relay-bin"},
-		{"binlog_format", binlogFormat},
 	}
+	// GTID mode is engine-divergent: MySQL uses gtid_mode/enforce_gtid_consistency,
+	// which MariaDB's server rejects as unknown variables. Engine-aware callers
+	// supply the flavor's pairs; version-only callers keep the MySQL defaults.
+	if engineCapabilities {
+		for _, kv := range c.GTIDSettings {
+			pairs = append(pairs, pair{kv[0], kv[1]})
+		}
+	} else {
+		pairs = append(pairs,
+			pair{"gtid_mode", "ON"},
+			pair{"enforce_gtid_consistency", "ON"},
+		)
+	}
+	pairs = append(pairs,
+		pair{"log_bin", "binlog"},
+		pair{"relay_log", "relay-bin"},
+		pair{"binlog_format", binlogFormat},
+	)
 
 	if c.Port != 0 {
 		pairs = append(pairs, pair{"port", strconv.Itoa(c.Port)})
@@ -474,7 +522,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 
 	// Administrative interface (8.0.14+): a dedicated listener exempt from
 	// max_connections, so the instance manager can always reach mysqld.
-	if ver.HasAdminInterface() {
+	if hasAdminInterface {
 		addr := c.AdminAddress
 		if addr == "" {
 			addr = DefaultAdminAddress
@@ -490,7 +538,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	}
 
 	// log_replica_updates was renamed from log_slave_updates in 8.0.
-	if ver.HasLogReplicaUpdates() {
+	if hasLogReplicaUpdates {
 		pairs = append(pairs, pair{"log_replica_updates", "ON"})
 	} else {
 		pairs = append(pairs, pair{"log_slave_updates", "ON"})
@@ -503,7 +551,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	// initdb/join temporary servers, which must be writable to bootstrap.
 	if c.Role == RoleReplica {
 		pairs = append(pairs, pair{"read_only", "ON"})
-		if ver.HasSuperReadOnly() {
+		if hasSuperReadOnly {
 			pairs = append(pairs, pair{"super_read_only", "ON"})
 		}
 	}
@@ -521,7 +569,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	}
 
 	if c.SemiSync.Enabled {
-		naming := ver.SemiSync()
+		naming := semiSyncNaming
 		pairs = append(pairs,
 			pair{"loose-" + naming.EnabledVarSource, "1"},
 			pair{"loose-" + naming.EnabledVarReplica, "1"},
@@ -636,6 +684,11 @@ func binlogExpire(ver version.Version, seconds int) (string, string) {
 	}
 	days := max((seconds+86399)/86400, 1)
 	return "expire_logs_days", strconv.Itoa(days)
+}
+
+// BinlogExpire is the exported wrapper for the engine package.
+func BinlogExpire(ver version.Version, seconds int) (string, string) {
+	return binlogExpire(ver, seconds)
 }
 
 type pair struct {

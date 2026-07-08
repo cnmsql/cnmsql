@@ -33,6 +33,25 @@ const (
 	requireX509 = "x509"
 )
 
+// Dialect captures the flavor-specific differences in user-management SQL.
+//
+// MariaDB does not support REVOKE IF EXISTS (that clause is MySQL 8.0.16+), and
+// it has no partial_revokes: a schema-scoped revoke that narrows a broader
+// (global) grant cannot be expressed. See revokeStatements and Manager.AlterUser
+// for how each is handled.
+type Dialect struct {
+	// RevokeIfExists is true when the server accepts "REVOKE IF EXISTS" (MySQL
+	// 8.0.16+). MariaDB sets it false: the builder emits a plain REVOKE, and the
+	// Manager tolerates "non-existing grant" errors to stay idempotent.
+	RevokeIfExists bool
+}
+
+// MySQLDialect is the default dialect: full MySQL 8.0+ user-management syntax.
+var MySQLDialect = Dialect{RevokeIfExists: true}
+
+// MariaDBDialect drops MySQL-only syntax REVOKE cannot use on MariaDB.
+var MariaDBDialect = Dialect{RevokeIfExists: false}
+
 // reservedUsers are the operator- and server-owned accounts that must never be
 // created, altered or dropped through the declarative/control API. They mirror
 // the account names the operator provisions during bootstrap (see
@@ -212,15 +231,23 @@ func grantStatements(name, host string, superuser bool, privileges []Privilege) 
 	return stmts, nil
 }
 
-// revokeStatements builds REVOKE IF EXISTS statements for a privilege list
-// against an account. They carve specific targets (typically system schemas such
-// as mysql.*) out of a broader grant. Schema-level revokes that exceed the
-// account's database grants require partial_revokes=ON on the server; IF EXISTS
-// (MySQL 8.0.16+, the same baseline as partial_revokes) keeps re-application
-// idempotent.
-func revokeStatements(name, host string, revokes []Privilege) ([]string, error) {
+// revokeStatements builds REVOKE statements for a privilege list against an
+// account. They carve specific targets (typically system schemas such as
+// mysql.*) out of a broader grant.
+//
+// On MySQL the builder emits REVOKE IF EXISTS (8.0.16+): schema-level revokes
+// that exceed the account's database grants require partial_revokes=ON, and IF
+// EXISTS keeps re-application idempotent. MariaDB has neither IF EXISTS on
+// REVOKE nor partial_revokes, so the builder emits a plain REVOKE and the
+// Manager tolerates "non-existing grant" errors for idempotency; a revoke that
+// narrows a global grant is not enforceable there.
+func revokeStatements(name, host string, revokes []Privilege, d Dialect) ([]string, error) {
 	if len(revokes) == 0 {
 		return nil, nil
+	}
+	verb := "REVOKE "
+	if d.RevokeIfExists {
+		verb = "REVOKE IF EXISTS "
 	}
 	acct := account(name, host)
 	stmts := make([]string, 0, len(revokes))
@@ -232,16 +259,24 @@ func revokeStatements(name, host string, revokes []Privilege) ([]string, error) 
 		if on == "" {
 			on = "*.*"
 		}
-		stmts = append(stmts, fmt.Sprintf("REVOKE IF EXISTS %s ON %s FROM %s",
-			strings.Join(p.Privileges, ", "), on, acct))
+		stmts = append(stmts, fmt.Sprintf("%s%s ON %s FROM %s",
+			verb, strings.Join(p.Privileges, ", "), on, acct))
 	}
 	return stmts, nil
 }
 
 // CreateUserStatements builds the CREATE USER statement followed by any GRANT
-// statements, then any REVOKE statements (applied after the grants so a
-// system-schema carve-out survives a broad grant).
+// then REVOKE statements, using MySQL syntax. It is retained for callers that do
+// not thread a dialect (and for byte-identical MySQL tests); MariaDB callers use
+// CreateUserStatementsWithDialect.
 func CreateUserStatements(req CreateUserRequest) ([]string, error) {
+	return CreateUserStatementsWithDialect(req, MySQLDialect)
+}
+
+// CreateUserStatementsWithDialect builds the CREATE USER statement followed by
+// any GRANT statements, then any REVOKE statements (applied after the grants so
+// a system-schema carve-out survives a broad grant), in the dialect's syntax.
+func CreateUserStatementsWithDialect(req CreateUserRequest, d Dialect) ([]string, error) {
 	require, err := requireClause(req.RequireTLS)
 	if err != nil {
 		return nil, err
@@ -254,7 +289,7 @@ func CreateUserStatements(req CreateUserRequest) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	revokes, err := revokeStatements(req.Name, req.Host, req.Revokes)
+	revokes, err := revokeStatements(req.Name, req.Host, req.Revokes, d)
 	if err != nil {
 		return nil, err
 	}
@@ -265,8 +300,16 @@ func CreateUserStatements(req CreateUserRequest) ([]string, error) {
 }
 
 // AlterUserStatements builds the ALTER USER statements (and GRANT statements for
-// privilege changes) for the non-nil fields of the request.
+// privilege changes) for the non-nil fields of the request, using MySQL syntax.
+// MariaDB callers use AlterUserStatementsWithDialect.
 func AlterUserStatements(req AlterUserRequest) ([]string, error) {
+	return AlterUserStatementsWithDialect(req, MySQLDialect)
+}
+
+// AlterUserStatementsWithDialect builds the ALTER USER statements (and GRANT
+// statements for privilege changes) for the non-nil fields of the request, in
+// the dialect's syntax.
+func AlterUserStatementsWithDialect(req AlterUserRequest, d Dialect) ([]string, error) {
 	acct := account(req.Name, req.Host)
 	var stmts []string
 
@@ -317,7 +360,7 @@ func AlterUserStatements(req AlterUserRequest) ([]string, error) {
 	// Revokes are applied after grants so a system-schema carve-out is not
 	// re-widened by a grant re-applied in the same request.
 	if req.Revokes != nil {
-		revokes, err := revokeStatements(req.Name, req.Host, *req.Revokes)
+		revokes, err := revokeStatements(req.Name, req.Host, *req.Revokes, d)
 		if err != nil {
 			return nil, err
 		}

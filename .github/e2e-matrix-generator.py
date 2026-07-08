@@ -11,12 +11,20 @@
 # three times.
 #
 # Lanes (each becomes one matrix entry == one status check == one runner job):
-#   - core-feature       (core || feature) && !heavy   latest MySQL   procs 3
-#   - heavy              heavy                          latest MySQL   procs 1
-#   - operator-upgrade   disruptive (op-lifecycle)      latest MySQL   procs 1
-#   - major-upgrade      major-upgrade                  latest MySQL   procs 1
-#   - node-failure       node-failure                   latest MySQL   procs 1
-#   - flavor-MySQL-<v>   flavor && !heavy               each MySQL     procs 2
+#   - core-feature         (core || feature) && !heavy      latest MySQL   procs 3
+#   - heavy                heavy && !mariadb                latest MySQL   procs 1
+#   - operator-upgrade     disruptive (op-lifecycle)        latest MySQL   procs 1
+#   - major-upgrade        major-upgrade && !mariadb        latest MySQL   procs 1
+#   - node-failure         node-failure                     latest MySQL   procs 1
+#   - flavor-MySQL-<v>     flavor && !mariadb && !heavy      each MySQL     procs 2
+#   - flavor-MariaDB-<v>   flavor && mariadb && !heavy       each MariaDB   procs 2
+#   - mariadb-heavy        mariadb && heavy                  latest MariaDB procs 1
+#   - mariadb-major-upgrade mariadb && major-upgrade         latest MariaDB procs 1
+#
+# The generic heavy and major-upgrade lanes exclude mariadb: those specs boot a
+# MariaDB cluster and the suite loads either the MySQL or the MariaDB instance
+# images (never both), so a MariaDB spec on a MySQL-image lane can never pull its
+# image. They run in the dedicated mariadb-heavy / mariadb-major-upgrade lanes.
 #
 # k8s versions come from .github/kind_versions.json filtered by the e2e_test
 # range in .github/k8s_versions_scope.json (latest is used for every lane).
@@ -33,6 +41,7 @@ from typing import List
 KIND_VERSIONS_FILE = ".github/kind_versions.json"
 VERSION_SCOPE_FILE = ".github/k8s_versions_scope.json"
 MYSQL_VERSIONS_FILE = ".github/mysql_versions.json"
+MARIADB_VERSIONS_FILE = ".github/mariadb_versions.json"
 
 
 class VersionList(list):
@@ -79,8 +88,12 @@ KIND_K8S = VersionList(filter_version(load_json(KIND_VERSIONS_FILE), scope))
 mysql_rows = sorted(load_json(MYSQL_VERSIONS_FILE), key=_server_version_key, reverse=True)
 MYSQL = VersionList([row["version"] for row in mysql_rows])
 
+mariadb_rows = sorted(load_json(MARIADB_VERSIONS_FILE), key=_server_version_key, reverse=True)
+MARIADB = VersionList([row["version"] for row in mariadb_rows])
 
-def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, shared_setup=True):
+
+def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, shared_setup=True,
+         mariadb_version=""):
     """One matrix entry. The workflow maps these fields onto the env vars the
     suite and hack/e2e.sh consume (GINKGO_LABEL_FILTER, E2E_MYSQL_VERSION,
     GINKGO_PROCS, E2E_MAJOR_UPGRADE, E2E_SHARED_SETUP).
@@ -98,6 +111,7 @@ def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, share
         "procs": procs,
         "major_upgrade": major_upgrade,
         "shared_setup": shared_setup,
+        "mariadb_version": mariadb_version,
     }
 
 
@@ -105,20 +119,43 @@ def build_lanes():
     latest = MYSQL.latest
     lanes = [
         lane("core-feature", "(core || feature) && !heavy", latest, 3),
-        lane("heavy", "heavy", latest, 1),
+        lane("heavy", "heavy && !mariadb", latest, 1),
         # Disruptive operator-lifecycle specs each provision their own ephemeral
         # cluster, so the shared operator/MinIO is not needed (shared_setup=False).
         lane("operator-upgrade", "disruptive && !major-upgrade && !node-failure", latest, 1,
              shared_setup=False),
         # major-upgrade runs on the shared cluster and co-loads every supported
         # series image (E2E_MAJOR_UPGRADE), so it keeps the shared setup.
-        lane("major-upgrade", "major-upgrade", latest, 1, major_upgrade=True),
+        lane("major-upgrade", "major-upgrade && !mariadb", latest, 1, major_upgrade=True),
         # node-failure provisions its own multi-node cluster (shared_setup=False).
         lane("node-failure", "node-failure", latest, 1, shared_setup=False),
     ]
-    # Only version-sensitive specs run across the whole MySQL axis.
+    # Only version-sensitive specs run across the whole MySQL axis. MariaDB
+    # flavor specs are excluded here: they boot a MariaDB cluster and the suite
+    # loads either the MySQL or the MariaDB instance images (never both), so a
+    # MariaDB spec on a MySQL-image lane can never pull its image. They run in
+    # the dedicated flavor-MariaDB lanes below instead.
     for mysql_version in MYSQL:
-        lanes.append(lane(f"flavor-MySQL-{mysql_version}", "flavor && !heavy", mysql_version, 2))
+        lanes.append(lane(f"flavor-MySQL-{mysql_version}", "flavor && !mariadb && !heavy", mysql_version, 2))
+    # MariaDB flavor lanes: run mariadb-labeled specs across the MariaDB series.
+    for mariadb_version in MARIADB:
+        lanes.append(lane(
+            f"flavor-MariaDB-{mariadb_version}",
+            "flavor && mariadb && !heavy",
+            "", 2, mariadb_version=mariadb_version,
+        ))
+    # Dedicated MariaDB heavy and major-upgrade lanes: the MariaDB analogues of the
+    # generic heavy / major-upgrade lanes, isolated at procs 1 on the latest series
+    # so a single MariaDB image (or, for the rollout, the co-loaded series set) is
+    # loaded. The major-upgrade lane sets E2E_MAJOR_UPGRADE so the suite co-loads
+    # the adjacent MariaDB series images for a real in-place series roll.
+    lanes.append(lane(
+        "mariadb-heavy", "mariadb && heavy", "", 1, mariadb_version=MARIADB.latest,
+    ))
+    lanes.append(lane(
+        "mariadb-major-upgrade", "mariadb && major-upgrade", "", 1,
+        major_upgrade=True, mariadb_version=MARIADB.latest,
+    ))
     return lanes
 
 

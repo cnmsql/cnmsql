@@ -77,6 +77,86 @@ func TestScan(t *testing.T) {
 	}
 }
 
+// sampleMariaDBBinlog mimics `mariadb-binlog` output. Unlike mysqlbinlog, the
+// per-transaction GTID and the Gtid_list event both live in the event-header
+// line (there is no SET @@SESSION.GTID_NEXT). The last transaction is in a
+// second domain produced by a different server (1-5-3) to exercise per-domain
+// server rendering.
+const sampleMariaDBBinlog = `/*!50530 SET @@SESSION.PSEUDO_SLAVE_MODE=1*/;
+/*!40019 SET @@session.max_insert_delayed_threads=0*/;
+# at 4
+#260612 10:00:00 server id 1  end_log_pos 256 CRC32 0xdeadbeef 	Start: binlog v 4, server v 11.4.2-MariaDB
+# at 256
+#260612 10:00:00 server id 1  end_log_pos 299 CRC32 0x00000000 	Gtid list [0-1-9]
+# at 299
+#260612 10:00:05 server id 1  end_log_pos 341 CRC32 0x11111111 	GTID 0-1-10 ddl
+/*!100001 SET @@session.gtid_domain_id=0*//*!*/;
+/*!100001 SET @@session.server_id=1*//*!*/;
+/*!100001 SET @@session.gtid_seq_no=10*//*!*/;
+BEGIN
+/*!*/;
+# at 341
+#260612 10:00:07 server id 1  end_log_pos 420 CRC32 0x22222222 	GTID 0-1-11 trans
+/*!100001 SET @@session.gtid_seq_no=11*//*!*/;
+COMMIT
+/*!*/;
+# at 420
+#260612 10:00:09 server id 5  end_log_pos 500 CRC32 0x33333333 	GTID 1-5-3 trans
+/*!100001 SET @@session.gtid_domain_id=1*//*!*/;
+/*!100001 SET @@session.server_id=5*//*!*/;
+/*!100001 SET @@session.gtid_seq_no=3*//*!*/;
+COMMIT
+/*!*/;
+`
+
+func TestScanMariaDB(t *testing.T) {
+	t.Parallel()
+	res, err := Scan(strings.NewReader(sampleMariaDBBinlog), ScanOpts{MariaDB: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PreviousGTIDs != "0-1-9" {
+		t.Fatalf("PreviousGTIDs = %q", res.PreviousGTIDs)
+	}
+	// Highest seq per domain, domains sorted; domain 1 keeps its own server (5).
+	if res.GTIDSet != "0-1-11,1-5-3" {
+		t.Fatalf("GTIDSet = %q", res.GTIDSet)
+	}
+	if res.FirstGTID != "0-1-10" {
+		t.Fatalf("FirstGTID = %q", res.FirstGTID)
+	}
+	if res.LastGTID != "1-5-3" {
+		t.Fatalf("LastGTID = %q", res.LastGTID)
+	}
+	if got := res.FirstEventTime.Format("2006-01-02 15:04:05"); got != "2026-06-12 10:00:00" {
+		t.Fatalf("FirstEventTime = %q", got)
+	}
+	if !res.LastEventTime.After(res.FirstEventTime) {
+		t.Fatalf("last (%v) should be after first (%v)", res.LastEventTime, res.FirstEventTime)
+	}
+}
+
+// TestScanMariaDBEmptyGtidList covers a freshly rotated file: a Gtid_list event
+// with an empty bracket and no transactions yields an empty GTID set.
+func TestScanMariaDBEmptyGtidList(t *testing.T) {
+	t.Parallel()
+	const onlyList = `# at 4
+#260612 10:00:00 server id 1  end_log_pos 256 CRC32 0x0 	Start: binlog v 4
+# at 256
+#260612 10:00:00 server id 1  end_log_pos 299 CRC32 0x0 	Gtid list []
+`
+	res, err := Scan(strings.NewReader(onlyList), ScanOpts{MariaDB: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PreviousGTIDs != "" {
+		t.Fatalf("PreviousGTIDs = %q, want empty", res.PreviousGTIDs)
+	}
+	if res.GTIDSet != "" {
+		t.Fatalf("GTIDSet = %q, want empty", res.GTIDSet)
+	}
+}
+
 func TestScanEmptyContribution(t *testing.T) {
 	t.Parallel()
 	// A freshly-rotated file with only a Previous-GTIDs event and no

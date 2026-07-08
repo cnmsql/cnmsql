@@ -190,7 +190,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 
-	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster.Status.GroupReplication, cluster.Status.DivergedInstances))
+	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster, cluster.Status.GroupReplication, cluster.Status.DivergedInstances))
 	if topologyObservation.PrimaryAuthoritative {
 		observed.PrimaryName = topologyObservation.PrimaryName
 	}
@@ -450,6 +450,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// independent of the observed pods.
 	latest.Status.LabelSelector = latest.GetInstancesSelector()
 	latest.Status.ObservedGeneration = latest.Generation
+	latest.Status.Flavor = latest.ResolvedFlavor()
 	latest.Status.Phase = observed.Phase
 	latest.Status.PhaseReason = observed.PhaseReason
 	latest.Status.ReadyInstances = observed.ReadyInstances

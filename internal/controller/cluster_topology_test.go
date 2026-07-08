@@ -472,6 +472,86 @@ func TestReconcileInstancesGatesBrandNewMemberWithoutDonor(t *testing.T) {
 	}
 }
 
+// TestReconcileInstancesHoldsPrimaryWhileReplicaTerminating reproduces the quorum-
+// collapse race: a replica rolled in an earlier pass is terminating (its Pod carries
+// a DeletionTimestamp) but still reports Ready in the pre-pass observation. The
+// primary must not be rolled until that replica is live-ready again — otherwise the
+// primary and the terminating replica are down together and the group loses quorum.
+func TestReconcileInstancesHoldsPrimaryWhileReplicaTerminating(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Scheme: scheme,
+	}
+	plan := testPlan()
+	plan.Instances = 3
+	plan.PrimaryName = instanceName(cluster, 1)
+
+	observed := observedCluster{
+		Plan:             plan,
+		PrimaryName:      plan.PrimaryName,
+		Ready:            true,
+		StatusByInstance: map[string]*webserver.Status{},
+	}
+	markReady := func(name string) {
+		markPodReady(t, ctx, reconciler, name)
+		observed.StatusByInstance[name] = &webserver.Status{Role: webserver.RolePrimary, IsReady: true}
+	}
+	// Primary on the pre-change hash, replicas on the post-change hash: only the
+	// primary is left needing a roll (same setup as TestReconcileInstancesRollsPrimaryLast).
+	primary := plan.instanceFor(cluster, 1)
+	if _, err := reconciler.ensureInstance(ctx, cluster, plan, primary, true); err != nil {
+		t.Fatal(err)
+	}
+	markReady(primary.Name)
+	cluster.Annotations = map[string]string{restartAnnotation: "1"}
+	for i := 2; i <= plan.Instances; i++ {
+		inst := plan.instanceFor(cluster, i)
+		if _, err := reconciler.ensureInstance(ctx, cluster, plan, inst, true); err != nil {
+			t.Fatal(err)
+		}
+		markReady(inst.Name)
+	}
+
+	// demo-3 was just rolled and is terminating: its Pod carries a DeletionTimestamp
+	// yet keeps the Ready condition observed above still reports.
+	markPodTerminating(t, ctx, reconciler, instanceName(cluster, 3))
+
+	provisioned, err := reconciler.reconcileInstances(ctx, cluster, plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provisioned {
+		t.Fatal("reconcileInstances reported provisioned while a replica is terminating")
+	}
+	// The primary must still be up: rolling it now would drop the group to one member.
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 1)}, &corev1.Pod{}); err != nil {
+		t.Fatalf("primary must not be rolled while a replica is terminating: %v", err)
+	}
+}
+
+// markPodTerminating puts the named Pod into graceful termination — a live
+// DeletionTimestamp while it keeps its Ready condition — as a just-rolled Pod does
+// mid-restart. A finalizer keeps the object around so the DeletionTimestamp is
+// observable rather than the Pod vanishing.
+func markPodTerminating(t *testing.T, ctx context.Context, reconciler *ClusterReconciler, name string) {
+	t.Helper()
+	pod := &corev1.Pod{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, pod); err != nil {
+		t.Fatalf("get pod %s: %v", name, err)
+	}
+	pod.Finalizers = append(pod.Finalizers, "test.cnmsql.co/hold")
+	if err := reconciler.Update(ctx, pod); err != nil {
+		t.Fatalf("add finalizer to %s: %v", name, err)
+	}
+	if err := reconciler.Delete(ctx, pod); err != nil {
+		t.Fatalf("delete pod %s: %v", name, err)
+	}
+}
+
 // markPodReady flips the named Pod's Ready condition to True.
 func markPodReady(t *testing.T, ctx context.Context, reconciler *ClusterReconciler, name string) {
 	t.Helper()

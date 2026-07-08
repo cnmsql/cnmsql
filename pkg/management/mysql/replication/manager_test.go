@@ -23,7 +23,27 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
+
+// sourceReplicaNamingDialect is a mysqlDialect that reports MariaDB's
+// source/replica semi-sync naming. It stands in for
+// engine.ForFlavor(FlavorMariaDB).Repl(), which the replication package cannot
+// import (engine imports replication). It proves the semi-sync setters read
+// naming from the dialect, not the raw version.
+type sourceReplicaNamingDialect struct{ mysqlDialect }
+
+func (sourceReplicaNamingDialect) SemiSyncNaming(version.Version) version.SemiSyncNaming {
+	return version.SemiSyncNaming{
+		EnabledVarSource:  "rpl_semi_sync_source_enabled",
+		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
+		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
+		TimeoutVar:        "rpl_semi_sync_source_timeout",
+	}
+}
+
+func (sourceReplicaNamingDialect) HasSuperReadOnly() bool { return false }
 
 func newManager(t *testing.T, ver string) (*Manager, sqlmock.Sqlmock) {
 	t.Helper()
@@ -227,10 +247,56 @@ func TestDemoteOrdering(t *testing.T) {
 
 func TestSetSuperReadOnlyNoopOnLegacy(t *testing.T) {
 	m, mock := newManager(t, "5.7.7")
-	// No expectations registered: servers before 5.7.8 must not receive
-	// super_read_only.
+	// No expectations registered: MySQL servers before 5.7.8 must not receive
+	// super_read_only even though the MySQL dialect has the feature.
 	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
 		t.Fatalf("SetSuperReadOnly: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetSuperReadOnlyNoopOnMariaDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// MariaDB's dialect reports HasSuperReadOnly=false; super_read_only
+	// must not be emitted regardless of version.
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), sourceReplicaNamingDialect{})
+	if err := m.SetSuperReadOnly(context.Background(), true); err != nil {
+		t.Fatalf("SetSuperReadOnly: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSemiSyncRuntimeVariablesUseDialectNaming(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// Version 11.4 would select source/replica naming via version.SemiSync();
+	// the dialect must also report source/replica spelling (MariaDB 10.5+).
+	m := NewManagerWithDialect(db, mustParse(t, "11.4.3"), sourceReplicaNamingDialect{})
+
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_replica_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_wait_for_replica_count = 2").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_timeout = 5000").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := m.EnableSemiSync(context.Background()); err != nil {
+		t.Fatalf("EnableSemiSync: %v", err)
+	}
+	if err := m.SetSemiSyncWaitForReplicaCount(context.Background(), 2); err != nil {
+		t.Fatalf("SetSemiSyncWaitForReplicaCount: %v", err)
+	}
+	if err := m.SetSemiSyncTimeoutMillis(context.Background(), 5000); err != nil {
+		t.Fatalf("SetSemiSyncTimeoutMillis: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)

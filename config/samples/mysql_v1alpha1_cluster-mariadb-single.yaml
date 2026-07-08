@@ -1,0 +1,19 @@
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  labels:
+    app.kubernetes.io/name: cnmsql
+    app.kubernetes.io/managed-by: kustomize
+  name: cluster-sample-mariadb-single
+spec:
+  flavor: mariadb
+  instances: 1
+  imageName: ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4
+  storage:
+    size: 10Gi
+  mysql:
+    binlogFormat: ROW
+  bootstrap:
+    initdb:
+      database: app
+      owner: app

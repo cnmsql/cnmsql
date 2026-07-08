@@ -22,6 +22,12 @@ import (
 
 // ImageCatalogSpec is the shared spec for ImageCatalog and ClusterImageCatalog.
 type ImageCatalogSpec struct {
+	// Flavor is the advisory engine flavor for the series in this catalog
+	// (mysql or mariadb). It is non-gating: a mismatch does not block
+	// resolution, but improves the admission error message.
+	// +optional
+	Flavor Flavor `json:"flavor,omitempty"`
+
 	// Images is the list of MySQL series to container image mappings. Each
 	// series must appear at most once.
 	// +kubebuilder:validation:MinItems=1

@@ -91,12 +91,36 @@ type InstanceController interface {
 	SetCommunicationProtocol(ctx context.Context, target string) error
 }
 
+// BackupResult carries values a backup stream can only report once the archive
+// has been fully produced. It travels to the caller as response trailers (see
+// backupHandler), since the response status/headers are already committed by the
+// time the archive body starts.
+type BackupResult struct {
+	// AnchorGTID is the GTID position of the base backup's consistent point,
+	// resolved on the source. Empty when not applicable (MySQL) or a genuinely
+	// empty anchor (backup at genesis).
+	AnchorGTID string
+	// AnchorServerUUID is the archive-partition identity of the incarnation the
+	// backup was streamed from. It lets a GTID-less recovery pick the anchor binlog
+	// when several incarnations number their binlogs from 000001. Empty for MySQL.
+	AnchorServerUUID string
+}
+
 // BackupStreamer streams a consistent physical backup (xbstream archive) to the
 // writer, used by a joining replica to clone this instance. It is optional: the
 // GET /cluster/backup route is only served when the controller implements it.
 type BackupStreamer interface {
-	BackupStream(ctx context.Context, w io.Writer) error
+	BackupStream(ctx context.Context, w io.Writer) (BackupResult, error)
 }
+
+// Response trailer names carrying a backup's post-stream result. Trailers (not
+// headers) because these are known only after the archive body is sent. They are
+// exported so the backup worker reads them off the stream response.
+const (
+	BackupAnchorGTIDTrailer   = "X-Cnmsql-Anchor-Gtid"
+	BackupAnchorServerTrailer = "X-Cnmsql-Anchor-Server"
+	BackupAnchorErrorTrailer  = "X-Cnmsql-Anchor-Error"
+)
 
 // Handler builds the http.Handler serving the instance control API. Exposing
 // the handler (rather than only a server) lets it be tested with httptest and
@@ -295,13 +319,29 @@ func configureReplicaHandler(controller InstanceController) http.HandlerFunc {
 
 // backupHandler streams an xbstream physical backup. Because the body is sent
 // incrementally, an error mid-stream cannot change the already-sent 200 status;
-// the truncated archive will simply fail to extract on the replica.
+// the truncated archive will simply fail to extract on the replica. Post-stream
+// results (the resolved anchor GTID, or the error that prevented resolving it) are
+// returned as response trailers, which is why the Trailer header is declared before
+// the body starts.
 func backupHandler(streamer BackupStreamer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-xbstream")
-		if err := streamer.BackupStream(r.Context(), w); err != nil {
-			// If nothing was written yet, this still surfaces as a 500.
+		w.Header().Set("Trailer",
+			BackupAnchorGTIDTrailer+", "+BackupAnchorServerTrailer+", "+BackupAnchorErrorTrailer)
+		result, err := streamer.BackupStream(r.Context(), w)
+		if err != nil {
+			// The body may already be (partly) sent, so the status can't change; the
+			// worker learns of the failure from the error trailer and fails the backup.
+			// If nothing was written yet, writeError still surfaces a 500.
+			w.Header().Set(BackupAnchorErrorTrailer, err.Error())
 			writeError(w, err)
+			return
+		}
+		if result.AnchorGTID != "" {
+			w.Header().Set(BackupAnchorGTIDTrailer, result.AnchorGTID)
+		}
+		if result.AnchorServerUUID != "" {
+			w.Header().Set(BackupAnchorServerTrailer, result.AnchorServerUUID)
 		}
 	}
 }

@@ -163,6 +163,9 @@ type ObservationInput struct {
 	GTIDByInstance    map[string]string
 	ConfiguredMembers int
 	ObservedViewMax   int
+	// EngineFlavor selects the GTID parser: "mysql" for UUID-based sets,
+	// "mariadb" for domain-based gtid_current_pos sets.
+	EngineFlavor string
 	// PriorDivergedInstances carries the divergence flags recorded in the last
 	// observed Cluster status. Divergence is sticky: a flagged instance is only
 	// cleared once positively proven re-converged against a live primary, so this

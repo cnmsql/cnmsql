@@ -27,6 +27,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
@@ -36,6 +37,9 @@ import (
 type InitOptions struct {
 	// MysqldPath is the mysqld binary (default "mysqld").
 	MysqldPath string
+	// Engine is the database engine (MySQL or MariaDB). When unset, the init
+	// binary defaults to MysqldPath (MySQL backward compatibility).
+	Engine engine.Engine
 	// Version is the MySQL server version (e.g. "8.0.36"). It selects the
 	// initialisation method and the bootstrap SQL dialect.
 	Version string
@@ -54,7 +58,17 @@ type InitOptions struct {
 
 func (o *InitOptions) applyDefaults() {
 	if o.MysqldPath == "" {
-		o.MysqldPath = defaultMysqldBinary
+		if o.Engine != nil {
+			o.MysqldPath = o.Engine.ServerdCommand()
+		} else {
+			o.MysqldPath = defaultMysqldBinary
+		}
+	} else if o.Engine != nil && o.MysqldPath == defaultMysqldBinary {
+		// The caller passed the default "mysqld" (e.g. the initdb command's flag
+		// default) but selected a non-MySQL engine; the temporary bootstrap
+		// server must run the engine's daemon (mariadbd). For MySQL this is a
+		// no-op since ServerdCommand() is also "mysqld".
+		o.MysqldPath = o.Engine.ServerdCommand()
 	}
 	if o.ReadyTimeout == 0 {
 		o.ReadyTimeout = 60 * time.Second
@@ -165,6 +179,15 @@ func Initialize(ctx context.Context, opts InitOptions) error {
 	if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
 		return fmt.Errorf("marking data directory as bootstrapped: %w", err)
 	}
+	// MariaDB partitions the binlog archive by a persisted per-incarnation token
+	// rather than @@server_id (which is config-assigned and reused across a re-init).
+	// A fresh --initialize starts a new incarnation, so mint the token here. MySQL
+	// needs no action: --initialize already generated a unique auto.cnf/server_uuid.
+	if opts.Engine != nil && opts.Engine.Flavor() == engine.FlavorMariaDB {
+		if _, err := EnsureArchiveID(opts.DataDir); err != nil {
+			return fmt.Errorf("initializing archive identity: %w", err)
+		}
+	}
 	log.Info("Completed data directory initialization")
 	return nil
 }
@@ -202,15 +225,13 @@ func (o *InitOptions) runInitialize(ctx context.Context) error {
 	return o.runMysqldInitialize(ctx)
 }
 
-// runMysqldInitialize runs `mysqld --initialize-insecure`.
+// runMysqldInitialize runs the engine-appropriate init binary with
+// flavor-specific arguments.
 func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
-	logf.FromContext(ctx).WithName("instance-initdb").Info("Running mysqld initialize", "binary", o.MysqldPath)
+	initBinary := o.initBinary()
+	logf.FromContext(ctx).WithName("instance-initdb").Info("Initializing data directory", "binary", initBinary)
 	args := []string{}
 	if o.ConfigFile != "" {
-		// --initialize ignores plugin_load_add, so group_replication.so is never
-		// loaded and the group_replication_* settings become unknown variables
-		// that abort initialization. Feed mysqld a copy of the config with the GR
-		// block stripped out (it is meaningless during --initialize anyway).
 		initConfig, err := o.writeInitConfig()
 		if err != nil {
 			return err
@@ -218,11 +239,28 @@ func (o *InitOptions) runMysqldInitialize(ctx context.Context) error {
 		defer func() { _ = os.Remove(initConfig) }()
 		args = append(args, "--defaults-file="+initConfig)
 	}
-	args = append(args,
+	args = append(args, o.initArgs()...)
+	return runStdio(ctx, initBinary, args, initBinary+" initialize")
+}
+
+// initBinary returns the binary used to initialize a fresh data directory.
+func (o *InitOptions) initBinary() string {
+	if o.Engine != nil {
+		return o.Engine.InitBinary()
+	}
+	return o.MysqldPath
+}
+
+// initArgs returns the flavor-appropriate data directory initialization
+// arguments.
+func (o *InitOptions) initArgs() []string {
+	if o.Engine != nil {
+		return o.Engine.InitDataDirArgs(o.DataDir)
+	}
+	return []string{
 		"--initialize-insecure",
-		"--datadir="+o.DataDir,
-	)
-	return runStdio(ctx, o.MysqldPath, args, "mysqld --initialize-insecure")
+		"--datadir=" + o.DataDir,
+	}
 }
 
 // writeInitConfig writes a temporary copy of the runtime config with the Group
@@ -281,8 +319,27 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 		// both off on the command line so the temporary server is writable
 		// regardless of the member's eventual role.
 		"--read-only=OFF",
-		"--super-read-only=OFF",
 	)
+	// Suppress the binary log for the bootstrap SQL. The config file enables
+	// log_bin, so without this the CREATE USER / ALTER USER statements would be
+	// written to the binlog as the cluster's very first transactions. Those then
+	// get archived and, during a later point-in-time recovery, replayed into a
+	// temporary server started with --skip-grant-tables, where account-management
+	// statements fail with ER_OPTION_PREVENTS_STATEMENT (ERROR 1290). Bootstrap
+	// must lay down the accounts on disk only, never on the replication timeline.
+	// (reconcileCredentials guards the same way for the restore-side reset.)
+	//
+	// MariaDB only: PITR replay is a MariaDB-only path, so only MariaDB needs the
+	// bootstrap statements kept off the timeline. MySQL must NOT get this flag: its
+	// rendered config always sets log_replica_updates=ON, which MySQL 8.0 refuses to
+	// honor without binary logging, aborting the temporary server at startup (and
+	// MySQL never runs the --skip-grant-tables replay this guards against anyway).
+	if o.Engine != nil && o.Engine.Flavor() == engine.FlavorMariaDB {
+		args = append(args, "--skip-log-bin")
+	}
+	if o.Engine == nil || o.Engine.HasSuperReadOnly() {
+		args = append(args, "--super-read-only=OFF")
+	}
 
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))
 	sup := NewProcessSupervisor(o.MysqldPath, args,

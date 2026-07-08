@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -83,6 +84,11 @@ func ParseRetentionPolicy(policy string) (time.Duration, error) {
 var gtidSetSyntaxRe = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+(-[0-9]+)?(:[0-9]+(-[0-9]+)?)*` +
 		`(,[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+(-[0-9]+)?(:[0-9]+(-[0-9]+)?)*)*$`)
+
+// mariadbGTIDSetSyntaxRe matches a MariaDB GTID set: one or more comma-separated
+// "<domain>-<server>-<seq>" terms, each component being an unsigned integer.
+var mariadbGTIDSetSyntaxRe = regexp.MustCompile(
+	`^[0-9]+-[0-9]+-[0-9]+(,[0-9]+-[0-9]+-[0-9]+)*$`)
 
 // SetDefaults fills in the unset fields of the Cluster spec with their default
 // values. It is idempotent. Defaults declared via kubebuilder markers are
@@ -223,6 +229,7 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateManagedServices(specPath.Child("managed", "services"))...)
 	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
 	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
+	allErrs = append(allErrs, spec.validateFlavor(specPath)...)
 
 	return allErrs
 }
@@ -232,7 +239,16 @@ func (cluster *Cluster) Validate() field.ErrorList {
 // which the caller still runs for field-level checks.
 func (cluster *Cluster) ValidateUpdate(old *Cluster) field.ErrorList {
 	var allErrs field.ErrorList
-	path := field.NewPath("spec", "replication")
+	specPath := field.NewPath("spec")
+
+	flavorPath := specPath.Child("flavor")
+	if old.ResolvedFlavor() != cluster.ResolvedFlavor() {
+		allErrs = append(allErrs, field.Invalid(
+			flavorPath, cluster.ResolvedFlavor(),
+			"flavor is immutable"))
+	}
+
+	path := specPath.Child("replication")
 
 	// replication.mode is immutable: switching topology on a live cluster is a
 	// data-path change that cannot be done safely in place.
@@ -280,7 +296,8 @@ func (cluster *Cluster) validateSeriesUpgrade(old *Cluster) field.ErrorList {
 				oldSeries.Major, oldSeries.Minor, newSeries.Major, newSeries.Minor)))
 		return allErrs
 	}
-	if err := version.CheckUpgrade(oldSeries, newSeries); err != nil {
+	eng := engine.MustForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
+	if err := eng.CheckUpgrade(oldSeries, newSeries); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("imageCatalogRef", "series"), cluster.Spec.ImageCatalogRef.Series, err.Error()))
 	}
@@ -324,6 +341,14 @@ func (cluster *Cluster) ReplicationMode() string {
 		return ReplicationModeAsync
 	}
 	return cluster.Spec.Replication.Mode
+}
+
+// ResolvedFlavor returns the effective engine flavor, defaulting to mysql.
+func (cluster *Cluster) ResolvedFlavor() Flavor {
+	if cluster.Spec.Flavor == "" {
+		return FlavorMySQL
+	}
+	return cluster.Spec.Flavor
 }
 
 // groupName returns the group name pinned in the spec, if any.
@@ -398,8 +423,8 @@ var groupNameRe = regexp.MustCompile(
 
 // validateReplication checks the replication topology selection: Group
 // Replication is incompatible with semi-synchronous replication, a pinned group
-// name must be a UUID, and the groupReplication tuning block is only meaningful
-// when the mode selects it.
+// name must be a UUID, MariaDB does not support Group Replication, and the
+// groupReplication tuning block is only meaningful when the mode selects it.
 func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 	if spec.Replication == nil {
@@ -409,6 +434,12 @@ func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 	mode := spec.Replication.Mode
 	if mode == "" {
 		mode = ReplicationModeAsync
+	}
+
+	if mode == ReplicationModeGroupReplication && spec.Flavor == FlavorMariaDB {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("mode"), mode,
+			"group replication is not supported with flavor mariadb"))
 	}
 
 	if mode != ReplicationModeGroupReplication {
@@ -450,6 +481,43 @@ func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 				fmt.Sprintf("group replication requires MySQL 8.0+, but the image catalog targets series %s",
 					spec.ImageCatalogRef.Series)))
 		}
+	}
+
+	return allErrs
+}
+
+// validateFlavor checks cross-field flavor constraints: a MariaDB flavor cannot
+// target a MySQL series (major 8 or 9), and a MySQL flavor cannot target a
+// MariaDB series (major >= 10).
+func (spec *ClusterSpec) validateFlavor(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	flavor := spec.Flavor
+	if flavor == "" {
+		flavor = FlavorMySQL
+	}
+
+	series, ok := spec.targetSeries()
+	if !ok {
+		return allErrs
+	}
+
+	// The flavor/series split is hardcoded on the major version rather than
+	// derived from engine.UpgradeChain()/Series (the plan's preferred source of
+	// truth) because the MariaDB engine still delegates to the MySQL chain until
+	// M-MDB.3 lands the real one; consulting it now would give wrong answers.
+	// TODO(M-MDB.3): switch to the engine chain once MariaDB has its own.
+	isMySQLSeries := series.Major == 8 || series.Major == 9
+	isMariaDBSeries := series.Major >= 10
+
+	switch {
+	case flavor == FlavorMariaDB && isMySQLSeries:
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("flavor"), flavor,
+			fmt.Sprintf("series %d.%d is a MySQL series and is incompatible with flavor mariadb", series.Major, series.Minor)))
+	case flavor == FlavorMySQL && isMariaDBSeries:
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("flavor"), flavor,
+			fmt.Sprintf("series %d.%d is a MariaDB series and is incompatible with flavor mysql", series.Major, series.Minor)))
 	}
 
 	return allErrs
@@ -663,10 +731,18 @@ func (spec *ClusterSpec) validateRecovery(path *field.Path) field.ErrorList {
 				"must be an RFC3339 timestamp"))
 		}
 	}
-	if target.TargetGTID != "" && !gtidSetSyntaxRe.MatchString(target.TargetGTID) {
-		allErrs = append(allErrs, field.Invalid(
-			tPath.Child("targetGTID"), target.TargetGTID,
-			"must be a valid GTID set (e.g. \"uuid:1-100\")"))
+	if target.TargetGTID != "" {
+		valid := spec.Flavor == FlavorMariaDB && mariadbGTIDSetSyntaxRe.MatchString(target.TargetGTID) ||
+			spec.Flavor != FlavorMariaDB && gtidSetSyntaxRe.MatchString(target.TargetGTID)
+		if !valid {
+			example := "uuid:1-100"
+			if spec.Flavor == FlavorMariaDB {
+				example = "0-1-16"
+			}
+			allErrs = append(allErrs, field.Invalid(
+				tPath.Child("targetGTID"), target.TargetGTID,
+				"must be a valid GTID set (e.g. \""+example+"\")"))
+		}
 	}
 	return allErrs
 }

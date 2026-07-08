@@ -98,16 +98,38 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 	// Every replica is provisioned and up to date. Roll the primary last, but only
 	// while the whole cluster is ready, so the primary is never taken down with a
 	// replica still unavailable.
-	if ordinal, ok := instanceOrdinal(cluster, primaryName); ok && observed.Ready {
-		rolled, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), true)
+	ordinal, ok := instanceOrdinal(cluster, primaryName)
+	if !ok {
+		return true, nil
+	}
+	pendingRoll, err := r.instancePendingRoll(ctx, cluster, plan, plan.instanceFor(cluster, ordinal))
+	if err != nil {
+		return false, err
+	}
+	if !pendingRoll {
+		// Nothing left to do: the primary is on the current template.
+		return true, nil
+	}
+	if observed.Ready {
+		// observed.Ready is the pre-pass snapshot: a replica rolled in an earlier pass
+		// keeps its Ready condition through graceful termination, so it still reads
+		// Ready here. Re-verify every replica live before taking the primary down —
+		// otherwise the primary and a still-terminating replica are down at once and
+		// the group loses quorum (the exact race instanceFullyReady guards for the
+		// replica-to-replica step, applied here to the primary-last step).
+		replicasReady, err := r.replicasFullyReady(ctx, cluster, plan, observed, primaryName)
 		if err != nil {
 			return false, err
 		}
-		if rolled {
-			return false, nil
+		if replicasReady {
+			if _, err := r.ensureInstance(ctx, cluster, plan, plan.instanceFor(cluster, ordinal), true); err != nil {
+				return false, err
+			}
 		}
 	}
-	return true, nil
+	// The primary still owes a roll (replicas not all live-ready, the cluster is not
+	// ready, or the roll was just issued): work remains, so we are not provisioned.
+	return false, nil
 }
 
 // gateInstance decides whether reconciliation may proceed to instance i (i > 1).
@@ -254,6 +276,58 @@ func (r *ClusterReconciler) instanceFullyReady(ctx context.Context, cluster *mys
 		return memberOnline(observed.GroupReplication, inst.Name), nil
 	}
 	return true, nil
+}
+
+// replicasFullyReady reports whether every non-primary instance is fully ready,
+// re-reading each Pod live (via instanceFullyReady) rather than trusting the
+// pre-pass observation. It gates the primary-last roll: a replica rolled in an
+// earlier pass keeps its Ready condition while its Pod terminates gracefully, so
+// the stale snapshot alone would let the primary be deleted with that replica
+// still down, dropping the group below quorum.
+func (r *ClusterReconciler) replicasFullyReady(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed observedCluster, primaryName string) (bool, error) {
+	for i := 1; i <= plan.Instances; i++ {
+		inst := plan.instanceFor(cluster, i)
+		if inst.Name == primaryName {
+			continue
+		}
+		ready, err := r.instanceFullyReady(ctx, cluster, observed, inst)
+		if err != nil {
+			return false, err
+		}
+		if !ready {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// instancePendingRoll reports whether the instance's live Pod carries a stale pod
+// template hash — a template change (config, seed, scale, restart) that a later
+// pass must apply by recreating the Pod. It reads the Pod without mutating it
+// (mirroring the hash comparison ensurePod makes), so the caller can gate
+// provisioned-completion on a primary roll that is still deferred: the primary is
+// rolled last, and while its replicas are not all live-ready the roll cannot yet
+// proceed, but the work is not done and reconcileInstances must not report
+// provisioned.
+func (r *ClusterReconciler) instancePendingRoll(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) (bool, error) {
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if pod.DeletionTimestamp != nil {
+		// Already being recreated: the roll is in flight, not pending a decision.
+		return false, nil
+	}
+	labels := labelsFor(cluster, inst.Name, roleOf(inst))
+	spec := r.podSpec(cluster, plan, inst)
+	annotations, err := r.podAnnotations(cluster, plan, inst, labels, spec)
+	if err != nil {
+		return false, err
+	}
+	return pod.Annotations[podTemplateHashAnnotation] != annotations[podTemplateHashAnnotation], nil
 }
 
 // memberOnline reports whether the named instance is ONLINE in the group view.

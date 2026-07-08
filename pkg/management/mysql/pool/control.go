@@ -16,7 +16,7 @@ limitations under the License.
 
 package pool
 
-import "github.com/cnmsql/cnmsql/pkg/management/mysql/version"
+const defaultAdminAddress = "127.0.0.1"
 
 // ControlParams describes how the instance manager reaches its local mysqld for
 // control and monitoring.
@@ -41,17 +41,17 @@ type ControlParams struct {
 // servers it falls back to the unix socket and relies on the reserved
 // privileged connection slot. Either way the pool is capped at a single
 // connection so that reserved slot is never wasted.
-func ControlConfig(v version.Version, p ControlParams) Config {
+func ControlConfig(hasAdminInterface bool, p ControlParams) Config {
 	cfg := Config{
 		User:         p.User,
 		Password:     p.Password,
 		MaxOpenConns: 1,
 	}
 
-	if v.HasAdminInterface() {
+	if hasAdminInterface {
 		addr := p.AdminAddress
 		if addr == "" {
-			addr = "127.0.0.1"
+			addr = defaultAdminAddress
 		}
 		port := p.AdminPort
 		if port == 0 {

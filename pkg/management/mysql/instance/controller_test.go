@@ -26,6 +26,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -41,7 +42,7 @@ func newControllerWithRole(t *testing.T, role webserver.Role, sup Supervisor) (*
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	c, err := NewController("cluster-1", db, "8.0.36", role, sup)
+	c, err := NewController("cluster-1", db, "8.0.36", role, sup, engine.MustForFlavor(engine.FlavorMySQL))
 	if err != nil {
 		t.Fatalf("NewController: %v", err)
 	}
@@ -429,7 +430,8 @@ func TestNewControllerRejectsBadVersion(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil); err == nil {
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	if _, err := NewController("x", db, "not-a-version", webserver.RoleUnknown, nil, eng); err == nil {
 		t.Error("expected error for invalid version")
 	}
 }
@@ -500,6 +502,7 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
 	mock.ExpectQuery("SELECT @@GLOBAL.super_read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	mock.ExpectExec("SET SESSION SQL_LOG_BIN=0").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = OFF").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL read_only = OFF").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSTALL PLUGIN rpl_semi_sync_source").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -508,13 +511,30 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 	mock.ExpectExec("SET GLOBAL rpl_semi_sync_replica_enabled = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_wait_for_replica_count = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_timeout = 10000").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET SESSION SQL_LOG_BIN=1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	err := configureSemiSync(ctx, c.repl, RunOptions{
 		SemiSyncWaitCount:     1,
 		SemiSyncTimeoutMillis: 10000,
-	})
+	}, engine.MustForFlavor(engine.FlavorMySQL))
+	if err != nil {
+		t.Fatalf("configureSemiSync: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestConfigureSemiSyncNoopForBuiltinEngine(t *testing.T) {
+	c, mock := newController(t, nil)
+	ctx := context.Background()
+
+	err := configureSemiSync(ctx, c.repl, RunOptions{
+		SemiSyncWaitCount:     1,
+		SemiSyncTimeoutMillis: 10000,
+	}, engine.MustForFlavor(engine.FlavorMariaDB))
 	if err != nil {
 		t.Fatalf("configureSemiSync: %v", err)
 	}

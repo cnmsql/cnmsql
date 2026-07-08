@@ -152,16 +152,22 @@ func (f *fakeController) SetCommunicationProtocol(_ context.Context, target stri
 // backupController is an InstanceController that also streams a backup.
 type backupController struct {
 	fakeController
-	payload string
-	err     error
+	payload      string
+	anchorGTID   string
+	anchorServer string
+	err          error
 }
 
-func (b *backupController) BackupStream(_ context.Context, w io.Writer) error {
-	if b.err != nil {
-		return b.err
+func (b *backupController) BackupStream(_ context.Context, w io.Writer) (BackupResult, error) {
+	// Write any payload first so an accompanying error models a post-stream failure
+	// (200 already committed), which is exactly when the error trailer matters.
+	if b.payload != "" {
+		_, _ = io.WriteString(w, b.payload)
 	}
-	_, _ = io.WriteString(w, b.payload)
-	return nil
+	if b.err != nil {
+		return BackupResult{}, b.err
+	}
+	return BackupResult{AnchorGTID: b.anchorGTID, AnchorServerUUID: b.anchorServer}, nil
 }
 
 func TestBackupRouteOnlyWhenStreamerImplemented(t *testing.T) {
@@ -187,6 +193,52 @@ func TestBackupRouteOnlyWhenStreamerImplemented(t *testing.T) {
 	herr := Handler(&backupController{err: errors.New("xtrabackup failed")})
 	if rec := do(t, herr, http.MethodGet, "/cluster/backup"); rec.Code != http.StatusInternalServerError {
 		t.Errorf("failed backup = %d, want 500", rec.Code)
+	}
+}
+
+func TestBackupAnchorTrailers(t *testing.T) {
+	// A successful backup reports the resolved anchor GTID as a response trailer,
+	// read after the body is drained (as the backup worker does).
+	srv := httptest.NewServer(Handler(&backupController{
+		payload: "xbstream", anchorGTID: "0-1-42", anchorServer: "uuid-a",
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/cluster/backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Trailer.Get(BackupAnchorGTIDTrailer); got != "0-1-42" {
+		t.Errorf("anchor GTID trailer = %q, want %q", got, "0-1-42")
+	}
+	if got := resp.Trailer.Get(BackupAnchorServerTrailer); got != "uuid-a" {
+		t.Errorf("anchor server trailer = %q, want %q", got, "uuid-a")
+	}
+	if got := resp.Trailer.Get(BackupAnchorErrorTrailer); got != "" {
+		t.Errorf("unexpected error trailer = %q", got)
+	}
+
+	// A resolution failure surfaces as the error trailer, so the worker can fail the
+	// backup even though the 200 status was already committed with the streamed body.
+	srvErr := httptest.NewServer(Handler(&backupController{
+		payload: "partial", err: errors.New("resolving anchor GTID failed"),
+	}))
+	defer srvErr.Close()
+
+	respErr, err := http.Get(srvErr.URL + "/cluster/backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = respErr.Body.Close() }()
+	if _, err := io.Copy(io.Discard, respErr.Body); err != nil {
+		t.Fatal(err)
+	}
+	if got := respErr.Trailer.Get(BackupAnchorErrorTrailer); got == "" {
+		t.Errorf("expected an error trailer, got none")
 	}
 }
 

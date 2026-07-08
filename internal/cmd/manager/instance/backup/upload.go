@@ -28,6 +28,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 // uploadOptions configures the backup worker that streams a physical backup
@@ -117,24 +118,36 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	}
 	completedAt := time.Now().UTC()
 
+	// The archive body is fully drained, so the source's post-stream trailers are
+	// now populated. A resolution error means the source could not produce a
+	// well-specified anchor; fail the backup so it is retried rather than shipping a
+	// backup that would replay from genesis at recovery time.
+	if anchorErr := resp.Trailer.Get(webserver.BackupAnchorErrorTrailer); anchorErr != "" {
+		return fmt.Errorf("backup: source failed to resolve anchor GTID: %s", anchorErr)
+	}
+	anchorGTID := resp.Trailer.Get(webserver.BackupAnchorGTIDTrailer)
+	anchorServer := resp.Trailer.Get(webserver.BackupAnchorServerTrailer)
+
 	checksum := ""
 	if opts.SHA256 {
 		checksum = reader.SumHex()
 	}
-	log.Info("Backup archive uploaded", "bytes", reader.Count(), "sha256", checksum)
+	log.Info("Backup archive uploaded", "bytes", reader.Count(), "sha256", checksum, "anchorGTID", anchorGTID)
 
 	metadata := objectstore.BackupMetadata{
-		BackupID:     opts.BackupID,
-		ClusterName:  opts.ClusterName,
-		BackupName:   opts.BackupName,
-		InstanceName: opts.InstanceName,
-		Method:       "xtrabackup",
-		ArchiveKey:   opts.ArchiveKey,
-		Compressed:   opts.Compress,
-		SizeBytes:    reader.Count(),
-		SHA256:       checksum,
-		StartedAt:    startedAt,
-		CompletedAt:  completedAt,
+		BackupID:         opts.BackupID,
+		ClusterName:      opts.ClusterName,
+		BackupName:       opts.BackupName,
+		InstanceName:     opts.InstanceName,
+		Method:           "xtrabackup",
+		ArchiveKey:       opts.ArchiveKey,
+		Compressed:       opts.Compress,
+		SizeBytes:        reader.Count(),
+		SHA256:           checksum,
+		AnchorGTID:       anchorGTID,
+		AnchorServerUUID: anchorServer,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
 	}
 	log.Info("Writing backup metadata")
 	if err := store.PutJSON(ctx, opts.Bucket, opts.MetadataKey, metadata); err != nil {

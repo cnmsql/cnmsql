@@ -26,6 +26,8 @@ TIMEOUT="${GINKGO_TIMEOUT:-120m}"
 
 K8S="${K8S_VERSION:-}"
 MYSQL="${E2E_MYSQL_VERSION:-}"
+MARIADB="${E2E_MARIADB_VERSION:-}"
+MARIADB_FLAG=false
 FOCUS="${E2E_FOCUS:-}"
 LABEL=""                       # set only by --label
 TIER=""                        # set only by --tier
@@ -54,19 +56,15 @@ Flags:
                      Set GINKGO_EXTRA_ARGS for extra ginkgo flags
                      (e.g. --repeat=2, --until-it-fails, --allow-empty).
   --k8s <version>    kindest/node version, e.g. v1.36.1   (sets K8S_VERSION).
-  --mysql <version>  Pin one MySQL flavor: 8.0 | 8.4 | 9.x (sets E2E_MYSQL_VERSION).
-  --procs <N>        Parallel Ginkgo processes (default: auto from CPU/RAM, capped at 3).
-  --junit <path>     Write a JUnit report to <path>.
-  --keep             Do not delete the Kind cluster afterwards (fast inner loop).
-  --fresh            Delete and recreate the Kind cluster before running.
-  --dry-run          Print the resolved plan (cluster/procs/labels/ginkgo args) and exit.
-  -h, --help         Show this help.
+		--mysql <version>  Pin one MySQL flavor: 8.0 | 8.4 | 9.x (sets E2E_MYSQL_VERSION).
+		--mariadb          Run the MariaDB e2e lane (sets label filter to 'mariadb').
 
 Examples:
-  hack/e2e.sh                              # whole suite, auto-sized, hermetic
-  hack/e2e.sh --tier smoke                 # critical path only, fast
-  hack/e2e.sh --focus 'switchover' --keep  # iterate on one spec, reuse cluster
-  hack/e2e.sh --mysql 9.x --tier flavor    # version-sensitive specs on 9.x
+		hack/e2e.sh                              # whole suite, auto-sized, hermetic
+		hack/e2e.sh --tier smoke                 # critical path only, fast
+		hack/e2e.sh --focus 'switchover' --keep  # iterate on one spec, reuse cluster
+		hack/e2e.sh --mysql 9.x --tier flavor    # version-sensitive specs on 9.x
+		hack/e2e.sh --mariadb --tier flavor      # MariaDB e2e specs
 EOF
 }
 
@@ -79,7 +77,8 @@ while [[ $# -gt 0 ]]; do
 	--label) LABEL="$2"; shift 2 ;;
 	--tier) TIER="$2"; shift 2 ;;
 	--k8s) K8S="$2"; shift 2 ;;
-	--mysql) MYSQL="$2"; shift 2 ;;
+		--mysql) MYSQL="$2"; shift 2 ;;
+		--mariadb) MARIADB_FLAG=true; shift ;;
 	--procs) PROCS="$2"; shift 2 ;;
 	--junit) JUNIT="$2"; shift 2 ;;
 	--keep) KEEP=true; shift ;;
@@ -107,6 +106,19 @@ if [[ -z "$LABEL" ]]; then
 		esac
 	elif [[ -n "$ENV_LABEL" ]]; then
 		LABEL="$ENV_LABEL"
+	fi
+fi
+
+# --mariadb adds the mariadb label constraint to any existing filter and defaults
+# E2E_MARIADB_VERSION to "11.4" when no explicit version is set.
+if [[ "$MARIADB_FLAG" == true ]]; then
+	if [[ -n "$LABEL" ]]; then
+		LABEL="$LABEL && mariadb"
+	else
+		LABEL="mariadb"
+	fi
+	if [[ -z "$MARIADB" ]]; then
+		MARIADB="11.4"
 	fi
 fi
 
@@ -146,10 +158,10 @@ fi
 # Export the knobs the suite and the make targets read.
 # ---------------------------------------------------------------------------
 export KIND KIND_CLUSTER="$CLUSTER" E2E_MANAGER_IMAGE="$MANAGER_IMAGE"
-export K8S_VERSION="$K8S" E2E_MYSQL_VERSION="$MYSQL"
+export K8S_VERSION="$K8S" E2E_MYSQL_VERSION="$MYSQL" E2E_MARIADB_VERSION="$MARIADB"
 export E2E_SKIP_IMAGE_BUILD=true
 
-echo "==> e2e: cluster=$CLUSTER procs=$PROCS k8s=${K8S:-default} mysql=${MYSQL:-default} label='${LABEL:-<all>}' focus='${FOCUS:-<none>}'"
+echo "==> e2e: cluster=$CLUSTER procs=$PROCS k8s=${K8S:-default} mysql=${MYSQL:-default} mariadb=${MARIADB:-false} label='${LABEL:-<all>}' focus='${FOCUS:-<none>}'"
 
 # Assemble the ginkgo arguments up front so --dry-run can show the exact plan.
 args=(-procs="$PROCS" -tags=e2e --timeout="$TIMEOUT" -v)
