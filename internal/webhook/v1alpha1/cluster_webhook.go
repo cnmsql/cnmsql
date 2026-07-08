@@ -53,6 +53,12 @@ func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
 			Handler: &ClusterSpecValidator{Decoder: admission.NewDecoder(mgr.GetScheme())},
 		},
 	)
+	mgr.GetWebhookServer().Register(
+		"/validate--v1-pod",
+		&admission.Webhook{
+			Handler: &InstancePodValidator{Decoder: admission.NewDecoder(mgr.GetScheme())},
+		},
+	)
 	return nil
 }
 

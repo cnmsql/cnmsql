@@ -47,6 +47,8 @@ namespaceSelector:
       values: [tenant-a]
 ```
 
+The same applies to the [instance Pod webhook](./security-model.md#instance-pod-admission-webhook). It matches instance Pods by their `mysql.cnmsql.co/cluster` label across every namespace, so in namespaced mode it gets the same `namespaceSelector` and only fires for Pods in its own namespace.
+
 ## Selecting the mode
 
 ### WATCH_NAMESPACE

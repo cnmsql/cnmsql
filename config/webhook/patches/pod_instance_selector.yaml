@@ -1,0 +1,12 @@
+# Bound the instance-Pod validating webhook to Pods this operator owns. The
+# webhook uses failurePolicy: Fail, so without this selector a webhook outage
+# would reject UPDATE on EVERY Pod in the cluster. With it, the blast radius of
+# an outage is limited to the operator's own instance Pods (which carry the
+# mysql.cnmsql.co/cluster label) — and when the webhook is down the operator,
+# the main writer of those Pods, is almost certainly down too.
+- op: add
+  path: /webhooks/2/objectSelector
+  value:
+    matchExpressions:
+    - key: mysql.cnmsql.co/cluster
+      operator: Exists

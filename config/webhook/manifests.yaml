@@ -62,4 +62,22 @@ webhooks:
     - UPDATE
     resources:
     - databaseusers
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate--v1-pod
+  failurePolicy: Fail
+  name: vinstancepod-v1alpha1.cnmsql.co
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - UPDATE
+    resources:
+    - pods
   sideEffects: None

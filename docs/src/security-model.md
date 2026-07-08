@@ -138,6 +138,13 @@ RoleBinding. The Role grants:
 - `get`, `update`, `patch` on the Cluster status;
 - lease operations for the primary lease.
 
+Under Group Replication each instance additionally gets its own
+`<cluster>-<ordinal>-gr-doorbell` Role granting `get`/`patch` on **only its
+own Pod** (via `resourceNames`), so it can ring the operator's group-view
+doorbell. RBAC therefore already prevents an instance from patching another
+instance's Pod; the [instance Pod admission webhook](#instance-pod-admission-webhook)
+adds the field-level restriction RBAC cannot express.
+
 On scale-down, the controller prunes ServiceAccounts for removed instances
 so the identity cannot be reused later.
 
@@ -164,6 +171,35 @@ status:
 
 Non-instance callers (operator ServiceAccount, human users) bypass the
 webhook and are subject to normal Kubernetes RBAC only.
+
+### Instance Pod admission webhook
+
+Under Group Replication an instance rings a doorbell on its own Pod by
+setting an annotation, which needs `patch` on the Pod. `resourceNames` in
+RBAC scopes that to the instance's *own* Pod, but RBAC cannot restrict
+*which fields* the patch touches. A compromised instance could otherwise
+swap its own container image, inject an ephemeral container, hijack labels,
+or forge operator-trusted annotations. A second validating webhook at
+`/validate--v1-pod` closes that gap:
+
+- **Caller identification**: same instance-identity parsing as the status
+  webhook; non-instance callers (operator, kubelet, humans) are admitted
+  and left to normal RBAC.
+- **Own-Pod check**: an instance identity may only be recognised for the
+  Pod bearing its own name. This sits behind RBAC `resourceNames` as
+  defence in depth.
+- **Field mask**: the Pod `spec`, `labels`, `ownerReferences`, and
+  `finalizers` must be unchanged. The only permitted annotation deltas are
+  the Group Replication doorbell `mysql.cnmsql.co/gr-observed` (freely
+  writable) and *clearing* the operator-issued `force-quorum-members` /
+  `force-group-rebootstrap` commands. Setting those force commands is
+  denied, so an instance cannot self-trigger a quorum-force or group
+  re-bootstrap.
+- **Scope**: registered for the `pods` resource only (never `pods/status`),
+  so the kubelet's status heartbeats never reach it.
+- **Failure policy**: `Fail`, but bounded by an `objectSelector` on the
+  `mysql.cnmsql.co/cluster` label so a webhook outage can only block updates
+  to the operator's own instance Pods, not every Pod in the cluster.
 
 ## Object-store credentials
 
@@ -238,6 +274,16 @@ The webhook is registered only for the `status` subresource. Any
 instance-originated write to the main Cluster resource or other
 subresources is denied.
 
+#### Instance cannot escalate through its own Pod
+
+An instance holds `patch` on its own Pod to ring the group-view doorbell.
+The [instance Pod webhook](#instance-pod-admission-webhook) restricts that
+patch to the doorbell and force-command-clear annotations, deep-comparing
+the rest of the Pod. A compromised instance therefore cannot swap its
+container image, add an ephemeral container, hijack labels or
+ownerReferences, inject a finalizer, forge an operator-trusted annotation,
+or self-issue a `force-*` command to fork the group.
+
 #### Scaled-down identities are removed
 
 A ServiceAccount for an instance that no longer exists (cluster scaled
@@ -276,6 +322,7 @@ mapping.
 |-------|-----------|-------|
 | Kubernetes RBAC | Per-instance ServiceAccounts; single Role per Cluster | API access |
 | Admission webhook | Field-level status validation for instance identities | Status write integrity |
+| Admission webhook | Field-level Pod validation for instance identities | Instance Pod spec/metadata integrity |
 | Owner references | All RBAC resources and SAs are owned by the Cluster CR | Garbage collection on delete |
 | TLS mTLS | Mutual TLS between operator and instance manager | Control-plane channel |
 | MySQL TLS | Replication requires X509 | Replication channel |
