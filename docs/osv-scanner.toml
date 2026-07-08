@@ -1,0 +1,9 @@
+# OSV Scanner configuration.
+#
+# The docs/ directory is a Docusaurus documentation site. Its package-lock.json
+# and node_modules are build-time-only tooling used to render the docs and are
+# never shipped in the operator, plugin, or container images. Exclude the whole
+# path so its npm advisories don't count against the project.
+[[PackageOverrides]]
+ignore = true
+reason = "Docusaurus docs site: build-time-only tooling, not shipped in any released artifact."
