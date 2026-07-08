@@ -59,7 +59,7 @@ type ScheduledBackupReconciler struct {
 
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=scheduledbackups,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=scheduledbackups/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -75,16 +75,23 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	scheduledBackup.SetDefaults()
 
+	// Retention GC runs on every pass, before the suspend/concurrency short-circuits:
+	// suspending a schedule stops new backups but should still bound the ones it
+	// already created, matching Kubernetes CronJob history-limit semantics.
+	children, err := r.getChildBackups(ctx, scheduledBackup)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.reconcileBackupGC(ctx, scheduledBackup, children); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if scheduledBackup.IsSuspended() {
 		log.Info("Skipping ScheduledBackup as it is suspended")
 		return ctrl.Result{}, nil
 	}
 
 	// Concurrency guard: never overlap backups for the same ScheduledBackup.
-	children, err := r.getChildBackups(ctx, scheduledBackup)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
 	for i := range children {
 		if !backupIsDone(&children[i]) {
 			log.Info("A child Backup is still running, retrying in 60 seconds",

@@ -1,6 +1,6 @@
 ---
 title: "Backup Retention and Deletion"
-description: "Current Backup deletion behavior, ScheduledBackup owner references, object-store cleanup, and planned retention GC."
+description: "Backup deletion behavior, ScheduledBackup owner references, object-store cleanup, Cluster retention GC, and ScheduledBackup object retention."
 sidebar_position: 12
 ---
 
@@ -184,9 +184,54 @@ archive.
 ### What it does not do
 
 - It does **not** delete `Backup` Kubernetes objects, only object-store
-  artifacts. Pruning expired `Backup` CRs stays the scheduler/owner-ref's job.
-- Count-based retention (keep N backups) is not supported; the policy is purely
-  time-based.
+  artifacts. Pruning expired `Backup` CRs is the scheduler's job; see
+  [ScheduledBackup retention](#scheduledbackup-retention-backup-objects) below.
+- It is purely time-based. Count-based bounds live on the ScheduledBackup, not on
+  the Cluster policy.
+
+## ScheduledBackup retention (Backup objects)
+
+The Cluster `retentionPolicy` above bounds object-store *bytes*. It says nothing
+about the `Backup` Kubernetes objects a `ScheduledBackup` creates, which otherwise
+accumulate one-per-slot forever. A ScheduledBackup bounds its own Backup objects
+with three opt-in knobs:
+
+```yaml
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: ScheduledBackup
+metadata:
+  name: nightly
+spec:
+  schedule: "0 0 2 * * *"
+  cluster:
+    name: my-cluster
+  successfulBackupsHistoryLimit: 7   # keep the 7 newest completed Backups
+  failedBackupsHistoryLimit: 3       # keep the 3 newest failed Backups
+  retentionPolicy: 30d               # and drop any terminal Backup older than 30d
+```
+
+- **Count** (`successfulBackupsHistoryLimit` / `failedBackupsHistoryLimit`): keep
+  the newest N completed / failed Backups; delete older ones of that phase.
+- **Time** (`retentionPolicy`): same `<n>d/w/m` syntax as the Cluster policy;
+  delete terminal Backups older than the window.
+
+A Backup is garbage-collected when it exceeds a count limit or ages past the
+window. Only terminal Backups (`completed`/`failed`) are eligible; `pending` and
+`running` are never touched. The newest completed Backup is always kept as a floor.
+Every knob is opt-in; an unset knob disables that axis.
+
+### How the two layers fit together
+
+- **Cluster `spec.backup.retentionPolicy`** bounds the object store: expired base
+  backups and uncoverable binlogs are removed. This is the only thing that reclaims
+  the continuous binlog archive.
+- **ScheduledBackup history limits / `retentionPolicy`** bound the number/age of
+  the `Backup` objects a schedule owns.
+- **`reclaimPolicy`** links the two: ScheduledBackup GC deletes only the Backup
+  object, but a Backup with `reclaimPolicy: Delete` reclaims its archive on delete
+  via the cleanup finalizer. So a `Delete`-policy schedule can drive both layers
+  from its own history limits; a `Retain`-policy schedule prunes objects while the
+  Cluster policy reclaims the bytes.
 
 ## What operators should do now
 

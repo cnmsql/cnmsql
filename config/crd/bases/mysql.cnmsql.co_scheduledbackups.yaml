@@ -73,6 +73,14 @@ spec:
                 required:
                 - name
                 type: object
+              failedBackupsHistoryLimit:
+                description: |-
+                  FailedBackupsHistoryLimit caps how many failed Backup objects this schedule
+                  keeps. The newest that many are retained and older failed Backups are
+                  garbage-collected. Unset means no count limit.
+                format: int32
+                minimum: 0
+                type: integer
               immediate:
                 default: false
                 description: |-
@@ -1171,11 +1179,33 @@ spec:
                   metadata.json) from the object store. Defaults to "Retain", the
                   non-destructive default.
                 type: string
+              retentionPolicy:
+                description: |-
+                  RetentionPolicy is a time window (e.g. "30d", "8w", "3m"; days, weeks, months,
+                  where a month is 30 days) after which this schedule's terminal Backup objects
+                  are garbage-collected. It uses the same syntax as the Cluster
+                  spec.backup.retentionPolicy. A terminal Backup is pruned when it exceeds the
+                  history limit OR ages past this window, whichever applies. Unset means no time
+                  limit. The newest completed Backup is always kept.
+                pattern: ^[1-9][0-9]*[dwm]$
+                type: string
               schedule:
                 description: |-
                   Schedule is a cron expression (6 fields, including seconds) defining when
                   backups are taken.
                 type: string
+              successfulBackupsHistoryLimit:
+                description: |-
+                  SuccessfulBackupsHistoryLimit caps how many completed Backup objects this
+                  schedule keeps. The newest that many are retained and older completed Backups
+                  are garbage-collected. Unset means no count limit. The single newest completed
+                  Backup is always kept regardless, so a schedule never prunes its last recovery
+                  point. Deleting a Backup honours its reclaimPolicy: a Delete-policy Backup also
+                  reclaims its object-store archive, a Retain-policy one leaves the archive (see
+                  spec.backup.retentionPolicy on the Cluster for object-store retention).
+                format: int32
+                minimum: 0
+                type: integer
               suspend:
                 default: false
                 description: Suspend, when true, pauses the schedule.

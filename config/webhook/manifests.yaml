@@ -62,6 +62,7 @@ webhooks:
     - UPDATE
     resources:
     - databaseusers
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:
