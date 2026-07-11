@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
@@ -57,10 +59,28 @@ func newShellCommand() *cobra.Command {
 				return fmt.Errorf("cluster %q has no primary yet", cluster.Name)
 			}
 
+			secretName := cluster.Name + "-root"
+			if cluster.Spec.RootPasswordSecret != nil && cluster.Spec.RootPasswordSecret.Name != "" {
+				secretName = cluster.Spec.RootPasswordSecret.Name
+			}
+
+			secret, err := env.Clientset.CoreV1().Secrets(cluster.Namespace).Get(ctx, secretName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("getting root password secret %q: %w", secretName, err)
+			}
+
+			password := string(secret.Data["password"])
+			if password == "" {
+				return fmt.Errorf("root password secret %q has empty password", secretName)
+			}
+
 			clientBin := "mysql"
 			if cluster.ResolvedFlavor() == "mariadb" {
 				clientBin = "mariadb"
 			}
+
+			shellCmd := fmt.Sprintf("MYSQL_PWD='%s' %s --socket=/var/run/mysqld/mysqld.sock --user=root",
+				strings.ReplaceAll(password, "'", "'\\''"), clientBin)
 
 			kubectlArgs := []string{
 				"exec", "-it",
@@ -68,9 +88,7 @@ func newShellCommand() *cobra.Command {
 				primary,
 				"-c", "mysql",
 				"--",
-				clientBin,
-				"--socket=/var/run/mysqld/mysqld.sock",
-				"--user=root",
+				"sh", "-c", shellCmd,
 			}
 
 			kubectll := exec.CommandContext(ctx, "kubectl", kubectlArgs...)
