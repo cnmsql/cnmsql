@@ -145,6 +145,41 @@ func (s GTIDSet) Equal(other GTIDSet) bool {
 	return s.Contains(other) && other.Contains(s)
 }
 
+// MissingCount returns how many transactions are present in other but absent
+// from s, i.e. the size of the set difference other - s. That is how much a
+// server holding s would lose by taking over from one holding other. Contains
+// only reports whether it would lose anything at all.
+func (s GTIDSet) MissingCount(other GTIDSet) int64 {
+	var missing int64
+	for uuid, intervals := range other {
+		mine := s[uuid]
+		for _, iv := range intervals {
+			missing += iv.uncoveredBy(mine)
+		}
+	}
+	return missing
+}
+
+// uncoveredBy returns how many transaction numbers in iv are not covered by
+// mine. mine is normalized (sorted, coalesced), so its intervals are disjoint
+// and each overlap can be subtracted without double counting.
+func (iv GTIDInterval) uncoveredBy(mine []GTIDInterval) int64 {
+	remaining := iv.End - iv.Start + 1
+	if remaining <= 0 {
+		return 0
+	}
+	for _, m := range mine {
+		if m.End < iv.Start {
+			continue
+		}
+		if m.Start > iv.End {
+			break
+		}
+		remaining -= min(m.End, iv.End) - max(m.Start, iv.Start) + 1
+	}
+	return max(remaining, 0)
+}
+
 // intervalsCover reports whether iv is fully covered by a single coalesced
 // interval. Because mine is normalized, a range is covered iff one interval
 // covers it.

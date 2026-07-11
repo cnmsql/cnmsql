@@ -30,6 +30,22 @@ func (mysqlGTID) Contains(superset, subset string) (bool, error) {
 	return replication.GTIDContains(superset, subset)
 }
 
+func (mysqlGTID) MissingCount(have, want string) (int64, error) {
+	setHave, err := replication.ParseGTIDSet(have)
+	if err != nil {
+		return 0, err
+	}
+	setWant, err := replication.ParseGTIDSet(want)
+	if err != nil {
+		return 0, err
+	}
+	return setHave.MissingCount(setWant), nil
+}
+
+func (mysqlGTID) Union(sets ...string) (string, error) {
+	return replication.UnionGTIDStrings(sets...)
+}
+
 func (mysqlGTID) Equal(a, b string) (bool, error) {
 	setA, err := replication.ParseGTIDSet(a)
 	if err != nil {

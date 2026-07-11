@@ -828,6 +828,7 @@ _Appears in:_
 | `maxSwitchoverDelay` _integer_ | MaxSwitchoverDelay is the time in seconds allowed for a switchover to<br />complete before being considered failed. | 3600 | Optional: \{\} <br /> |
 | `failoverDelay` _integer_ | FailoverDelay is the amount of time in seconds the operator waits before<br />declaring an unreachable primary failed and triggering a failover. | 0 | Optional: \{\} <br /> |
 | `enablePrimaryLease` _boolean_ | EnablePrimaryLease, when true (default), makes the acting primary hold a<br />per-cluster Lease before accepting writes. | true | Optional: \{\} <br /> |
+| `failoverPolicy` _[FailoverPolicy](#failoverpolicy)_ | FailoverPolicy bounds and steers automatic primary election. When it is<br />unset, the operator promotes the most advanced reachable replica and puts<br />no limit on how far behind that replica may be. |  | Optional: \{\} <br /> |
 | `backup` _[BackupConfiguration](#backupconfiguration)_ | Backup configures continuous archiving and the object store target. |  | Optional: \{\} <br /> |
 | `replica` _[ReplicaClusterConfiguration](#replicaclusterconfiguration)_ | Replica turns this cluster into a replica cluster that follows a source<br />defined in ExternalClusters. |  | Optional: \{\} <br /> |
 | `externalClusters` _[ExternalCluster](#externalcluster) array_ | ExternalClusters is the list of external clusters that can be used as a<br />replication source or a recovery origin. |  | Optional: \{\} <br /> |
@@ -885,6 +886,23 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest available observations of the cluster's<br />state. |  | Optional: \{\} <br /> |
 | `managedRolesStatus` _[ManagedRolesStatus](#managedrolesstatus)_ | ManagedRolesStatus reports the reconciliation state of the declarative<br />managed roles. |  | Optional: \{\} <br /> |
 | `groupReplication` _[GroupReplicationStatus](#groupreplicationstatus)_ | GroupReplication reflects the live group membership, quorum, effective<br />communication protocol, and the last finalized protocol target. Nil for<br />async clusters. |  | Optional: \{\} <br /> |
+
+
+#### FailoverPolicy
+
+
+
+FailoverPolicy bounds and steers the operator's automatic election of a new
+primary.
+
+
+
+_Appears in:_
+- [ClusterSpec](#clusterspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxTransactionsBehind` _integer_ | MaxTransactionsBehind caps how many transactions a replica may be missing<br />and still be promoted during an unplanned failover. The operator measures<br />the gap in GTIDs, against the last position it recorded for the primary in<br />status.gtidExecutedByInstance, because the primary itself cannot be asked<br />once it is down. It refreshes that snapshot periodically rather than on<br />every commit, so the gap is a lower bound on the true loss and can under<br />report it, but never over report it.<br /><br />The gap is not read from Seconds_Behind_Source. That column reports how far<br />the SQL applier trails the events it has already received. A replica that<br />stopped receiving reads zero there once it drains its relay log, no matter<br />how many transactions the primary committed without it, which is precisely<br />the case that loses data. The column is also NULL whenever the replication<br />IO thread is disconnected, and it always is on a replica whose primary has<br />just failed.<br /><br />If every replica exceeds the bound, the operator refuses the failover and<br />moves the cluster to Blocked, reporting the size of the gap, rather than<br />promote a replica and discard the transactions it never received. Writes<br />then stay down until the old primary comes back with its data, or until an<br />operator accepts the loss by raising this bound. Leave it unset for no<br />bound, in which case the most advanced replica is promoted however far<br />behind it is. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
 #### GroupReplicationStatus

@@ -496,15 +496,35 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	wasStoragePressured := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStoragePressure)
 	r.applyStoragePressureCondition(latest, observed)
 	// gtid_executed advances on every write, so persisting it on every reconcile
-	// would patch the Cluster status (an etcd write) continuously under load. It
-	// is purely informational — failover and switchover decisions read the live
-	// gtid_executed, never this field. So we refresh it only when (a) some other
-	// part of the status is already changing and the write is happening anyway, or
-	// (b) the last persisted snapshot is older than gtidPersistInterval, so it
-	// stays reasonably fresh without writing on every reconcile.
+	// would patch the Cluster status (an etcd write) continuously under load. So
+	// we refresh it only when (a) some other part of the status is already
+	// changing and the write is happening anyway, or (b) the last persisted
+	// snapshot is older than gtidPersistInterval, so it stays reasonably fresh
+	// without writing on every reconcile.
+	//
+	// Live decisions read the live gtid_executed. This snapshot matters for one
+	// thing only, the failover promotion bound: once the primary is gone nobody
+	// can read its position, and this is the only record of what it last held.
+	// So the entries are merged rather than replaced. Dropping an instance's
+	// position because it stopped answering would erase the very value failover
+	// needs. Staleness is safe in one direction: an old snapshot understates how
+	// far the primary got, which makes the measured gap a lower bound on what a
+	// promotion would lose.
 	otherChanged := !reflect.DeepEqual(before.Status, latest.Status)
 	if len(observed.GTIDByInstance) > 0 && (otherChanged || gtidSnapshotStale(before.Status.GTIDExecutedUpdatedAt)) {
-		latest.Status.GTIDExecutedByInstance = observed.GTIDByInstance
+		merged := make(map[string]string, len(observed.InstanceNames))
+		for _, name := range observed.InstanceNames {
+			if gtid, ok := observed.GTIDByInstance[name]; ok {
+				merged[name] = gtid
+				continue
+			}
+			// Unreachable this pass: keep the last position we saw it at. Instances
+			// absent from InstanceNames (scaled down) fall out of the map entirely.
+			if gtid, ok := latest.Status.GTIDExecutedByInstance[name]; ok {
+				merged[name] = gtid
+			}
+		}
+		latest.Status.GTIDExecutedByInstance = merged
 		latest.Status.GTIDExecutedUpdatedAt = &metav1.Time{Time: time.Now()}
 	}
 	if reflect.DeepEqual(before.Status, latest.Status) {

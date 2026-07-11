@@ -30,7 +30,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
-	controllerasync "github.com/cnmsql/cnmsql/internal/controller/async"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -419,7 +418,7 @@ func TestSelectFailoverCandidateSkipsFenced(t *testing.T) {
 		// demo-2 has the most complete GTID but is fenced, so demo-3 is promoted.
 		FencedInstances: []string{testReplica2},
 	}
-	if got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica3 {
+	if got, reason := selectCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3 (demo-2 is fenced)", got, reason)
 	}
 }

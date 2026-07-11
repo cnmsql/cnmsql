@@ -3131,6 +3131,41 @@ spec:
                   declaring an unreachable primary failed and triggering a failover.
                 format: int32
                 type: integer
+              failoverPolicy:
+                description: |-
+                  FailoverPolicy bounds and steers automatic primary election. When it is
+                  unset, the operator promotes the most advanced reachable replica and puts
+                  no limit on how far behind that replica may be.
+                properties:
+                  maxTransactionsBehind:
+                    description: |-
+                      MaxTransactionsBehind caps how many transactions a replica may be missing
+                      and still be promoted during an unplanned failover. The operator measures
+                      the gap in GTIDs, against the last position it recorded for the primary in
+                      status.gtidExecutedByInstance, because the primary itself cannot be asked
+                      once it is down. It refreshes that snapshot periodically rather than on
+                      every commit, so the gap is a lower bound on the true loss and can under
+                      report it, but never over report it.
+
+                      The gap is not read from Seconds_Behind_Source. That column reports how far
+                      the SQL applier trails the events it has already received. A replica that
+                      stopped receiving reads zero there once it drains its relay log, no matter
+                      how many transactions the primary committed without it, which is precisely
+                      the case that loses data. The column is also NULL whenever the replication
+                      IO thread is disconnected, and it always is on a replica whose primary has
+                      just failed.
+
+                      If every replica exceeds the bound, the operator refuses the failover and
+                      moves the cluster to Blocked, reporting the size of the gap, rather than
+                      promote a replica and discard the transactions it never received. Writes
+                      then stay down until the old primary comes back with its data, or until an
+                      operator accepts the loss by raising this bound. Leave it unset for no
+                      bound, in which case the most advanced replica is promoted however far
+                      behind it is.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                type: object
               flavor:
                 default: mysql
                 description: |-

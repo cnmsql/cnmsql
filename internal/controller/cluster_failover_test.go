@@ -59,6 +59,17 @@ func healthyReplicaStatus(name, gtid string) *webserver.Status {
 	}
 }
 
+// selectCandidate elects with no promotion bound, the behaviour of a cluster
+// that sets no failoverPolicy.
+func selectCandidate(observed topology.FailoverState, knownDiverged []string) (string, string) {
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:      observed,
+		KnownDiverged: knownDiverged,
+		GTID:          mysqlGTIDModel,
+	})
+	return elected.Name, elected.Reason
+}
+
 func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 	t.Parallel()
 	observed := observedCluster{
@@ -73,7 +84,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, testGTID),
 		},
 	}
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
+	got, reason := selectCandidate(topologyFailoverState(observed), nil)
 	if got != testReplica3 {
 		t.Fatalf("candidate = %q (reason %q), want demo-3", got, reason)
 	}
@@ -81,7 +92,7 @@ func TestSelectFailoverCandidatePrefersMostCompleteThenOrdinal(t *testing.T) {
 	// Equal GTID: lowest ordinal wins.
 	observed.GTIDByInstance[testReplica2] = testGTID
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
-	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica2 {
+	if got, _ := selectCandidate(topologyFailoverState(observed), nil); got != testReplica2 {
 		t.Fatalf("candidate = %q, want demo-2 on equal GTID", got)
 	}
 }
@@ -100,7 +111,7 @@ func TestSelectFailoverCandidateBlocksOnDivergedGTID(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "other:1-4"),
 		},
 	}
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
+	got, reason := selectCandidate(topologyFailoverState(observed), nil)
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -127,11 +138,11 @@ func TestSelectFailoverCandidateExcludesKnownDivergedReplica(t *testing.T) {
 		},
 	}
 	// Sanity: without the guard the diverged superset would be chosen.
-	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica3 {
+	if got, _ := selectCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("precondition: candidate = %q, want the diverged superset demo-3 to dominate", got)
 	}
 	// With it flagged diverged, the clean replica wins instead.
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica3}, mysqlGTIDModel)
+	got, reason := selectCandidate(topologyFailoverState(observed), []string{testReplica3})
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want the clean replica demo-2", got, reason)
 	}
@@ -152,7 +163,7 @@ func TestSelectFailoverCandidateBlocksWhenOnlyCandidateDiverged(t *testing.T) {
 			testReplica2: healthyReplicaStatus(testReplica2, "a:1-15,b:1-3"),
 		},
 	}
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), []string{testReplica2}, mysqlGTIDModel)
+	got, reason := selectCandidate(topologyFailoverState(observed), []string{testReplica2})
 	if got != "" {
 		t.Fatalf("candidate = %q, want empty (blocked)", got)
 	}
@@ -177,7 +188,7 @@ func TestSelectFailoverCandidateSkipsUnhealthyReplicas(t *testing.T) {
 			testReplica3: healthyReplicaStatus(testReplica3, "uuid:1-7"),
 		},
 	}
-	if got, _ := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel); got != testReplica3 {
+	if got, _ := selectCandidate(topologyFailoverState(observed), nil); got != testReplica3 {
 		t.Fatalf("candidate = %q, want demo-3 (demo-2 has stalled SQL thread)", got)
 	}
 }
@@ -205,7 +216,7 @@ func TestSelectFailoverCandidateAllowsStoppedIOThread(t *testing.T) {
 		},
 	}
 
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
+	got, reason := selectCandidate(topologyFailoverState(observed), nil)
 	if got != testReplica2 {
 		t.Fatalf("candidate = %q (reason %q), want demo-2", got, reason)
 	}
@@ -222,9 +233,134 @@ func TestSelectFailoverCandidateSkipsReplicasWithoutGTID(t *testing.T) {
 		},
 	}
 
-	got, reason := controllerasync.SelectFailoverCandidate(topologyFailoverState(observed), nil, mysqlGTIDModel)
+	got, reason := selectCandidate(topologyFailoverState(observed), nil)
 	if got != "" {
 		t.Fatalf("candidate = %q (reason %q), want empty without GTID status", got, reason)
+	}
+}
+
+// lagRelativeToPrimary builds the failure #76 describes: the primary committed
+// through uuid:1-100 before dying, and the only reachable replica stopped
+// receiving at uuid:1-40. Its relay log is fully drained, so the replica reports
+// itself caught up (Seconds_Behind_Source 0) while missing 60 transactions.
+func lagRelativeToPrimary() (topology.FailoverState, string) {
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{
+			testReplica2: "uuid:1-40",
+		},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: healthyReplicaStatus(testReplica2, "uuid:1-40"),
+		},
+	}
+	return topologyFailoverState(observed), "uuid:1-100"
+}
+
+func TestSelectFailoverCandidateBlocksWhenLagExceedsBound(t *testing.T) {
+	t.Parallel()
+	observed, primaryGTID := lagRelativeToPrimary()
+	bound := int64(10)
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:              observed,
+		GTID:                  mysqlGTIDModel,
+		MaxTransactionsBehind: &bound,
+		ReferenceGTID:         primaryGTID,
+	})
+	// It is the only replica, but it is 60 transactions behind a bound of 10.
+	// Promoting it would silently discard those 60, so the election must refuse
+	// and say by how much it missed.
+	if elected.Name != "" {
+		t.Fatalf("candidate = %q, want no election: the only replica is 60 transactions behind a bound of 10", elected.Name)
+	}
+	if elected.TransactionsBehind != 60 {
+		t.Errorf("TransactionsBehind = %d, want 60", elected.TransactionsBehind)
+	}
+	for _, want := range []string{testReplica2, "60 transactions behind", "maxTransactionsBehind (10)"} {
+		if !strings.Contains(elected.Reason, want) {
+			t.Errorf("Reason = %q, want it to mention %q", elected.Reason, want)
+		}
+	}
+}
+
+func TestSelectFailoverCandidatePrefersReplicaWithinBound(t *testing.T) {
+	t.Parallel()
+	// demo-2 is 60 transactions behind the dead primary; demo-3 has everything.
+	// The bound must exclude demo-2 rather than let ordinal order pick it.
+	observed := observedCluster{
+		PrimaryName:   testPrimary,
+		InstanceNames: []string{testPrimary, testReplica2, testReplica3},
+		GTIDByInstance: map[string]string{
+			testReplica2: "uuid:1-40",
+			testReplica3: "uuid:1-100",
+		},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: healthyReplicaStatus(testReplica2, "uuid:1-40"),
+			testReplica3: healthyReplicaStatus(testReplica3, "uuid:1-100"),
+		},
+	}
+	bound := int64(10)
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:              topologyFailoverState(observed),
+		GTID:                  mysqlGTIDModel,
+		MaxTransactionsBehind: &bound,
+		ReferenceGTID:         "uuid:1-100",
+	})
+	if elected.Name != testReplica3 {
+		t.Fatalf("candidate = %q (reason %q), want demo-3", elected.Name, elected.Reason)
+	}
+	if elected.TransactionsBehind != 0 {
+		t.Errorf("elected = %+v, want a candidate within the bound at zero lag", elected)
+	}
+}
+
+func TestSelectFailoverCandidateCountsUnappliedRelayLogAsHeld(t *testing.T) {
+	t.Parallel()
+	// demo-2 has received every transaction the primary had but applied only 40 of
+	// them. That is applier delay, not data loss: the relay log drains before
+	// promotion, so it must stay within the bound.
+	status := healthyReplicaStatus(testReplica2, "uuid:1-40")
+	status.Replication.RetrievedGTIDSet = "uuid:1-100"
+	observed := observedCluster{
+		PrimaryName:      testPrimary,
+		InstanceNames:    []string{testPrimary, testReplica2},
+		GTIDByInstance:   map[string]string{testReplica2: "uuid:1-40"},
+		StatusByInstance: map[string]*webserver.Status{testReplica2: status},
+	}
+	bound := int64(0)
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:              topologyFailoverState(observed),
+		GTID:                  mysqlGTIDModel,
+		MaxTransactionsBehind: &bound,
+		ReferenceGTID:         "uuid:1-100",
+	})
+	if elected.Name != testReplica2 {
+		t.Fatalf("candidate = %q, want demo-2", elected.Name)
+	}
+	if elected.TransactionsBehind != 0 {
+		t.Errorf("elected = %+v, want zero lag: the transactions are in the relay log", elected)
+	}
+}
+
+func TestSelectFailoverCandidateUnboundedIgnoresLag(t *testing.T) {
+	t.Parallel()
+	// Without a failoverPolicy the lag is reported but never blocks, preserving
+	// the behaviour of clusters that predate the bound.
+	observed, primaryGTID := lagRelativeToPrimary()
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:      observed,
+		GTID:          mysqlGTIDModel,
+		ReferenceGTID: primaryGTID,
+	})
+	if elected.Name != testReplica2 {
+		t.Fatalf("elected = %+v, want demo-2 promoted with no bound applied", elected)
+	}
+	if elected.TransactionsBehind != 60 {
+		t.Errorf("TransactionsBehind = %d, want 60 reported even when unbounded", elected.TransactionsBehind)
 	}
 }
 

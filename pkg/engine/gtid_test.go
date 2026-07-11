@@ -208,3 +208,65 @@ func TestMariaDBDuplicateDomainKeepsHighestSeq(t *testing.T) {
 		t.Errorf("Canonical = %q, want %q", got, "0-2-90")
 	}
 }
+
+func TestGTIDMissingCount(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		model GTIDModel
+		have  string
+		want  string
+		count int64
+	}{
+		{"mysql: contiguous gap", mysqlGTID{}, "uuid:1-40", "uuid:1-100", 60},
+		{"mysql: nothing missing", mysqlGTID{}, "uuid:1-100", "uuid:1-40", 0},
+		{"mysql: empty holds nothing", mysqlGTID{}, "", "uuid:1-5", 5},
+		{"mysql: split intervals", mysqlGTID{}, "uuid:1-10:21-30", "uuid:1-30", 10},
+		{"mysql: gap spans two sources", mysqlGTID{}, "a:1-5", "a:1-10,b:1-3", 8},
+		{"mysql: source absent entirely", mysqlGTID{}, "a:1-5", "b:1-7", 7},
+		{"mariadb: sequence gap", mariadbGTID{}, "0-1-40", "0-1-100", 60},
+		{"mariadb: nothing missing", mariadbGTID{}, "0-1-100", "0-1-40", 0},
+		{"mariadb: domain absent", mariadbGTID{}, "0-1-10", "0-1-10,1-2-7", 7},
+		{"mariadb: server id is not a transaction", mariadbGTID{}, "0-1-50", "0-9-50", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := tc.model.MissingCount(tc.have, tc.want)
+			if err != nil {
+				t.Fatalf("MissingCount error: %v", err)
+			}
+			if got != tc.count {
+				t.Errorf("MissingCount(%q, %q) = %d, want %d", tc.have, tc.want, got, tc.count)
+			}
+		})
+	}
+}
+
+func TestGTIDUnion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		model GTIDModel
+		sets  []string
+		want  string
+	}{
+		{"mysql: merges adjacent", mysqlGTID{}, []string{"uuid:1-40", "uuid:41-100"}, "uuid:1-100"},
+		{"mysql: keeps both sources", mysqlGTID{}, []string{"a:1-5", "b:1-3"}, "a:1-5,b:1-3"},
+		{"mysql: empty is identity", mysqlGTID{}, []string{"", "a:1-5"}, "a:1-5"},
+		{"mariadb: highest sequence wins", mariadbGTID{}, []string{"0-1-40", "0-1-100"}, "0-1-100"},
+		{"mariadb: keeps both domains", mariadbGTID{}, []string{"0-1-40", "1-2-7"}, "0-1-40,1-2-7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := tc.model.Union(tc.sets...)
+			if err != nil {
+				t.Fatalf("Union error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Union(%q) = %q, want %q", tc.sets, got, tc.want)
+			}
+		})
+	}
+}
