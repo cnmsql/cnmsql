@@ -4,9 +4,12 @@ description: "Deploy CNMSQL - CloudNative for MySQL, create a three-instance MyS
 sidebar_position: 2
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # Quickstart
 
-This guide walks through deploying CNMSQL - CloudNative for MySQL and a three-instance Percona Server for MySQL cluster in a local [Kind](https://kind.sigs.k8s.io/) environment.
+This guide walks through deploying CNMSQL and a three-instance Percona Server for MySQL cluster in a local [Kind](https://kind.sigs.k8s.io/) environment.
 
 ## Prerequisites
 
@@ -26,17 +29,30 @@ kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-m
 
 ## 1. Install the Operator
 
-Helm is the recommended way to install. The chart is published from the [charts](https://github.com/cnmsql/charts) repository:
+Helm is the recommended way to install or upgrade. The chart is published from the [charts](https://github.com/cnmsql/charts) repository:
+
+<Tabs>
+<TabItem value="install" label="Install" default>
 
 ```bash
-helm repo add cnmsql https://cnmsql.github.io/charts
-helm repo update
-helm install cnmsql cnmsql/cnmsql \
-  --namespace cnmsql-system \
+helm install cnmsql oci://ghcr.io/cnmsql/charts/cnmsql \
+  --namespace cnmsql \
   --create-namespace
 ```
 
-The operator image defaults to `ghcr.io/cnmsql/cnmsql` pinned to the chart's `appVersion`, so no `--set` overrides are needed for a standard install.
+</TabItem>
+<TabItem value="upgrade" label="Upgrade">
+
+```bash
+helm upgrade cnmsql oci://ghcr.io/cnmsql/charts/cnmsql \
+  --namespace cnmsql \
+  --create-namespace
+```
+
+</TabItem>
+</Tabs>
+
+The operator image defaults to `ghcr.io/cnmsql/cnmsql` pinned to the chart's `appVersion`, so no `--set` overrides are needed for a standard install or upgrade.
 
 Verify the controller is running:
 
