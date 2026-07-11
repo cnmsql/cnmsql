@@ -87,7 +87,9 @@ func (r *Reconciler) ReconcileFailover(
 		MaxTransactionsBehind: maxTransactionsBehind(cluster),
 		// The primary is unreachable by now, so its live position is unreadable and
 		// the last persisted snapshot is all there is to measure the gap against.
-		ReferenceGTID: cluster.Status.GTIDExecutedByInstance[observed.PrimaryName],
+		ReferenceGTID:     cluster.Status.GTIDExecutedByInstance[observed.PrimaryName],
+		MaxReplicationLag: cluster.MaxReplicationLag(),
+		PrimaryDownFor:    time.Since(failingSince),
 	})
 	candidate := elected.Name
 	if candidate == "" {
@@ -126,6 +128,9 @@ func (r *Reconciler) ReconcileFailover(
 	message := fmt.Sprintf("Failing over from %s to %s", observed.PrimaryName, candidate)
 	if elected.TransactionsBehind > 0 {
 		message += fmt.Sprintf(", which is %d transactions behind it", elected.TransactionsBehind)
+		if elected.TimeBehind != nil {
+			message += fmt.Sprintf(" (%s of writes)", elected.TimeBehind.Round(time.Second))
+		}
 	}
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = candidate
@@ -224,6 +229,11 @@ type FailoverCandidate struct {
 	// replicas still have between them, which is the best that can be known once
 	// the primary is gone.
 	TransactionsBehind int64
+	// TimeBehind is the same gap expressed in seconds of writes, from the
+	// heartbeat. It is nil when the heartbeat gave no reading, and zero whenever
+	// TransactionsBehind is zero, since a replica that missed no transactions
+	// loses no writes.
+	TimeBehind *time.Duration
 	// Reason explains why Name is empty.
 	Reason string
 }
@@ -243,6 +253,18 @@ type Election struct {
 	// lower bound on the transactions a promotion would lose. It is empty when no
 	// snapshot exists, which degrades the measurement to peer-relative.
 	ReferenceGTID string
+	// MaxReplicationLag bounds how many seconds of writes an elected replica may
+	// lose. Nil means unbounded, the behaviour of a cluster that sets no such
+	// bound. It needs the heartbeat to be enabled; without a reading, a candidate
+	// that is missing transactions cannot be shown to be within the bound and so
+	// is not promoted.
+	MaxReplicationLag *time.Duration
+	// PrimaryDownFor is how long the primary has been failing, from
+	// status.primaryFailingSince. It is what the election subtracts from each
+	// replica's heartbeat age to recover the replication delay as it stood when
+	// the primary died: with nothing stamping the table any more, every second the
+	// primary stays down adds a second to every replica's reading.
+	PrimaryDownFor time.Duration
 }
 
 // SelectFailoverCandidate chooses the safest reachable async replica. The SQL
@@ -297,6 +319,13 @@ func SelectFailoverCandidate(e Election) FailoverCandidate {
 		}
 	}
 
+	timeBehind := writesBehind(observed, eligible, behind, e.PrimaryDownFor)
+	withinLag := withinLagBound(eligible, timeBehind, e.MaxReplicationLag)
+	if len(withinLag) == 0 {
+		return FailoverCandidate{Reason: lagBlockReason(eligible, timeBehind, *e.MaxReplicationLag)}
+	}
+	eligible = withinLag
+
 	for _, candidate := range eligible {
 		dominatesAll := true
 		for _, other := range eligible {
@@ -319,6 +348,7 @@ func SelectFailoverCandidate(e Election) FailoverCandidate {
 			return FailoverCandidate{
 				Name:               candidate,
 				TransactionsBehind: behind[candidate],
+				TimeBehind:         timeBehind[candidate],
 			}
 		}
 	}
@@ -382,4 +412,91 @@ func withinBound(candidates []string, behind map[string]int64, maxBehind *int64)
 		}
 	}
 	return eligible
+}
+
+// writesBehind estimates how many seconds of writes each candidate would lose by
+// being promoted, from the heartbeat the primary was stamping. A nil entry means
+// the candidate reported no heartbeat reading, so the question cannot be
+// answered for it.
+//
+// Two corrections turn a raw heartbeat age into a loss estimate.
+//
+// The first is time. Once the primary stops stamping, nothing refreshes the
+// table, so every replica's age climbs in step with the clock and by now carries
+// however long the primary has been down on top of the delay it actually had.
+// Subtracting primaryDownFor takes that back out. primaryDownFor is measured from
+// when the operator noticed the primary failing, which is never earlier than the
+// failure itself, so the subtraction is never too generous: what is left over
+// states the loss as at least what it was, never less.
+//
+// The second is that lag and loss are not the same thing. A replica that holds
+// every transaction the primary committed loses nothing by being promoted, no
+// matter how far its applier trails: it drains its relay log before taking over,
+// which costs time, not data. So a candidate the GTID comparison found missing
+// nothing is reported as zero seconds behind, whatever its heartbeat says.
+func writesBehind(
+	observed topology.FailoverState,
+	candidates []string,
+	behind map[string]int64,
+	primaryDownFor time.Duration,
+) map[string]*time.Duration {
+	out := make(map[string]*time.Duration, len(candidates))
+	for _, name := range candidates {
+		if behind[name] == 0 {
+			out[name] = new(time.Duration)
+			continue
+		}
+		age := observed.Instances[name].HeartbeatAge
+		if age == nil {
+			out[name] = nil
+			continue
+		}
+		lost := max(*age-primaryDownFor, 0)
+		out[name] = &lost
+	}
+	return out
+}
+
+// withinLagBound drops candidates that would lose more than maxLag seconds of
+// writes, returning nothing when none qualify. A nil bound admits everyone.
+//
+// A candidate with no heartbeat reading is dropped rather than admitted. The
+// bound is a promise about how much data a promotion may destroy, and a replica
+// that cannot say how far behind it was is a replica that cannot keep it.
+func withinLagBound(candidates []string, timeBehind map[string]*time.Duration, maxLag *time.Duration) []string {
+	if maxLag == nil {
+		return candidates
+	}
+	var eligible []string
+	for _, name := range candidates {
+		if lost := timeBehind[name]; lost != nil && *lost <= *maxLag {
+			eligible = append(eligible, name)
+		}
+	}
+	return eligible
+}
+
+// lagBlockReason explains which replica came closest to the time bound and by
+// how much, or reports that none of them could be measured at all.
+func lagBlockReason(candidates []string, timeBehind map[string]*time.Duration, maxLag time.Duration) string {
+	var closest string
+	for _, name := range candidates {
+		lost := timeBehind[name]
+		if lost == nil {
+			continue
+		}
+		if closest == "" || *lost < *timeBehind[closest] {
+			closest = name
+		}
+	}
+	if closest == "" {
+		return fmt.Sprintf(
+			"maxReplicationLag (%s) is set but no replica reported a replication-lag heartbeat, "+
+				"so none can be shown to be within it; check that spec.replication.heartbeat is enabled",
+			maxLag)
+	}
+	return fmt.Sprintf(
+		"the closest replica (%s) is %s of writes behind the failed primary, more than maxReplicationLag (%s); "+
+			"promoting it would lose those writes",
+		closest, timeBehind[closest].Round(time.Second), maxLag)
 }

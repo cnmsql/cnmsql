@@ -3137,6 +3137,32 @@ spec:
                   unset, the operator promotes the most advanced reachable replica and puts
                   no limit on how far behind that replica may be.
                 properties:
+                  maxReplicationLag:
+                    description: |-
+                      MaxReplicationLag caps how far behind a replica may be, in seconds of
+                      writes, and still be promoted during an unplanned failover. It states the
+                      same bound as MaxTransactionsBehind in the unit a recovery objective is
+                      normally written in: a hundred transactions may be a millisecond of writes
+                      or an hour of them, and only the clock version can be held against an RPO.
+
+                      The measurement comes from the heartbeat the primary stamps into a
+                      replicated table (see spec.replication.heartbeat), which must be enabled for
+                      this bound to have anything to read. A replica's raw reading climbs by one
+                      second per second once the primary stops stamping, so the operator subtracts
+                      how long the primary has been failing and is left with the delay as it stood
+                      when the primary died. That subtraction starts from the moment the operator
+                      noticed the failure, which is never earlier than the failure itself, so the
+                      result overstates the loss rather than understating it.
+
+                      It is checked only against replicas that actually missed transactions. A
+                      replica holding every transaction the primary committed loses nothing by
+                      being promoted, however far its applier has fallen behind, and the wait for
+                      it to drain its relay log is delay rather than loss.
+
+                      If no replica is within the bound, the operator refuses the failover and
+                      moves the cluster to Blocked, exactly as it does for MaxTransactionsBehind.
+                      Leave it unset for no time bound.
+                    type: string
                   maxTransactionsBehind:
                     description: |-
                       MaxTransactionsBehind caps how many transactions a replica may be missing
@@ -4050,6 +4076,26 @@ spec:
                           the operator generates one on first bootstrap and persists it to
                           status.groupReplication.groupName. Immutable once the group exists; a
                           changed group name fractures the group.
+                        type: string
+                    type: object
+                  heartbeat:
+                    description: Heartbeat tunes the replication-lag heartbeat, which
+                      is on by default.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled turns the heartbeat on. It defaults to true: the cost is one small
+                          replicated write per interval on the primary, and it is what
+                          failoverPolicy.maxReplicationLag and the lag metrics read.
+                        type: boolean
+                      interval:
+                        default: 1s
+                        description: |-
+                          Interval is how often the primary stamps the table. It sets the floor on
+                          every lag reading, because a replica in perfect sync still reports an age of
+                          up to one interval simply because the next stamp is not written yet. Keep it
+                          well under any maxReplicationLag you set. Defaults to 1s.
                         type: string
                     type: object
                   mode:
@@ -5193,6 +5239,32 @@ spec:
                 items:
                   type: string
                 type: array
+              replicationLagByInstance:
+                additionalProperties:
+                  format: int64
+                  type: integer
+                description: |-
+                  ReplicationLagByInstance maps an instance name to its replication lag in
+                  milliseconds, as measured by the heartbeat (see
+                  spec.replication.heartbeat). Instances that reported no reading are absent
+                  rather than zero, since zero would say "in sync", which is the opposite of
+                  what an unreadable heartbeat means.
+
+                  It is here to be looked at. The failover bound does not read it: it asks the
+                  surviving replicas for their readings at the moment it elects, which is both
+                  fresher than this snapshot and, unlike the departing primary's GTID
+                  position, still answerable. Expect these values to climb while a primary is
+                  down, because nothing is stamping the heartbeat any more.
+                type: object
+              replicationLagUpdatedAt:
+                description: |-
+                  ReplicationLagUpdatedAt records when ReplicationLagByInstance was last
+                  refreshed. Lag moves constantly, so the operator throttles how often it
+                  persists the map; this timestamp says how old the readings are, and is the
+                  only way to tell a replica that is genuinely one second behind from one
+                  whose last reading merely happened to say so.
+                format: date-time
+                type: string
               resizingPVC:
                 description: |-
                   ResizingPVC lists the PVCs whose storage is currently being expanded — the

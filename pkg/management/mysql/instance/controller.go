@@ -74,6 +74,10 @@ type Controller struct {
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus
+	// replicationLag, when set, supplies the heartbeat loop's latest lag reading
+	// for inclusion in the instance status. nil leaves status.ReplicationLag unset
+	// (heartbeats disabled, or in tests).
+	replicationLag func() *webserver.ReplicationLagStatus
 	// storage, when set, supplies the data volume's space usage for inclusion in
 	// the instance status. nil leaves status.Storage unset (e.g. in tests, or when
 	// no data directory is known).
@@ -147,6 +151,12 @@ func userDialectFor(eng engine.Engine) user.Dialect {
 // archiver's current state for inclusion in the instance status.
 func (c *Controller) SetArchivingProvider(provider func() *webserver.ArchivingStatus) {
 	c.archiving = provider
+}
+
+// SetReplicationLagProvider registers a callback that supplies the heartbeat
+// loop's latest lag reading for inclusion in the instance status.
+func (c *Controller) SetReplicationLagProvider(provider func() *webserver.ReplicationLagStatus) {
+	c.replicationLag = provider
 }
 
 // SetStorageProvider registers a callback that supplies the data volume's space
@@ -331,6 +341,9 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	}
 	if c.storage != nil {
 		status.Storage = c.storage()
+	}
+	if c.replicationLag != nil {
+		status.ReplicationLag = c.replicationLag()
 	}
 
 	if replicaState.Configured {

@@ -389,10 +389,49 @@ If you leave `maxTransactionsBehind` unset there is no bound, and the best
 surviving replica is promoted however far behind it is. The operator still
 measures the gap and reports it on the failover event.
 
-#### Why transactions and not seconds
+#### How the gap is measured
 
-The obvious knob would be a lag in seconds, read from `Seconds_Behind_Source`.
-That column cannot do this job, for two reasons.
+The operator measures the gap in transactions, by GTID. It compares against the
+last position it recorded for the primary in `status.gtidExecutedByInstance`,
+since the primary itself cannot be asked once it is down. What a candidate holds
+includes both its executed GTIDs *and* its retrieved but unapplied relay log:
+those transactions are already on the replica and get applied before it is
+promoted, so they are applier delay rather than data loss.
+
+One caveat. The operator refreshes that GTID snapshot periodically rather than on
+every write, so the snapshot can trail the primary's true final position. The gap
+it computes is therefore a *lower* bound. The real loss may be larger, never
+smaller.
+
+### Bounding data loss with `maxReplicationLag`
+
+A count of transactions is an awkward thing to write a recovery objective
+against. A hundred transactions might be a millisecond of writes on a busy
+cluster or an hour of them on a quiet one, and it is the seconds, not the count,
+that anyone has actually promised.
+
+`spec.failoverPolicy.maxReplicationLag` states the same bound in time:
+
+```yaml
+spec:
+  failoverPolicy:
+    maxReplicationLag: 5s
+```
+
+It behaves exactly like `maxTransactionsBehind`: replicas that would lose more
+than that much are dropped from the candidate pool, and if that leaves nobody the
+cluster moves to `Blocked` with the refused loss named in `phaseReason`. The two
+can be set together, in which case a candidate has to satisfy both.
+
+It is checked only against replicas that actually missed transactions. A replica
+that holds everything the primary committed loses nothing by being promoted, no
+matter how far its applier has fallen behind: waiting for it to drain its relay
+log costs time, not data.
+
+#### Where the seconds come from
+
+Not from `Seconds_Behind_Source`. That column cannot do this job, for two
+reasons.
 
 It is `NULL` whenever the IO thread is disconnected. A failover happens precisely
 because the primary is gone, so every candidate has lost its connection and
@@ -405,18 +444,62 @@ transactions it never received in the first place. A replica whose IO thread
 stalled ten minutes ago, and which has since applied everything it holds, reports
 zero lag while missing ten minutes of writes.
 
-So the operator measures the gap in transactions instead, by GTID. It compares
-against the last position it recorded for the primary in
-`status.gtidExecutedByInstance`, since the primary itself cannot be asked once it
-is down. What a candidate holds includes both its executed GTIDs *and* its
-retrieved but unapplied relay log: those transactions are already on the replica
-and get applied before it is promoted, so they are applier delay rather than data
-loss.
+The number comes from a heartbeat instead. The writable primary's instance
+manager stamps the current UTC time into a small replicated table once a second.
+Every instance reads the table back and subtracts the newest stamp it has applied
+from its own clock, and the difference is how old the most recent write it has
+caught up to is. When replication stops, the stamps stop arriving and the
+measured age grows on its own, which is exactly the blind spot
+`Seconds_Behind_Source` has.
 
-One caveat. The operator refreshes that GTID snapshot periodically rather than on
-every write, so the snapshot can trail the primary's true final position. The gap
-it computes is therefore a *lower* bound. The real loss may be larger, never
-smaller.
+This is what Percona's `pt-heartbeat` does, reimplemented in the instance manager
+so there is no sidecar and no cron to run. The table is `heartbeat.heartbeat` and
+its shape is `pt-heartbeat`'s, so the heartbeat collector already built into
+`mysqld_exporter` scrapes it unchanged. The instance manager also exports the
+reading directly as `cnmsql_replication_lag_seconds`, and the operator mirrors it
+into `status.replicationLagByInstance` in milliseconds, stamping
+`status.replicationLagUpdatedAt` with when it last refreshed them. Check that
+timestamp before trusting a reading: the operator does not rewrite the map on
+every pass, so on a quiet cluster the numbers are up to one resync old. The
+scraped metric is always live.
+
+Configure it under `spec.replication`:
+
+```yaml
+spec:
+  replication:
+    heartbeat:
+      enabled: true   # the default
+      interval: 1s
+```
+
+The interval sets the floor on every reading: a replica in perfect sync still
+reports an age of up to one interval, simply because the next stamp has not been
+written yet. Keep it well under any `maxReplicationLag` you set.
+
+Two things are worth knowing before you rely on the number.
+
+It is measured against the reading instance's own clock, so it is only as good as
+the clocks agree. Nodes with NTP disagree by milliseconds and it does not matter;
+a node with a badly wrong clock reports a badly wrong lag, exactly as
+`pt-heartbeat` would.
+
+And a raw reading climbs by one second per second once the primary stops
+stamping, because nothing is refreshing the table any more. Ten seconds after a
+crash every replica reads ten seconds behind whether or not it missed a single
+transaction. The operator subtracts how long the primary has been failing
+(`status.primaryFailingSince`) before checking the bound, which leaves the lag as
+it stood when the primary died. That subtraction starts from when the operator
+*noticed* the failure, which is never earlier than the failure itself, so the
+result overstates the loss rather than understating it. If you alert on
+`cnmsql_replication_lag_seconds` yourself, do it together with the primary's
+health, or a dead primary will look like every replica falling behind at once.
+
+If no replica reports a heartbeat at all and `maxReplicationLag` is set, the
+operator blocks rather than promoting blind. A bound is a promise about how much
+data a promotion may destroy, and a replica that cannot say how far behind it was
+cannot keep it. In practice this means the bound needs the heartbeat left
+enabled.
 
 ### Excluding diverged candidates
 

@@ -85,12 +85,43 @@ type Status struct {
 	// majority.
 	GroupReplication *GroupReplicationMemberStatus `json:"groupReplication,omitempty"`
 
+	// ReplicationLag reports the wall-clock replication delay measured by the
+	// heartbeat the writable primary stamps into a replicated table. It is nil
+	// when heartbeats are disabled, and on an instance manager old enough to
+	// predate them, in which case the operator has no seconds-based lag signal
+	// for this instance and says so rather than assuming zero.
+	ReplicationLag *ReplicationLagStatus `json:"replicationLag,omitempty"`
+
 	// Storage reports the instance data volume's space usage as observed by
 	// statfs. The operator aggregates it across instances to raise the
 	// StoragePressure condition. It is nil when usage could not be read (e.g. an
 	// instance manager that predates this field), in which case the operator
 	// treats the instance as contributing no storage signal.
 	Storage *StorageStatus `json:"storage,omitempty"`
+}
+
+// ReplicationLagStatus is one instance's heartbeat reading: how old the newest
+// heartbeat stamp it has applied is, measured against its own clock.
+type ReplicationLagStatus struct {
+	// Writer is true when this instance is the one stamping the heartbeat table,
+	// which only the writable primary does.
+	Writer bool `json:"writer,omitempty"`
+	// LagMillis is the age of the newest stamp this instance has applied. It is
+	// nil when no reading could be taken: nothing has stamped the table yet, or
+	// the last read failed.
+	//
+	// While the primary is stamping, this is the replication delay. Once the
+	// primary stops, the stamps stop and the value climbs by one second per
+	// second, so it must not be read during an outage as a count of lost writes.
+	// The operator subtracts how long the primary has been failing to recover the
+	// delay as it stood at the moment the primary died.
+	LagMillis *int64 `json:"lagMillis,omitempty"`
+	// SampledAt is when the reading was taken, in RFC 3339. It bounds how stale
+	// LagMillis is relative to the status response itself.
+	SampledAt string `json:"sampledAt,omitempty"`
+	// LastError is the most recent heartbeat failure, empty when the last pass
+	// succeeded.
+	LastError string `json:"lastError,omitempty"`
 }
 
 // StorageStatus reports an instance data volume's space usage, in bytes, as
