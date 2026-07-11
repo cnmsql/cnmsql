@@ -371,7 +371,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	// An unreachable primary takes precedence over a manual switchover: drive
 	// automatic failover (bounded by spec.failoverDelay) before anything else.
-	failoverHandled, failoverResult, err := r.reconcileFailover(ctx, cluster, plan, observed)
+	failoverHandled, failoverResult, err := r.reconcileFailover(ctx, cluster, plan, &observed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

@@ -556,7 +556,7 @@ func TestReconcileFailoverPromotesBestCandidateImmediately(t *testing.T) {
 	cluster, reconciler, _ := failoverCluster(t, 0)
 	observed := unreachablePrimaryObserved()
 
-	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestReconcileFailoverWaitsForFailoverDelay(t *testing.T) {
 	cluster, reconciler, control := failoverCluster(t, 60)
 	observed := unreachablePrimaryObserved()
 
-	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestReconcileFailoverWaitsForActivePrimaryLease(t *testing.T) {
 	}
 	observed := unreachablePrimaryObserved()
 
-	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +673,7 @@ func TestReconcileFailoverBlocksWithoutSafeCandidate(t *testing.T) {
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
 	observed.StatusByInstance[testReplica3] = healthyReplicaStatus(testReplica3, "other:1-4")
 
-	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,6 +689,21 @@ func TestReconcileFailoverBlocksWithoutSafeCandidate(t *testing.T) {
 	}
 	if gotCluster.Status.Phase != topology.PhaseBlocked {
 		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseBlocked)
+	}
+	// The block must also survive the rest of the reconcile. A blocked failover
+	// returns Handled=false so the pass carries on and can recreate the failed
+	// primary's Pod, and that pass ends in patchStatus, which writes whatever phase
+	// the observation holds. Unless the refusal is folded back into the
+	// observation, patchStatus overwrites it with the Degraded that the broken
+	// replication thread computes, and the reason the promotion was declined is
+	// lost: the cluster ends up reporting the symptom while hiding the decision.
+	if observed.Phase != topology.PhaseBlocked {
+		t.Errorf("observed.Phase = %q, want %q: the block would be overwritten by patchStatus at the end of the pass",
+			observed.Phase, topology.PhaseBlocked)
+	}
+	if observed.PhaseReason == "" || observed.Ready {
+		t.Errorf("observed = {reason:%q ready:%v}, want the block's reason and not ready",
+			observed.PhaseReason, observed.Ready)
 	}
 }
 
@@ -707,7 +722,7 @@ func TestReconcileFailoverYieldsToProvisioningBeforeAnyReplica(t *testing.T) {
 	observed.GTIDByInstance = map[string]string{}
 	observed.ReadyInstances = 0
 
-	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +765,7 @@ func TestReconcileFailoverClearsMarkerWhenPrimaryHealthy(t *testing.T) {
 		GTIDExecuted: testGTID,
 	}
 
-	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
