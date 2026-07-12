@@ -280,6 +280,22 @@ func (a *Archiver) archiveFile(
 	return meta, true, nil
 }
 
+// HasSegment reports whether this instance has already archived under its
+// current identity, i.e. it owns a segment in the archive.
+//
+// It is what distinguishes a former primary holding its own un-shipped tail from
+// a replica that merely re-logs someone else's history: only an instance that
+// archived while it was primary has a segment keyed by its server identity. The
+// drain path (see Loop.tick) uses it to stay silent on every never-promoted
+// replica, so no replica's redundant copy of the timeline is ever uploaded.
+func (a *Archiver) HasSegment(ctx context.Context) (bool, error) {
+	status, err := a.loadStatus(ctx, a.objectStore.Bucket)
+	if err != nil {
+		return false, err
+	}
+	return status.LastArchivedBinlog != "", nil
+}
+
 // loadStatus reads this segment's archive status, returning a fresh zero status
 // when none exists yet.
 func (a *Archiver) loadStatus(ctx context.Context, bucket string) (objectstore.ArchiveStatus, error) {

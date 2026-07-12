@@ -239,15 +239,15 @@ func TestMariaDBReplDialect(t *testing.T) {
 	}
 
 	// ChangeSource keeps MASTER_* terminology and seeds GTID auto-positioning
-	// with MASTER_USE_GTID=slave_pos — never the MySQL SOURCE_/AUTO_POSITION form.
+	// with MASTER_USE_GTID=current_pos — never the MySQL SOURCE_/AUTO_POSITION form.
 	stmt := r.ChangeSource(v, replication.SourceOptions{Host: "h", User: "u", AutoPosition: true})
 	wantStmt := replication.MariaDBChangeSourceStatement(
 		replication.SourceOptions{Host: "h", User: "u", AutoPosition: true})
 	if got, want := stmt, wantStmt; got != want {
 		t.Errorf("ChangeSource = %q, want %q", got, want)
 	}
-	if !strings.Contains(stmt, "CHANGE MASTER TO") || !strings.Contains(stmt, "MASTER_USE_GTID=slave_pos") {
-		t.Errorf("ChangeSource = %q, want CHANGE MASTER TO ... MASTER_USE_GTID=slave_pos", stmt)
+	if !strings.Contains(stmt, "CHANGE MASTER TO") || !strings.Contains(stmt, "MASTER_USE_GTID=current_pos") {
+		t.Errorf("ChangeSource = %q, want CHANGE MASTER TO ... MASTER_USE_GTID=current_pos", stmt)
 	}
 
 	// GTID position and replica seeding use MariaDB's gtid_current_pos /

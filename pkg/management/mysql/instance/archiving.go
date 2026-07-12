@@ -26,8 +26,29 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
+
+// replicaProbe adapts the replication manager to binlog.ReplicationProbe. It
+// answers the one question the archiver's drain needs: has the source accepted
+// this instance's GTID position and started streaming? Under
+// MASTER_USE_GTID=current_pos a diverged instance is refused (error 1236) and so
+// never reports streaming, which is what makes the drain safe.
+type replicaProbe struct {
+	repl *replication.Manager
+}
+
+func (p replicaProbe) Streaming(ctx context.Context) (bool, error) {
+	state, err := p.repl.ReplicaState(ctx)
+	if err != nil {
+		return false, err
+	}
+	if state == nil || !state.Configured {
+		return false, nil
+	}
+	return state.IORunning && state.SQLRunning, nil
+}
 
 // ArchivingConfig configures the in-Pod continuous binlog archiver.
 type ArchivingConfig struct {
@@ -82,6 +103,7 @@ func startArchiver(
 	cfg ArchivingConfig,
 	db *sql.DB,
 	identityQuery string,
+	repl *replication.Manager,
 ) (*binlog.Loop, <-chan error, error) {
 	log := logf.FromContext(ctx).WithName("archiver")
 	store, err := objectstore.NewClientFromEnv()
@@ -118,6 +140,7 @@ func startArchiver(
 		Logger:        log,
 		FlushInterval: cfg.FlushInterval,
 		Purge:         cfg.Purge,
+		Replication:   replicaProbe{repl: repl},
 	})
 
 	errCh := make(chan error, 1)

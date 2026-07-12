@@ -36,10 +36,22 @@ const (
 // the archive frontier, and purges shipped logs. It only ever archives from the
 // primary, so on failover the new primary's Loop takes over (its archiver keys
 // under a different server_uuid and GTID stitches the streams).
+// ReplicationProbe reports whether this instance is replicating from its source.
+// The Loop uses it as the authorisation signal for draining a stranded tail (see
+// Loop.drain); it is nil for engines with no such path, which disables the drain.
+type ReplicationProbe interface {
+	// Streaming is true only when replication is configured and both threads are
+	// running — i.e. the source accepted this instance's GTID position rather than
+	// rejecting it as diverged.
+	Streaming(ctx context.Context) (bool, error)
+}
+
 type Loop struct {
 	reader   *Reader
 	archiver *Archiver
 	logger   logr.Logger
+	// replication authorises draining a demoted primary's un-shipped binlogs.
+	replication ReplicationProbe
 
 	pollInterval  time.Duration
 	flushInterval time.Duration
@@ -75,6 +87,9 @@ type LoopOptions struct {
 	FlushInterval time.Duration
 	// Purge enables the active purge gate (PURGE BINARY LOGS to the frontier).
 	Purge bool
+	// Replication authorises the drain of binlogs stranded by a demotion. When
+	// nil, a non-writable instance never archives.
+	Replication ReplicationProbe
 }
 
 // NewLoop builds a Loop from options, applying cadence defaults.
@@ -94,6 +109,7 @@ func NewLoop(opts LoopOptions) *Loop {
 		pollInterval:  poll,
 		flushInterval: flush,
 		purge:         opts.Purge,
+		replication:   opts.Replication,
 	}
 }
 
@@ -122,7 +138,8 @@ func (l *Loop) Run(ctx context.Context) error {
 }
 
 // tick runs one archive pass. It gates on writability so only the primary
-// archives; a non-primary clears its Active flag and does nothing.
+// rotates and ships on the RPO cadence; a non-primary clears its Active flag and
+// at most drains a tail it stranded while it was primary (see drain).
 func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *int64) {
 	writable, err := l.reader.Writable(ctx)
 	if err != nil {
@@ -135,6 +152,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.mu.Unlock()
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
 		*lastFlush = time.Time{}
+		l.drain(ctx)
 		return
 	}
 
@@ -195,6 +213,95 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 			"files", res.Archived,
 			"lastArchivedGTID", res.LastArchivedGTID)
 	}
+}
+
+// drain ships the closed binlogs a former primary stranded when it stopped being
+// writable, and does nothing at all on any other instance.
+//
+// A primary that dies holds every transaction it committed since its last
+// rotation in its still-open binlog, which the archiver cannot ship. Its
+// successor normally re-logs that history (log_slave_updates) and the hole
+// closes itself — but a re-cloned successor starts a virgin binlog and re-logs
+// nothing, so those transactions survive only in the dead primary's data
+// directory. Once its Pod restarts, mysqld closes that file and it becomes
+// archivable; without this, it is stranded for good and recovery across the
+// re-clone fails with ErrForkedTimeline against a hole no segment can bridge.
+//
+// Two conditions authorise the upload, and both are needed:
+//
+//   - The instance owns a segment (HasSegment): it archived while it was
+//     primary, so the files it holds are its own history and not a replica's
+//     redundant re-log of someone else's.
+//   - Replication is streaming: the source accepted this instance's GTID
+//     position, which under MASTER_USE_GTID=current_pos is its true frontier —
+//     including everything it authored as primary. Acceptance means the source's
+//     binlog contains that exact GTID (domain-server-sequence), so this
+//     instance's history is an ancestor of the surviving timeline.
+//
+// The second is the safety property. A former primary whose final transactions
+// never reached its successor is diverged: they sit on a dead branch, and the
+// promoted server has since reused those sequence numbers for different
+// transactions under its own server id. Archiving them would put two different
+// transactions at the same sequence into the archive, and the MariaDB planner
+// stitches segments by sequence — it could replay the dead branch and silently
+// produce a database state that never existed. So authorisation comes only from
+// a source that accepted us: MariaDB refuses a diverged replica with error 1236,
+// and a diverged instance therefore never reaches a streaming state. No error is
+// ever read as permission — a failure to connect leaves the tail unshipped, and
+// recovery keeps failing closed, which is the correct outcome for a hole that
+// genuinely cannot be filled.
+//
+// ArchivePending never touches the active log and is idempotent, so a drain
+// ships exactly the closed, un-shipped files and converges. No flush (a
+// non-writable server must not rotate) and no purge (the purge gate stays with
+// the primary).
+func (l *Loop) drain(ctx context.Context) {
+	if l.replication == nil {
+		return
+	}
+	mine, err := l.archiver.HasSegment(ctx)
+	if err != nil {
+		l.fail("checking archive segment", err)
+		return
+	}
+	if !mine {
+		return
+	}
+
+	streaming, err := l.replication.Streaming(ctx)
+	if err != nil {
+		l.fail("checking replication state", err)
+		return
+	}
+	if !streaming {
+		// Either still connecting, or the source rejected us as diverged. Both mean
+		// our history is unproven, so the tail stays on disk.
+		return
+	}
+
+	logs, err := l.reader.ListBinaryLogs(ctx)
+	if err != nil {
+		l.fail("listing binary logs", err)
+		return
+	}
+	res, err := l.archiver.ArchivePending(ctx, logs)
+	if err != nil {
+		l.fail("draining stranded binary logs", err)
+		return
+	}
+	if len(res.Archived) == 0 {
+		return
+	}
+
+	l.mu.Lock()
+	l.state.LastArchivedBinlog = res.LastArchivedBinlog
+	l.state.LastArchivedGTID = res.LastArchivedGTID
+	l.state.LastArchivedTime = res.LastArchivedTime
+	l.state.PendingFiles = pendingAfter(logs, res.LastArchivedBinlog)
+	l.mu.Unlock()
+	l.logger.Info("Drained binary logs stranded by a demotion",
+		"files", res.Archived,
+		"lastArchivedGTID", res.LastArchivedGTID)
 }
 
 func (l *Loop) fail(action string, err error) {

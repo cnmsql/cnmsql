@@ -510,7 +510,8 @@ func Run(ctx context.Context, opts RunOptions) error {
 			}
 			opts.Archiving.ArchiveIdentity = id
 		}
-		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery())
+		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery(),
+			replication.NewManagerWithDialect(db, ver, eng.Repl()))
 		if err != nil {
 			_ = sup.Shutdown(ctx)
 			return err

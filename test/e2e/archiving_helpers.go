@@ -99,14 +99,23 @@ func readArchiveIndex(cluster string) (objectstore.ArchiveIndex, error) {
 	return idx, nil
 }
 
-// flushBinaryLogs forces the primary to rotate its active binary log so every
-// committed transaction lands in an immutable, archivable file. Returns the
-// gtid_executed captured immediately after the flush.
+// flushBinaryLogs returns the primary's gtid_executed, then rotates its active
+// binary log so every transaction up to that position lands in an immutable,
+// archivable file.
+//
+// The position is read before the rotation, not after. The primary is never
+// quiescent — the instance manager stamps the heartbeat table once a second — so
+// a position read after the flush already includes transactions that landed in
+// the new, still-open file, which the archiver cannot ship until something closes
+// it. Such a target is unreachable: the recovery guard rejects it as beyond the
+// archived coverage. Reading first pins the target inside the file the flush is
+// about to close, which is the next file the archiver ships.
 func flushBinaryLogs(cluster, primary, password string) string {
+	executed := gtidExecuted(primary, password)
 	_, err := mysqlExec(primary, "root", rootPassword(cluster), "",
 		"FLUSH BINARY LOGS")
 	Expect(err).NotTo(HaveOccurred(), "FLUSH BINARY LOGS failed on %s", primary)
-	return gtidExecuted(primary, password)
+	return executed
 }
 
 // gtidExecuted reads @@GLOBAL.gtid_executed from an instance as the app user.
