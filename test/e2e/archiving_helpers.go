@@ -13,8 +13,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // setupMC deploys a long-lived mc (MinIO client) toolbox Pod with the bucket
@@ -163,11 +163,29 @@ func rootPassword(cluster string) string {
 // GTID set that is a superset of want — i.e. every committed transaction up to
 // want has been durably shipped to object storage with no gap.
 func expectArchiveCovers(cluster, want string, timeout time.Duration) {
-	// An empty want would make GTIDContains trivially true: the assertion would
-	// pass without proving anything. Every caller captures gtid_executed after a
+	GinkgoHelper()
+	expectFlavorArchiveCovers(cluster, engine.FlavorMySQL, want, timeout)
+}
+
+// expectMariadbArchiveCovers is expectArchiveCovers for a MariaDB source, whose
+// GTID sets are domain-server-sequence triples rather than MySQL's UUID form and
+// so need the MariaDB containment model. This is the same comparison the
+// operator's recovery guard makes before it admits a targetGTID, so waiting on it
+// is what makes a PITR spec's target admissible rather than merely likely to be.
+func expectMariadbArchiveCovers(cluster, want string, timeout time.Duration) {
+	GinkgoHelper()
+	expectFlavorArchiveCovers(cluster, engine.FlavorMariaDB, want, timeout)
+}
+
+func expectFlavorArchiveCovers(cluster string, flavor engine.Flavor, want string, timeout time.Duration) {
+	GinkgoHelper()
+	// An empty want would make containment trivially true: the assertion would
+	// pass without proving anything. Every caller captures a GTID position after a
 	// seed+flush, so it must be non-empty; refuse the vacuous case loudly.
-	ExpectWithOffset(1, want).NotTo(BeEmpty(),
-		"refusing to assert archive coverage of an empty GTID set (gtid_executed parsed empty?)")
+	Expect(want).NotTo(BeEmpty(),
+		"refusing to assert archive coverage of an empty GTID set (position parsed empty?)")
+	eng, err := engine.ForFlavor(flavor)
+	Expect(err).NotTo(HaveOccurred())
 	timeout = e2eTimeout(timeout)
 	Eventually(func(g Gomega) {
 		idx, err := readArchiveIndex(cluster)
@@ -179,7 +197,7 @@ func expectArchiveCovers(cluster, want string, timeout time.Duration) {
 		if err != nil {
 			g.Expect(err).NotTo(HaveOccurred(), "archive index unreadable: %s", archivingDiagnostics(cluster))
 		}
-		covers, err := replication.GTIDContains(idx.CoveredGTIDSet, want)
+		covers, err := eng.GTID().Contains(idx.CoveredGTIDSet, want)
 		g.Expect(err).NotTo(HaveOccurred())
 		if !covers {
 			g.Expect(covers).To(BeTrue(),
