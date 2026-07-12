@@ -112,10 +112,17 @@ type fakeProbe struct {
 
 func (p fakeProbe) Streaming(context.Context) (bool, error) { return p.streaming, p.err }
 
-// drainFixture builds a demoted former primary: it archived binlog.000001 while
-// it was writable (so it owns a segment), then died holding the closed-but-never
-// -shipped binlog.000002 — the tail a crash strands. binlog.000003 is the file
-// mysqld opened on restart, and must never be touched.
+// The three files a demoted former primary holds: one it shipped while it was
+// writable, the closed tail its crash stranded, and the log mysqld opened on
+// restart (which no non-writable server may ever archive).
+const (
+	shippedLog  = "binlog.000001"
+	strandedLog = "binlog.000002"
+	activeLog3  = "binlog.000003"
+)
+
+// drainFixture builds that former primary: it archived shippedLog while it was
+// writable, so it owns a segment, then died holding strandedLog.
 func drainFixture(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Archiver, *memStore) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -125,18 +132,18 @@ func drainFixture(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Archiver, *memStore)
 	t.Cleanup(func() { _ = db.Close() })
 
 	dir := t.TempDir()
-	writeBinlog(t, dir, "binlog.000001", "shipped")
-	writeBinlog(t, dir, "binlog.000002", "stranded")
-	writeBinlog(t, dir, "binlog.000003", "active")
+	writeBinlog(t, dir, shippedLog, "shipped")
+	writeBinlog(t, dir, strandedLog, "stranded")
+	writeBinlog(t, dir, activeLog3, "active")
 	store := newMemStore()
 	arch := newTestArchiver(t, store, dir, staticScan(map[string]string{
-		"binlog.000001": testUUID + ":1-3",
-		"binlog.000002": testUUID + ":4-9",
+		shippedLog:  testUUID + ":1-3",
+		strandedLog: testUUID + ":4-9",
 	}))
 
-	// Seed the segment: archive binlog.000001 as the primary once, so the instance
+	// Seed the segment: archive shippedLog as the primary once, so the instance
 	// owns an archive identity when it is later demoted.
-	seed := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})
+	seed := MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})
 	if _, err := arch.ArchivePending(context.Background(), seed); err != nil {
 		t.Fatal(err)
 	}
@@ -162,14 +169,14 @@ func expectDemotedWithLogs(mock sqlmock.Sqlmock) {
 		sqlmock.NewRows([]string{"v"}).AddRow("1"))
 	mock.ExpectQuery("SHOW BINARY LOGS").WillReturnRows(
 		sqlmock.NewRows([]string{"Log_name", "File_size"}).
-			AddRow("binlog.000001", "500").
-			AddRow("binlog.000002", "300").
-			AddRow("binlog.000003", "120"))
+			AddRow(shippedLog, "500").
+			AddRow(strandedLog, "300").
+			AddRow(activeLog3, "120"))
 }
 
 // A demoted primary whose source accepted its GTID position is proven to be an
 // ancestor of the surviving timeline, so the tail it stranded is shipped. Without
-// this the transactions in binlog.000002 exist only on its PVC, and a recovery
+// this the transactions in that tail exist only on its PVC, and a recovery
 // spanning them fails against a hole no segment can bridge.
 func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
 	t.Parallel()
@@ -188,15 +195,15 @@ func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
 	if state.Active {
 		t.Fatal("a draining instance is not an active archiver")
 	}
-	if state.LastArchivedBinlog != "binlog.000002" {
-		t.Fatalf("frontier = %q, want the stranded binlog.000002 shipped", state.LastArchivedBinlog)
+	if state.LastArchivedBinlog != strandedLog {
+		t.Fatalf("frontier = %q, want the stranded %s shipped", state.LastArchivedBinlog, strandedLog)
 	}
 	if state.LastError != "" {
 		t.Fatalf("unexpected error: %q", state.LastError)
 	}
 	// The active log stays untouched: a non-writable server must not archive the
 	// file mysqld is still writing.
-	if got, want := archivedNames(store), []string{"binlog.000001", "binlog.000002"}; !slices.Equal(got, want) {
+	if got, want := archivedNames(store), []string{shippedLog, strandedLog}; !slices.Equal(got, want) {
 		t.Fatalf("archived %v, want %v", got, want)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -204,8 +211,8 @@ func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
 	}
 }
 
-// The safety property: a former primary that cannot replicate may be diverged —
-// its final transactions may sit on a dead branch whose sequence numbers the
+// The safety property: a former primary that cannot replicate may be diverged.
+// Its final transactions may sit on a dead branch whose sequence numbers the
 // promoted server has since reused for different transactions. Archiving them
 // would let the merge-by-sequence planner replay the dead branch. So a
 // non-streaming instance ships nothing, and recovery keeps failing closed.
@@ -224,9 +231,9 @@ func TestLoopDrainRefusesWhenNotReplicating(t *testing.T) {
 	var lastSize int64
 	loop.tick(context.Background(), &lastFlush, &lastSize)
 
-	// The possibly-errant binlog.000002 stays on disk: unproven history never
-	// enters the archive.
-	if got, want := archivedNames(store), []string{"binlog.000001"}; !slices.Equal(got, want) {
+	// The possibly-errant tail stays on disk: unproven history never enters the
+	// archive.
+	if got, want := archivedNames(store), []string{shippedLog}; !slices.Equal(got, want) {
 		t.Fatalf("archived %v, want only the pre-demotion %v", got, want)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -235,8 +242,8 @@ func TestLoopDrainRefusesWhenNotReplicating(t *testing.T) {
 }
 
 // A replica that was never promoted owns no segment. Its binlogs are a re-logged
-// copy of the primary's history, not stranded originals, so it stays silent —
-// which is what keeps the drain from turning every replica into an archiver.
+// copy of the primary's history, not stranded originals, so it stays silent. That
+// is what keeps the drain from turning every replica into an archiver.
 func TestLoopDrainSkipsReplicaWithoutSegment(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New()
@@ -248,7 +255,7 @@ func TestLoopDrainSkipsReplicaWithoutSegment(t *testing.T) {
 		sqlmock.NewRows([]string{"v"}).AddRow("1"))
 
 	dir := t.TempDir()
-	writeBinlog(t, dir, "binlog.000001", "relogged")
+	writeBinlog(t, dir, shippedLog, "relogged")
 	arch := newTestArchiver(t, newMemStore(), dir, staticScan(nil))
 
 	loop := NewLoop(LoopOptions{
