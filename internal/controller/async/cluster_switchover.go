@@ -110,7 +110,15 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 	if err != nil {
 		return topology.FailoverResult{}, fmt.Errorf("unknown engine flavor %q", cluster.ResolvedFlavor())
 	}
-	candidate, _ := SelectFailoverCandidate(observed, knownDiverged, eng.GTID())
+	// The primary is still up for a planned drain, so its live position is the
+	// exact reference to measure the candidates against.
+	candidate := SelectFailoverCandidate(Election{
+		Observed:              observed,
+		KnownDiverged:         knownDiverged,
+		GTID:                  eng.GTID(),
+		MaxTransactionsBehind: maxTransactionsBehind(cluster),
+		ReferenceGTID:         observed.Instances[current].GTID,
+	}).Name
 	if candidate == "" {
 		// No provably-safe replica: do nothing and let failover handle the primary
 		// once it becomes unreachable.

@@ -106,13 +106,19 @@ type AvailabilityState struct {
 
 // FailoverInstance contains the async failover policy inputs for one instance.
 type FailoverInstance struct {
-	Ready            bool
-	Primary          bool
-	Replica          bool
-	Role             string
-	IORunning        bool
-	SQLRunning       bool
-	GTID             string
+	Ready      bool
+	Primary    bool
+	Replica    bool
+	Role       string
+	IORunning  bool
+	SQLRunning bool
+	// GTID is the instance's gtid_executed: what it has applied.
+	GTID string
+	// RetrievedGTID is the replica's Retrieved_Gtid_Set: what it has pulled into
+	// its relay log, applied or not. These transactions are already durable on the
+	// replica and it applies them before promotion, so the failover bound measures
+	// data loss against the union of GTID and RetrievedGTID, not against GTID alone.
+	RetrievedGTID    string
 	InPlaceUpgrading bool
 }
 

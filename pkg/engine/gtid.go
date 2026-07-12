@@ -70,6 +70,14 @@ type GTIDModel interface {
 	// Contains reports whether superset includes every transaction in subset.
 	Contains(superset, subset string) (bool, error)
 
+	// MissingCount returns how many transactions in want are absent from have.
+	// Contains reports whether promoting a replica would lose anything at all;
+	// this reports how much, which is what the failover bound needs.
+	MissingCount(have, want string) (int64, error)
+
+	// Union merges positions into the set of every transaction any of them holds.
+	Union(sets ...string) (string, error)
+
 	// Equal reports whether a and b hold exactly the same transactions.
 	Equal(a, b string) (bool, error)
 

@@ -359,6 +359,65 @@ During failover, the old primary is fenced by removing its primary role and
 deleting its Pod while retaining the PVC. The promoted replica becomes
 `currentPrimary`, and surviving replicas follow it.
 
+### Bounding data loss with `maxTransactionsBehind`
+
+The rules above pick the *best surviving* replica. They say nothing about how good
+that replica is in absolute terms. If every replica has fallen behind by the time
+the primary dies, the best of them is still promoted, and every transaction it
+never received is lost without a trace.
+
+`spec.failoverPolicy.maxTransactionsBehind` puts a limit on that loss:
+
+```yaml
+spec:
+  failoverPolicy:
+    maxTransactionsBehind: 100
+```
+
+The operator drops any replica missing more than that many transactions from the
+candidate pool. If this leaves no candidate at all, it refuses the failover: the
+cluster moves to `Blocked`, the `phaseReason` names the closest replica and the
+size of its gap, and nothing is promoted. Writes stay down until the old primary
+comes back with its data, or until you accept the loss by raising or removing the
+bound, which lets the election run normally.
+
+The operator takes the same position on a
+[diverged candidate](#excluding-diverged-candidates). When the only way to restore
+writes is to destroy committed transactions, it stops and asks you first.
+
+If you leave `maxTransactionsBehind` unset there is no bound, and the best
+surviving replica is promoted however far behind it is. The operator still
+measures the gap and reports it on the failover event.
+
+#### Why transactions and not seconds
+
+The obvious knob would be a lag in seconds, read from `Seconds_Behind_Source`.
+That column cannot do this job, for two reasons.
+
+It is `NULL` whenever the IO thread is disconnected. A failover happens precisely
+because the primary is gone, so every candidate has lost its connection and
+reports no lag at all at the exact moment the bound would need to fire.
+
+It also measures the applier rather than the data. `Seconds_Behind_Source` is the
+delay between the source committing a transaction and the replica *applying* it.
+Once a replica drains its relay log it reports `0`, no matter how many
+transactions it never received in the first place. A replica whose IO thread
+stalled ten minutes ago, and which has since applied everything it holds, reports
+zero lag while missing ten minutes of writes.
+
+So the operator measures the gap in transactions instead, by GTID. It compares
+against the last position it recorded for the primary in
+`status.gtidExecutedByInstance`, since the primary itself cannot be asked once it
+is down. What a candidate holds includes both its executed GTIDs *and* its
+retrieved but unapplied relay log: those transactions are already on the replica
+and get applied before it is promoted, so they are applier delay rather than data
+loss.
+
+One caveat. The operator refreshes that GTID snapshot periodically rather than on
+every write, so the snapshot can trail the primary's true final position. The gap
+it computes is therefore a *lower* bound. The real loss may be larger, never
+smaller.
+
 ### Excluding diverged candidates
 
 A diverged replica carries errant transactions, so its GTID set is a *superset*

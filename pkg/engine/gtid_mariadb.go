@@ -137,6 +137,49 @@ func (mariadbGTID) Contains(superset, subset string) (bool, error) {
 	return super.contains(sub), nil
 }
 
+// MissingCount sums, over every domain in want, how many sequence numbers have
+// has not reached. MariaDB numbers each domain's transactions consecutively
+// from 1, so the gap in a domain is the difference of the reached sequence
+// numbers, and a domain absent from have counts as its full sequence number.
+func (mariadbGTID) MissingCount(have, want string) (int64, error) {
+	posHave, err := parseMariaPos(have)
+	if err != nil {
+		return 0, err
+	}
+	posWant, err := parseMariaPos(want)
+	if err != nil {
+		return 0, err
+	}
+	var missing int64
+	for domain, wanted := range posWant {
+		if mine, ok := posHave[domain]; ok {
+			if wanted.seq > mine.seq {
+				missing += int64(wanted.seq - mine.seq)
+			}
+			continue
+		}
+		missing += int64(wanted.seq)
+	}
+	return missing, nil
+}
+
+// Union keeps, per domain, the highest sequence number any position reached.
+func (mariadbGTID) Union(sets ...string) (string, error) {
+	union := mariaPos{}
+	for _, raw := range sets {
+		pos, err := parseMariaPos(raw)
+		if err != nil {
+			return "", err
+		}
+		for domain, e := range pos {
+			if existing, ok := union[domain]; !ok || e.seq >= existing.seq {
+				union[domain] = e
+			}
+		}
+	}
+	return union.string(), nil
+}
+
 func (mariadbGTID) Equal(a, b string) (bool, error) {
 	posA, err := parseMariaPos(a)
 	if err != nil {
