@@ -261,3 +261,54 @@ func TestFailedReadInvalidatesTheLastReading(t *testing.T) {
 		t.Error("a failed read recorded no error")
 	}
 }
+
+// TestStampOnPrimaryReportingReadOnlyAsOff proves the writability probe survives
+// an engine that spells the flag OFF/ON rather than 0/1. MariaDB 12 does, and
+// scanning "OFF" straight into a bool fails the probe, which made every server
+// look unwritable: the primary never stamped, the table was never created, and
+// no instance in the cluster ever reported a lag.
+func TestStampOnPrimaryReportingReadOnlyAsOff(t *testing.T) {
+	loop, mock := newTestLoop(t)
+
+	mock.ExpectQuery(regexp.QuoteMeta(superReadOnlyQuery)).
+		WillReturnError(&mysql.MySQLError{Number: errUnknownSystemVariable, Message: "unknown system variable"})
+	mock.ExpectQuery(regexp.QuoteMeta(readOnlyQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"ro"}).AddRow("OFF"))
+	mock.ExpectExec("CREATE DATABASE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT INTO").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(readQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"micros"}).AddRow(int64(1_000_000)))
+
+	loop.tick(context.Background())
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
+	}
+	if state := loop.State(); !state.Writing {
+		t.Errorf("a writable primary reporting read_only=OFF did not stamp the heartbeat (err %q)", state.LastError)
+	}
+}
+
+// TestStampOnReplicaReportingReadOnlyAsOn is the other half: the same spelling
+// must still read as read-only, or the loop would stamp on a replica and strand
+// it with an errant transaction.
+func TestStampOnReplicaReportingReadOnlyAsOn(t *testing.T) {
+	loop, mock := newTestLoop(t)
+
+	mock.ExpectQuery(regexp.QuoteMeta(superReadOnlyQuery)).
+		WillReturnError(&mysql.MySQLError{Number: errUnknownSystemVariable, Message: "unknown system variable"})
+	mock.ExpectQuery(regexp.QuoteMeta(readOnlyQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"ro"}).AddRow("ON"))
+	mock.ExpectQuery(regexp.QuoteMeta(readQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"micros"}).AddRow(int64(2_000_000)))
+
+	loop.tick(context.Background())
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
+	}
+	if state := loop.State(); state.Writing {
+		t.Error("an instance reporting read_only=ON stamped the heartbeat")
+	}
+}

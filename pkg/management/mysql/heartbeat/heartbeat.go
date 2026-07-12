@@ -247,15 +247,31 @@ func (l *Loop) stamp(ctx context.Context) (bool, error) {
 // it. Very old MySQL (pre-5.7.8) lacks it for the same reason and takes the same
 // path. This mirrors the archiver's Writable, which needs the answer for the
 // same reason: only the primary may generate transactions.
+//
+// The flag is read as a string, never straight into a bool: engines disagree on
+// how they render it. MySQL and MariaDB through 11.x answer 0/1, MariaDB 12
+// answers OFF/ON, and a bool Scan of "OFF" fails outright, which would leave
+// every server looking unwritable and stop the primary stamping at all.
 func (l *Loop) writable(ctx context.Context) (bool, error) {
-	var readOnly bool
+	var readOnly sql.NullString
 	err := l.db.QueryRowContext(ctx, "SELECT @@GLOBAL.super_read_only").Scan(&readOnly)
 	if err != nil {
 		if err2 := l.db.QueryRowContext(ctx, "SELECT @@GLOBAL.read_only").Scan(&readOnly); err2 != nil {
 			return false, fmt.Errorf("reading server read-only state: %w", err2)
 		}
 	}
-	return !readOnly, nil
+	return !parseServerBool(readOnly.String), nil
+}
+
+// parseServerBool reads a server boolean in any of the spellings the engines
+// use for it: 0/1, OFF/ON, and the mixed-case variants.
+func parseServerBool(s string) bool {
+	switch strings.ToUpper(s) {
+	case "1", "ON", "TRUE", "YES":
+		return true
+	default:
+		return false
+	}
 }
 
 // read returns the age of the newest stamp this instance has applied.
