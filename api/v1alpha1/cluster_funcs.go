@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -230,8 +231,57 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
 	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
 	allErrs = append(allErrs, spec.validateFlavor(specPath)...)
+	allErrs = append(allErrs, cluster.validateFailoverPolicy(specPath.Child("failoverPolicy"))...)
 
 	return allErrs
+}
+
+// validateFailoverPolicy checks the anti-flapping timers and the preferred
+// primary list. The list is checked against the instance names this cluster can
+// generate: a name that can never exist is a typo, and a preference the operator
+// would silently never act on is worse than a rejected spec.
+func (cluster *Cluster) validateFailoverPolicy(path *field.Path) field.ErrorList {
+	policy := cluster.Spec.FailoverPolicy
+	if policy == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	for name, duration := range map[string]*metav1.Duration{
+		"minTimeBetweenFailovers": policy.MinTimeBetweenFailovers,
+		"primaryStabilityWindow":  policy.PrimaryStabilityWindow,
+	} {
+		if duration != nil && duration.Duration < 0 {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child(name), duration.Duration.String(),
+				fmt.Sprintf("%s cannot be negative", name)))
+		}
+	}
+
+	preferredPath := path.Child("preferredPrimary")
+	seen := make(map[string]bool, len(policy.PreferredPrimary))
+	for i, name := range policy.PreferredPrimary {
+		switch {
+		case seen[name]:
+			allErrs = append(allErrs, field.Duplicate(preferredPath.Index(i), name))
+		case !isInstanceNameOf(cluster.Name, name):
+			allErrs = append(allErrs, field.Invalid(
+				preferredPath.Index(i), name,
+				fmt.Sprintf("must be an instance of this cluster, i.e. %s-<ordinal>", cluster.Name)))
+		}
+		seen[name] = true
+	}
+	return allErrs
+}
+
+// isInstanceNameOf reports whether name is one of clusterName's instance names,
+// which the operator builds as "<cluster>-<ordinal>".
+func isInstanceNameOf(clusterName, name string) bool {
+	suffix, found := strings.CutPrefix(name, clusterName+"-")
+	if !found || suffix == "" {
+		return false
+	}
+	ordinal, err := strconv.Atoi(suffix)
+	return err == nil && ordinal > 0
 }
 
 // ValidateUpdate returns the validation errors specific to updating an existing
@@ -367,6 +417,34 @@ func (cluster *Cluster) MaxReplicationLag() *time.Duration {
 		return nil
 	}
 	return &cluster.Spec.FailoverPolicy.MaxReplicationLag.Duration
+}
+
+// PreferredPrimary returns the instance names the primary role should sit on,
+// most preferred first, or nil when the cluster expresses no preference.
+func (cluster *Cluster) PreferredPrimary() []string {
+	if cluster.Spec.FailoverPolicy == nil {
+		return nil
+	}
+	return cluster.Spec.FailoverPolicy.PreferredPrimary
+}
+
+// MinTimeBetweenFailovers returns the anti-flapping cooldown between automatic
+// failovers, or zero when the cluster sets none.
+func (cluster *Cluster) MinTimeBetweenFailovers() time.Duration {
+	if cluster.Spec.FailoverPolicy == nil || cluster.Spec.FailoverPolicy.MinTimeBetweenFailovers == nil {
+		return 0
+	}
+	return cluster.Spec.FailoverPolicy.MinTimeBetweenFailovers.Duration
+}
+
+// PrimaryStabilityWindow returns how long a promoted primary must stay healthy
+// before it counts as settled, or zero when the cluster sets no window, in which
+// case a promotion settles the moment it happens.
+func (cluster *Cluster) PrimaryStabilityWindow() time.Duration {
+	if cluster.Spec.FailoverPolicy == nil || cluster.Spec.FailoverPolicy.PrimaryStabilityWindow == nil {
+		return 0
+	}
+	return cluster.Spec.FailoverPolicy.PrimaryStabilityWindow.Duration
 }
 
 func (cluster *Cluster) heartbeat() *ReplicationHeartbeat {

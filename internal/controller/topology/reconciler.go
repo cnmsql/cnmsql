@@ -310,6 +310,16 @@ type Reconciler interface {
 		cluster *mysqlv1alpha1.Cluster,
 		observed FailoverState,
 	) (FailoverResult, error)
+	// SwitchoverTargetReady reports whether instanceName could be handed the
+	// primary role right now: an async replica whose replication threads are both
+	// running, or an ONLINE secondary member of the group. It is the topology's
+	// answer to "is this a legitimate switchover target", and it decides whether a
+	// preferred primary is in a fit state to be failed back to.
+	SwitchoverTargetReady(
+		cluster *mysqlv1alpha1.Cluster,
+		observed FailoverState,
+		instanceName string,
+	) bool
 	Observe(input ObservationInput) Observation
 	MergeStatus(cluster *mysqlv1alpha1.Cluster, observed Observation)
 	ObservedFailover(before, after *mysqlv1alpha1.Cluster) (string, string, bool)

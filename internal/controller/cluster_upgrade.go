@@ -229,7 +229,7 @@ func (r *ClusterReconciler) upgradePrimaryViaSwitchover(
 
 	if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 		s.TargetPrimary = target
-		s.TargetPrimaryTimestamp = ""
+		s.TargetPrimaryTimestamp = nil
 	}); err != nil {
 		return false, reconcile.Result{}, err
 	}

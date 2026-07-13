@@ -1145,7 +1145,7 @@ func TestReconcileSwitchoverWaitsForInstancePromotion(t *testing.T) {
 	if got.Status.TargetPrimary != testReplica2 {
 		t.Fatalf("targetPrimary = %q, want %q", got.Status.TargetPrimary, testReplica2)
 	}
-	if got.Status.TargetPrimaryTimestamp == "" {
+	if got.Status.TargetPrimaryTimestamp.IsZero() {
 		t.Fatal("targetPrimaryTimestamp should be stamped")
 	}
 	if got.Status.Phase != topology.PhaseSwitchover {

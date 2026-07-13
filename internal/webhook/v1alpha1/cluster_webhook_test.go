@@ -3,12 +3,14 @@ package v1alpha1
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -18,6 +20,13 @@ func TestClusterStatusValidator(t *testing.T) {
 	d := admission.NewDecoder(schemeForTests())
 	validator := &ClusterStatusValidator{Decoder: d}
 
+	// The cases care only about whether the election stamp is absent, or present
+	// and distinct from the one before it, so they name two of them: "then" is the
+	// stamp of a standing primary, "now" the stamp of a promotion under test.
+	stamps := map[string]*metav1.Time{
+		"then": ptr.To(metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))),
+		"now":  ptr.To(metav1.NewTime(time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC))),
+	}
 	mkCluster := func(current, timestamp, target string) *mysqlv1alpha1.Cluster {
 		return &mysqlv1alpha1.Cluster{
 			ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},
@@ -26,7 +35,7 @@ func TestClusterStatusValidator(t *testing.T) {
 			},
 			Status: mysqlv1alpha1.ClusterStatus{
 				CurrentPrimary:          current,
-				CurrentPrimaryTimestamp: timestamp,
+				CurrentPrimaryTimestamp: stamps[timestamp],
 				TargetPrimary:           target,
 			},
 		}

@@ -522,6 +522,107 @@ case it cannot catch is a replica that diverged during the same outage, with no
 earlier reconcile to record it. That is the fundamental limit of MySQL
 replication once the old primary is gone to compare against.
 
+### Steering the primary with `preferredPrimary`
+
+Everything above decides which replica is *safe* to promote. It says nothing
+about which one you would rather have. If one node has the faster disks, or sits
+in the zone your application runs in, you want writes to land there, and an
+election that resolves ties on ordinal order does not know that.
+
+`spec.failoverPolicy.preferredPrimary` names the instances that should hold the
+role, most preferred first:
+
+```yaml
+spec:
+  failoverPolicy:
+    preferredPrimary:
+      - my-cluster-2
+      - my-cluster-3
+```
+
+It does two things.
+
+In an election it orders the candidates, so the most preferred replica that is
+also safe wins. It is only a tie-break. A preferred replica that has diverged,
+that is missing transactions the bounds above refuse to lose, or that cannot be
+proven to hold every other candidate's transactions, is passed over for one that
+can. The preference cannot promote a replica the operator would otherwise have
+refused, and it never widens the candidate pool.
+
+It also brings the primary back. When the primary is not the most preferred
+instance that is currently available, and that instance is a healthy replica fit
+to be a switchover target, the operator performs a planned switchover to it. This
+is the ordinary switchover path: the operator sets `status.targetPrimary` and the
+handoff runs with the same validation and the same `maxSwitchoverDelay` bound as a
+switchover you request yourself. So a failover that moves the primary onto a node
+you did not want is corrected once the node you did want comes back.
+
+Names are instance names, so `my-cluster-2`, not a Kubernetes node name. Pin the
+instance to the node you care about with the usual affinity rules, and name the
+instance here. An instance that does not exist is ignored, which means the list
+may name instances of a cluster larger than the one you are running today.
+
+Under Group Replication the group elects its own primary and the operator does
+not run the election, so `preferredPrimary` only does the second half of the job
+there: it switches the primary back to the preferred member, via
+`group_replication_set_as_primary`, once that member is ONLINE again.
+
+### Damping repeated failovers
+
+A failover replaces a primary that has failed. It does nothing about a primary
+that keeps failing. If the replacement is on the same bad node, or the cause is a
+network partition that comes and goes, the operator will keep doing what it is
+told to do and walk the primary role around the cluster, one promotion per
+outage, until it runs out of instances. Every one of those promotions costs a
+write interruption, and none of them fixes anything.
+
+`spec.failoverPolicy.minTimeBetweenFailovers` is the brake:
+
+```yaml
+spec:
+  failoverPolicy:
+    minTimeBetweenFailovers: 10m
+    primaryStabilityWindow: 2m
+```
+
+The operator refuses an automatic failover that comes less than
+`minTimeBetweenFailovers` after the last one settled. The cluster moves to
+`Blocked` and the `phaseReason` names how long is left. The refusal does not stop
+the rest of the reconcile: the failed primary's Pod is still recreated. That is
+the outcome the wait exists to allow. A primary that is
+failing intermittently is usually better restarted in place than replaced, and a
+promotion the operator declines is a promotion the primary gets a chance to make
+unnecessary.
+
+The bound applies to automatic promotions only. A switchover you request by
+writing `status.targetPrimary` is honoured immediately. A human asking for the
+primary to move is not the operator flapping.
+
+`primaryStabilityWindow` decides when a promoted primary counts as *settled*, and
+so when the cooldown starts running. Without it the cooldown runs from the
+promotion itself, and a primary that comes up, drops out, and comes up again
+burns the cooldown down while it is misbehaving. Once the cooldown expires the
+operator fails away from an instance that was never really working, which is the
+flapping it was set to prevent.
+
+With it, the cooldown runs from the point the primary had been continuously
+healthy for that long. Every time the primary drops out the clock restarts, so an
+instance that cannot stay up never settles, and the operator keeps declining to
+fail over on its behalf. The churn stops at the instance causing it, and the
+failure is left for the Pod restart, or for you, to resolve.
+
+Two things this deliberately does not do. It does not trap a cluster whose
+promoted primary never came up at all: an instance that has never been observed
+healthy has no healthy stretch to measure, so the cooldown falls back to running
+from the promotion, and the operator is free to replace it once that expires. And
+it costs nothing in the ordinary case, because a primary that has been healthy for
+longer than the window settled long ago, which is every primary in a cluster that
+is not flapping.
+
+Both timers are checked after `spec.failoverDelay` has already elapsed, and both
+are unset by default: an unconfigured cluster fails over as soon as the delay is
+up, however recently the last one happened.
+
 ## Former primary rejoin
 
 When a fenced or crashed primary returns, it does not automatically become

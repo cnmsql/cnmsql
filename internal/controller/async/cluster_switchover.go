@@ -117,6 +117,7 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 		KnownDiverged:         knownDiverged,
 		GTID:                  eng.GTID(),
 		MaxTransactionsBehind: maxTransactionsBehind(cluster),
+		Preferred:             cluster.PreferredPrimary(),
 		ReferenceGTID:         observed.Instances[current].GTID,
 	}).Name
 	if candidate == "" {
@@ -127,9 +128,10 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 
 	message := fmt.Sprintf("Primary %s is draining; switching over to %s", current, candidate)
 	logf.FromContext(ctx).Info("Switching over a draining primary", "from", current, "to", candidate)
+	now := metav1.Now()
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = candidate
-		status.TargetPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
+		status.TargetPrimaryTimestamp = &now
 		status.Phase = topology.PhaseSwitchover
 		status.PhaseReason = message
 	}); err != nil {
@@ -139,6 +141,17 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 		r.recorder.Event(cluster, corev1.EventTypeNormal, topology.PhaseSwitchover, message)
 	}
 	return topology.FailoverResult{Handled: true}, nil
+}
+
+// SwitchoverTargetReady reports whether target is an async replica fit to be
+// handed the primary role: the same bar a switchover the user asked for has to
+// clear.
+func (r *Reconciler) SwitchoverTargetReady(
+	_ *mysqlv1alpha1.Cluster,
+	observed topology.FailoverState,
+	target string,
+) bool {
+	return validateSwitchoverTarget(observed, target) == nil
 }
 
 func validateSwitchoverTarget(observed topology.FailoverState, target string) error {
@@ -162,18 +175,16 @@ func (r *Reconciler) ensureSwitchoverStarted(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 ) (time.Time, error) {
-	if timestamp := cluster.Status.TargetPrimaryTimestamp; timestamp != "" {
-		if parsed, err := time.Parse(time.RFC3339, timestamp); err == nil {
-			return parsed, nil
-		}
+	if timestamp := cluster.Status.TargetPrimaryTimestamp; timestamp != nil {
+		return timestamp.Time, nil
 	}
-	now := time.Now().Truncate(time.Second)
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
-		status.TargetPrimaryTimestamp = now.Format(time.RFC3339)
+		status.TargetPrimaryTimestamp = &now
 	}); err != nil {
 		return time.Time{}, err
 	}
-	return now, nil
+	return now.Time, nil
 }
 
 func (r *Reconciler) abortSwitchover(
@@ -186,7 +197,7 @@ func (r *Reconciler) abortSwitchover(
 	logf.FromContext(ctx).Info("Aborting switchover", "target", target, "restoredPrimary", current, "reason", reason)
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = current
-		status.TargetPrimaryTimestamp = ""
+		status.TargetPrimaryTimestamp = nil
 		status.Phase = topology.PhaseBlocked
 		status.PhaseReason = reason
 	}); err != nil {

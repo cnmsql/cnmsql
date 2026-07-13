@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -457,7 +458,7 @@ func TestReconcilePrimaryChangeAbortsWhenTargetLagsPastMaxSwitchoverDelay(t *tes
 	cluster.Status.CurrentPrimary = testPrimary
 	cluster.Status.TargetPrimary = testReplica2
 	// The switchover started well beyond maxSwitchoverDelay ago.
-	cluster.Status.TargetPrimaryTimestamp = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	cluster.Status.TargetPrimaryTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-time.Hour)))
 	scheme := testScheme(t)
 	pods := []*corev1.Pod{
 		readyPod(cluster, testPrimary, rolePrimary),
@@ -515,7 +516,7 @@ func failoverCluster(t *testing.T, failoverDelay int32) (*mysqlv1alpha1.Cluster,
 	cluster.Spec.FailoverDelay = failoverDelay
 	cluster.Status.CurrentPrimary = testPrimary
 	cluster.Status.TargetPrimary = testPrimary
-	cluster.Status.CurrentPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
+	cluster.Status.CurrentPrimaryTimestamp = ptr.To(metav1.Now())
 	scheme := testScheme(t)
 	// The old primary Pod still exists (unreachable, but not yet deleted).
 	oldPod := readyPod(cluster, testPrimary, rolePrimary)
@@ -584,8 +585,8 @@ func TestReconcileFailoverPromotesBestCandidateImmediately(t *testing.T) {
 	if gotCluster.Status.TargetPrimary != testReplica2 {
 		t.Fatalf("targetPrimary = %q, want %q", gotCluster.Status.TargetPrimary, testReplica2)
 	}
-	if gotCluster.Status.PrimaryFailingSince != "" {
-		t.Fatalf("primaryFailingSince = %q, want cleared", gotCluster.Status.PrimaryFailingSince)
+	if gotCluster.Status.PrimaryFailingSince != nil {
+		t.Fatalf("primaryFailingSince = %v, want cleared", gotCluster.Status.PrimaryFailingSince)
 	}
 	if gotCluster.Status.Phase != topology.PhaseFailingOver {
 		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseFailingOver)
@@ -615,7 +616,7 @@ func TestReconcileFailoverWaitsForFailoverDelay(t *testing.T) {
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster); err != nil {
 		t.Fatal(err)
 	}
-	if gotCluster.Status.PrimaryFailingSince == "" {
+	if gotCluster.Status.PrimaryFailingSince == nil {
 		t.Fatal("primaryFailingSince was not recorded")
 	}
 	if gotCluster.Status.Phase != topology.PhaseDegraded {
@@ -753,7 +754,7 @@ func TestReconcileFailoverClearsMarkerWhenPrimaryHealthy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster, reconciler, control := failoverCluster(t, 0)
-	cluster.Status.PrimaryFailingSince = metav1.Now().Format(time.RFC3339)
+	cluster.Status.PrimaryFailingSince = ptr.To(metav1.Now())
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
@@ -779,8 +780,8 @@ func TestReconcileFailoverClearsMarkerWhenPrimaryHealthy(t *testing.T) {
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster); err != nil {
 		t.Fatal(err)
 	}
-	if gotCluster.Status.PrimaryFailingSince != "" {
-		t.Fatalf("failing marker not cleared: %q", gotCluster.Status.PrimaryFailingSince)
+	if gotCluster.Status.PrimaryFailingSince != nil {
+		t.Fatalf("failing marker not cleared: %v", gotCluster.Status.PrimaryFailingSince)
 	}
 }
 

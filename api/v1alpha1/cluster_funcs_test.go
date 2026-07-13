@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 )
@@ -583,5 +584,59 @@ var _ = Describe("BackupBeforeUpgrade defaulting", func() {
 			BackupBeforeUpgrade: ptr.To(false),
 		}}}
 		Expect(cluster.BackupBeforeUpgradeEnabled()).To(BeFalse())
+	})
+})
+
+var _ = Describe("Failover policy validation", func() {
+	policyCluster := func(policy *FailoverPolicy) *Cluster {
+		cluster := &Cluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+			Spec: ClusterSpec{
+				ImageName:      "percona/percona-server:8.0",
+				Instances:      3,
+				Storage:        StorageConfiguration{Size: "10Gi"},
+				FailoverPolicy: policy,
+			},
+		}
+		cluster.SetDefaults()
+		return cluster
+	}
+
+	It("accepts a preference naming instances of this cluster", func() {
+		cluster := policyCluster(&FailoverPolicy{PreferredPrimary: []string{"demo-2", "demo-1"}})
+		Expect(cluster.Validate()).To(BeEmpty())
+		Expect(cluster.PreferredPrimary()).To(Equal([]string{"demo-2", "demo-1"}))
+	})
+
+	It("rejects a preference naming an instance of another cluster", func() {
+		cluster := policyCluster(&FailoverPolicy{PreferredPrimary: []string{"other-1"}})
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects a preference naming the same instance twice", func() {
+		cluster := policyCluster(&FailoverPolicy{PreferredPrimary: []string{"demo-1", "demo-1"}})
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("rejects negative anti-flapping timers", func() {
+		cluster := policyCluster(&FailoverPolicy{
+			MinTimeBetweenFailovers: &metav1.Duration{Duration: -time.Minute},
+		})
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("reads the anti-flapping timers back, and zero when unset", func() {
+		cluster := policyCluster(&FailoverPolicy{
+			MinTimeBetweenFailovers: &metav1.Duration{Duration: 10 * time.Minute},
+			PrimaryStabilityWindow:  &metav1.Duration{Duration: 2 * time.Minute},
+		})
+		Expect(cluster.Validate()).To(BeEmpty())
+		Expect(cluster.MinTimeBetweenFailovers()).To(Equal(10 * time.Minute))
+		Expect(cluster.PrimaryStabilityWindow()).To(Equal(2 * time.Minute))
+
+		bare := policyCluster(nil)
+		Expect(bare.MinTimeBetweenFailovers()).To(BeZero())
+		Expect(bare.PrimaryStabilityWindow()).To(BeZero())
+		Expect(bare.PreferredPrimary()).To(BeEmpty())
 	})
 })

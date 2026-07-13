@@ -19,7 +19,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,8 +73,9 @@ func runPromote(ctx context.Context, clusterName, instance string) error {
 	}
 
 	before := cluster.DeepCopy()
+	now := metav1.Now()
 	cluster.Status.TargetPrimary = instance
-	cluster.Status.TargetPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
+	cluster.Status.TargetPrimaryTimestamp = &now
 	if err := env.Client.Status().Patch(ctx, cluster, client.MergeFrom(before)); err != nil {
 		return fmt.Errorf("patching target primary: %w", err)
 	}
