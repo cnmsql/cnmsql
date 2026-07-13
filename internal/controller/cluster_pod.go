@@ -353,6 +353,10 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 			fmt.Sprintf("--archive-rpo-seconds=%d", cluster.ArchiveRPOSeconds()),
 		)
 	}
+	if cluster.IsHeartbeatEnabled() {
+		args = append(args, fmt.Sprintf("--heartbeat-interval-millis=%d",
+			cluster.HeartbeatInterval().Milliseconds()))
+	}
 	args = append(args,
 		fmt.Sprintf("--stop-delay=%d", cluster.GetMaxStopDelay()),
 		fmt.Sprintf("--smart-shutdown-timeout=%d", cluster.GetSmartShutdownTimeout()),

@@ -343,6 +343,39 @@ func (cluster *Cluster) ReplicationMode() string {
 	return cluster.Spec.Replication.Mode
 }
 
+// IsHeartbeatEnabled reports whether the replication-lag heartbeat runs. It is
+// on unless explicitly disabled.
+func (cluster *Cluster) IsHeartbeatEnabled() bool {
+	hb := cluster.heartbeat()
+	return hb == nil || hb.Enabled == nil || *hb.Enabled
+}
+
+// HeartbeatInterval returns how often the primary stamps the heartbeat table,
+// defaulting to one second.
+func (cluster *Cluster) HeartbeatInterval() time.Duration {
+	hb := cluster.heartbeat()
+	if hb == nil || hb.Interval == nil || hb.Interval.Duration <= 0 {
+		return time.Second
+	}
+	return hb.Interval.Duration
+}
+
+// MaxReplicationLag returns the configured seconds-of-writes promotion bound, or
+// nil when the cluster sets none.
+func (cluster *Cluster) MaxReplicationLag() *time.Duration {
+	if cluster.Spec.FailoverPolicy == nil || cluster.Spec.FailoverPolicy.MaxReplicationLag == nil {
+		return nil
+	}
+	return &cluster.Spec.FailoverPolicy.MaxReplicationLag.Duration
+}
+
+func (cluster *Cluster) heartbeat() *ReplicationHeartbeat {
+	if cluster.Spec.Replication == nil {
+		return nil
+	}
+	return cluster.Spec.Replication.Heartbeat
+}
+
 // ResolvedFlavor returns the effective engine flavor, defaulting to mysql.
 func (cluster *Cluster) ResolvedFlavor() Flavor {
 	if cluster.Spec.Flavor == "" {

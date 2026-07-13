@@ -52,6 +52,9 @@ type observedCluster struct {
 	InstanceNames []string
 	// GTIDByInstance maps instance name to its gtid_executed set.
 	GTIDByInstance map[string]string
+	// ReplicationLagByInstance maps instance name to its heartbeat reading, in
+	// milliseconds. Instances that reported none are absent.
+	ReplicationLagByInstance map[string]int64
 	// ExecutableHashByInstance maps instance name to its reported instance-manager hash.
 	ExecutableHashByInstance map[string]string
 	// StatusByInstance maps instance name to the last successful control status.
@@ -115,6 +118,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		PrimaryName:              plan.primaryName(cluster),
 		InstanceNames:            plan.instanceNames(cluster),
 		GTIDByInstance:           map[string]string{},
+		ReplicationLagByInstance: map[string]int64{},
 		ExecutableHashByInstance: map[string]string{},
 		StatusByInstance:         map[string]*webserver.Status{},
 		Progressing:              true,
@@ -171,6 +175,9 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 		if status.ExecutableHash != "" {
 			observed.ExecutableHashByInstance[inst.Name] = status.ExecutableHash
+		}
+		if status.ReplicationLag != nil && status.ReplicationLag.LagMillis != nil {
+			observed.ReplicationLagByInstance[inst.Name] = *status.ReplicationLag.LagMillis
 		}
 		if status.IsReady {
 			observed.ReadyInstances++
@@ -527,6 +534,24 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		latest.Status.GTIDExecutedByInstance = merged
 		latest.Status.GTIDExecutedUpdatedAt = &metav1.Time{Time: time.Now()}
 	}
+	// The heartbeat readings are throttled too, but on their own and far shorter
+	// clock. They exist to be read by a human or a dashboard, and a lag number is
+	// worth nothing if it is not recent: on the gtid snapshot's schedule a steady
+	// healthy cluster would refresh it every five minutes, leaving whatever value
+	// happened to be there while the replica was still catching up on startup
+	// standing as the truth for the next five.
+	//
+	// Nothing in the operator reads them back, so unlike the GTID positions they
+	// are replaced rather than merged. A reading from an instance that has since
+	// gone quiet is not worth keeping: it would only invite someone to trust a
+	// number that stopped being true.
+	if otherChanged || lagSnapshotStale(before.Status.ReplicationLagUpdatedAt) {
+		latest.Status.ReplicationLagByInstance = nil
+		if len(observed.ReplicationLagByInstance) > 0 {
+			latest.Status.ReplicationLagByInstance = observed.ReplicationLagByInstance
+			latest.Status.ReplicationLagUpdatedAt = &metav1.Time{Time: time.Now()}
+		}
+	}
 	if reflect.DeepEqual(before.Status, latest.Status) {
 		return nil
 	}
@@ -622,6 +647,25 @@ const gtidPersistInterval = 5 * time.Minute
 // enough to be refreshed. A nil timestamp (never persisted) counts as stale.
 func gtidSnapshotStale(updatedAt *metav1.Time) bool {
 	return updatedAt == nil || time.Since(updatedAt.Time) >= gtidPersistInterval
+}
+
+// lagPersistInterval bounds how often the operator persists the heartbeat
+// readings when nothing else in the status is changing. It is far shorter than
+// gtidPersistInterval because the two snapshots are read by different things: the
+// GTID positions are a fallback the operator consults once, after a primary has
+// already died, and an old one is still sound. A lag reading is looked at by
+// people, and one that is minutes old is worse than none at all, because nothing
+// about it says so.
+//
+// Being under readyResync, it puts the real refresh cadence of a healthy cluster
+// at one resync, so the cost is a small status patch every readyResync per
+// cluster. That is the price of the readings being worth reading.
+const lagPersistInterval = 15 * time.Second
+
+// lagSnapshotStale reports whether the persisted heartbeat readings are old
+// enough to be refreshed. A nil timestamp (never persisted) counts as stale.
+func lagSnapshotStale(updatedAt *metav1.Time) bool {
+	return updatedAt == nil || time.Since(updatedAt.Time) >= lagPersistInterval
 }
 
 func (r *ClusterReconciler) certificateStatus(

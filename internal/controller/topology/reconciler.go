@@ -118,7 +118,16 @@ type FailoverInstance struct {
 	// its relay log, applied or not. These transactions are already durable on the
 	// replica and it applies them before promotion, so the failover bound measures
 	// data loss against the union of GTID and RetrievedGTID, not against GTID alone.
-	RetrievedGTID    string
+	RetrievedGTID string
+	// HeartbeatAge is how old the newest heartbeat stamp this instance has applied
+	// is, as the instance itself measured it. Nil when the heartbeat is off or has
+	// never been read.
+	//
+	// It is not the replication delay once the primary has stopped stamping: with
+	// no new stamps arriving it grows by one second per second, so it carries the
+	// delay at the moment the primary died plus however long the primary has been
+	// down. The failover election subtracts the latter to recover the former.
+	HeartbeatAge     *time.Duration
 	InPlaceUpgrading bool
 }
 

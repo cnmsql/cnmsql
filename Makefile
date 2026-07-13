@@ -158,8 +158,8 @@ docs-build: ## Build the Docusaurus documentation site.
 	NO_UPDATE_NOTIFIER=1 $(NPM) --prefix docs run build
 
 .PHONY: api-docs
-api-docs: ## Generate API reference documentation from CRDs.
-	go run github.com/elastic/crd-ref-docs \
+api-docs: crd-ref-docs ## Generate API reference documentation from CRDs.
+	"$(CRD_REF_DOCS)" \
 		--config $(CRD_REF_DOCS_CONFIG) \
 		--source-path api \
 		--renderer markdown \
@@ -309,6 +309,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GINKGO ?= $(LOCALBIN)/ginkgo
 GOVULNCHECK ?= $(LOCALBIN)/govulncheck
+CRD_REF_DOCS ?= $(LOCALBIN)/crd-ref-docs
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -326,6 +327,12 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
 
 GOLANGCI_LINT_VERSION ?= v2.11.4
 GOVULNCHECK_VERSION ?= v1.1.4
+CRD_REF_DOCS_VERSION ?= v0.3.0
+
+.PHONY: crd-ref-docs
+crd-ref-docs: $(CRD_REF_DOCS) ## Download crd-ref-docs locally if necessary.
+$(CRD_REF_DOCS): $(LOCALBIN)
+	$(call go-install-tool,$(CRD_REF_DOCS),github.com/elastic/crd-ref-docs,$(CRD_REF_DOCS_VERSION))
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)

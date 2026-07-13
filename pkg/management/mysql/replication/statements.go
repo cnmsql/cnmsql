@@ -117,8 +117,37 @@ func ChangeSourceStatement(v version.Version, opts SourceOptions) string {
 
 // MariaDBChangeSourceStatement builds CHANGE MASTER TO for MariaDB. Unlike
 // ChangeSourceStatement it always uses MASTER_* prefix (MariaDB never adopted
-// SOURCE/REPLICA terminology) and emits MASTER_USE_GTID=slave_pos in place of
+// SOURCE/REPLICA terminology) and emits MASTER_USE_GTID=current_pos in place of
 // MASTER_AUTO_POSITION/SOURCE_AUTO_POSITION.
+//
+// current_pos, not slave_pos, because a demoted primary must announce the
+// transactions it authored. gtid_slave_pos only tracks what a server applied
+// *from a source*: while an instance is primary it stays frozen, so a former
+// primary reconnecting under slave_pos announces a stale position that says
+// nothing about what it wrote. gtid_current_pos is the per-domain maximum of
+// gtid_binlog_pos and gtid_slave_pos, so it carries the server's true frontier.
+//
+// Two things follow, and both are why this is the correct setting rather than a
+// preference:
+//
+//   - The source can detect divergence. It validates the announced GTID
+//     (domain-server-sequence) against its own binlog and refuses with 1236 when
+//     it holds different transactions at higher sequences — i.e. the replica has
+//     errant transactions. Under slave_pos those transactions are invisible to
+//     the handshake and the replica rejoins while silently diverged.
+//   - A former primary can rejoin after its successor was re-cloned. The stale
+//     slave_pos points into history the re-cloned source never had, which it
+//     answers with 1236 ("could not find GTID state"); the true frontier is the
+//     clone boundary, which the source can serve.
+//
+// This only differs from slave_pos when gtid_binlog_pos is ahead of
+// gtid_slave_pos, which happens for a former primary and for a server written to
+// locally. Every operator-authored local write is deliberately kept off the
+// binlog (bootstrap runs with --skip-log-bin, credential reconciliation with
+// SET SESSION SQL_LOG_BIN=0), so a replica's binlog holds only replicated
+// history and the two positions agree — the change is inert everywhere except
+// the cases above. It relies on log_slave_updates, which the rendered config
+// always sets.
 func MariaDBChangeSourceStatement(opts SourceOptions) string {
 	const verb = "CHANGE MASTER TO"
 	const prefix = "MASTER_"
@@ -154,7 +183,7 @@ func MariaDBChangeSourceStatement(opts SourceOptions) string {
 	}
 
 	if opts.AutoPosition {
-		clauses = append(clauses, "MASTER_USE_GTID=slave_pos")
+		clauses = append(clauses, "MASTER_USE_GTID=current_pos")
 	}
 
 	return fmt.Sprintf("%s %s", verb, strings.Join(clauses, ", "))

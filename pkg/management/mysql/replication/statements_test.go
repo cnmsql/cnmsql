@@ -217,7 +217,8 @@ func TestMariaDBChangeSourceStatement(t *testing.T) {
 	})
 
 	// MariaDB keeps MASTER_* terminology at every version and seeds GTID
-	// auto-positioning with MASTER_USE_GTID=slave_pos.
+	// auto-positioning with MASTER_USE_GTID=current_pos, so a demoted primary
+	// announces the transactions it authored (gtid_slave_pos would omit them).
 	for _, want := range []string{
 		"CHANGE MASTER TO",
 		"MASTER_HOST='primary.svc'",
@@ -226,7 +227,7 @@ func TestMariaDBChangeSourceStatement(t *testing.T) {
 		"MASTER_PASSWORD='secret'",
 		"MASTER_CONNECT_RETRY=10",
 		"MASTER_RETRY_COUNT=5",
-		"MASTER_USE_GTID=slave_pos",
+		"MASTER_USE_GTID=current_pos",
 	} {
 		if !strings.Contains(stmt, want) {
 			t.Errorf("expected %q in:\n%s", want, stmt)

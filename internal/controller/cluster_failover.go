@@ -29,11 +29,11 @@ func (r *ClusterReconciler) reconcileFailover(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	plan clusterPlan,
-	observed observedCluster,
+	observed *observedCluster,
 ) (bool, ctrl.Result, error) {
 	result, err := r.topologyReconciler(cluster).ReconcileFailover(ctx, cluster, topology.FailoverRequest{
 		Instances:         plan.Instances,
-		Observed:          topologyFailoverState(observed),
+		Observed:          topologyFailoverState(*observed),
 		RetryInterval:     readyResync,
 		ProvisioningRetry: provisioningRequeue,
 	})
@@ -41,7 +41,23 @@ func (r *ClusterReconciler) reconcileFailover(
 		return result.Handled, ctrl.Result{}, err
 	}
 	if result.Phase != nil {
-		err = r.patchOperationPhase(ctx, cluster, observed, *result.Phase)
+		// A failover that refuses to promote reports Handled=false on purpose, so
+		// the rest of the pass still runs and can recreate the failed primary's Pod.
+		// That means this pass ends in patchStatus, which writes the phase the
+		// observation computed: Degraded, because a replica whose primary is gone has
+		// a broken replication thread. Written on its own, the refusal would be
+		// overwritten within the same reconcile by the very state that caused it, and
+		// the operator would be left reading "replication broken" with no hint that a
+		// promotion was available and deliberately declined.
+		//
+		// So the decision is folded back into the observation and carried to the end
+		// of the pass. Phases the failover path handles itself (it returns early) do
+		// not reach patchStatus and are unaffected.
+		observed.Phase = result.Phase.Phase
+		observed.PhaseReason = result.Phase.Reason
+		observed.Ready = result.Phase.Ready
+		observed.Progressing = result.Phase.Progressing
+		err = r.patchOperationPhase(ctx, cluster, *observed, *result.Phase)
 	}
 	return result.Handled, ctrl.Result{RequeueAfter: result.RequeueAfter}, err
 }

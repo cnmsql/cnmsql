@@ -33,10 +33,12 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/diskusage"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/heartbeat"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance/rolereconciler"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
@@ -91,6 +93,10 @@ type RunOptions struct {
 	// Archiving, when set and Enabled, runs the continuous binlog archiver in
 	// this Pod (active only while the instance is the writable primary).
 	Archiving *ArchivingConfig
+	// Heartbeat, when set and Enabled, runs the replication-lag heartbeat in this
+	// Pod: the writable primary stamps a replicated table, every instance reads it
+	// back to measure how many seconds of writes it is behind by.
+	Heartbeat *HeartbeatConfig
 	// SemiSyncEnabled installs and enables the semi-synchronous replication
 	// plugins after mysqld starts. The initial wait/timeout values mirror the
 	// rendered loose- my.cnf values, but are applied explicitly after plugin load.
@@ -504,13 +510,25 @@ func Run(ctx context.Context, opts RunOptions) error {
 			}
 			opts.Archiving.ArchiveIdentity = id
 		}
-		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery())
+		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery(),
+			replication.NewManagerWithDialect(db, ver, eng.Repl()))
 		if err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
 		controller.SetArchivingProvider(archivingStatusProvider(loop))
 		archiveErr = errCh
+	}
+
+	// Replication-lag heartbeat: like the archiver it runs in every Pod and only
+	// writes from the writable primary, but every Pod also reads it back, which is
+	// how a replica learns how many seconds of writes it is behind by.
+	var heartbeatLoop *heartbeat.Loop
+	if opts.Heartbeat != nil && opts.Heartbeat.Enabled {
+		heartbeatCtx, cancelHeartbeat := context.WithCancel(logf.IntoContext(ctx, log))
+		defer cancelHeartbeat()
+		heartbeatLoop = startHeartbeat(heartbeatCtx, *opts.Heartbeat, db)
+		controller.SetReplicationLagProvider(heartbeatStatusProvider(heartbeatLoop))
 	}
 
 	var cm *webserver.TLSCertManager
@@ -553,8 +571,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 			}
 		}
 	}
-	metricsSrv := metricserver.New(opts.MetricsAddr, metricsTLSConfig,
-		metrics.NewExporter(db), metrics.NewVolumeCollector(opts.DataDir))
+	metricsCollectors := []prometheus.Collector{
+		metrics.NewExporter(db),
+		metrics.NewVolumeCollector(opts.DataDir),
+	}
+	if heartbeatLoop != nil {
+		metricsCollectors = append(metricsCollectors, heartbeat.NewCollector(heartbeatLoop))
+	}
+	metricsSrv := metricserver.New(opts.MetricsAddr, metricsTLSConfig, metricsCollectors...)
 
 	serverErr := make(chan error, 1)
 	log.Info("Starting control API server", "addr", opts.WebserverAddr, "tls", opts.TLS.ServerCertFile != "")

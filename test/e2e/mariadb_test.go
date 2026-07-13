@@ -238,6 +238,8 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 
 		setupMinio()
 		DeferCleanup(teardownMinio)
+		setupMC()
+		DeferCleanup(teardownMC)
 
 		By("creating the source cluster that archives to object store")
 		applyManifest(pitrSource, mariadbContinuousArchivingClusterManifest(pitrSource))
@@ -272,19 +274,25 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 			"INSERT INTO events (msg) VALUES ('post-backup');")
 		Expect(err).NotTo(HaveOccurred())
 
+		By("recording the binlog position after post-backup write")
+		// The position is captured before the flush, not after: the heartbeat loop
+		// stamps the primary once a second, so a position read after the rotation
+		// already sits in the new, still-open binlog that the archiver cannot have
+		// shipped yet. Reading first pins the target inside the file the flush is
+		// about to close, which is the file the archiver ships next.
+		gtidOut, err := mariadbExec(pitrPrimary, "app", password, "app",
+			"SELECT @@gtid_current_pos")
+		Expect(err).NotTo(HaveOccurred())
+		targetGTID := strings.TrimSpace(gtidOut)
+		Expect(targetGTID).NotTo(BeEmpty(), "PITR target GTID parsed empty")
+		GinkgoWriter.Printf("PITR target GTID: %s\n", targetGTID)
+
 		By("flushing binary logs and waiting for the archiver to ship them")
 		rootPW := rootPassword(pitrSource)
 		_, err = mariadbExec(pitrPrimary, "root", rootPW, "",
 			"FLUSH BINARY LOGS")
 		Expect(err).NotTo(HaveOccurred())
-		time.Sleep(20 * time.Second)
-
-		By("recording the binlog position after post-backup write")
-		gtidOut, err := mariadbExec(pitrPrimary, "app", password, "app",
-			"SELECT @@gtid_current_pos")
-		Expect(err).NotTo(HaveOccurred())
-		targetGTID := strings.TrimSpace(gtidOut)
-		GinkgoWriter.Printf("PITR target GTID: %s\n", targetGTID)
+		expectMariadbArchiveCovers(pitrSource, targetGTID, 5*time.Minute)
 
 		By("restoring to the target GTID via PITR")
 		applyManifest(pitrRestored, mariadbPITRClusterManifest(pitrRestored, pitrBackup, pitrSource, targetGTID))

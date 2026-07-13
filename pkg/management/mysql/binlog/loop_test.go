@@ -18,6 +18,11 @@ package binlog
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +98,176 @@ func TestLoopTickSkipsWhenReplica(t *testing.T) {
 
 	if loop.State().Active {
 		t.Fatal("loop should be inactive on a replica")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeProbe is a ReplicationProbe with a canned answer.
+type fakeProbe struct {
+	streaming bool
+	err       error
+}
+
+func (p fakeProbe) Streaming(context.Context) (bool, error) { return p.streaming, p.err }
+
+// The three files a demoted former primary holds: one it shipped while it was
+// writable, the closed tail its crash stranded, and the log mysqld opened on
+// restart (which no non-writable server may ever archive).
+const (
+	shippedLog  = "binlog.000001"
+	strandedLog = "binlog.000002"
+	activeLog3  = "binlog.000003"
+)
+
+// drainFixture builds that former primary: it archived shippedLog while it was
+// writable, so it owns a segment, then died holding strandedLog.
+func drainFixture(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Archiver, *memStore) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	dir := t.TempDir()
+	writeBinlog(t, dir, shippedLog, "shipped")
+	writeBinlog(t, dir, strandedLog, "stranded")
+	writeBinlog(t, dir, activeLog3, "active")
+	store := newMemStore()
+	arch := newTestArchiver(t, store, dir, staticScan(map[string]string{
+		shippedLog:  testUUID + ":1-3",
+		strandedLog: testUUID + ":4-9",
+	}))
+
+	// Seed the segment: archive shippedLog as the primary once, so the instance
+	// owns an archive identity when it is later demoted.
+	seed := MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})
+	if _, err := arch.ArchivePending(context.Background(), seed); err != nil {
+		t.Fatal(err)
+	}
+	return db, mock, arch, store
+}
+
+// archivedNames lists the binlog basenames present in the store.
+func archivedNames(store *memStore) []string {
+	var out []string
+	for key := range store.objects {
+		if base := filepath.Base(key); strings.HasPrefix(base, "binlog.") &&
+			!strings.HasSuffix(base, ".json") {
+			out = append(out, base)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// expectDemotedWithLogs primes a read-only server that reports all three files.
+func expectDemotedWithLogs(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("super_read_only").WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	mock.ExpectQuery("SHOW BINARY LOGS").WillReturnRows(
+		sqlmock.NewRows([]string{"Log_name", "File_size"}).
+			AddRow(shippedLog, "500").
+			AddRow(strandedLog, "300").
+			AddRow(activeLog3, "120"))
+}
+
+// A demoted primary whose source accepted its GTID position is proven to be an
+// ancestor of the surviving timeline, so the tail it stranded is shipped. Without
+// this the transactions in that tail exist only on its PVC, and a recovery
+// spanning them fails against a hole no segment can bridge.
+func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
+	t.Parallel()
+	db, mock, arch, store := drainFixture(t)
+	expectDemotedWithLogs(mock)
+
+	loop := NewLoop(LoopOptions{
+		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
+		Replication: fakeProbe{streaming: true},
+	})
+	var lastFlush time.Time
+	var lastSize int64
+	loop.tick(context.Background(), &lastFlush, &lastSize)
+
+	state := loop.State()
+	if state.Active {
+		t.Fatal("a draining instance is not an active archiver")
+	}
+	if state.LastArchivedBinlog != strandedLog {
+		t.Fatalf("frontier = %q, want the stranded %s shipped", state.LastArchivedBinlog, strandedLog)
+	}
+	if state.LastError != "" {
+		t.Fatalf("unexpected error: %q", state.LastError)
+	}
+	// The active log stays untouched: a non-writable server must not archive the
+	// file mysqld is still writing.
+	if got, want := archivedNames(store), []string{shippedLog, strandedLog}; !slices.Equal(got, want) {
+		t.Fatalf("archived %v, want %v", got, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The safety property: a former primary that cannot replicate may be diverged.
+// Its final transactions may sit on a dead branch whose sequence numbers the
+// promoted server has since reused for different transactions. Archiving them
+// would let the merge-by-sequence planner replay the dead branch. So a
+// non-streaming instance ships nothing, and recovery keeps failing closed.
+func TestLoopDrainRefusesWhenNotReplicating(t *testing.T) {
+	t.Parallel()
+	db, mock, arch, store := drainFixture(t)
+	// Only the writability probe runs: no SHOW BINARY LOGS, no upload.
+	mock.ExpectQuery("super_read_only").WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("1"))
+
+	loop := NewLoop(LoopOptions{
+		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
+		Replication: fakeProbe{streaming: false},
+	})
+	var lastFlush time.Time
+	var lastSize int64
+	loop.tick(context.Background(), &lastFlush, &lastSize)
+
+	// The possibly-errant tail stays on disk: unproven history never enters the
+	// archive.
+	if got, want := archivedNames(store), []string{shippedLog}; !slices.Equal(got, want) {
+		t.Fatalf("archived %v, want only the pre-demotion %v", got, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A replica that was never promoted owns no segment. Its binlogs are a re-logged
+// copy of the primary's history, not stranded originals, so it stays silent. That
+// is what keeps the drain from turning every replica into an archiver.
+func TestLoopDrainSkipsReplicaWithoutSegment(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("super_read_only").WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("1"))
+
+	dir := t.TempDir()
+	writeBinlog(t, dir, shippedLog, "relogged")
+	arch := newTestArchiver(t, newMemStore(), dir, staticScan(nil))
+
+	loop := NewLoop(LoopOptions{
+		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
+		Replication: fakeProbe{streaming: true},
+	})
+	var lastFlush time.Time
+	var lastSize int64
+	loop.tick(context.Background(), &lastFlush, &lastSize)
+
+	if got := loop.State().LastArchivedBinlog; got != "" {
+		t.Fatalf("a never-promoted replica archived %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

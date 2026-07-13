@@ -556,7 +556,7 @@ func TestReconcileFailoverPromotesBestCandidateImmediately(t *testing.T) {
 	cluster, reconciler, _ := failoverCluster(t, 0)
 	observed := unreachablePrimaryObserved()
 
-	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestReconcileFailoverWaitsForFailoverDelay(t *testing.T) {
 	cluster, reconciler, control := failoverCluster(t, 60)
 	observed := unreachablePrimaryObserved()
 
-	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestReconcileFailoverWaitsForActivePrimaryLease(t *testing.T) {
 	}
 	observed := unreachablePrimaryObserved()
 
-	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, result, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +673,7 @@ func TestReconcileFailoverBlocksWithoutSafeCandidate(t *testing.T) {
 	observed.StatusByInstance[testReplica2] = healthyReplicaStatus(testReplica2, testGTID)
 	observed.StatusByInstance[testReplica3] = healthyReplicaStatus(testReplica3, "other:1-4")
 
-	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,6 +689,21 @@ func TestReconcileFailoverBlocksWithoutSafeCandidate(t *testing.T) {
 	}
 	if gotCluster.Status.Phase != topology.PhaseBlocked {
 		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseBlocked)
+	}
+	// The block must also survive the rest of the reconcile. A blocked failover
+	// returns Handled=false so the pass carries on and can recreate the failed
+	// primary's Pod, and that pass ends in patchStatus, which writes whatever phase
+	// the observation holds. Unless the refusal is folded back into the
+	// observation, patchStatus overwrites it with the Degraded that the broken
+	// replication thread computes, and the reason the promotion was declined is
+	// lost: the cluster ends up reporting the symptom while hiding the decision.
+	if observed.Phase != topology.PhaseBlocked {
+		t.Errorf("observed.Phase = %q, want %q: the block would be overwritten by patchStatus at the end of the pass",
+			observed.Phase, topology.PhaseBlocked)
+	}
+	if observed.PhaseReason == "" || observed.Ready {
+		t.Errorf("observed = {reason:%q ready:%v}, want the block's reason and not ready",
+			observed.PhaseReason, observed.Ready)
 	}
 }
 
@@ -707,7 +722,7 @@ func TestReconcileFailoverYieldsToProvisioningBeforeAnyReplica(t *testing.T) {
 	observed.GTIDByInstance = map[string]string{}
 	observed.ReadyInstances = 0
 
-	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +765,7 @@ func TestReconcileFailoverClearsMarkerWhenPrimaryHealthy(t *testing.T) {
 		GTIDExecuted: testGTID,
 	}
 
-	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, observed)
+	handled, _, err := reconciler.reconcileFailover(ctx, cluster, observed.Plan, &observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,5 +781,168 @@ func TestReconcileFailoverClearsMarkerWhenPrimaryHealthy(t *testing.T) {
 	}
 	if gotCluster.Status.PrimaryFailingSince != "" {
 		t.Fatalf("failing marker not cleared: %q", gotCluster.Status.PrimaryFailingSince)
+	}
+}
+
+// laggingReplicaStatus is a healthy replica that reports a heartbeat reading:
+// the newest stamp it has applied is heartbeatAge old.
+func laggingReplicaStatus(gtid string, heartbeatAge time.Duration) *webserver.Status {
+	status := healthyReplicaStatus(testReplica2, gtid)
+	millis := heartbeatAge.Milliseconds()
+	status.ReplicationLag = &webserver.ReplicationLagStatus{LagMillis: &millis}
+	return status
+}
+
+// TestSelectFailoverCandidateSubtractsPrimaryDowntimeFromLag is the heart of the
+// time bound. Once the primary stops stamping, nothing refreshes the heartbeat
+// table, so every replica's reading climbs by one second per second. Here the
+// replica is 8s behind the last stamp, but the primary has already been down for
+// 5s, so only 3s of that is writes it actually missed. Reading the raw 8s would
+// block a failover the bound allows.
+func TestSelectFailoverCandidateSubtractsPrimaryDowntimeFromLag(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "uuid:1-40"},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: laggingReplicaStatus("uuid:1-40", 8*time.Second),
+		},
+	}
+	maxLag := 5 * time.Second
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:          topologyFailoverState(observed),
+		GTID:              mysqlGTIDModel,
+		ReferenceGTID:     "uuid:1-100",
+		MaxReplicationLag: &maxLag,
+		PrimaryDownFor:    5 * time.Second,
+	})
+	if elected.Name != testReplica2 {
+		t.Fatalf("candidate = %q (reason %q), want demo-2: 8s behind less 5s of downtime is 3s, within a 5s bound",
+			elected.Name, elected.Reason)
+	}
+	if elected.TimeBehind == nil || *elected.TimeBehind != 3*time.Second {
+		t.Errorf("TimeBehind = %v, want 3s", elected.TimeBehind)
+	}
+}
+
+// TestSelectFailoverCandidateBlocksWhenWritesBehindExceedsBound proves the time
+// bound refuses the election in its own right, even when the transaction bound
+// is unset. The replica missed transactions and was 30s of writes behind when
+// the primary died, well past a 5s objective.
+func TestSelectFailoverCandidateBlocksWhenWritesBehindExceedsBound(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "uuid:1-40"},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: laggingReplicaStatus("uuid:1-40", 32*time.Second),
+		},
+	}
+	maxLag := 5 * time.Second
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:          topologyFailoverState(observed),
+		GTID:              mysqlGTIDModel,
+		ReferenceGTID:     "uuid:1-100",
+		MaxReplicationLag: &maxLag,
+		PrimaryDownFor:    2 * time.Second,
+	})
+	if elected.Name != "" {
+		t.Fatalf("candidate = %q, want no election: the replica is 30s of writes behind a 5s bound", elected.Name)
+	}
+	for _, want := range []string{testReplica2, "30s of writes behind", "maxReplicationLag (5s)"} {
+		if !strings.Contains(elected.Reason, want) {
+			t.Errorf("Reason = %q, want it to mention %q", elected.Reason, want)
+		}
+	}
+}
+
+// TestSelectFailoverCandidateIgnoresLagOfAReplicaThatMissedNothing proves the
+// time bound does not block a replica that holds every transaction the primary
+// committed. Such a replica loses nothing by being promoted however far its
+// applier trails: draining the relay log costs time, not data. Its heartbeat
+// reading here is far outside the bound, and it must still be elected.
+func TestSelectFailoverCandidateIgnoresLagOfAReplicaThatMissedNothing(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "uuid:1-100"},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: laggingReplicaStatus("uuid:1-100", 10*time.Minute),
+		},
+	}
+	maxLag := 5 * time.Second
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:          topologyFailoverState(observed),
+		GTID:              mysqlGTIDModel,
+		ReferenceGTID:     "uuid:1-100",
+		MaxReplicationLag: &maxLag,
+	})
+	if elected.Name != testReplica2 {
+		t.Fatalf("candidate = %q (reason %q), want demo-2: it missed no transactions, so it loses no writes",
+			elected.Name, elected.Reason)
+	}
+	if elected.TimeBehind == nil || *elected.TimeBehind != 0 {
+		t.Errorf("TimeBehind = %v, want 0", elected.TimeBehind)
+	}
+}
+
+// TestSelectFailoverCandidateBlocksWithoutAHeartbeatReading proves a bound that
+// cannot be measured is not quietly ignored. The bound is a promise about how
+// much data a promotion may destroy; a replica that missed transactions and
+// cannot say how far behind it was cannot be shown to keep it.
+func TestSelectFailoverCandidateBlocksWithoutAHeartbeatReading(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "uuid:1-40"},
+		StatusByInstance: map[string]*webserver.Status{
+			// No ReplicationLag: the heartbeat is off, or has never been read.
+			testReplica2: healthyReplicaStatus(testReplica2, "uuid:1-40"),
+		},
+	}
+	maxLag := 5 * time.Second
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:          topologyFailoverState(observed),
+		GTID:              mysqlGTIDModel,
+		ReferenceGTID:     "uuid:1-100",
+		MaxReplicationLag: &maxLag,
+	})
+	if elected.Name != "" {
+		t.Fatalf("candidate = %q, want no election: no replica reported a heartbeat", elected.Name)
+	}
+	if !strings.Contains(elected.Reason, "no replica reported a replication-lag heartbeat") {
+		t.Errorf("Reason = %q, want it to say no heartbeat was reported", elected.Reason)
+	}
+}
+
+// TestSelectFailoverCandidateWithoutLagBoundIgnoresHeartbeat proves a cluster
+// that sets no time bound is unaffected by the heartbeat, however alarming the
+// reading. This is the default, and it must keep promoting the best replica.
+func TestSelectFailoverCandidateWithoutLagBoundIgnoresHeartbeat(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		PrimaryName:    testPrimary,
+		InstanceNames:  []string{testPrimary, testReplica2},
+		GTIDByInstance: map[string]string{testReplica2: "uuid:1-40"},
+		StatusByInstance: map[string]*webserver.Status{
+			testReplica2: laggingReplicaStatus("uuid:1-40", time.Hour),
+		},
+	}
+
+	elected := controllerasync.SelectFailoverCandidate(controllerasync.Election{
+		Observed:      topologyFailoverState(observed),
+		GTID:          mysqlGTIDModel,
+		ReferenceGTID: "uuid:1-100",
+	})
+	if elected.Name != testReplica2 {
+		t.Fatalf("candidate = %q (reason %q), want demo-2 with no bound set", elected.Name, elected.Reason)
 	}
 }

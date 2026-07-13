@@ -445,6 +445,63 @@ type FailoverPolicy struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MaxTransactionsBehind *int64 `json:"maxTransactionsBehind,omitempty"`
+
+	// MaxReplicationLag caps how far behind a replica may be, in seconds of
+	// writes, and still be promoted during an unplanned failover. It states the
+	// same bound as MaxTransactionsBehind in the unit a recovery objective is
+	// normally written in: a hundred transactions may be a millisecond of writes
+	// or an hour of them, and only the clock version can be held against an RPO.
+	//
+	// The measurement comes from the heartbeat the primary stamps into a
+	// replicated table (see spec.replication.heartbeat), which must be enabled for
+	// this bound to have anything to read. A replica's raw reading climbs by one
+	// second per second once the primary stops stamping, so the operator subtracts
+	// how long the primary has been failing and is left with the delay as it stood
+	// when the primary died. That subtraction starts from the moment the operator
+	// noticed the failure, which is never earlier than the failure itself, so the
+	// result overstates the loss rather than understating it.
+	//
+	// It is checked only against replicas that actually missed transactions. A
+	// replica holding every transaction the primary committed loses nothing by
+	// being promoted, however far its applier has fallen behind, and the wait for
+	// it to drain its relay log is delay rather than loss.
+	//
+	// If no replica is within the bound, the operator refuses the failover and
+	// moves the cluster to Blocked, exactly as it does for MaxTransactionsBehind.
+	// Leave it unset for no time bound.
+	// +optional
+	MaxReplicationLag *metav1.Duration `json:"maxReplicationLag,omitempty"`
+}
+
+// ReplicationHeartbeat configures the replication-lag heartbeat: the writable
+// primary's instance manager stamps the current time into a small replicated
+// table, and every instance reads it back to measure how old the newest write it
+// has caught up to is.
+//
+// It exists because the server cannot answer that question itself.
+// Seconds_Behind_Source times the SQL applier against the events it has already
+// received, so a replica that stopped receiving anything reports zero once its
+// relay log drains, no matter how far the primary ran on without it, and it
+// reports NULL whenever the IO thread is disconnected, which is the state every
+// replica is in the moment its primary dies.
+//
+// The table is heartbeat.heartbeat, in pt-heartbeat's shape, so the heartbeat
+// collector already built into mysqld_exporter scrapes it as-is.
+type ReplicationHeartbeat struct {
+	// Enabled turns the heartbeat on. It defaults to true: the cost is one small
+	// replicated write per interval on the primary, and it is what
+	// failoverPolicy.maxReplicationLag and the lag metrics read.
+	// +kubebuilder:default:=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Interval is how often the primary stamps the table. It sets the floor on
+	// every lag reading, because a replica in perfect sync still reports an age of
+	// up to one interval simply because the next stamp is not written yet. Keep it
+	// well under any maxReplicationLag you set. Defaults to 1s.
+	// +kubebuilder:default:="1s"
+	// +optional
+	Interval *metav1.Duration `json:"interval,omitempty"`
 }
 
 // ReplicationConfiguration selects and tunes the replication topology.
@@ -459,6 +516,10 @@ type ReplicationConfiguration struct {
 	// set unless Mode is groupReplication.
 	// +optional
 	GroupReplication *GroupReplicationConfiguration `json:"groupReplication,omitempty"`
+
+	// Heartbeat tunes the replication-lag heartbeat, which is on by default.
+	// +optional
+	Heartbeat *ReplicationHeartbeat `json:"heartbeat,omitempty"`
 }
 
 // GroupReplicationConfiguration tunes MySQL Group Replication. All fields map to
@@ -1140,6 +1201,28 @@ type ClusterStatus struct {
 	// persisted snapshot.
 	// +optional
 	GTIDExecutedUpdatedAt *metav1.Time `json:"gtidExecutedUpdatedAt,omitempty"`
+
+	// ReplicationLagByInstance maps an instance name to its replication lag in
+	// milliseconds, as measured by the heartbeat (see
+	// spec.replication.heartbeat). Instances that reported no reading are absent
+	// rather than zero, since zero would say "in sync", which is the opposite of
+	// what an unreadable heartbeat means.
+	//
+	// It is here to be looked at. The failover bound does not read it: it asks the
+	// surviving replicas for their readings at the moment it elects, which is both
+	// fresher than this snapshot and, unlike the departing primary's GTID
+	// position, still answerable. Expect these values to climb while a primary is
+	// down, because nothing is stamping the heartbeat any more.
+	// +optional
+	ReplicationLagByInstance map[string]int64 `json:"replicationLagByInstance,omitempty"`
+
+	// ReplicationLagUpdatedAt records when ReplicationLagByInstance was last
+	// refreshed. Lag moves constantly, so the operator throttles how often it
+	// persists the map; this timestamp says how old the readings are, and is the
+	// only way to tell a replica that is genuinely one second behind from one
+	// whose last reading merely happened to say so.
+	// +optional
+	ReplicationLagUpdatedAt *metav1.Time `json:"replicationLagUpdatedAt,omitempty"`
 
 	// ExecutableHashByInstance maps an instance name to the SHA-256 hash of its
 	// running instance manager binary, as reported by the in-Pod control API.

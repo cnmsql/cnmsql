@@ -67,6 +67,7 @@ func NewCommand() *cobra.Command {
 		archiving         bool
 		archiveRPOSeconds int
 		archivePurge      bool
+		heartbeatMillis   int
 		mysqlbinlogPath   string
 		semiSync          bool
 		semiSyncWait      int
@@ -157,6 +158,16 @@ func NewCommand() *cobra.Command {
 				}
 			}
 
+			// The replication-lag heartbeat. It runs in every Pod; only the writable
+			// primary stamps the table.
+			var beat *instance.HeartbeatConfig
+			if heartbeatMillis > 0 {
+				beat = &instance.HeartbeatConfig{
+					Enabled:  true,
+					Interval: time.Duration(heartbeatMillis) * time.Millisecond,
+				}
+			}
+
 			return instance.Run(cmd.Context(), instance.RunOptions{
 				MysqldPath:            mysqldPath,
 				ConfigFile:            configFile,
@@ -176,6 +187,7 @@ func NewCommand() *cobra.Command {
 				MetricsTLS:            metricsTLS,
 				Backup:                backup,
 				Archiving:             archive,
+				Heartbeat:             beat,
 				SemiSyncEnabled:       semiSync,
 				SemiSyncWaitCount:     semiSyncWait,
 				SemiSyncTimeoutMillis: semiSyncTimeout,
@@ -229,6 +241,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from cnmsql_S3_* env)")
 	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")
 	cmd.Flags().BoolVar(&archivePurge, "archive-purge", true, "Purge binary logs once archived (the active purge gate)")
+	cmd.Flags().IntVar(&heartbeatMillis, "heartbeat-interval-millis", 0,
+		"Stamp the replication-lag heartbeat table this often on the primary; 0 disables the heartbeat")
 	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Path to the mysqlbinlog binary (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")
 	cmd.Flags().BoolVar(&semiSync, "semi-sync", false, "Install and enable semi-synchronous replication plugins")
 	cmd.Flags().IntVar(&semiSyncWait, "semi-sync-wait-for-replica-count", 0, "Initial semi-sync acknowledgement count")

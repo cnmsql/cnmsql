@@ -218,7 +218,7 @@ Each row maps to a subsystem section.
 | Bootstrap empty datadir | `mysqld --initialize-insecure` | `mariadb-install-db --auth-root-authentication-method=normal` | 8 |
 | Post-upgrade fixups | `mysql_upgrade` | `mariadb-upgrade` | 8 |
 | Default auth plugin | `caching_sha2_password` | `mysql_native_password` (`ed25519` optional) | 8 |
-| Replica setup | `CHANGE REPLICATION SOURCE TO` + `MASTER_AUTO_POSITION=1` | `CHANGE MASTER TO ... MASTER_USE_GTID=slave_pos` | 10 |
+| Replica setup | `CHANGE REPLICATION SOURCE TO` + `MASTER_AUTO_POSITION=1` | `CHANGE MASTER TO ... MASTER_USE_GTID=current_pos` | 10 |
 | Replication verbs | `START/STOP REPLICA`, `SHOW REPLICA STATUS` | `START/STOP SLAVE`, `SHOW SLAVE STATUS` (canonical) | 10 |
 | GTID identity | `@@gtid_executed` (`UUID:1-N`) | `@@gtid_binlog_pos` / `@@gtid_current_pos` (`domain-server-seq`) | 10 |
 | GTID subset test | `GTID_SUBSET()` | no builtin; operator-side domain-wise compare | 10 |

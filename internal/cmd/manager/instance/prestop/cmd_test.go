@@ -94,3 +94,33 @@ func TestWaitUntilDemotedDegradesOnTimeout(t *testing.T) {
 		t.Fatalf("returned after %s, expected to wait out the ~30ms timeout", elapsed)
 	}
 }
+
+// TestWaitUntilDemotedHandlesOnOffSpelling proves the poll survives an engine
+// that renders read_only as OFF/ON rather than 0/1. MariaDB 12 does, and
+// scanning "ON" into a number fails, which the hook swallows: the demotion would
+// never be seen and every drain would burn the full timeout before shutting the
+// primary down, degrading a clean switchover into a reactive failover.
+func TestWaitUntilDemotedHandlesOnOffSpelling(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT @@global.read_only").
+		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow("OFF"))
+	mock.ExpectQuery("SELECT @@global.read_only").
+		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow("ON"))
+
+	start := time.Now()
+	if err := WaitUntilDemoted(context.Background(), db, 5*time.Second, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) >= 5*time.Second {
+		t.Fatal("WaitUntilDemoted blocked for the full timeout instead of returning on demotion")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

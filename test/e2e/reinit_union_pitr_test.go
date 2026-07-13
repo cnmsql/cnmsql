@@ -89,9 +89,8 @@ type reinitUnionFlavor struct {
 	sourceManifest func(name string) string
 	// pitrManifest renders the single-instance recovery cluster targeting targetGTID.
 	pitrManifest func(name, backup, targetGTID string) string
-	// awaitArchive blocks until the archive is known to cover the target (MySQL) or
-	// a bounded grace has elapsed (MariaDB, whose GTID form the coverage check can't
-	// parse).
+	// awaitArchive blocks until the archive index is known to cover the target,
+	// under the flavor's own GTID containment model.
 	awaitArchive func(cluster, target string)
 }
 

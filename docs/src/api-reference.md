@@ -798,6 +798,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `description` _string_ | Description of this MySQL cluster. |  | Optional: \{\} <br /> |
+| `flavor` _[Flavor](#flavor)_ | Flavor selects the database engine flavor (mysql or mariadb).<br />Immutable after creation. Defaults to mysql. | mysql | Enum: [mysql mariadb] <br />Optional: \{\} <br /> |
 | `inheritedMetadata` _[EmbeddedObjectMetadata](#embeddedobjectmetadata)_ | Metadata that will be inherited by all objects related to the Cluster. |  | Optional: \{\} <br /> |
 | `imageName` _string_ | ImageName is the name of the Percona Server for MySQL container image to<br />use. Mutually exclusive with ImageCatalogRef. |  | Optional: \{\} <br /> |
 | `imageCatalogRef` _[ImageCatalogRef](#imagecatalogref)_ | ImageCatalogRef resolves the image from an ImageCatalog or<br />ClusterImageCatalog based on the MySQL series. Mutually exclusive<br />with ImageName. |  | Optional: \{\} <br /> |
@@ -807,6 +808,7 @@ _Appears in:_
 | `minSyncReplicas` _integer_ | MinSyncReplicas is the minimum number of semi-synchronous replicas that<br />must acknowledge a transaction before it is committed on the primary. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `maxSyncReplicas` _integer_ | MaxSyncReplicas is the maximum number of semi-synchronous replicas the<br />primary will wait for. Must be lower than the number of instances. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `mysql` _[MySQLConfiguration](#mysqlconfiguration)_ | MySQL holds the engine configuration (my.cnf parameters, replication<br />options). |  | Optional: \{\} <br /> |
+| `replication` _[ReplicationConfiguration](#replicationconfiguration)_ | Replication selects and tunes the replication topology (asynchronous /<br />semi-synchronous GTID replication, or quorum-based Group Replication). The<br />mode is immutable after creation; when omitted the cluster is async. |  | Optional: \{\} <br /> |
 | `storage` _[StorageConfiguration](#storageconfiguration)_ | Storage configuration for the instance data directory. |  | Required: \{\} <br /> |
 | `binlogStorage` _[StorageConfiguration](#storageconfiguration)_ | BinlogStorage, when set, places the binary logs on a separate volume from<br />the data directory. |  | Optional: \{\} <br /> |
 | `bootstrap` _[BootstrapConfiguration](#bootstrapconfiguration)_ | Bootstrap describes how the cluster is initialised (fresh init or recovery<br />from a backup). |  | Optional: \{\} <br /> |
@@ -836,6 +838,7 @@ _Appears in:_
 | `monitoring` _[MonitoringConfiguration](#monitoringconfiguration)_ | Monitoring configuration. |  | Optional: \{\} <br /> |
 | `nodeMaintenanceWindow` _[NodeMaintenanceWindow](#nodemaintenancewindow)_ | NodeMaintenanceWindow defines if the cluster is tolerant to node failures<br />during maintenance (e.g. PVC may be reused). |  | Optional: \{\} <br /> |
 | `enablePDB` _boolean_ | EnablePDB, when true (default), makes the operator create a<br />PodDisruptionBudget for the cluster. | true | Optional: \{\} <br /> |
+| `enableSwitchoverOnDrain` _boolean_ | EnableSwitchoverOnDrain, when true (default), makes the operator promote a<br />healthy replica via a planned switchover when the primary Pod is gracefully<br />terminated (e.g. a node drain or eviction), instead of waiting for the<br />primary to become unreachable and failing over. Falls back to failover when<br />no safe candidate exists or the handoff cannot complete in time. | true | Optional: \{\} <br /> |
 | `serviceAccountTemplate` _[ServiceAccountTemplate](#serviceaccounttemplate)_ | ServiceAccountTemplate to use for the generated service account. |  | Optional: \{\} <br /> |
 | `env` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#envvar-v1-core) array_ | Env is a list of additional environment variables added to the instance<br />containers. |  | Optional: \{\} <br /> |
 | `envFrom` _[EnvFromSource](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#envfromsource-v1-core) array_ | EnvFrom is a list of sources to populate environment variables in the<br />instance containers. |  | Optional: \{\} <br /> |
@@ -857,8 +860,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `flavor` _[Flavor](#flavor)_ | Flavor echoes the resolved engine flavor (spec.flavor, default mysql). |  | Enum: [mysql mariadb] <br />Optional: \{\} <br /> |
 | `instances` _integer_ | Instances is the total number of instances reported. |  | Optional: \{\} <br /> |
 | `readyInstances` _integer_ | ReadyInstances is the number of ready instances. |  | Optional: \{\} <br /> |
+| `labelSelector` _string_ | LabelSelector is the serialized label selector that identifies the<br />instance Pods managed by this Cluster. It is populated by the operator<br />and exposed through the scale sub-resource (selectorpath) so that<br />autoscalers such as the Vertical Pod Autoscaler can discover the managed<br />Pods to resize. |  | Optional: \{\} <br /> |
 | `instanceNames` _string array_ | InstanceNames is the list of instance (pod) names. |  | Optional: \{\} <br /> |
 | `currentPrimary` _string_ | CurrentPrimary is the name of the instance currently acting as primary. |  | Optional: \{\} <br /> |
 | `targetPrimary` _string_ | TargetPrimary is the name of the instance that should become primary (used<br />during switchover/failover). |  | Optional: \{\} <br /> |
@@ -877,6 +882,8 @@ _Appears in:_
 | `image` _string_ | Image is the resolved image currently in use. |  | Optional: \{\} <br /> |
 | `gtidExecutedByInstance` _object (keys:string, values:string)_ | GTIDExecutedByInstance maps an instance name to its gtid_executed set. |  | Optional: \{\} <br /> |
 | `gtidExecutedUpdatedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | GTIDExecutedUpdatedAt records when GTIDExecutedByInstance was last<br />refreshed. Because gtid_executed advances on every write, the operator<br />throttles how often it persists the map; this timestamp marks the last<br />persisted snapshot. |  | Optional: \{\} <br /> |
+| `replicationLagByInstance` _object (keys:string, values:integer)_ | ReplicationLagByInstance maps an instance name to its replication lag in<br />milliseconds, as measured by the heartbeat (see<br />spec.replication.heartbeat). Instances that reported no reading are absent<br />rather than zero, since zero would say "in sync", which is the opposite of<br />what an unreadable heartbeat means.<br /><br />It is here to be looked at. The failover bound does not read it: it asks the<br />surviving replicas for their readings at the moment it elects, which is both<br />fresher than this snapshot and, unlike the departing primary's GTID<br />position, still answerable. Expect these values to climb while a primary is<br />down, because nothing is stamping the heartbeat any more. |  | Optional: \{\} <br /> |
+| `replicationLagUpdatedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | ReplicationLagUpdatedAt records when ReplicationLagByInstance was last<br />refreshed. Lag moves constantly, so the operator throttles how often it<br />persists the map; this timestamp says how old the readings are, and is the<br />only way to tell a replica that is genuinely one second behind from one<br />whose last reading merely happened to say so. |  | Optional: \{\} <br /> |
 | `executableHashByInstance` _object (keys:string, values:string)_ | ExecutableHashByInstance maps an instance name to the SHA-256 hash of its<br />running instance manager binary, as reported by the in-Pod control API.<br />The operator uses it to detect stale instance managers when upgrading. |  | Optional: \{\} <br /> |
 | `operatorExecutableHash` _string_ | OperatorExecutableHash is the SHA-256 hash of the running operator binary.<br />It is the target hash every instance manager should match after an upgrade. |  | Optional: \{\} <br /> |
 | `certificates` _[CertificatesStatus](#certificatesstatus)_ | Certificates reports the status of the managed certificates. |  | Optional: \{\} <br /> |
@@ -903,6 +910,30 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `maxTransactionsBehind` _integer_ | MaxTransactionsBehind caps how many transactions a replica may be missing<br />and still be promoted during an unplanned failover. The operator measures<br />the gap in GTIDs, against the last position it recorded for the primary in<br />status.gtidExecutedByInstance, because the primary itself cannot be asked<br />once it is down. It refreshes that snapshot periodically rather than on<br />every commit, so the gap is a lower bound on the true loss and can under<br />report it, but never over report it.<br /><br />The gap is not read from Seconds_Behind_Source. That column reports how far<br />the SQL applier trails the events it has already received. A replica that<br />stopped receiving reads zero there once it drains its relay log, no matter<br />how many transactions the primary committed without it, which is precisely<br />the case that loses data. The column is also NULL whenever the replication<br />IO thread is disconnected, and it always is on a replica whose primary has<br />just failed.<br /><br />If every replica exceeds the bound, the operator refuses the failover and<br />moves the cluster to Blocked, reporting the size of the gap, rather than<br />promote a replica and discard the transactions it never received. Writes<br />then stay down until the old primary comes back with its data, or until an<br />operator accepts the loss by raising this bound. Leave it unset for no<br />bound, in which case the most advanced replica is promoted however far<br />behind it is. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxReplicationLag` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | MaxReplicationLag caps how far behind a replica may be, in seconds of<br />writes, and still be promoted during an unplanned failover. It states the<br />same bound as MaxTransactionsBehind in the unit a recovery objective is<br />normally written in: a hundred transactions may be a millisecond of writes<br />or an hour of them, and only the clock version can be held against an RPO.<br /><br />The measurement comes from the heartbeat the primary stamps into a<br />replicated table (see spec.replication.heartbeat), which must be enabled for<br />this bound to have anything to read. A replica's raw reading climbs by one<br />second per second once the primary stops stamping, so the operator subtracts<br />how long the primary has been failing and is left with the delay as it stood<br />when the primary died. That subtraction starts from the moment the operator<br />noticed the failure, which is never earlier than the failure itself, so the<br />result overstates the loss rather than understating it.<br /><br />It is checked only against replicas that actually missed transactions. A<br />replica holding every transaction the primary committed loses nothing by<br />being promoted, however far its applier has fallen behind, and the wait for<br />it to drain its relay log is delay rather than loss.<br /><br />If no replica is within the bound, the operator refuses the failover and<br />moves the cluster to Blocked, exactly as it does for MaxTransactionsBehind.<br />Leave it unset for no time bound. |  | Optional: \{\} <br /> |
+
+
+#### Flavor
+
+_Underlying type:_ _string_
+
+Flavor selects the database engine a Cluster runs.
++kubebuilder:validation:Enum=mysql;mariadb
+
+_Validation:_
+- Enum: [mysql mariadb]
+
+_Appears in:_
+- [ClusterSpec](#clusterspec)
+- [ClusterStatus](#clusterstatus)
+- [ImageCatalogSpec](#imagecatalogspec)
+
+| Field | Description |
+| --- | --- |
+| `mysql` |  |
+| `mariadb` |  |
+
+
 
 
 #### GroupReplicationStatus
@@ -948,6 +979,27 @@ _Appears in:_
 | `state` _string_ | Group state: ONLINE, RECOVERING, OFFLINE, ERROR, or UNREACHABLE. |  | Required: \{\} <br /> |
 | `role` _string_ | Group role: PRIMARY or SECONDARY. |  | Required: \{\} <br /> |
 | `reachable` _boolean_ | Whether the group currently considers the member reachable. |  | Required: \{\} <br /> |
+
+
+#### GroupReplicationConfiguration
+
+
+
+GroupReplicationConfiguration tunes MySQL Group Replication. All fields map to
+group_replication_* server variables; the operator owns the rest of the
+namespace (group name, addresses, seeds, start/bootstrap control).
+
+
+
+_Appears in:_
+- [ReplicationConfiguration](#replicationconfiguration)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `consistency` _string_ | Consistency maps to group_replication_consistency, the transaction<br />consistency guarantee the group enforces. | BEFORE_ON_PRIMARY_FAILOVER | Enum: [EVENTUAL BEFORE_ON_PRIMARY_FAILOVER BEFORE AFTER BEFORE_AND_AFTER] <br />Optional: \{\} <br /> |
+| `exitStateAction` _string_ | ExitStateAction maps to group_replication_exit_state_action: what a member<br />does when it involuntarily leaves the group (e.g. on an unrecoverable error<br />or loss of quorum). | READ_ONLY | Enum: [READ_ONLY OFFLINE_MODE ABORT_SERVER] <br />Optional: \{\} <br /> |
+| `autoRejoinTries` _integer_ | AutoRejoinTries maps to group_replication_autorejoin_tries: how many times a<br />member tries to automatically rejoin after being expelled before giving up. | 3 | Minimum: 0 <br />Optional: \{\} <br /> |
+| `groupName` _string_ | GroupName, when set, pins group_replication_group_name (a UUID). When unset<br />the operator generates one on first bootstrap and persists it to<br />status.groupReplication.groupName. Immutable once the group exists; a<br />changed group name fractures the group. |  | Optional: \{\} <br /> |
 
 
 #### ConfigMapKeySelector
@@ -1205,6 +1257,25 @@ DatabaseUserList contains a list of DatabaseUser.
 | `items` _[DatabaseUser](#databaseuser) array_ |  |  |  |
 
 
+#### DatabaseUserRevoke
+
+
+
+DatabaseUserRevoke describes a single MySQL REVOKE statement, applied after
+the grants. The target is required: a revoke must name the schema (or schema
+object) it carves out, so it cannot accidentally strip a global grant.
+
+
+
+_Appears in:_
+- [DatabaseUserSpec](#databaseuserspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `privileges` _string array_ | Privileges is the list of privileges to revoke (e.g. "INSERT", "UPDATE"). |  | MinItems: 1 <br /> |
+| `on` _string_ | On is the target to revoke from (e.g. "mysql.*", "sys.*"). |  | Required: \{\} <br /> |
+
+
 #### DatabaseUserSpec
 
 
@@ -1234,6 +1305,7 @@ _Appears in:_
 | `requireTLS` _string_ | RequireTLS sets REQUIRE X509, REQUIRE SSL, or none. | none | Enum: [x509 ssl none] <br />Optional: \{\} <br /> |
 | `comment` _string_ | Comment is an optional user comment. |  | Optional: \{\} <br /> |
 | `grants` _[DatabaseUserGrant](#databaseusergrant) array_ | Grants is the list of grants applied to the user. Targets are<br />installation-wide and have no default schema (unlike Database.spec.users). |  | Optional: \{\} <br /> |
+| `revokes` _[DatabaseUserRevoke](#databaseuserrevoke) array_ | Revokes lists privileges to revoke after Grants are applied, each scoped to<br />an explicit target (typically a system schema such as "mysql.*"). Combined<br />with partial_revokes=ON on the cluster, this carves the system schemas out<br />of a broad "*.*" grant so a cross-database admin cannot modify the grant<br />tables and self-escalate. Revokes are applied after Grants, in order.<br />Not supported on MariaDB: it has neither partial_revokes nor DENY (DENY is<br />planned for MariaDB 13.1), so the carve-out cannot be enforced. A<br />DatabaseUser with revokes on a MariaDB cluster is rejected at admission and<br />stays unapplied (reason UnsupportedOnMariaDB). |  | Optional: \{\} <br /> |
 | `reclaimPolicy` _string_ | ReclaimPolicy controls what happens to the MySQL user when the<br />DatabaseUser object is deleted. | retain | Enum: [delete retain] <br />Optional: \{\} <br /> |
 | `driftDetection` _boolean_ | DriftDetection controls whether the operator periodically re-applies this<br />user to correct out-of-band drift. When true (the default) the controller<br />re-asserts the desired state on every resync, so a manually altered or<br />dropped account is restored within readyResync. When false the controller<br />reconciles only on changes to the spec or to the referenced password<br />Secret, and does not periodically re-apply; drift introduced out of band<br />is not corrected until the next such change. | true | Optional: \{\} <br /> |
 
@@ -1417,6 +1489,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `flavor` _[Flavor](#flavor)_ | Flavor is the advisory engine flavor for the series in this catalog<br />(mysql or mariadb). It is non-gating: a mismatch does not block<br />resolution, but improves the admission error message. |  | Enum: [mysql mariadb] <br />Optional: \{\} <br /> |
 | `images` _[CatalogImage](#catalogimage) array_ | Images is the list of MySQL series to container image mappings. Each<br />series must appear at most once. |  | MaxItems: 8 <br />MinItems: 1 <br /> |
 
 
@@ -1726,6 +1799,56 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether the cluster runs in replica mode. | true | Optional: \{\} <br /> |
 | `source` _string_ | Source is the name of the entry in ExternalClusters to replicate from. |  | Required: \{\} <br /> |
+
+
+#### ReplicationConfiguration
+
+
+
+ReplicationConfiguration selects and tunes the replication topology.
+
+
+
+_Appears in:_
+- [ClusterSpec](#clusterspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `mode` _string_ | Mode is the replication topology. Immutable after creation. | async | Enum: [async groupReplication] <br />Optional: \{\} <br /> |
+| `groupReplication` _[GroupReplicationConfiguration](#groupreplicationconfiguration)_ | GroupReplication tunes the group when Mode=groupReplication. It must not be<br />set unless Mode is groupReplication. |  | Optional: \{\} <br /> |
+| `heartbeat` _[ReplicationHeartbeat](#replicationheartbeat)_ | Heartbeat tunes the replication-lag heartbeat, which is on by default. |  | Optional: \{\} <br /> |
+
+
+#### ReplicationHeartbeat
+
+
+
+ReplicationHeartbeat configures the replication-lag heartbeat: the writable
+primary's instance manager stamps the current time into a small replicated
+table, and every instance reads it back to measure how old the newest write it
+has caught up to is.
+
+It exists because the server cannot answer that question itself.
+Seconds_Behind_Source times the SQL applier against the events it has already
+received, so a replica that stopped receiving anything reports zero once its
+relay log drains, no matter how far the primary ran on without it, and it
+reports NULL whenever the IO thread is disconnected, which is the state every
+replica is in the moment its primary dies.
+
+The table is heartbeat.heartbeat, in pt-heartbeat's shape, so the heartbeat
+collector already built into mysqld_exporter scrapes it as-is.
+
+
+
+_Appears in:_
+- [ReplicationConfiguration](#replicationconfiguration)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled turns the heartbeat on. It defaults to true: the cost is one small<br />replicated write per interval on the primary, and it is what<br />failoverPolicy.maxReplicationLag and the lag metrics read. | true | Optional: \{\} <br /> |
+| `interval` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | Interval is how often the primary stamps the table. It sets the floor on<br />every lag reading, because a replica in perfect sync still reports an age of<br />up to one interval simply because the next stamp is not written yet. Keep it<br />well under any maxReplicationLag you set. Defaults to 1s. | 1s | Optional: \{\} <br /> |
+
+
 
 
 #### RoleConfiguration

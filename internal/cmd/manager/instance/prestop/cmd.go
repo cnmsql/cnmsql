@@ -22,8 +22,10 @@ package prestop
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -100,10 +102,20 @@ func WaitUntilDemoted(ctx context.Context, db pool.Connection, timeout, interval
 
 // isReadOnly reports whether the local server has global read_only enabled,
 // which the operator sets when it demotes a former primary to a replica.
+//
+// The flag is read as a string because the engines render it differently: MySQL
+// and MariaDB through 11.x answer 0/1, MariaDB 12 answers OFF/ON. Scanning "OFF"
+// into a number fails, and the failure is silent here (the wait just runs to its
+// timeout), so a demotion would never be seen on those servers.
 func isReadOnly(ctx context.Context, db pool.Connection) (bool, error) {
-	var readOnly int64
+	var readOnly sql.NullString
 	if err := db.QueryRowContext(ctx, "SELECT @@global.read_only").Scan(&readOnly); err != nil {
 		return false, err
 	}
-	return readOnly == 1, nil
+	switch strings.ToUpper(readOnly.String) {
+	case "1", "ON", "TRUE", "YES":
+		return true, nil
+	default:
+		return false, nil
+	}
 }

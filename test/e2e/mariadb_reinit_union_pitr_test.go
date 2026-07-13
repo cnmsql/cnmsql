@@ -47,9 +47,7 @@ var _ = Describe("MariaDB reinit union PITR", Ordered, Label("flavor", "mariadb"
 			return mariadbPITRClusterManifest(name, backup, sourceCluster, targetGTID)
 		},
 		awaitArchive: func(cluster, target string) {
-			// MariaDB GTID sets are not the MySQL UUID form expectArchiveCovers parses,
-			// so give the archiver a bounded grace period to ship the flushed logs.
-			time.Sleep(e2eTimeout(30 * time.Second))
+			expectMariadbArchiveCovers(cluster, target, 8*time.Minute)
 		},
 	}
 

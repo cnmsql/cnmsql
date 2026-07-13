@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/async"
 	controllergr "github.com/cnmsql/cnmsql/internal/controller/groupreplication"
@@ -55,6 +57,10 @@ func topologyFailoverState(observed observedCluster) topology.FailoverState {
 			instance.IORunning = status.Replication.IORunning
 			instance.SQLRunning = status.Replication.SQLRunning
 			instance.RetrievedGTID = status.Replication.RetrievedGTIDSet
+		}
+		if status.ReplicationLag != nil && status.ReplicationLag.LagMillis != nil {
+			lag := time.Duration(*status.ReplicationLag.LagMillis) * time.Millisecond
+			instance.HeartbeatAge = &lag
 		}
 		instances[name] = instance
 	}

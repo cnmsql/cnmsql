@@ -111,9 +111,7 @@ var _ = Describe("MariaDB failover + PITR under heavy writes", Ordered, Label("f
 		flushMariadbBinaryLogs(sourceCluster, newPrimary, password)
 
 		By("waiting for the archiver to ship the binary logs covering the target")
-		// MariaDB GTID sets are not the MySQL UUID form expectArchiveCovers parses,
-		// so give the archiver a bounded grace period to ship the flushed logs.
-		time.Sleep(e2eTimeout(30 * time.Second))
+		expectMariadbArchiveCovers(sourceCluster, targetGTID, 8*time.Minute)
 
 		By(fmt.Sprintf("bootstrapping a recovery cluster to targetGTID=%s", targetGTID))
 		applyManifest(restoredCluster, mariadbPITRClusterManifest(restoredCluster, backupName, sourceCluster, targetGTID))
@@ -187,15 +185,23 @@ func writeMariadbStressRows(cluster, password string, startID, count, batchSize 
 	}
 }
 
-// flushMariadbBinaryLogs rotates the primary's active binary log so every
-// committed transaction lands in an archivable file, then returns the MariaDB
-// GTID position (@@gtid_current_pos) captured immediately after the flush.
+// flushMariadbBinaryLogs returns the MariaDB GTID position (@@gtid_current_pos)
+// the primary has reached, then rotates its active binary log so every
+// transaction up to that position lands in an immutable, archivable file.
+//
+// The position is read before the rotation, not after. The primary is never
+// quiescent — the instance manager stamps the heartbeat table once a second —
+// so a position read after the flush already includes transactions that landed
+// in the new, still-open file, which the archiver cannot ship until something
+// closes it. Such a target is unreachable: the recovery guard rejects it as
+// beyond the archived coverage. Reading first pins the target inside the file
+// the flush is about to close, which is the next file the archiver ships.
 func flushMariadbBinaryLogs(cluster, primary, password string) string {
 	GinkgoHelper()
-	_, err := mariadbExec(primary, "root", rootPassword(cluster), "", "FLUSH BINARY LOGS")
-	Expect(err).NotTo(HaveOccurred(), "FLUSH BINARY LOGS failed on %s", primary)
 	out, err := mariadbExec(primary, "app", password, "", "SELECT @@gtid_current_pos")
 	Expect(err).NotTo(HaveOccurred(), "reading gtid_current_pos from %s", primary)
+	_, err = mariadbExec(primary, "root", rootPassword(cluster), "", "FLUSH BINARY LOGS")
+	Expect(err).NotTo(HaveOccurred(), "FLUSH BINARY LOGS failed on %s", primary)
 	return strings.TrimSpace(out)
 }
 
