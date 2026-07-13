@@ -445,21 +445,39 @@ func backupJob(
 
 func backupObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: "cnmsql_S3_ENDPOINT", Value: store.Endpoint},
-		{Name: "cnmsql_S3_REGION", Value: store.Region},
-		{Name: "cnmsql_S3_SIGNATURE_VERSION", Value: string(store.SignatureVersion)},
+		{Name: objectstore.EnvEndpoint, Value: store.Endpoint},
+		{Name: objectstore.EnvRegion, Value: store.Region},
+		{Name: objectstore.EnvSignatureVersion, Value: string(store.SignatureVersion)},
 	}
 	if store.ForcePathStyle != nil {
-		env = append(env, corev1.EnvVar{Name: "cnmsql_S3_FORCE_PATH_STYLE", Value: fmt.Sprintf("%t", *store.ForcePathStyle)})
+		env = append(env, corev1.EnvVar{
+			Name: objectstore.EnvForcePathStyle, Value: fmt.Sprintf("%t", *store.ForcePathStyle),
+		})
 	}
 	if store.Credentials.AccessKeyID != nil {
-		env = append(env, secretKeyEnv("cnmsql_S3_ACCESS_KEY_ID", *store.Credentials.AccessKeyID))
+		env = append(env, secretKeyEnv(objectstore.EnvAccessKeyID, *store.Credentials.AccessKeyID))
 	}
 	if store.Credentials.SecretAccessKey != nil {
-		env = append(env, secretKeyEnv("cnmsql_S3_SECRET_ACCESS_KEY", *store.Credentials.SecretAccessKey))
+		env = append(env, secretKeyEnv(objectstore.EnvSecretAccessKey, *store.Credentials.SecretAccessKey))
 	}
 	if store.Credentials.SessionToken != nil {
-		env = append(env, secretKeyEnv("cnmsql_S3_SESSION_TOKEN", *store.Credentials.SessionToken))
+		env = append(env, secretKeyEnv(objectstore.EnvSessionToken, *store.Credentials.SessionToken))
+	}
+	if store.ServerSideEncryption != nil {
+		env = append(env, corev1.EnvVar{
+			Name: objectstore.EnvServerSideEncryption, Value: *store.ServerSideEncryption,
+		})
+	}
+	if store.StorageClass != nil {
+		env = append(env, corev1.EnvVar{Name: objectstore.EnvStorageClass, Value: *store.StorageClass})
+	}
+	if store.TLS != nil {
+		env = append(env, corev1.EnvVar{
+			Name: objectstore.EnvTLSInsecure, Value: fmt.Sprintf("%t", store.TLS.InsecureSkipVerify),
+		})
+		if store.TLS.CABundleSecret != nil {
+			env = append(env, secretKeyEnv(objectstore.EnvCABundle, *store.TLS.CABundleSecret))
+		}
 	}
 	return env
 }

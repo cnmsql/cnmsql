@@ -275,7 +275,9 @@ type S3ObjectStore struct {
 	Endpoint string `json:"endpoint,omitempty"`
 
 	// Region is the bucket region. Required by most providers; for AWS it
-	// selects the regional endpoint.
+	// selects the regional endpoint. When empty it defaults to the region the
+	// endpoint expects requests to be signed with: "auto" for Cloudflare R2,
+	// "us-east-1" everywhere else (which MinIO, Ceph and friends accept).
 	// +optional
 	Region string `json:"region,omitempty"`
 
@@ -301,11 +303,16 @@ type S3ObjectStore struct {
 	// +kubebuilder:default:=s3v4
 	SignatureVersion S3SignatureVersion `json:"signatureVersion,omitempty"`
 
-	// ServerSideEncryption sets the SSE algorithm (e.g. "AES256" or "aws:kms").
+	// ServerSideEncryption sets the SSE algorithm applied to every uploaded
+	// object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+	// providers that encrypt at rest unconditionally (MinIO, R2, B2), which
+	// reject or silently ignore the SSE header.
 	// +optional
 	ServerSideEncryption *string `json:"serverSideEncryption,omitempty"`
 
-	// StorageClass sets the object storage class (e.g. "STANDARD_IA").
+	// StorageClass sets the storage class of every uploaded object (e.g.
+	// "STANDARD_IA"). Leave unset on providers with a single class; a class the
+	// provider does not know is rejected at upload time.
 	// +optional
 	StorageClass *string `json:"storageClass,omitempty"`
 

@@ -186,30 +186,37 @@ func resolveObjectStoreConfig(
 	namespace string,
 	store *mysqlv1alpha1.S3ObjectStore,
 ) (objectstore.Config, error) {
-	var accessKeyID, secretAccessKey, sessionToken string
+	var secrets objectstore.StoreSecrets
 	creds := store.Credentials
 	if creds.AccessKeyID != nil {
 		value, err := resolveSecretValue(ctx, c, namespace, *creds.AccessKeyID)
 		if err != nil {
 			return objectstore.Config{}, err
 		}
-		accessKeyID = value
+		secrets.AccessKeyID = value
 	}
 	if creds.SecretAccessKey != nil {
 		value, err := resolveSecretValue(ctx, c, namespace, *creds.SecretAccessKey)
 		if err != nil {
 			return objectstore.Config{}, err
 		}
-		secretAccessKey = value
+		secrets.SecretAccessKey = value
 	}
 	if creds.SessionToken != nil {
 		value, err := resolveSecretValue(ctx, c, namespace, *creds.SessionToken)
 		if err != nil {
 			return objectstore.Config{}, err
 		}
-		sessionToken = value
+		secrets.SessionToken = value
 	}
-	return objectstore.ConfigFromStore(*store, accessKeyID, secretAccessKey, sessionToken), nil
+	if store.TLS != nil && store.TLS.CABundleSecret != nil {
+		value, err := resolveSecretValue(ctx, c, namespace, *store.TLS.CABundleSecret)
+		if err != nil {
+			return objectstore.Config{}, err
+		}
+		secrets.CABundle = value
+	}
+	return objectstore.ConfigFromStore(*store, secrets), nil
 }
 
 func resolveSecretValue(

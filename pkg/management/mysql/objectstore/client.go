@@ -18,17 +18,23 @@ package objectstore
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/encrypt"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -49,6 +55,14 @@ const (
 	// the one-shot backup worker still takes them as flags.
 	EnvBucket = "cnmsql_S3_BUCKET"
 	EnvPath   = "cnmsql_S3_PATH"
+	// EnvServerSideEncryption and EnvStorageClass carry the per-object write
+	// options applied to every upload.
+	EnvServerSideEncryption = "cnmsql_S3_SERVER_SIDE_ENCRYPTION"
+	EnvStorageClass         = "cnmsql_S3_STORAGE_CLASS"
+	// EnvTLSInsecure and EnvCABundle configure endpoint TLS verification. The CA
+	// bundle carries the PEM itself (from the referenced secret), not a path.
+	EnvTLSInsecure = "cnmsql_S3_TLS_INSECURE_SKIP_VERIFY"
+	EnvCABundle    = "cnmsql_S3_CA_BUNDLE"
 )
 
 // StoreFromEnv builds an S3ObjectStore destination (bucket + path) from the
@@ -78,38 +92,77 @@ type Config struct {
 	// ForcePathStyle uses path-style bucket addressing (host/bucket/key) instead
 	// of virtual-hosted style. Required by most S3-compatible stores (MinIO, ...).
 	ForcePathStyle bool
+	// ServerSideEncryption selects the SSE algorithm applied to every upload:
+	// "AES256" (SSE-S3) or "aws:kms" / "aws:kms:<key-id>" (SSE-KMS). Empty
+	// uploads without an SSE header, which is what non-AWS providers expect.
+	ServerSideEncryption string
+	// StorageClass sets the x-amz-storage-class of every upload (e.g.
+	// "STANDARD_IA", or a provider-specific class). Empty leaves it unset.
+	StorageClass string
+	// InsecureSkipVerify disables endpoint certificate verification.
+	InsecureSkipVerify bool
+	// CABundle is a PEM bundle used to verify the endpoint certificate, for
+	// stores fronted by a private CA. It carries the PEM itself, not a path.
+	CABundle string
 }
 
 // ConfigFromEnv builds a Config from the cnmsql_S3_* environment variables.
 func ConfigFromEnv() Config {
 	cfg := Config{
-		Endpoint:        os.Getenv(EnvEndpoint),
-		Region:          os.Getenv(EnvRegion),
-		AccessKeyID:     os.Getenv(EnvAccessKeyID),
-		SecretAccessKey: os.Getenv(EnvSecretAccessKey),
-		SessionToken:    os.Getenv(EnvSessionToken),
-		SignatureV2:     strings.EqualFold(os.Getenv(EnvSignatureVersion), "s3v2"),
+		Endpoint:             os.Getenv(EnvEndpoint),
+		Region:               os.Getenv(EnvRegion),
+		AccessKeyID:          os.Getenv(EnvAccessKeyID),
+		SecretAccessKey:      os.Getenv(EnvSecretAccessKey),
+		SessionToken:         os.Getenv(EnvSessionToken),
+		SignatureV2:          strings.EqualFold(os.Getenv(EnvSignatureVersion), "s3v2"),
+		ServerSideEncryption: os.Getenv(EnvServerSideEncryption),
+		StorageClass:         os.Getenv(EnvStorageClass),
+		CABundle:             os.Getenv(EnvCABundle),
 	}
 	if force, err := strconv.ParseBool(os.Getenv(EnvForcePathStyle)); err == nil {
 		cfg.ForcePathStyle = force
 	}
+	if insecure, err := strconv.ParseBool(os.Getenv(EnvTLSInsecure)); err == nil {
+		cfg.InsecureSkipVerify = insecure
+	}
 	return cfg
 }
 
-// ConfigFromStore maps an API object store plus already-resolved credential
-// values into a client Config. It mirrors the env the pods receive, so the
-// operator's own object-store access matches the workers'.
-func ConfigFromStore(store mysqlv1alpha1.S3ObjectStore, accessKeyID, secretAccessKey, sessionToken string) Config {
+// StoreSecrets holds the object-store values the operator has resolved out of
+// the referenced Secrets. They are passed to ConfigFromStore separately from the
+// (non-secret) S3ObjectStore spec.
+type StoreSecrets struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	// CABundle is the PEM read from spec.tls.caBundleSecret, when set.
+	CABundle string
+}
+
+// ConfigFromStore maps an API object store plus already-resolved secret values
+// into a client Config. It mirrors the env the pods receive, so the operator's
+// own object-store access matches the workers'.
+func ConfigFromStore(store mysqlv1alpha1.S3ObjectStore, secrets StoreSecrets) Config {
 	cfg := Config{
 		Endpoint:        store.Endpoint,
 		Region:          store.Region,
-		AccessKeyID:     accessKeyID,
-		SecretAccessKey: secretAccessKey,
-		SessionToken:    sessionToken,
+		AccessKeyID:     secrets.AccessKeyID,
+		SecretAccessKey: secrets.SecretAccessKey,
+		SessionToken:    secrets.SessionToken,
 		SignatureV2:     store.SignatureVersion == mysqlv1alpha1.SignatureVersionV2,
+		CABundle:        secrets.CABundle,
 	}
 	if store.ForcePathStyle != nil {
 		cfg.ForcePathStyle = *store.ForcePathStyle
+	}
+	if store.ServerSideEncryption != nil {
+		cfg.ServerSideEncryption = *store.ServerSideEncryption
+	}
+	if store.StorageClass != nil {
+		cfg.StorageClass = *store.StorageClass
+	}
+	if store.TLS != nil {
+		cfg.InsecureSkipVerify = store.TLS.InsecureSkipVerify
 	}
 	return cfg
 }
@@ -117,7 +170,12 @@ func ConfigFromStore(store mysqlv1alpha1.S3ObjectStore, accessKeyID, secretAcces
 // Client is a thin wrapper over the S3 SDK exposing the operations the
 // backup/recovery workers need.
 type Client struct {
-	mc *minio.Client
+	mc           *minio.Client
+	sse          encrypt.ServerSide
+	storageClass string
+	// listV1 is set once a ListObjectsV2 call has been rejected by the endpoint,
+	// after which every listing uses the V1 API. See listObjects.
+	listV1 atomic.Bool
 }
 
 // NewClient builds an object-store client from cfg.
@@ -127,14 +185,16 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, err
 	}
 
-	var creds *credentials.Credentials
-	switch {
-	case cfg.AccessKeyID == "" && cfg.SecretAccessKey == "":
-		creds = credentials.NewIAM("")
-	case cfg.SignatureV2:
-		creds = credentials.NewStaticV2(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
-	default:
-		creds = credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+	creds := resolveCredentials(cfg)
+
+	sse, err := parseServerSideEncryption(cfg.ServerSideEncryption)
+	if err != nil {
+		return nil, err
+	}
+
+	transport, err := newTransport(cfg, secure)
+	if err != nil {
+		return nil, err
 	}
 
 	lookup := minio.BucketLookupAuto
@@ -142,23 +202,115 @@ func NewClient(cfg Config) (*Client, error) {
 		lookup = minio.BucketLookupPath
 	}
 
-	// Default the signing region so SigV4 works against S3-compatible stores
-	// (e.g. MinIO) where users routinely leave the region unset.
-	region := cfg.Region
-	if region == "" {
-		region = "us-east-1"
-	}
-
 	mc, err := minio.New(endpoint, &minio.Options{
 		Creds:        creds,
 		Secure:       secure,
-		Region:       region,
+		Region:       signingRegion(cfg.Region, endpoint),
 		BucketLookup: lookup,
+		Transport:    transport,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating object-store client: %w", err)
 	}
-	return &Client{mc: mc}, nil
+	return &Client{mc: mc, sse: sse, storageClass: cfg.StorageClass}, nil
+}
+
+// resolveCredentials builds the credential provider for cfg. Static keys are
+// used verbatim; with none configured we fall back to the ambient AWS chain
+// (environment, shared credentials file, then the instance/IRSA endpoint), which
+// is what spec.credentials.inheritFromIAMRole means in practice.
+func resolveCredentials(cfg Config) *credentials.Credentials {
+	switch {
+	case cfg.AccessKeyID != "" || cfg.SecretAccessKey != "":
+		if cfg.SignatureV2 {
+			return credentials.NewStaticV2(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+		}
+		return credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+	default:
+		return credentials.NewChainCredentials([]credentials.Provider{
+			&credentials.EnvAWS{},
+			&credentials.FileAWSCredentials{},
+			&credentials.IAM{Client: &http.Client{Timeout: 30 * time.Second}},
+		})
+	}
+}
+
+// newTransport returns the HTTP transport for the client, or nil to let the SDK
+// build its default. A custom one is only needed when the endpoint's TLS has to
+// be trusted through a private CA or not verified at all.
+func newTransport(cfg Config, secure bool) (http.RoundTripper, error) {
+	if !secure || (cfg.CABundle == "" && !cfg.InsecureSkipVerify) {
+		return nil, nil
+	}
+	transport, err := minio.DefaultTransport(secure)
+	if err != nil {
+		return nil, fmt.Errorf("building object-store transport: %w", err)
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = cfg.InsecureSkipVerify
+	if cfg.CABundle != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM([]byte(cfg.CABundle)) {
+			return nil, fmt.Errorf("object-store CA bundle contains no valid PEM certificate")
+		}
+		transport.TLSClientConfig.RootCAs = pool
+	}
+	return transport, nil
+}
+
+// parseServerSideEncryption maps the spec's SSE algorithm onto an SDK
+// encryption. An unknown value is rejected up front rather than being sent as an
+// opaque header that most providers answer with a confusing 400.
+func parseServerSideEncryption(algorithm string) (encrypt.ServerSide, error) {
+	switch {
+	case algorithm == "":
+		return nil, nil
+	case strings.EqualFold(algorithm, "AES256"), strings.EqualFold(algorithm, "aws:s3"):
+		return encrypt.NewSSE(), nil
+	case strings.EqualFold(algorithm, "aws:kms"):
+		return encrypt.NewSSEKMS("", nil)
+	case strings.HasPrefix(strings.ToLower(algorithm), "aws:kms:"):
+		return encrypt.NewSSEKMS(algorithm[len("aws:kms:"):], nil)
+	default:
+		return nil, fmt.Errorf(
+			"unsupported serverSideEncryption %q: use \"AES256\", \"aws:kms\" or \"aws:kms:<key-id>\"", algorithm)
+	}
+}
+
+// signingRegion picks the region used to sign requests. Most S3-compatible
+// stores ignore it but still require it to match what they expect: MinIO, Ceph
+// and friends accept us-east-1, while Cloudflare R2 only signs with "auto".
+func signingRegion(region, endpoint string) string {
+	if region != "" {
+		return region
+	}
+	if strings.HasSuffix(hostOnly(endpoint), ".r2.cloudflarestorage.com") {
+		return "auto"
+	}
+	return "us-east-1"
+}
+
+// hostOnly strips a trailing port from a host[:port].
+func hostOnly(endpoint string) string {
+	if host, _, err := net.SplitHostPort(endpoint); err == nil {
+		return host
+	}
+	return endpoint
+}
+
+// putOptions returns the write options every upload shares: the configured SSE
+// and storage class, plus the content type.
+func (c *Client) putOptions(contentType string) minio.PutObjectOptions {
+	return minio.PutObjectOptions{
+		ContentType:          contentType,
+		ServerSideEncryption: c.sse,
+		StorageClass:         c.storageClass,
+	}
 }
 
 // NewClientFromEnv builds a client from the cnmsql_S3_* environment variables.
@@ -178,7 +330,7 @@ func (c *Client) Upload(
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	_, err := c.mc.PutObject(ctx, bucket, key, reader, size, minio.PutObjectOptions{ContentType: contentType})
+	_, err := c.mc.PutObject(ctx, bucket, key, reader, size, c.putOptions(contentType))
 	if err != nil {
 		return fmt.Errorf("uploading s3://%s/%s: %w", bucket, key, err)
 	}
@@ -192,7 +344,7 @@ func (c *Client) PutJSON(ctx context.Context, bucket, key string, v any) error {
 		return fmt.Errorf("marshaling object %s: %w", key, err)
 	}
 	_, err = c.mc.PutObject(ctx, bucket, key, strings.NewReader(string(payload)), int64(len(payload)),
-		minio.PutObjectOptions{ContentType: "application/json"})
+		c.putOptions("application/json"))
 	if err != nil {
 		return fmt.Errorf("uploading s3://%s/%s: %w", bucket, key, err)
 	}
@@ -217,20 +369,11 @@ func (c *Client) Download(ctx context.Context, bucket, key string, writer io.Wri
 // by the operator's empty-archive safety check, so a fresh cluster never adopts
 // (and overwrites) a destination that already holds another cluster's backups.
 func (c *Client) IsEmptyPrefix(ctx context.Context, bucket, prefix string) (bool, error) {
-	objects := c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{
-		Prefix:    prefix,
-		Recursive: true,
-		MaxKeys:   1,
-	})
-	object, ok := <-objects
-	if !ok {
-		// Channel closed without yielding anything: nothing under the prefix.
-		return true, nil
+	objects, err := c.listObjects(ctx, bucket, prefix, true, 1)
+	if err != nil {
+		return false, err
 	}
-	if object.Err != nil {
-		return false, fmt.Errorf("listing s3://%s/%s: %w", bucket, prefix, object.Err)
-	}
-	return false, nil
+	return len(objects) == 0, nil
 }
 
 // ObjectInfo describes a single object returned by ListObjects.
@@ -247,10 +390,42 @@ type ObjectInfo struct {
 // only the immediate level is walked (delimiter-based), so listing a cluster
 // prefix yields its backup directories rather than every leaf object.
 func (c *Client) ListObjects(ctx context.Context, bucket, prefix string, recursive bool) ([]ObjectInfo, error) {
+	return c.listObjects(ctx, bucket, prefix, recursive, 0)
+}
+
+// listObjects walks bucket/prefix, stopping early once limit objects have been
+// collected (limit <= 0 walks everything).
+//
+// Listing is the one call whose API version is not universally implemented:
+// ListObjectsV2 is what every modern store speaks, but the GCS XML interop
+// endpoint only implements the original (V1) listing and answers V2 with a 400.
+// The first such rejection latches the client onto V1 for the rest of its life,
+// so the fallback costs one wasted request per process rather than one per call.
+func (c *Client) listObjects(ctx context.Context, bucket, prefix string, recursive bool, limit int) (
+	[]ObjectInfo, error,
+) {
+	infos, err := c.listObjectsWith(ctx, bucket, prefix, recursive, limit, c.listV1.Load())
+	if err == nil || c.listV1.Load() || !isUnsupportedListV2(err) {
+		return infos, err
+	}
+	c.listV1.Store(true)
+	return c.listObjectsWith(ctx, bucket, prefix, recursive, limit, true)
+}
+
+func (c *Client) listObjectsWith(ctx context.Context, bucket, prefix string, recursive bool, limit int, useV1 bool) (
+	[]ObjectInfo, error,
+) {
+	// The SDK only stops producing when the context is cancelled, so an early
+	// return without this would leak its listing goroutine.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var infos []ObjectInfo
 	for object := range c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{
 		Prefix:    prefix,
 		Recursive: recursive,
+		MaxKeys:   limit,
+		UseV1:     useV1,
 	}) {
 		if object.Err != nil {
 			return nil, fmt.Errorf("listing s3://%s/%s: %w", bucket, prefix, object.Err)
@@ -260,14 +435,22 @@ func (c *Client) ListObjects(ctx context.Context, bucket, prefix string, recursi
 			Size:         object.Size,
 			LastModified: object.LastModified,
 		})
+		if limit > 0 && len(infos) >= limit {
+			break
+		}
 	}
 	return infos, nil
 }
 
 // Remove deletes a single object. A not-found object is treated as success.
+//
+// Deletion is deliberately one object per request: the bulk DeleteObjects (POST
+// ?delete) API is the operation S3-compatible stores most often omit, and no
+// provider lets us delete a prefix in a single call, so RemovePrefix expands to
+// per-object deletes that every store supports.
 func (c *Client) Remove(ctx context.Context, bucket, key string) error {
 	err := c.mc.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
-	if err != nil && minio.ToErrorResponse(err).Code != "NoSuchKey" {
+	if err != nil && !isNotFound(err) {
 		return fmt.Errorf("removing s3://%s/%s: %w", bucket, key, err)
 	}
 	return nil
@@ -295,7 +478,7 @@ func (c *Client) Exists(ctx context.Context, bucket, key string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+	if isNotFound(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("stat s3://%s/%s: %w", bucket, key, err)

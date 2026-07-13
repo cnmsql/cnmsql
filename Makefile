@@ -88,6 +88,10 @@ KIND_CLUSTER ?= cnmsql-test-e2e
 K8S_VERSION ?=
 KIND_IMAGE_ARG = $(if $(K8S_VERSION),--image kindest/node:$(K8S_VERSION),)
 
+.PHONY: test-s3-conformance
+test-s3-conformance: ## Qualify an S3-compatible provider: runs the object-store conformance suite against the endpoint in the cnmsql_S3_* env (see docs/src/object-store.md).
+	go test -tags conformance -count=1 -v -timeout 600s ./test/conformance/s3/...
+
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Optional: K8S_VERSION=v1.34.0.
 	@command -v $(KIND) >/dev/null 2>&1 || { \

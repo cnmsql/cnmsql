@@ -176,6 +176,37 @@ func (store *S3ObjectStore) SetDefaults() {
 	}
 }
 
+// Validate returns the validation errors for an object store. It rejects the
+// values the S3 client cannot turn into a request, so a typo surfaces at
+// admission instead of failing the first backup pod hours later.
+func (store *S3ObjectStore) Validate(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if store == nil {
+		return allErrs
+	}
+	if sse := store.ServerSideEncryption; sse != nil && *sse != "" && !isSupportedSSE(*sse) {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("serverSideEncryption"), *sse,
+			`must be "AES256", "aws:kms" or "aws:kms:<key-id>"`))
+	}
+	if store.TLS != nil && store.TLS.InsecureSkipVerify && store.TLS.CABundleSecret != nil {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("tls", "insecureSkipVerify"), true,
+			"insecureSkipVerify and caBundleSecret are mutually exclusive: skipping verification ignores the CA bundle"))
+	}
+	return allErrs
+}
+
+// isSupportedSSE reports whether algorithm is one the object-store client can
+// map onto an SSE header. Kept in sync with objectstore.parseServerSideEncryption.
+func isSupportedSSE(algorithm string) bool {
+	lowered := strings.ToLower(algorithm)
+	return lowered == "aes256" ||
+		lowered == "aws:s3" ||
+		lowered == "aws:kms" ||
+		(strings.HasPrefix(lowered, "aws:kms:") && len(lowered) > len("aws:kms:"))
+}
+
 // Validate returns the list of validation errors for the Cluster spec. An empty
 // list means the spec is valid. This is used both by unit tests and (later) by
 // the validating webhook.
@@ -230,6 +261,11 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
 	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
 	allErrs = append(allErrs, spec.validateFlavor(specPath)...)
+
+	for i := range spec.ExternalClusters {
+		allErrs = append(allErrs, spec.ExternalClusters[i].ObjectStore.Validate(
+			specPath.Child("externalClusters").Index(i).Child("objectStore"))...)
+	}
 
 	return allErrs
 }
@@ -672,6 +708,7 @@ func (spec *ClusterSpec) validateBackup(path *field.Path) field.ErrorList {
 				"retentionPolicy requires backup.objectStore to be configured"))
 		}
 	}
+	allErrs = append(allErrs, spec.Backup.ObjectStore.Validate(path.Child("objectStore"))...)
 	if spec.Backup.ContinuousArchiving == nil {
 		return allErrs
 	}
