@@ -160,11 +160,11 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 	// Asynchronous topology: an instance may set its own currentPrimary (the
 	// pull-model self-promotion path), gated on the operator-designated target.
 	if newStatus.CurrentPrimary != oldStatus.CurrentPrimary ||
-		newStatus.CurrentPrimaryTimestamp != oldStatus.CurrentPrimaryTimestamp {
+		!newStatus.CurrentPrimaryTimestamp.Equal(oldStatus.CurrentPrimaryTimestamp) {
 		if newStatus.CurrentPrimary != instanceName {
 			return admission.Denied(fmt.Sprintf("instance %q may only set status.currentPrimary to itself", instanceName))
 		}
-		if newStatus.CurrentPrimaryTimestamp == "" {
+		if newStatus.CurrentPrimaryTimestamp.IsZero() {
 			return admission.Denied(fmt.Sprintf("instance %q must set status.currentPrimaryTimestamp when updating status.currentPrimary", instanceName))
 		}
 		if oldStatus.TargetPrimary != "" && newStatus.CurrentPrimary != oldStatus.TargetPrimary {
@@ -177,9 +177,9 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 	oldCopy := oldStatus.DeepCopy()
 	newCopy := newStatus.DeepCopy()
 	oldCopy.CurrentPrimary = ""
-	oldCopy.CurrentPrimaryTimestamp = ""
+	oldCopy.CurrentPrimaryTimestamp = nil
 	newCopy.CurrentPrimary = ""
-	newCopy.CurrentPrimaryTimestamp = ""
+	newCopy.CurrentPrimaryTimestamp = nil
 
 	if !reflect.DeepEqual(oldCopy, newCopy) {
 		return admission.Denied(fmt.Sprintf("instance %q is only allowed to modify status.currentPrimary and status.currentPrimaryTimestamp", instanceName))

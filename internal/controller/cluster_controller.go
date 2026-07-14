@@ -291,9 +291,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if cluster.Status.TargetPrimary == "" {
 		bootstrapPrimary := instanceName(cluster, 1)
 		log.Info("Electing bootstrap primary", "primary", bootstrapPrimary)
+		now := metav1.Now()
 		if err := r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 			s.TargetPrimary = bootstrapPrimary
-			s.TargetPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
+			s.TargetPrimaryTimestamp = &now
 		}); err != nil {
 			return ctrl.Result{}, err
 		}

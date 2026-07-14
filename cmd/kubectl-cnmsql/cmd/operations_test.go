@@ -153,7 +153,7 @@ func TestRunPromoteValidationAndPatch(t *testing.T) {
 		t.Fatalf("runPromote() error = %v", err)
 	}
 	got := getTestCluster(t, env)
-	if got.Status.TargetPrimary != "demo-2" || got.Status.TargetPrimaryTimestamp == "" {
+	if got.Status.TargetPrimary != "demo-2" || got.Status.TargetPrimaryTimestamp.IsZero() {
 		t.Errorf("target primary status = %#v", got.Status)
 	}
 

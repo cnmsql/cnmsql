@@ -17,6 +17,7 @@ limitations under the License.
 package async
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -45,12 +46,7 @@ func (r *Reconciler) ReconcileFailover(
 		return topology.FailoverResult{}, nil
 	}
 	if PrimaryHealthy(observed) {
-		if cluster.Status.PrimaryFailingSince != "" {
-			return topology.FailoverResult{}, topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
-				status.PrimaryFailingSince = ""
-			})
-		}
-		return topology.FailoverResult{}, nil
+		return topology.FailoverResult{}, r.recordPrimaryHealthy(ctx, cluster)
 	}
 
 	failingSince, err := r.recordPrimaryFailing(ctx, cluster)
@@ -74,6 +70,25 @@ func (r *Reconciler) ReconcileFailover(
 		reason := fmt.Sprintf("Primary %s unreachable; waiting %s before failover", observed.PrimaryName, remaining.Round(time.Second))
 		return phaseResult(remaining, topology.PhaseDegraded, reason), nil
 	}
+	// Anti-flapping: refuse to chain a second failover onto a recent one. Blocked
+	// rather than Degraded, and deliberately not Handled, so the pass continues to
+	// instance provisioning: recreating the failed primary's Pod is how a primary
+	// that is failing intermittently gets to recover in place, which is the whole
+	// point of declining to replace it.
+	if remaining := topology.FailoverCooldownRemaining(cluster); remaining > 0 {
+		reason := fmt.Sprintf(
+			"Cannot fail over from %s: the last primary promotion is too recent to fail over again; "+
+				"minTimeBetweenFailovers (%s) allows the next one in %s",
+			observed.PrimaryName, cluster.MinTimeBetweenFailovers(), remaining.Round(time.Second))
+		return topology.FailoverResult{
+			Handled: false,
+			Phase: &topology.OperationPhase{
+				Phase:       topology.PhaseBlocked,
+				Reason:      reason,
+				Progressing: true,
+			},
+		}, nil
+	}
 
 	knownDiverged := append(slices.Clone(observed.Diverged), cluster.Status.DivergedInstances...)
 	eng, err := engine.ForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
@@ -85,6 +100,7 @@ func (r *Reconciler) ReconcileFailover(
 		KnownDiverged:         knownDiverged,
 		GTID:                  eng.GTID(),
 		MaxTransactionsBehind: maxTransactionsBehind(cluster),
+		Preferred:             cluster.PreferredPrimary(),
 		// The primary is unreachable by now, so its live position is unreadable and
 		// the last persisted snapshot is all there is to measure the gap against.
 		ReferenceGTID:     cluster.Status.GTIDExecutedByInstance[observed.PrimaryName],
@@ -132,10 +148,16 @@ func (r *Reconciler) ReconcileFailover(
 			message += fmt.Sprintf(" (%s of writes)", elected.TimeBehind.Round(time.Second))
 		}
 	}
+	now := metav1.Now()
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = candidate
-		status.TargetPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
-		status.PrimaryFailingSince = ""
+		status.TargetPrimaryTimestamp = &now
+		status.PrimaryFailingSince = nil
+		// The promoted instance has its own health to prove: it has been healthy for
+		// no time at all until it is observed to be, which is what stops a cluster
+		// whose primaries keep dying from settling and failing over again.
+		status.PrimaryHealthySince = nil
+		status.LastFailoverTimestamp = &now
 		status.Phase = topology.PhaseFailingOver
 		status.PhaseReason = message
 	}); err != nil {
@@ -180,18 +202,36 @@ func (r *Reconciler) fenceInstancePod(ctx context.Context, cluster *mysqlv1alpha
 }
 
 func (r *Reconciler) recordPrimaryFailing(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (time.Time, error) {
-	if existing := cluster.Status.PrimaryFailingSince; existing != "" {
-		if timestamp, err := time.Parse(time.RFC3339, existing); err == nil {
-			return timestamp, nil
-		}
+	if existing := cluster.Status.PrimaryFailingSince; existing != nil {
+		return existing.Time, nil
 	}
-	now := time.Now().Truncate(time.Second)
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
-		status.PrimaryFailingSince = now.Format(time.RFC3339)
+		status.PrimaryFailingSince = &now
 	}); err != nil {
 		return time.Time{}, err
 	}
-	return now, nil
+	return now.Time, nil
+}
+
+// recordPrimaryHealthy clears the failing marker and stamps the start of the
+// primary's current healthy stretch, which is what primaryStabilityWindow is
+// measured against.
+//
+// Recovering from a failing stretch starts a new one, so the stamp moves forward
+// every time the primary drops out and comes back. That is what denies a flapping
+// primary the uninterrupted health it needs to settle, and it is why the stamp is
+// rewritten on recovery rather than only when it is missing.
+func (r *Reconciler) recordPrimaryHealthy(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
+	recovered := cluster.Status.PrimaryFailingSince != nil
+	if !recovered && cluster.Status.PrimaryHealthySince != nil {
+		return nil
+	}
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
+	return topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
+		status.PrimaryFailingSince = nil
+		status.PrimaryHealthySince = &now
+	})
 }
 
 func isInstanceHashStale(cluster *mysqlv1alpha1.Cluster, name, operatorHash string) (bool, bool) {
@@ -246,6 +286,12 @@ type Election struct {
 	// MaxTransactionsBehind bounds how far behind an elected replica may be. Nil
 	// means unbounded, the behaviour of a cluster with no failoverPolicy.
 	MaxTransactionsBehind *int64
+	// Preferred orders the candidates, most preferred first. It only breaks ties
+	// between replicas that are already safe to promote: a preferred replica that
+	// does not hold every other candidate's transactions still loses to one that
+	// does. Empty means ordinal order, the behaviour of a cluster that names no
+	// preference.
+	Preferred []string
 	// ReferenceGTID is the position the lag bound is measured against: the last
 	// position known for the primary being replaced. During failover the primary
 	// is unreachable, so this comes from the persisted status snapshot, which can
@@ -277,6 +323,11 @@ type Election struct {
 // received, and the caller blocks the failover instead. Leaving the bound unset
 // keeps the historical behaviour of promoting the best replica however far
 // behind it is.
+//
+// Preferred only decides which of the surviving candidates is considered first.
+// Every safety rule is applied to it exactly as it is to any other replica, so a
+// preferred replica that cannot be proven safe is passed over rather than
+// promoted.
 func SelectFailoverCandidate(e Election) FailoverCandidate {
 	observed, knownDiverged, gtidModel := e.Observed, e.KnownDiverged, e.GTID
 	var candidates []string
@@ -324,7 +375,7 @@ func SelectFailoverCandidate(e Election) FailoverCandidate {
 	if len(withinLag) == 0 {
 		return FailoverCandidate{Reason: lagBlockReason(eligible, timeBehind, *e.MaxReplicationLag)}
 	}
-	eligible = withinLag
+	eligible = orderByPreference(withinLag, e.Preferred)
 
 	for _, candidate := range eligible {
 		dominatesAll := true
@@ -397,6 +448,28 @@ func transactionsBehind(
 		behind[name] = missing
 	}
 	return behind, nil
+}
+
+// orderByPreference sorts candidates so the most preferred come first, keeping
+// the relative order (which is ordinal order) of everything the preference does
+// not mention. It reorders the pool the dominance check walks; it does not admit
+// anyone to it, so a preferred replica still has to win the check on its own
+// merits to be promoted.
+func orderByPreference(candidates, preferred []string) []string {
+	if len(preferred) == 0 {
+		return candidates
+	}
+	rank := func(name string) int {
+		if i := slices.Index(preferred, name); i >= 0 {
+			return i
+		}
+		return len(preferred)
+	}
+	ordered := slices.Clone(candidates)
+	slices.SortStableFunc(ordered, func(a, b string) int {
+		return cmp.Compare(rank(a), rank(b))
+	})
+	return ordered
 }
 
 // withinBound drops candidates lagging by more than maxBehind, returning nothing

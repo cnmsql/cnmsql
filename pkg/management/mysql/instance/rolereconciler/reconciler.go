@@ -299,8 +299,9 @@ func (r *Reconciler) setCurrentPrimary(ctx context.Context, me string) error {
 		return nil
 	}
 	before := cluster.DeepCopy()
+	now := metav1.Now()
 	cluster.Status.CurrentPrimary = me
-	cluster.Status.CurrentPrimaryTimestamp = metav1.Now().Format(time.RFC3339)
+	cluster.Status.CurrentPrimaryTimestamp = &now
 	return r.Status().Patch(ctx, cluster, client.MergeFrom(before))
 }
 

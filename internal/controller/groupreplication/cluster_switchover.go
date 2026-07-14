@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -108,6 +109,29 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 	return topology.FailoverResult{}, nil
 }
 
+// SwitchoverTargetReady reports whether target is an ONLINE secondary of the
+// group, which is what group_replication_set_as_primary requires of the instance
+// it hands the primary role to.
+func (r *Reconciler) SwitchoverTargetReady(
+	cluster *mysqlv1alpha1.Cluster,
+	observed topology.FailoverState,
+	target string,
+) bool {
+	if status, ok := observed.Instances[target]; !ok || !status.Ready {
+		return false
+	}
+	grStatus := cluster.Status.GroupReplication
+	if grStatus == nil {
+		return false
+	}
+	for _, member := range grStatus.Members {
+		if member.Instance == target {
+			return member.State == mysqlgr.MemberStateOnline && member.Role == mysqlgr.MemberRoleSecondary
+		}
+	}
+	return false
+}
+
 // memberUUIDForInstance queries the group view from queryInstance and returns the
 // server_uuid of targetInstance.
 func (r *Reconciler) memberUUIDForInstance(
@@ -140,18 +164,16 @@ func (r *Reconciler) ensureSwitchoverStarted(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 ) (time.Time, error) {
-	if timestamp := cluster.Status.TargetPrimaryTimestamp; timestamp != "" {
-		if parsed, err := time.Parse(time.RFC3339, timestamp); err == nil {
-			return parsed, nil
-		}
+	if timestamp := cluster.Status.TargetPrimaryTimestamp; timestamp != nil {
+		return timestamp.Time, nil
 	}
-	now := time.Now().Truncate(time.Second)
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
-		status.TargetPrimaryTimestamp = now.Format(time.RFC3339)
+		status.TargetPrimaryTimestamp = &now
 	}); err != nil {
 		return time.Time{}, err
 	}
-	return now, nil
+	return now.Time, nil
 }
 
 func (r *Reconciler) abortSwitchover(
@@ -163,7 +185,7 @@ func (r *Reconciler) abortSwitchover(
 		"target", target, "delay", cluster.Spec.MaxSwitchoverDelay)
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = current
-		status.TargetPrimaryTimestamp = ""
+		status.TargetPrimaryTimestamp = nil
 	}); err != nil {
 		return topology.FailoverResult{}, err
 	}

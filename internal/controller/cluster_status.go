@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -400,11 +401,26 @@ func aggregateArchiving(observed observedCluster) *mysqlv1alpha1.ContinuousArchi
 	a := status.Archiving
 	out.LastArchivedBinlog = a.LastArchivedBinlog
 	out.LastArchivedGTID = a.LastArchivedGTID
-	out.LastArchivedTime = a.LastArchivedTime
+	out.LastArchivedTime = parseInstanceTime(a.LastArchivedTime)
 	out.PendingFiles = a.PendingFiles
 	out.LastFailureReason = a.LastError
-	out.LastFailureTime = a.LastErrorTime
+	out.LastFailureTime = parseInstanceTime(a.LastErrorTime)
 	return out
+}
+
+// parseInstanceTime converts a timestamp the instance manager reports over its
+// status API, which is RFC3339 text, into the Kubernetes time the status surfaces.
+// An unparseable stamp is dropped rather than propagated: a status field that
+// cannot be read as a time is worth less than an absent one.
+func parseInstanceTime(stamp string) *metav1.Time {
+	if stamp == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return nil
+	}
+	return ptr.To(metav1.NewTime(parsed))
 }
 
 // archivingHealthy reports whether continuous archiving is keeping up: no

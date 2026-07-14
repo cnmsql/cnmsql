@@ -471,6 +471,77 @@ type FailoverPolicy struct {
 	// Leave it unset for no time bound.
 	// +optional
 	MaxReplicationLag *metav1.Duration `json:"maxReplicationLag,omitempty"`
+
+	// PreferredPrimary names the instances that should hold the primary role, most
+	// preferred first, as a way to steer the primary onto particular nodes: pin an
+	// instance to a node with the storage or the zone you want writes to land on,
+	// and name it here.
+	//
+	// It steers two things. In an election it orders the candidates, so the most
+	// preferred one that is *also safe* wins. It is only ever a tie-break: a
+	// preferred instance that has diverged, that is missing transactions the bounds
+	// above refuse to lose, or that cannot be proven to hold every other candidate's
+	// transactions, is passed over for one that can. Preference never promotes a
+	// replica that the operator would otherwise have refused.
+	//
+	// It also brings the primary back. When the primary is not the most preferred
+	// instance that is currently available, and that instance is a healthy replica
+	// fit to be a switchover target, the operator performs a planned switchover to
+	// it. That happens after any failover away from it has healed, so a preferred
+	// instance that keeps failing does not cause the primary to bounce back to it:
+	// the failback waits out MinTimeBetweenFailovers like any other automatic
+	// promotion.
+	//
+	// Names are instance (Pod) names, e.g. "my-cluster-1". Instances that do not
+	// exist are ignored, so a list may name instances of a cluster larger than the
+	// current one. Leave it unset to let the election pick purely on safety and
+	// ordinal order, and to never move a healthy primary.
+	// +optional
+	PreferredPrimary []string `json:"preferredPrimary,omitempty"`
+
+	// MinTimeBetweenFailovers damps a flapping primary: it refuses an automatic
+	// failover that comes less than this long after the previous one settled, so a
+	// primary that dies, is replaced, and whose replacement dies again does not walk
+	// the role through every instance in the cluster in a matter of minutes.
+	//
+	// A refusal moves the cluster to Blocked and names the time remaining. It does
+	// not stop the operator from recreating the failed primary's Pod, which is the
+	// outcome the wait exists to allow: a primary that is failing intermittently is
+	// usually better restarted in place than replaced.
+	//
+	// It bounds automatic promotions only. A switchover you request by writing
+	// status.targetPrimary is honoured immediately, since a human asking for the
+	// primary to move is not the operator flapping.
+	//
+	// Leave it unset to allow a failover as soon as spec.failoverDelay has elapsed,
+	// however recently the last one happened.
+	// +optional
+	MinTimeBetweenFailovers *metav1.Duration `json:"minTimeBetweenFailovers,omitempty"`
+
+	// PrimaryStabilityWindow decides when a promoted primary counts as settled, and
+	// so when MinTimeBetweenFailovers starts running. Without it the cooldown runs
+	// from the moment of the promotion, and a primary that comes up, flaps, and
+	// comes up again still burns the cooldown down while it is misbehaving; once the
+	// cooldown expires the operator fails away from an instance that was never
+	// really working.
+	//
+	// With it, the cooldown runs from the point the primary had been continuously
+	// healthy for this long. Every time it drops out, the clock restarts, so an
+	// instance that cannot stay up never settles and the operator keeps declining to
+	// fail over on its behalf, leaving it to recover or an operator to intervene
+	// rather than dragging the rest of the cluster through the churn.
+	//
+	// A primary that has been healthy for longer than this window settled long ago,
+	// which is every primary in a cluster that is not flapping, so this costs
+	// nothing in the ordinary case. A promoted primary that never became healthy at
+	// all cannot settle by staying up, so the cooldown falls back to running from
+	// the promotion and the operator is never trapped waiting on an instance that
+	// will not arrive.
+	//
+	// It has no effect on its own without MinTimeBetweenFailovers, which is the
+	// bound it qualifies.
+	// +optional
+	PrimaryStabilityWindow *metav1.Duration `json:"primaryStabilityWindow,omitempty"`
 }
 
 // ReplicationHeartbeat configures the replication-lag heartbeat: the writable
@@ -1109,12 +1180,12 @@ type ClusterStatus struct {
 
 	// CurrentPrimaryTimestamp is when the current primary was elected.
 	// +optional
-	CurrentPrimaryTimestamp string `json:"currentPrimaryTimestamp,omitempty"`
+	CurrentPrimaryTimestamp *metav1.Time `json:"currentPrimaryTimestamp,omitempty"`
 
 	// TargetPrimaryTimestamp is when the current switchover request to
 	// TargetPrimary was started. It bounds the switchover by spec.maxSwitchoverDelay.
 	// +optional
-	TargetPrimaryTimestamp string `json:"targetPrimaryTimestamp,omitempty"`
+	TargetPrimaryTimestamp *metav1.Time `json:"targetPrimaryTimestamp,omitempty"`
 
 	// DivergedInstances are replicas whose executed GTID set is not contained in
 	// the primary's (errant transactions). They cannot safely rejoin; their
@@ -1162,7 +1233,25 @@ type ClusterStatus struct {
 	// unreachable. It is used to enforce spec.failoverDelay before an automatic
 	// failover, and is cleared once the primary is healthy again.
 	// +optional
-	PrimaryFailingSince string `json:"primaryFailingSince,omitempty"`
+	PrimaryFailingSince *metav1.Time `json:"primaryFailingSince,omitempty"`
+
+	// PrimaryHealthySince records when the current primary began the unbroken
+	// stretch of health it is now in: it is stamped the first time the primary is
+	// observed healthy and re-stamped whenever it recovers from a failing stretch,
+	// so it moves forward every time the primary drops out. It is what
+	// spec.failoverPolicy.primaryStabilityWindow is measured from. Never earlier
+	// than CurrentPrimaryTimestamp, since a primary's health cannot predate its
+	// election.
+	// +optional
+	PrimaryHealthySince *metav1.Time `json:"primaryHealthySince,omitempty"`
+
+	// LastFailoverTimestamp records when the operator last promoted a replica in an
+	// automatic failover. It is what spec.failoverPolicy.minTimeBetweenFailovers is
+	// measured from. A switchover, planned or requested, does not set it: the
+	// cooldown exists to damp the operator reacting to failures, not to delay a
+	// promotion somebody asked for.
+	// +optional
+	LastFailoverTimestamp *metav1.Time `json:"lastFailoverTimestamp,omitempty"`
 
 	// LatestGeneratedNode is the serial of the latest generated instance.
 	// +optional
@@ -1406,7 +1495,7 @@ type ContinuousArchivingStatus struct {
 
 	// LastArchivedTime is when the most recent file finished archiving.
 	// +optional
-	LastArchivedTime string `json:"lastArchivedTime,omitempty"`
+	LastArchivedTime *metav1.Time `json:"lastArchivedTime,omitempty"`
 
 	// PendingFiles is the number of rotated binary logs not yet archived
 	// (archive lag). A growing value means the archiver is falling behind.
@@ -1418,7 +1507,7 @@ type ContinuousArchivingStatus struct {
 	// +optional
 	LastFailureReason string `json:"lastFailureReason,omitempty"`
 	// +optional
-	LastFailureTime string `json:"lastFailureTime,omitempty"`
+	LastFailureTime *metav1.Time `json:"lastFailureTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
