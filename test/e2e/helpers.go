@@ -297,12 +297,42 @@ func clusterField(name, jsonpath string) (string, error) {
 	return kubectl("get", "cluster", name, "-n", testNamespace, "-o", "jsonpath="+jsonpath)
 }
 
+// terminalStateGrace is how long a terminal reason must hold, unchanged, before
+// expectClusterReady stops waiting for the cluster and fails on it.
+//
+// The Blocked phase is not only reached by misconfiguration. A cluster reaches it
+// whenever the operator declines a failover, and it stays there until the operator
+// re-observes the instance that is coming back: unfencing an instance has to restart
+// its mysqld, which takes minutes on a loaded CI node, and the phase carries the old
+// refusal for all of that time. A grace period long enough to cover that restart
+// keeps the fast-fail useful — a misconfigured cluster reports the same reason
+// forever, so it still surfaces in minutes rather than at the full timeout — while a
+// cluster that is on its way back is given the time it needs.
+const terminalStateGrace = 5 * time.Minute
+
 // expectClusterReady blocks until the named Cluster reports Ready with the
 // expected number of ready instances and an elected primary. On timeout it dumps
 // cluster-wide diagnostics (Cluster status, Pod states, events, operator logs,
 // node capacity) before failing: a cluster that never converges is the most
 // common e2e failure, and without this dump the CI logs reveal nothing about why.
 func expectClusterReady(name string, instances int, timeout time.Duration) {
+	GinkgoHelper()
+	awaitClusterReady(name, instances, timeout, true)
+}
+
+// expectClusterRecovers is expectClusterReady for a cluster that is known to be
+// parked in Blocked right now, having been driven there on purpose by a guard spec
+// that has since removed the cause. Blocked is the state such a spec just finished
+// asserting, so it is the expected starting point of the recovery and never a reason
+// to fail. Image-pull errors remain terminal.
+func expectClusterRecovers(name string, instances int, timeout time.Duration) {
+	GinkgoHelper()
+	awaitClusterReady(name, instances, timeout, false)
+}
+
+// awaitClusterReady polls the cluster to readiness. blockedIsTerminal decides
+// whether a persistent Blocked phase is grounds to give up early.
+func awaitClusterReady(name string, instances int, timeout time.Duration, blockedIsTerminal bool) {
 	GinkgoHelper()
 	timeout = e2eTimeout(timeout)
 	check := func() error {
@@ -331,27 +361,35 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 	}
 
 	deadline := time.Now().Add(timeout)
-	var prevTerminal string
+	var (
+		prevTerminal  string
+		terminalSince time.Time
+	)
 	for {
 		lastErr := check()
 		if lastErr == nil {
 			return
 		}
-		// Fail fast on a state the cluster cannot recover from on its own, so a
-		// misconfigured cluster surfaces in seconds with diagnostics instead of
-		// burning the whole timeout. clusterTerminalState is deliberately
-		// conservative (Blocked phase + image-pull errors only), so a transient
-		// CrashLoopBackOff during bootstrap never trips a false failure.
+		// Fail early on a state the cluster cannot leave on its own, so a
+		// misconfigured cluster surfaces with diagnostics instead of burning the whole
+		// timeout. clusterTerminalState is deliberately conservative (Blocked phase +
+		// image-pull errors only), so a transient CrashLoopBackOff during bootstrap
+		// never trips a false failure.
 		//
-		// Blocked is also parked transiently during switchover/failover (while the
-		// operator waits for the target primary to demote to replica), resolving
-		// within a poll interval. Require the same terminal reason on two
-		// consecutive polls before failing, so that sub-second Blocked window never
-		// trips a false failure while a genuine misconfiguration (which persists
-		// forever) still surfaces promptly.
-		reason := clusterTerminalState(name)
-		if reason != "" && reason == prevTerminal {
-			By(fmt.Sprintf("cluster %s entered a terminal state (%s); dumping diagnostics", name, reason))
+		// Blocked is also parked while the operator waits out a switchover, a failover
+		// it has declined, or an instance that is restarting, none of which the cluster
+		// needs help to leave. Require the same reason to hold for terminalStateGrace
+		// before failing on it, so that only a reason the cluster is genuinely stuck on
+		// counts.
+		reason := clusterTerminalState(name, blockedIsTerminal)
+		switch {
+		case reason == "":
+			terminalSince = time.Time{}
+		case reason != prevTerminal:
+			terminalSince = time.Now()
+		case time.Since(terminalSince) >= terminalStateGrace:
+			By(fmt.Sprintf("cluster %s held a terminal state for %s (%s); dumping diagnostics",
+				name, terminalStateGrace, reason))
 			dumpE2EDiagnostics()
 			Fail(fmt.Sprintf("cluster %s cannot become ready: %s (last check: %v)", name, reason, lastErr))
 		}
@@ -366,7 +404,7 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 }
 
 // clusterTerminalState reports a non-empty reason when a cluster is in a state it
-// cannot recover from without intervention, so expectClusterReady can fail fast
+// cannot recover from without intervention, so expectClusterReady can give up
 // instead of polling to the deadline. It is intentionally conservative: only an
 // operator-declared Blocked phase and image-pull failures count. Because every
 // instance image is preloaded into Kind, an image-pull error is a real
@@ -374,8 +412,12 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 // terminal, since instances may crash-loop briefly during bootstrap. Any read
 // error degrades to "" (no fast-fail), so a jsonpath/label mismatch only loses
 // the optimization, never causes a false failure.
-func clusterTerminalState(name string) string {
-	if phase, err := clusterField(name, "{.status.phase}"); err == nil && strings.TrimSpace(phase) == "Blocked" {
+//
+// Callers recovering a cluster from a block they induced themselves pass
+// blockedIsTerminal=false: for them the phase is the expected starting state.
+func clusterTerminalState(name string, blockedIsTerminal bool) string {
+	if phase, err := clusterField(name, "{.status.phase}"); blockedIsTerminal &&
+		err == nil && strings.TrimSpace(phase) == "Blocked" {
 		reason, _ := clusterField(name, "{.status.phaseReason}")
 		return fmt.Sprintf("cluster phase Blocked: %s", strings.TrimSpace(reason))
 	}

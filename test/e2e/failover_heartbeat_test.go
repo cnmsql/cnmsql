@@ -94,7 +94,7 @@ func heartbeatSpec(
 		Eventually(func(g Gomega) {
 			lag := heartbeatLag(cluster, replica)
 			g.Expect(lag).NotTo(BeNil(), "a healthy replica must report a heartbeat reading")
-			g.Expect(*lag).To(BeNumerically("<", (maxLagSeconds * time.Second)),
+			g.Expect(*lag).To(BeNumerically("<", (maxLagSeconds*time.Second)),
 				"a replica in sync must read well inside the bound")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
@@ -171,7 +171,7 @@ func heartbeatSpec(
 
 		By(fmt.Sprintf("unfencing the primary %s to recover the cluster", primary))
 		unfence(primary)
-		expectClusterReady(cluster, instances, e2eTimeout(20*time.Minute))
+		expectClusterRecovers(cluster, instances, e2eTimeout(20*time.Minute))
 
 		By("verifying the writes the guard refused to lose are still there, on both instances")
 		// This is what the block bought. Had the replica been promoted, every row
@@ -185,10 +185,6 @@ func heartbeatSpec(
 					"%s holds only the seed row: the writes made during the freeze were lost", pod)
 			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 		}
-	})
-
-	AfterAll(func() {
-		deleteTestNamespace(ns, prevNS)
 	})
 }
 

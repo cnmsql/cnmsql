@@ -85,11 +85,7 @@ var _ = Describe("Failover policy: preferred primary", Ordered, Label("feature")
 
 		By(fmt.Sprintf("waiting for the operator to fail back to %s", preferred))
 		expectPrimary(cluster, preferred, 10*time.Minute)
-		expectClusterReady(cluster, instances, e2eTimeout(15*time.Minute))
-	})
-
-	AfterAll(func() {
-		deleteTestNamespace(ns, prevNS)
+		expectClusterRecovers(cluster, instances, e2eTimeout(15*time.Minute))
 	})
 })
 
@@ -186,11 +182,7 @@ var _ = Describe("Failover policy: anti-flapping timers", Ordered, Label("featur
 		By("unfencing both fenced instances")
 		unfence(promoted)
 		unfence(firstFailed)
-		expectClusterReady(cluster, instances, e2eTimeout(20*time.Minute))
-	})
-
-	AfterAll(func() {
-		deleteTestNamespace(ns, prevNS)
+		expectClusterRecovers(cluster, instances, e2eTimeout(20*time.Minute))
 	})
 })
 

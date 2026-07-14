@@ -147,7 +147,7 @@ var _ = Describe("Diverged replica failover guard", Ordered, Label("feature"), f
 		clusterAnnotate(cluster, "cnmsql.cnmsql.co/reinit="+replica)
 
 		By("waiting for the replica to re-clone and the cluster to become Ready")
-		expectClusterReady(cluster, instances, 20*time.Minute)
+		expectClusterRecovers(cluster, instances, 20*time.Minute)
 
 		By("verifying the cluster is fully recovered with no diverged instances")
 		diverged, _ := clusterField(cluster, "{.status.divergedInstances}")
@@ -157,10 +157,6 @@ var _ = Describe("Diverged replica failover guard", Ordered, Label("feature"), f
 		phase, _ := clusterField(cluster, "{.status.phase}")
 		Expect(phase).To(Equal(string(topologyPhaseReady)),
 			"cluster must be Ready after recovery")
-	})
-
-	AfterAll(func() {
-		deleteTestNamespace(ns, prevNS)
 	})
 })
 
