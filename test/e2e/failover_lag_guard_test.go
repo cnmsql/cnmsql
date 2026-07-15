@@ -129,7 +129,7 @@ func lagGuardSpec(
 
 		By(fmt.Sprintf("unfencing the primary %s to recover the cluster", primary))
 		unfence(primary)
-		expectClusterReady(cluster, instances, e2eTimeout(20*time.Minute))
+		expectClusterRecovers(cluster, instances, e2eTimeout(20*time.Minute))
 
 		By("verifying the transactions the guard refused to lose are still there, on both instances")
 		// This is what the block bought. Had the replica been promoted, these rows,
@@ -143,10 +143,6 @@ func lagGuardSpec(
 					"%s must hold the seed row plus all %d burned transactions", pod, burn)
 			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 		}
-	})
-
-	AfterAll(func() {
-		deleteTestNamespace(ns, prevNS)
 	})
 }
 
