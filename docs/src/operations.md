@@ -356,6 +356,39 @@ kubectl cnmsql metrics -w --filter=mysql_global_status_threads  # watch mode, fi
 Add `-w` for continuous refresh. Use `--filter` with a pattern to narrow the
 output to matching metric names (grep-style substring match).
 
+## Benchmark a cluster
+
+Both benchmarks run as short-lived Jobs in the cluster's namespace. They stream
+their output to your terminal, and the Job (plus any scratch volume) is deleted
+when the run finishes.
+
+Benchmark MySQL throughput with sysbench against the read-write endpoint:
+
+```bash
+kubectl cnmsql bench mysql cluster-sample
+kubectl cnmsql bench mysql cluster-sample --time=60 --threads=8 --tables=16
+kubectl cnmsql bench mysql cluster-sample --tests=oltp_point_select
+```
+
+The plugin creates a temporary user that can connect over the network, along
+with a scratch database, runs the workloads you selected, and drops the user
+when it is done. The operator's root user only listens on the local socket, so
+it is never used over the network. The bench user's generated password reaches
+the Job through a Secret, and the connection uses TLS.
+
+Benchmark storage with fio against a fresh PVC on the cluster's storage class. It
+reports IOPS, throughput, and latency:
+
+```bash
+kubectl cnmsql bench fio cluster-sample
+kubectl cnmsql bench fio cluster-sample --node=worker-2 --size=5Gi --file-size=4Gi
+```
+
+fio can be heavy on I/O, so the command asks for confirmation first; pass `--yes`
+to skip it. Add `--dry-run` to either subcommand to print the resources it would
+create without applying them, or `--keep` to leave the Job in place for
+inspection instead of deleting it.
+
 ## Continuous archiving operations
 
 When continuous archiving is enabled, inspect:

@@ -78,8 +78,7 @@ cmd/kubectl-cnmsql/
     backup.go                      # Trigger on-demand backup → Create ScheduledBackup(immediate)
     restart.go                     # Restart cluster/instance → annotation + delete pod
     reload.go                      # Reload config → Cluster annotations
-    bench.go                       # Sysbench benchmark → Job scheduler
-    fio.go                         # Storage benchmark (fio) → Job scheduler
+    bench.go                       # `bench mysql` (sysbench) + `bench fio` (storage) → Job scheduler
     maintenance.go                 # Node maintenance window toggle
     destroy.go                     # Destroy instance (PVC-aware)
     metrics.go                     # Scrape/view per-instance metrics
@@ -104,8 +103,8 @@ kubectl cnmsql
 ├── backup CLUSTER                    [trigger on-demand base backup]
 ├── restart CLUSTER [INSTANCE]        [restart all or single instance]
 ├── reload CLUSTER                    [reload my.cnf parameters]
-├── bench CLUSTER                     [run sysbench benchmark]
-├── fio [NODE]                        [run fio storage benchmark]
+├── bench mysql [CLUSTER]            [run sysbench MySQL benchmark]
+├── bench fio [CLUSTER]              [run fio storage benchmark]
 ├── maintenance set|unset [CLUSTER]   [toggle node maintenance window]
 ├── destroy CLUSTER INSTANCE          [destroy instance + optional PVC]
 ├── metrics CLUSTER [INSTANCE]        [scrape/view Prometheus metrics]
@@ -271,38 +270,55 @@ dynamic parameters).
 **Note:** Static parameters (require mysqld restart) are logged and the
 operator emits a Warning event.
 
-### 9. `bench CLUSTER` — Sysbench benchmarking
+### 9. `bench mysql [CLUSTER]` — Sysbench benchmarking
 
 **Purpose:** Run a MySQL performance benchmark against a cluster.
 
-**Mechanism:** Creates a Kubernetes Job resource with a `sysbench` container
-pointed at the cluster's `rw` service (T3 job management via T1):
-- Creates a schema and test data via `sysbench oltp_read_write prepare`.
-- Runs benchmarks: `oltp_read_write`, `oltp_read_only`, `oltp_write_only`,
-  `oltp_point_select`.
-- Reports results (transactions/sec, latency percentiles, queries/sec).
-- Cleans up with `sysbench ... cleanup` on completion.
+**Mechanism:** Creates a Kubernetes Job with a `sysbench` container pointed at
+the cluster's `rw` service (T3 job management via T1):
+- Creates the scratch database and prepares the shared OLTP schema with the
+  first selected workload.
+- Runs the selected workloads (default `oltp_read_write`, `oltp_read_only`,
+  `oltp_write_only`, `oltp_point_select`).
+- Streams the sysbench output (transactions/sec, latency percentiles,
+  queries/sec) to the terminal.
+- Cleans up with `sysbench ... cleanup`, then deletes the Job (unless `--keep`).
 
-**Job image:** `severalnines/sysbench` or build our own slim sysbench image.
+Because the operator's root user is socket-only (`root@localhost`) and cannot
+connect over the `-rw` service, the plugin provisions a short-lived,
+network-capable bench user (and the scratch database) over an exec into the
+primary, hands its generated password to the Job via a `secretKeyRef`, and drops
+the user again on completion. The connection uses TLS (`--mysql-ssl=REQUIRED`),
+required by MySQL 8's `caching_sha2_password` on a fresh auth cache.
+
+**Job image:** `perconalab/sysbench` by default (sysbench 1.1 with a MySQL 8
+client — needed for `caching_sha2_password`); override with `--image`.
 
 **Flags:** `--tables=N`, `--table-size=N`, `--threads=N`, `--time=N`,
-`--tests=<list>`, `--db-name=<name>`, `--dry-run`, `--ttl` (auto-delete).
+`--tests=<list>`, `--db-name=<name>`, `--image=<ref>`, `--keep`, `--dry-run`,
+`--timeout`.
 
-### 10. `fio [NODE]` — Storage benchmarking
+### 10. `bench fio [CLUSTER]` — Storage benchmarking
 
-**Purpose:** Benchmark storage performance (IOPS, throughput, latency) of
-the PV underlying MySQL.
+**Purpose:** Benchmark storage performance (IOPS, throughput, latency) of the
+storage class that backs MySQL.
 
-**Mechanism:** Creates a Deployment + PVC + ConfigMap running fio (T1):
-- If `[NODE]` is specified, uses `nodeName` affinity to pin to that node.
-- ConfigMap contains fio job definitions (randread, randwrite, randrw,
-  read, write with ioengine=libaio).
-- Results printed to stdout, optionally to JSON.
+**Mechanism:** Creates a scratch PVC and a Job running fio against it (T1):
+- The PVC defaults to the cluster's storage class, so numbers reflect the
+  storage MySQL actually runs on.
+- With `--node`, pins the pod via `nodeName` to that node.
+- Runs a small suite (randread, randwrite, randrw) with `--ioengine` (default
+  `libaio`); output is streamed to the terminal.
+- Deletes the Job and scratch PVC on completion (unless `--keep`).
 
 **Guards:** Confirmation prompt (fio can be disruptive if running on the
-same physical disk as a live cluster).
+same physical disk as a live cluster); skip with `--yes`.
 
-**Flags:** `--storage-class=<sc>`, `--size=<size>`, `--dry-run`, `--ioengine=<engine>`.
+**Job image:** `ljishen/fio` by default; override with `--image`.
+
+**Flags:** `--storage-class=<sc>`, `--size=<size>`, `--file-size=<size>`,
+`--node=<node>`, `--ioengine=<engine>`, `--image=<ref>`, `--keep`, `--yes`,
+`--dry-run`, `--timeout`.
 
 ### 11. `maintenance set|unset [CLUSTER]` — Node maintenance window
 
@@ -489,8 +505,8 @@ would be natural additions:
 3. `certificate` — client cert generation.
 
 ### Phase 6 — Benchmarking & diagnostics (M16.6)
-1. `bench` — sysbench Job manager.
-2. `fio` — fio storage benchmark.
+1. `bench mysql` — sysbench Job manager.
+2. `bench fio` — fio storage benchmark.
 3. `report` — diagnostic bundles.
 4. `completion` — shell completion.
 

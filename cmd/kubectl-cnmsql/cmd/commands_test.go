@@ -9,7 +9,7 @@ import (
 
 func TestRootCommandContainsExpectedCommands(t *testing.T) {
 	want := []string{
-		"backup", "database", "destroy", "fence", "group", "logs", "maintenance", "metrics",
+		"backup", "bench", "database", "destroy", "fence", "group", "logs", "maintenance", "metrics",
 		"promote", "reinit", "reload", "restart", "status", "user", "version",
 	}
 	root := NewRootCommand()
@@ -44,6 +44,14 @@ func TestCommandValidationDoesNotRequireCluster(t *testing.T) {
 			wantErr: "accepts at most 2 arg",
 		},
 		{name: "version rejects args", commandArgs: []string{"version", "extra"}, wantErr: "unknown command"},
+		{
+			name: "bench mysql rejects unknown test", commandArgs: []string{"bench", "mysql", "--tests=oltp_bogus"},
+			wantErr: "unknown sysbench test",
+		},
+		{
+			name: "bench fio rejects tiny volume", commandArgs: []string{"bench", "fio", "--size=1Gi", "--file-size=2Gi"},
+			wantErr: "must be smaller than",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
