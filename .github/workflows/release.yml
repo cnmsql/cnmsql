@@ -45,7 +45,7 @@ jobs:
       with:
         distribution: goreleaser
         version: "~> v2"
-        args: release --clean --release-notes=${{ steps.git-cliff.outputs.changelog }}
+        args: release --clean --release-notes=RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -32,11 +32,9 @@ body = """
     - {% if commit.scope %}**({{ commit.scope }})** {% endif %}\
       {% if commit.breaking %}[**breaking**] {% endif %}\
       {{ commit.message | upper_first }}\
+      {% if commit.remote.pr_number %} ([#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }})){% endif %}\
       {% if commit.remote.username %} by @{{ commit.remote.username }}{% endif %}\
-      {% if commit.remote.pr_number %} in \
-        [#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }})\
-      {% endif %}\
-      ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
+      {{ " " }}([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
   {% endfor %}
 {% endfor %}
 
@@ -76,6 +74,15 @@ trim = true
 [git]
 conventional_commits = true
 filter_unconventional = false
+
+# Squash merges append "(#123)" to the subject. Strip it so the PR is
+# referenced exactly once, via the explicit link built from the enriched
+# commit.remote.pr_number (see the body template). `(?m)` anchors to the end
+# of the subject line; the commit body is not rendered, so this is safe.
+commit_preprocessors = [
+  { pattern = '(?m)[ \t]*\(#[0-9]+\)[ \t]*$', replace = "" },
+]
+
 split_commits = false
 protect_breaking_commits = true
 filter_commits = false
