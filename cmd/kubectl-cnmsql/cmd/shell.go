@@ -74,13 +74,8 @@ func newShellCommand() *cobra.Command {
 				return fmt.Errorf("root password secret %q has empty password", secretName)
 			}
 
-			clientBin := "mysql"
-			if cluster.ResolvedFlavor() == "mariadb" {
-				clientBin = "mariadb"
-			}
-
 			shellCmd := fmt.Sprintf("MYSQL_PWD='%s' %s --socket=/var/run/mysqld/mysqld.sock --user=root",
-				strings.ReplaceAll(password, "'", "'\\''"), clientBin)
+				strings.ReplaceAll(password, "'", "'\\''"), mysqlClientBinary(cluster))
 
 			kubectlArgs := []string{
 				"exec", "-it",
