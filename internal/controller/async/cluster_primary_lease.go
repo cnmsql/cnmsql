@@ -77,8 +77,9 @@ func (r *Reconciler) PrimaryLeaseStatus(
 	if lease.Spec.LeaseDurationSeconds != nil {
 		duration = time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 	}
-	if time.Since(lease.Spec.RenewTime.Time) > duration {
+	remaining := duration - time.Since(lease.Spec.RenewTime.Time)
+	if remaining <= 0 {
 		return topology.PrimaryLeaseStatus{}, nil
 	}
-	return topology.PrimaryLeaseStatus{Held: true, RetryAfter: duration}, nil
+	return topology.PrimaryLeaseStatus{Held: true, RetryAfter: remaining}, nil
 }
