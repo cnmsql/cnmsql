@@ -79,6 +79,37 @@ func TestPrimaryLeaseStatusHonorsExpiry(t *testing.T) {
 	}
 }
 
+func TestPrimaryLeaseStatusReportsRemainingTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := testCluster()
+	holder := "demo-1"
+	duration := int32(15)
+	renewed := metav1.MicroTime{Time: time.Now().Add(-13 * time.Second)}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: cluster.Namespace},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			RenewTime:            &renewed,
+			LeaseDurationSeconds: &duration,
+		},
+	}
+	scheme := testScheme(t)
+	r := NewReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, lease).Build(), scheme, nil, nil, "")
+
+	status, err := r.PrimaryLeaseStatus(ctx, cluster, holder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Held {
+		t.Fatal("valid lease reported as not held")
+	}
+	// ~2s remain on a 15s lease; make sure we don't return the full duration.
+	if status.RetryAfter <= 0 || status.RetryAfter > 3*time.Second {
+		t.Fatalf("RetryAfter = %v, want remaining time around 2s", status.RetryAfter)
+	}
+}
+
 func testCluster() *mysqlv1alpha1.Cluster {
 	return &mysqlv1alpha1.Cluster{
 		TypeMeta: metav1.TypeMeta{APIVersion: mysqlv1alpha1.GroupVersion.String(), Kind: "Cluster"},

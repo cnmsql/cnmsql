@@ -651,8 +651,10 @@ func TestReconcileFailoverWaitsForActivePrimaryLease(t *testing.T) {
 	if !handled {
 		t.Fatal("failover was not handled")
 	}
-	if result.RequeueAfter != 15*time.Second {
-		t.Fatalf("requeue = %s, want %s", result.RequeueAfter, 15*time.Second)
+	// The lease was just renewed, so the requeue should be the time remaining
+	// until it expires: close to, but not more than, the 15s lease duration.
+	if result.RequeueAfter <= 13*time.Second || result.RequeueAfter > 15*time.Second {
+		t.Fatalf("requeue = %s, want the remaining lease time (near 15s)", result.RequeueAfter)
 	}
 	gotPod := &corev1.Pod{}
 	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testPrimary}, gotPod); err != nil {
