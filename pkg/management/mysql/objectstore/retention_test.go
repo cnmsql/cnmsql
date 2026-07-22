@@ -130,6 +130,32 @@ func TestPlanRetention(t *testing.T) {
 		}
 	})
 
+	t.Run("missing index parks binlog GC", func(t *testing.T) {
+		t.Parallel()
+		// Same shape as the case above, but the archive index is gone. The expired
+		// base backup still goes; every binlog must survive, however far it sits
+		// behind the horizon, because nothing is left to record its removal.
+		backups := []BackupEntry{
+			backup("c/b_old/", now.Add(-20*day), now.Add(-20*day)),
+			backup("c/b_new/", now.Add(-2*day), now.Add(-2*day)),
+		}
+		binlogs := []BinlogEntry{
+			binlog(uuid, "binlog.000001", now.Add(-19*day)),
+			binlog(uuid, "binlog.000002", now.Add(-1*day)),
+		}
+		plan := PlanRetention(backups, binlogs, nil, cutoff)
+
+		if len(plan.DeleteBackupPrefixes) != 1 || plan.DeleteBackupPrefixes[0] != "c/b_old/" {
+			t.Fatalf("deleted backups = %v, want [c/b_old/]", plan.DeleteBackupPrefixes)
+		}
+		if len(plan.DeleteBinlogKeys) != 0 {
+			t.Fatalf("deleted binlog keys = %v, want none without an index", plan.DeleteBinlogKeys)
+		}
+		if plan.NewIndex != nil {
+			t.Fatalf("expected no index rewrite, got %+v", plan.NewIndex)
+		}
+	})
+
 	t.Run("segment emptied is dropped from index", func(t *testing.T) {
 		t.Parallel()
 		backups := []BackupEntry{

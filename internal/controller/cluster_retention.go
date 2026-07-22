@@ -90,6 +90,14 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		}
 	}
 
+	if index == nil && len(binlogs) > 0 {
+		// The archiver writes the index in the same pass as every file it ships, so
+		// a non-empty archive with no index means the index was lost. PlanRetention
+		// expires base backups but parks binlog GC until it comes back.
+		log.Info("Archive index missing; retaining all archived binlogs this pass",
+			"archivedBinlogs", len(binlogs))
+	}
+
 	cutoff := time.Now().Add(-window)
 	plan := objectstore.PlanRetention(backups, binlogs, index, cutoff)
 
