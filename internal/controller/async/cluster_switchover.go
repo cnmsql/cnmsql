@@ -195,6 +195,12 @@ func (r *Reconciler) abortSwitchover(
 	reason := fmt.Sprintf("switchover to %s aborted: not promoted within maxSwitchoverDelay (%ds)",
 		target, cluster.Spec.MaxSwitchoverDelay)
 	logf.FromContext(ctx).Info("Aborting switchover", "target", target, "restoredPrimary", current, "reason", reason)
+	// The target may have partially promoted before the abort fired. Fence it
+	// before unwinding so it restarts and rejoins as a replica of the restored
+	// primary, rather than lingering as a second primary (split brain).
+	if err := r.fenceInstancePod(ctx, cluster, target); err != nil {
+		return topology.FailoverResult{Handled: true}, fmt.Errorf("fence aborted target %s: %w", target, err)
+	}
 	if err := topology.PatchClusterStatus(ctx, r.client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = current
 		status.TargetPrimaryTimestamp = nil
