@@ -196,7 +196,7 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		if err := a.store.PutJSON(ctx, bucket, statusKey, status); err != nil {
 			return result, fmt.Errorf("binlog: writing archive status: %w", err)
 		}
-		if err := a.updateIndex(ctx, bucket, status); err != nil {
+		if err := a.updateIndex(ctx, bucket, status, l.Name, meta.GTIDSet); err != nil {
 			return result, err
 		}
 	}
@@ -318,11 +318,22 @@ func (a *Archiver) loadStatus(ctx context.Context, bucket string) (objectstore.A
 	return status, nil
 }
 
-// updateIndex folds this segment's current coverage into the cluster-level
-// archive index, the discovery/ordering record recovery walks across all server
-// UUIDs. It is best-effort idempotent: the active segment is upserted with its
-// latest covered set, and the cumulative set is recomputed.
-func (a *Archiver) updateIndex(ctx context.Context, bucket string, status objectstore.ArchiveStatus) error {
+// updateIndex folds one just-archived file into the cluster-level archive index,
+// the discovery/ordering record recovery walks across all server UUIDs. The
+// file's name and its GTID coverage advance together in this single write, so the
+// segment's file list and its covered set can never disagree: a GTID counts as
+// covered only once the file that carries it is in seg.Binlogs.
+//
+// It must not copy the per-segment status's cumulative covered set into the
+// segment. Status is committed in a separate object one step earlier, so a crash
+// between the two (followed by the file leaving the local listing, e.g. mysqld
+// expiring it) would leave the segment claiming coverage for a file its list no
+// longer names, and recovery would silently skip a GTID range it believes it has.
+// Folding only fileGTIDSet — the coverage of the file being added — keeps the two
+// in lockstep. Union is idempotent, so retries and resumes are safe.
+func (a *Archiver) updateIndex(
+	ctx context.Context, bucket string, status objectstore.ArchiveStatus, fileName, fileGTIDSet string,
+) error {
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
 	var index objectstore.ArchiveIndex
 	exists, err := a.store.Exists(ctx, bucket, key)
@@ -345,21 +356,27 @@ func (a *Archiver) updateIndex(ctx context.Context, bucket string, status object
 		})
 		seg = &index.Segments[len(index.Segments)-1]
 	}
-	seg.GTIDSet = status.CoveredGTIDSet
 	if seg.StartGTIDSet == "" {
 		seg.StartGTIDSet = status.FirstGTID
 	}
 	seg.EndedAt = a.now()
 
-	// Accumulate the binlog file names in this segment so that recovery's
-	// PlanReplay can discover which files to download. The status always carries
-	// the most recently shipped file; add it to the segment's list when it is
-	// new (deduplicated so retries and idempotent updates are safe).
-	if status.LastArchivedBinlog != "" {
-		if !slices.Contains(seg.Binlogs, status.LastArchivedBinlog) {
-			seg.Binlogs = append(seg.Binlogs, status.LastArchivedBinlog)
-		}
+	// Add the file's name and fold its coverage in the same write, so recovery's
+	// PlanReplay never sees a covered GTID it has no file to replay. Deduplicated
+	// so retries and idempotent resumes are safe.
+	if fileName != "" && !slices.Contains(seg.Binlogs, fileName) {
+		seg.Binlogs = append(seg.Binlogs, fileName)
 	}
+	segSet := a.newSet()
+	if err := segSet.Parse(seg.GTIDSet); err != nil {
+		return fmt.Errorf("binlog: parsing segment gtid set: %w", err)
+	}
+	fileSet := a.newSet()
+	if err := fileSet.Parse(fileGTIDSet); err != nil {
+		return fmt.Errorf("binlog: parsing file gtid set for %q: %w", fileName, err)
+	}
+	segSet.Union(fileSet)
+	seg.GTIDSet = segSet.String()
 
 	// Recompute the cumulative covered set across every segment.
 	cumulative := a.newSet()
