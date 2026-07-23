@@ -101,6 +101,9 @@ func (p RetentionPlan) Empty() bool {
 //     binlog file whose last event predates the horizon is uncoverable (no
 //     retained base to apply it onto) and is deleted; the index is rewritten to
 //     drop it. Binlogs with an unknown (zero) last-event time are kept.
+//   - Binlog GC requires the cluster archive index. Without it no deletion can be
+//     reflected back into the record recovery discovers the archive through, so
+//     retention expires base backups only and leaves the archive whole.
 func PlanRetention(
 	backups []BackupEntry,
 	binlogs []BinlogEntry,
@@ -142,8 +145,16 @@ func PlanRetention(
 
 // applyBinlogGC selects binlog files older than the horizon and rewrites the
 // index to drop them.
+//
+// A nil index parks the whole pass. The index is the only record tying archived
+// files to timeline segments, and rewriting it is what keeps the two in step.
+// Deleting without one leaves the files gone but unrecorded, so the index the
+// archiver writes next can claim GTID coverage no surviving file carries — the
+// same silent gap the archiver's lockstep write exists to prevent. Keeping
+// binlogs the horizon calls uncoverable only costs storage, and the archiver
+// restores the index on its next pass, so the stall clears itself.
 func (plan *RetentionPlan) applyBinlogGC(binlogs []BinlogEntry, index *ArchiveIndex) {
-	if plan.Horizon.IsZero() {
+	if plan.Horizon.IsZero() || index == nil {
 		return
 	}
 
@@ -162,7 +173,7 @@ func (plan *RetentionPlan) applyBinlogGC(binlogs []BinlogEntry, index *ArchiveIn
 		set[entry.Meta.BinlogName] = struct{}{}
 	}
 
-	if len(deleted) == 0 || index == nil {
+	if len(deleted) == 0 {
 		return
 	}
 	plan.NewIndex = rewriteIndex(index, deleted)
