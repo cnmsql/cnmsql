@@ -33,7 +33,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -178,6 +180,46 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 	}
 	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, mysqlv1alpha1.ConditionProgressing); cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("progressing condition = %#v", cond)
+	}
+}
+
+// The API server creates the worker Job asynchronously, so the read that
+// follows the create can miss it. That must requeue, not error out and flap the
+// Backup back to Failed.
+func TestBackupReconcileRequeuesWhenWorkerJobNotVisibleYet(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	backup := baseBackup()
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod()).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*batchv1.Job); ok {
+						return apierrors.NewNotFound(batchv1.Resource("jobs"), key.Name)
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}).
+			Build(),
+		Scheme: scheme,
+	}
+
+	result := reconcileBackup(t, reconciler, backup)
+	if result.RequeueAfter != provisioningRequeue {
+		t.Fatalf("requeue = %s, want %s", result.RequeueAfter, provisioningRequeue)
+	}
+
+	updated := &mysqlv1alpha1.Backup{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != mysqlv1alpha1.BackupPhaseRunning {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, mysqlv1alpha1.BackupPhaseRunning)
 	}
 }
 

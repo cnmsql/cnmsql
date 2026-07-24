@@ -176,6 +176,12 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	latestJob := &batchv1.Job{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: backup.Namespace, Name: jobName}, latestJob); err != nil {
+		// The Job was just created, so it may not be visible yet (creation is
+		// async and the client reads through a cache). Requeue instead of
+		// failing the reconcile, which would flap the phase back to Error.
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
+		}
 		return ctrl.Result{}, err
 	}
 	switch {
