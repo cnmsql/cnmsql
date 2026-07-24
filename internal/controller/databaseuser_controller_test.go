@@ -228,6 +228,109 @@ func TestDatabaseUserNoChangeWhenMatching(t *testing.T) {
 	}
 }
 
+// An account can already hold ALL PRIVILEGES on *.* from a plain grant, so the
+// grants diff sees nothing to do; the missing grant option still has to be
+// applied.
+func TestDatabaseUserSuperuserAppliedWhenGrantsUnchanged(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{
+		users: []user.UserInfo{{
+			Name: testUserName, Host: "%",
+			Grants: []string{"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%`"},
+		}},
+	}
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.Superuser = true
+		d.Spec.Grants = nil
+	})
+	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
+
+	du.Annotations = map[string]string{mysqlv1alpha1.DatabaseUserAdoptAnnotation: "true"}
+	if err := r.Update(context.Background(), du); err != nil {
+		t.Fatal(err)
+	}
+	reconcileUserToApplied(t, r, du)
+	// Drop the alters driven by the initial password apply: the next pass has to
+	// stand on the superuser drift alone.
+	control.altered = nil
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(control.altered) == 0 {
+		t.Fatal("no alter produced when the superuser bit flipped")
+	}
+	alt := control.altered[0]
+	if alt.Superuser == nil || !*alt.Superuser {
+		t.Fatalf("alter.Superuser = %v, want true", alt.Superuser)
+	}
+}
+
+// The counterpart: an account that already carries the superuser grant is left
+// alone, so the fix does not turn steady state into an alter loop.
+func TestDatabaseUserSuperuserNoChangeWhenGrantOptionPresent(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{
+		users: []user.UserInfo{{
+			Name: testUserName, Host: "%",
+			Grants: []string{"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%` WITH GRANT OPTION"},
+		}},
+	}
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.Superuser = true
+		d.Spec.Grants = nil
+	})
+	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
+
+	du.Annotations = map[string]string{mysqlv1alpha1.DatabaseUserAdoptAnnotation: "true"}
+	if err := r.Update(context.Background(), du); err != nil {
+		t.Fatal(err)
+	}
+	reconcileUserToApplied(t, r, du)
+	control.altered = nil
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(control.altered) != 0 {
+		t.Fatalf("altered = %+v, want none on steady state", control.altered)
+	}
+}
+
+// SHOW GRANTS renders the superuser line differently per flavour: MySQL puts the
+// grant option straight after the account, MariaDB wedges the authentication
+// clause in between.
+func TestDuSuperuserSatisfiedAcrossFlavours(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		observed []string
+		want     bool
+	}{
+		{"mysql superuser", []string{"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%` WITH GRANT OPTION"}, true},
+		{"mariadb superuser", []string{
+			"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%` IDENTIFIED VIA mysql_native_password " +
+				"USING '*6BB4837EB74329105EE4568DDA7DC67ED2CA2AD9' WITH GRANT OPTION",
+		}, true},
+		{"mariadb pre-10.4 superuser", []string{
+			"GRANT ALL PRIVILEGES ON *.* TO 'tenant'@'%' IDENTIFIED BY PASSWORD " +
+				"'*6BB4837EB74329105EE4568DDA7DC67ED2CA2AD9' WITH GRANT OPTION",
+		}, true},
+		{"all privileges without grant option", []string{"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%`"}, false},
+		{"grant option on a schema only", []string{"GRANT SELECT ON `app`.* TO `tenant`@`%` WITH GRANT OPTION"}, false},
+		{"usage only", []string{"GRANT USAGE ON *.* TO `tenant`@`%`"}, false},
+		{"no grants", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := duSuperuserSatisfied(tc.observed); got != tc.want {
+				t.Fatalf("duSuperuserSatisfied = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDatabaseUserRevokeOnlyChangeDetected(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{
