@@ -1,0 +1,62 @@
+name: CodeQL
+
+# Static analysis for the Go code. Results land in the repository's
+# code-scanning dashboard, the same place the Scorecard workflow uploads to.
+#
+# PRs are analysed so a new vulnerability is caught before merge; main is
+# re-analysed on push and weekly so the baseline stays current and alerts on
+# existing code surface even without a new commit.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+  # 03:00 UTC Monday — after the Scorecard weekly run (02:00) and clear of the
+  # E2E and fuzz nightlies, so the shared dashboard is not written concurrently.
+  - cron: '0 3 * * 1'
+
+permissions: {}
+
+concurrency:
+  # Cancel superseded runs on a branch, but never on main so every pushed
+  # baseline is analysed.
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload results to the code-scanning dashboard.
+      security-events: write
+    timeout-minutes: 30
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Setup Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version-file: go.mod
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@192325c86100d080feab897ff886c34abd4c83a3 # v3.30.3
+      with:
+        languages: go
+        # The CodeQL version on the runner does not support build-mode: none for
+        # Go, so it must trace an actual build. autobuild runs `go build ./...`,
+        # which succeeds without `make generate` because the generated sources
+        # (CRD deepcopy, vendored scrapers) are committed and the tree compiles
+        # as-is.
+        build-mode: autobuild
+        queries: security-and-quality
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@192325c86100d080feab897ff886c34abd4c83a3 # v3.30.3
+      with:
+        category: /language:go

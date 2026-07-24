@@ -18,6 +18,7 @@ package replication
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -102,7 +103,11 @@ func normalizeIntervals(in []GTIDInterval) []GTIDInterval {
 	out := []GTIDInterval{in[0]}
 	for _, iv := range in[1:] {
 		last := &out[len(out)-1]
-		if iv.Start <= last.End+1 {
+		// last.End+1 would overflow to a negative number when last.End is
+		// MaxInt64, wrongly reporting the ranges as disjoint. Nothing sorted
+		// after an interval ending at MaxInt64 can start beyond it, so such an
+		// interval always absorbs its successors.
+		if last.End == math.MaxInt64 || iv.Start <= last.End+1 {
 			if iv.End > last.End {
 				last.End = iv.End
 			}
@@ -154,7 +159,15 @@ func (s GTIDSet) MissingCount(other GTIDSet) int64 {
 	for uuid, intervals := range other {
 		mine := s[uuid]
 		for _, iv := range intervals {
-			missing += iv.uncoveredBy(mine)
+			n := iv.uncoveredBy(mine)
+			// GTID ranges can legitimately reach MaxInt64, so the running sum
+			// can overflow into a negative count. Saturate instead: callers
+			// only compare the magnitude against a lag threshold, and a
+			// negative count would read as "nothing missing".
+			if missing > math.MaxInt64-n {
+				return math.MaxInt64
+			}
+			missing += n
 		}
 	}
 	return missing

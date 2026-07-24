@@ -1,0 +1,87 @@
+name: Fuzz Hunt
+
+# Runs the Go fuzz targets with mutation enabled, so parser and SQL-quoting bugs
+# are found by CI rather than in production. It is NON-BLOCKING: it posts no
+# commit statuses and is never a required check.
+#
+# PRs do not fuzz. `make test` already executes every target's seed corpus as
+# ordinary subtests, which is the deterministic, fast regression signal; -fuzz is
+# time-boxed exploration and belongs on a schedule instead of in the PR gate.
+#
+# When a target fails, the crashing input is written to the package's
+# testdata/fuzz/<Target>/ and uploaded as an artifact. Commit that file: it then
+# runs forever after as a seed under `make test`.
+
+on:
+  schedule:
+  # 06:00 UTC — offset from the E2E nightly (01:00) and the flake hunt (04:00).
+  # This job needs no Kind cluster, so it never contends for the self-hosted
+  # runner, but the offset keeps the nightly notification stream readable.
+  - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Budget per fuzz target (go test -fuzztime), e.g. 60s, 10m'
+        required: false
+        default: '5m'
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: fuzz-hunt
+  cancel-in-progress: false
+
+jobs:
+  hunt:
+    name: Fuzz hunt (${{ github.event.inputs.fuzztime || '5m' }} per target)
+    # Pure CPU work with no Kind cluster, so this stays on hosted runners and
+    # leaves the self-hosted E2E runner free.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # 8 targets; the timeout covers the full sweep plus build overhead even when
+    # fuzztime is raised well above the default via workflow_dispatch.
+    timeout-minutes: 120
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Setup Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version-file: go.mod
+        # setup-go keys its cache on go.sum, so it would restore the same
+        # snapshot every night and never save a grown corpus. The explicit cache
+        # step below owns GOCACHE instead.
+        cache: false
+
+    - name: Locate the fuzz corpus
+      run: echo "GOCACHE=$(go env GOCACHE)" >> "$GITHUB_ENV"
+
+    - name: Restore the fuzz corpus
+      # Go stores generated corpus entries under $GOCACHE/fuzz. Persisting it
+      # lets each night resume from the inputs earlier runs found interesting
+      # rather than re-deriving coverage from the seeds every time. The run_id in
+      # the key forces a fresh save each run (a cache hit never re-saves), while
+      # restore-keys falls back to the most recent previous corpus.
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ env.GOCACHE }}/fuzz
+        key: fuzz-corpus-${{ github.run_id }}
+        restore-keys: |
+          fuzz-corpus-
+
+    - name: Fuzz hunt
+      run: make fuzz FUZZTIME=${{ github.event.inputs.fuzztime || '5m' }}
+
+    - name: Upload crashing inputs
+      if: failure()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: fuzz-crashers
+        path: '**/testdata/fuzz/**'
+        if-no-files-found: ignore
+        retention-days: 30
