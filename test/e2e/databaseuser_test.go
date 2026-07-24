@@ -138,6 +138,45 @@ var _ = Describe("DatabaseUser", Ordered, Label("feature"), func() {
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
+	It("restores the superuser grant option after an out-of-band revoke", func() {
+		const suCR, suPass, suSec = "rootish", "rootish-secret", "rootish-pw"
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+
+		By("creating a superuser DatabaseUser")
+		applyManifest(suSec, passwordSecretManifest(suSec, suPass))
+		applyManifest(suCR, databaseUserSuperuserManifest(suCR, cluster, suSec))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", suCR, "-n", testNamespace, "--ignore-not-found")
+			_, _ = kubectl("delete", "secret", suSec, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("waiting for the account to hold ALL PRIVILEGES with the grant option")
+		Eventually(func(g Gomega) {
+			grants, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(grants).To(ContainSubstring("ALL PRIVILEGES ON *.*"))
+			g.Expect(grants).To(ContainSubstring("WITH GRANT OPTION"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		// Revoking only the grant option leaves ALL PRIVILEGES in place, so a diff
+		// that reads the superuser bit off the grants alone sees nothing to do.
+		By("revoking the grant option out of band, keeping ALL PRIVILEGES")
+		_, err := mysqlExec(primary, "root", rootPass, "",
+			fmt.Sprintf("REVOKE GRANT OPTION ON *.* FROM '%s'@'%%';", suCR))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying drift detection puts the grant option back")
+		Eventually(func(g Gomega) {
+			grants, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(grants).To(ContainSubstring("WITH GRANT OPTION"),
+				"superuser drift was not corrected")
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
 	It("refuses a pre-existing account until adopted", func() {
 		primary := clusterPrimary(cluster)
 		rootPass := secretPassword(cluster + "-root")
@@ -385,6 +424,26 @@ spec:
     - privileges: ["SELECT"]
       "on": "app.*"
 `, name, testNamespace, cluster, drift, userSecret)
+}
+
+// databaseUserSuperuserManifest builds a superuser DatabaseUser. It carries no
+// grants: the API rejects spec.grants alongside spec.superuser, since the
+// superuser bit already implies ALL PRIVILEGES on *.* with the grant option.
+func databaseUserSuperuserManifest(name, cluster, userSecret string) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: DatabaseUser
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster:
+    name: %s
+  reclaimPolicy: delete
+  superuser: true
+  passwordSecret:
+    name: %s
+    key: password
+`, name, testNamespace, cluster, userSecret)
 }
 
 // databaseUserCustomManifest builds a DatabaseUser with an optional MySQL user
