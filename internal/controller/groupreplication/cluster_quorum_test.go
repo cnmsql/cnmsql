@@ -17,6 +17,7 @@ limitations under the License.
 package groupreplication
 
 import (
+	"math"
 	"testing"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -284,5 +285,69 @@ func TestComputeForceQuorumRecoveryRebootstrapBlockedWhenMemberMissing(t *testin
 	gtids := map[string]string{"demo-0": gtidShort, "demo-1": gtidLong}
 	if got := r.ComputeForceQuorumRecovery(cluster, gtids); got != nil {
 		t.Fatalf("expected nil recovery when a member is unreachable, got %+v", got)
+	}
+}
+
+func TestQuorumClampsNonPositiveMemberCounts(t *testing.T) {
+	tests := []struct {
+		members int
+		want    int
+	}{
+		{members: -1, want: 1},
+		{members: 0, want: 1},
+		{members: 1, want: 1},
+		{members: 3, want: 2},
+		{members: 5, want: 3},
+		{members: math.MaxInt, want: math.MaxInt/2 + 1},
+	}
+	for _, tt := range tests {
+		if got := quorum(tt.members); got != tt.want {
+			t.Fatalf("quorum(%d) = %d, want %d", tt.members, got, tt.want)
+		}
+	}
+}
+
+// An instances value beyond math.MaxInt32 used to wrap negative on the way into
+// the quorum math, which made an empty group look quorate. The guards must stay
+// blocking instead.
+func TestQuorumGuardsWithOversizedInstanceCount(t *testing.T) {
+	r := &Reconciler{}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Spec.Instances = math.MaxInt32 + 1
+	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{
+		Members: []mysqlv1alpha1.GroupMember{onlineMember("demo-0", mysqlgr.MemberRolePrimary)},
+	}
+
+	if got := r.FenceQuorumGuard(cluster, []string{"demo-0"}); got == nil || !got.Blocked {
+		t.Fatalf("FenceQuorumGuard = %+v, want a blocking result", got)
+	}
+	if got := r.ScaleDownQuorumGuard(cluster, "demo-0"); got != nil {
+		t.Fatalf("ScaleDownQuorumGuard = %+v, want nil", got)
+	}
+
+	primary, replica := r.PDBMaxUnavailable(cluster)
+	if primary.IntValue() < 0 {
+		t.Fatalf("primary maxUnavailable = %d, want a non-negative budget", primary.IntValue())
+	}
+	if replica.IntValue() != 0 {
+		t.Fatalf("replica maxUnavailable = %d, want 0", replica.IntValue())
+	}
+}
+
+func TestQuorumGuardsWithNonPositiveInstanceCount(t *testing.T) {
+	r := &Reconciler{}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Spec.Instances = 0
+	cluster.Status.GroupReplication = &mysqlv1alpha1.GroupReplicationStatus{}
+
+	if got := r.FenceQuorumGuard(cluster, nil); got == nil || !got.Blocked {
+		t.Fatalf("FenceQuorumGuard = %+v, want a blocking result for an empty group", got)
+	}
+	if got := r.ScaleDownQuorumGuard(cluster, "demo-0"); got == nil || !got.Blocked {
+		t.Fatalf("ScaleDownQuorumGuard = %+v, want a blocking result", got)
+	}
+	primary, _ := r.PDBMaxUnavailable(cluster)
+	if primary.IntValue() != 0 {
+		t.Fatalf("primary maxUnavailable = %d, want 0", primary.IntValue())
 	}
 }
