@@ -48,10 +48,12 @@ jobs:
       uses: github/codeql-action/init@192325c86100d080feab897ff886c34abd4c83a3 # v3.30.3
       with:
         languages: go
-        # Go builds fast and cleanly from source, so CodeQL extracts it directly
-        # without a build. This skips `make generate`/manifests, which are only
-        # needed for the controller binary, not for analysis.
-        build-mode: none
+        # The CodeQL version on the runner does not support build-mode: none for
+        # Go, so it must trace an actual build. autobuild runs `go build ./...`,
+        # which succeeds without `make generate` because the generated sources
+        # (CRD deepcopy, vendored scrapers) are committed and the tree compiles
+        # as-is.
+        build-mode: autobuild
         queries: security-and-quality
 
     - name: Perform CodeQL Analysis
