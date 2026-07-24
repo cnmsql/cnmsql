@@ -29,6 +29,9 @@ var _ = Describe("MariaDB DatabaseUser superuser", Ordered, Label("flavor", "mar
 
 	var ns, prevNS string
 
+	// The account is created in BeforeAll, not in the first spec, so every spec in
+	// this container stands on its own: a focused run of the drift spec must not
+	// depend on an earlier spec having created the user.
 	BeforeAll(func() {
 		prevNS = testNamespace
 		ns = createTestNamespace("mdb-dbusr")
@@ -40,9 +43,7 @@ var _ = Describe("MariaDB DatabaseUser superuser", Ordered, Label("flavor", "mar
 			deleteTestNamespace(ns, prevNS)
 		})
 		expectClusterReady(cluster, 1, e2eTimeout(20*time.Minute))
-	})
 
-	It("creates a superuser account with the grant option", func() {
 		By("creating the superuser DatabaseUser")
 		applyManifest(suSec, passwordSecretManifest(suSec, suPass))
 		applyManifest(suCR, databaseUserSuperuserManifest(suCR, cluster, suSec))
@@ -54,7 +55,9 @@ var _ = Describe("MariaDB DatabaseUser superuser", Ordered, Label("flavor", "mar
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(applied).To(Equal("true"), "DatabaseUser is not applied yet")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+	})
 
+	It("creates a superuser account with the grant option", func() {
 		primary := clusterPrimary(cluster)
 		rootPass := rootPassword(cluster)
 
@@ -76,6 +79,14 @@ var _ = Describe("MariaDB DatabaseUser superuser", Ordered, Label("flavor", "mar
 	It("restores the superuser grant option after an out-of-band revoke", func() {
 		primary := clusterPrimary(cluster)
 		rootPass := rootPassword(cluster)
+
+		By("waiting for the grant option to be in place before revoking it")
+		Eventually(func(g Gomega) {
+			grants, err := mariadbExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(grants).To(ContainSubstring("WITH GRANT OPTION"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		// Revoking only the grant option leaves ALL PRIVILEGES in place, so a diff
 		// that reads the superuser bit off the grants alone sees nothing to do.
