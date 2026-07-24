@@ -72,6 +72,44 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e | grep -v /test/integration) -coverprofile cover.out
 
+# FUZZTIME bounds each individual fuzz target. Go only accepts one -fuzz target
+# per invocation, so the targets are enumerated and run in sequence; a 60s budget
+# per target keeps a full pass under ten minutes. The seed corpora also run as
+# ordinary unit tests under `make test`, so regressions are caught without fuzzing.
+FUZZTIME ?= 60s
+FUZZ_TARGETS = \
+	./pkg/management/mysql/replication:FuzzParseGTIDSet \
+	./pkg/management/mysql/replication:FuzzGTIDSetUnion \
+	./pkg/management/mysql/replication:FuzzQuote \
+	./pkg/management/mysql/user:FuzzQuote \
+	./pkg/management/mysql/user:FuzzQuoteIdent \
+	./pkg/management/mysql/instance:FuzzQuoteIdent \
+	./pkg/management/mysql/instance:FuzzQuoteString \
+	./pkg/management/mysql/heartbeat:FuzzQuoteIdent
+
+.PHONY: fuzz
+fuzz: ## Run the fuzz targets, FUZZTIME each (e.g. make fuzz FUZZTIME=5m). Failing inputs land in the package's testdata/fuzz for committing.
+	@failed=""; \
+	for spec in $(FUZZ_TARGETS); do \
+		pkg=$${spec%%:*}; target=$${spec##*:}; \
+		echo "==> $$target ($$pkg)"; \
+		log=$$(mktemp); \
+		if go test -run="^$$target$$" -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) "$$pkg" 2>&1 | tee "$$log"; then \
+			if grep -q 'no fuzz tests to fuzz' "$$log"; then \
+				failed="$$failed $$target(MISSING-from-$$pkg)"; \
+			fi; \
+		else \
+			failed="$$failed $$target($$pkg)"; \
+		fi; \
+		rm -f "$$log"; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo; echo "FAILED FUZZ TARGETS:$$failed"; \
+		echo "MISSING means the target no longer exists: fix FUZZ_TARGETS in the Makefile."; \
+		echo "Otherwise the crashing input was written to the package's testdata/fuzz/ — commit it as a regression seed."; \
+		exit 1; \
+	fi
+
 .PHONY: test-integration
 test-integration: ## Run the instance-manager integration tests against real Percona containers (requires Docker).
 	go test -tags integration -timeout 600s ./test/integration/...
