@@ -299,9 +299,16 @@ func (r *DatabaseUserReconciler) diffDatabaseUser(
 	}
 	grantsChanged := !duGrantsSatisfied(current.Grants, du)
 	revokesChanged := !duRevokesSatisfied(current.Grants, du)
-	if grantsChanged || revokesChanged {
+	// The superuser bit is compared on its own: an account can already hold every
+	// declared grant and still be missing the superuser grant (ALL PRIVILEGES on
+	// *.* WITH GRANT OPTION), in which case the grants diff reports no change.
+	superuserChanged := du.Spec.Superuser && !duSuperuserSatisfied(current.Grants)
+	if grantsChanged || revokesChanged || superuserChanged {
 		su := du.Spec.Superuser
 		alter.Superuser = &su
+		changed = true
+	}
+	if grantsChanged || revokesChanged {
 		privs := duPrivileges(du.Spec.Grants)
 		alter.Privileges = &privs
 		// Re-apply revokes whenever grants change (a GRANT on *.* re-widens any
@@ -313,7 +320,6 @@ func (r *DatabaseUserReconciler) diffDatabaseUser(
 			}
 			alter.Revokes = &revokes
 		}
-		changed = true
 	}
 	return alter, changed
 }
@@ -397,6 +403,24 @@ func duRevokes(revokes []mysqlv1alpha1.DatabaseUserRevoke) []user.Privilege {
 		out = append(out, user.Privilege{Privileges: r.Privileges, On: r.On})
 	}
 	return out
+}
+
+// duSuperuserSatisfied reports whether the observed SHOW GRANTS output already
+// carries the superuser grant the operator issues: ALL PRIVILEGES on *.* with
+// the grant option. An account can hold ALL PRIVILEGES from a plain grant and
+// still not be a superuser, so the grant option is part of the check.
+func duSuperuserSatisfied(observed []string) bool {
+	for _, g := range observed {
+		if !strings.Contains(strings.ToUpper(g), "WITH GRANT OPTION") {
+			continue
+		}
+		for _, tok := range parseGrantTokens(g) {
+			if tok == "all privileges@"+grantTargetAll {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // duGrantsSatisfied reports whether every declared grant is already present in
