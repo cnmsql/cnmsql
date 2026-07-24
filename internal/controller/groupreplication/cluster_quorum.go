@@ -18,6 +18,7 @@ package groupreplication
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -29,8 +30,13 @@ import (
 )
 
 // quorum returns `floor(N/2) + 1` for N members, the minimum number of
-// ONLINE + RECOVERING members required for the group to be writable.
+// ONLINE + RECOVERING members required for the group to be writable. A
+// non-positive member count has no meaningful majority, so it clamps to 1:
+// returning 0 would mean an empty group counts as quorate.
 func quorum(members int) int {
+	if members <= 0 {
+		return 1
+	}
 	return members/2 + 1
 }
 
@@ -40,8 +46,8 @@ func quorum(members int) int {
 // the guard remains correct after members have been expelled from the group.
 func (r *Reconciler) FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, fenceSet []string) *topology.QuorumResult {
 	gr := cluster.Status.GroupReplication
-	n := int32(cluster.Spec.Instances)
-	q := quorum(int(n))
+	n := cluster.Spec.Instances
+	q := quorum(n)
 	if gr == nil {
 		return nil
 	}
@@ -75,31 +81,34 @@ func (r *Reconciler) FenceQuorumGuard(cluster *mysqlv1alpha1.Cluster, fenceSet [
 // PDBMaxUnavailable returns maxUnavailable = N - quorum so voluntary
 // disruptions can never break quorum (e.g. N=3 -> 1, N=5 -> 2).
 func (r *Reconciler) PDBMaxUnavailable(cluster *mysqlv1alpha1.Cluster) (intstr.IntOrString, intstr.IntOrString) {
-	n := int32(cluster.Spec.Instances)
-	q := int32(quorum(int(n)))
-	mu := max(n-q, 0)
-	return intstr.FromInt32(mu), intstr.FromInt32(0)
+	n := cluster.Spec.Instances
+	q := quorum(n)
+	// PodDisruptionBudget carries maxUnavailable as an int32, so clamp before
+	// narrowing: an instance count above math.MaxInt32 would otherwise wrap to a
+	// negative budget that the API server rejects.
+	mu := min(max(n-q, 0), math.MaxInt32)
+	return intstr.FromInt32(int32(mu)), intstr.FromInt32(0)
 }
 
 // ScaleDownQuorumGuard returns a blocking reason if removing instanceName (the
 // highest-ordinal member during scale-down) would drop the group below quorum.
 func (r *Reconciler) ScaleDownQuorumGuard(cluster *mysqlv1alpha1.Cluster, instanceName string) *topology.QuorumResult {
-	n := int32(cluster.Spec.Instances)
+	n := cluster.Spec.Instances
 	if n <= 1 {
 		return &topology.QuorumResult{
 			Blocked:     true,
 			Reason:      "cannot scale below 1 member",
-			CurrentSize: int(n),
+			CurrentSize: n,
 			Quorum:      1,
 		}
 	}
 	after := n - 1
-	q := quorum(int(after))
-	if after < int32(q) {
+	q := quorum(after)
+	if after < q {
 		return &topology.QuorumResult{
 			Blocked:     true,
 			Reason:      fmt.Sprintf("scaling down to %d members would drop below quorum (%d)", after, q),
-			CurrentSize: int(n),
+			CurrentSize: n,
 			Quorum:      q,
 		}
 	}
