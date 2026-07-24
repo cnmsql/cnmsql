@@ -80,35 +80,58 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{"username": "cnmsql_control"})
 }
 
+// ensurePasswordSecret creates the named credential Secret with a generated
+// password, and heals an existing one that is missing expected keys (a partially
+// written object, or one left behind with only part of its data). Keys that are
+// already populated are never rewritten: the password is the live MySQL
+// credential and regenerating it would lock the operator out of its own users.
 func (r *ClusterReconciler) ensurePasswordSecret(ctx context.Context, cluster *mysqlv1alpha1.Cluster, name string, data map[string]string) error {
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, secret)
-	if err == nil {
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	exists := err == nil
+
+	missing := map[string][]byte{}
+	for key, value := range data {
+		if len(secret.Data[key]) == 0 {
+			missing[key] = []byte(value)
+		}
+	}
+	if len(secret.Data["password"]) == 0 {
+		password, err := randomPassword()
+		if err != nil {
+			return err
+		}
+		missing["password"] = []byte(password)
+	}
+	if exists && len(missing) == 0 {
 		return nil
 	}
-	if !apierrors.IsNotFound(err) {
-		return err
+
+	if !exists {
+		secret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: cluster.Namespace,
+				Labels:    labelsFor(cluster, "", ""),
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: missing,
+		}
+		if err := controllerutil.SetControllerReference(cluster, secret, r.Scheme); err != nil {
+			return err
+		}
+		return r.Create(ctx, secret)
 	}
 
-	password, err := randomPassword()
-	if err != nil {
-		return err
+	before := secret.DeepCopy()
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
 	}
-	stringData := map[string]string{"password": password}
-	maps.Copy(stringData, data)
-	secret = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: cluster.Namespace,
-			Labels:    labelsFor(cluster, "", ""),
-		},
-		Type:       corev1.SecretTypeOpaque,
-		StringData: stringData,
-	}
-	if err := controllerutil.SetControllerReference(cluster, secret, r.Scheme); err != nil {
-		return err
-	}
-	return r.Create(ctx, secret)
+	maps.Copy(secret.Data, missing)
+	return r.Patch(ctx, secret, client.MergeFrom(before))
 }
 
 func randomPassword() (string, error) {

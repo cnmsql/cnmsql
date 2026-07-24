@@ -397,6 +397,55 @@ func TestEnsurePasswordSecretDoesNotOverwriteExistingSecret(t *testing.T) {
 	if string(got.Data["password"]) != "keep" {
 		t.Fatalf("password was overwritten: %q", got.Data["password"])
 	}
+	if string(got.Data["username"]) != "root" {
+		t.Fatalf("missing username was not healed: %q", got.Data["username"])
+	}
+}
+
+func TestEnsurePasswordSecretHealsMissingKeys(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	// A partially written Secret: the object exists but carries none of the
+	// expected keys.
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-root", Namespace: "default"},
+		Data:       map[string][]byte{"unrelated": []byte("x")},
+	}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, existing).Build(),
+		Scheme: scheme,
+	}
+
+	if err := reconciler.ensurePasswordSecret(context.Background(), cluster, "demo-root", map[string]string{"username": "root"}); err != nil {
+		t.Fatal(err)
+	}
+	got := &corev1.Secret{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "demo-root"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Data["password"]) == 0 {
+		t.Fatal("password was not generated for a secret missing it")
+	}
+	if string(got.Data["username"]) != "root" {
+		t.Fatalf("username = %q, want root", got.Data["username"])
+	}
+	if string(got.Data["unrelated"]) != "x" {
+		t.Fatalf("unrelated key was dropped: %q", got.Data["unrelated"])
+	}
+
+	// A second pass must be a no-op: the healed password is the live MySQL
+	// credential and may not be rotated underneath the cluster.
+	password := string(got.Data["password"])
+	if err := reconciler.ensurePasswordSecret(context.Background(), cluster, "demo-root", map[string]string{"username": "root"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "demo-root"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Data["password"]) != password {
+		t.Fatal("password was rotated on a subsequent reconcile")
+	}
 }
 
 func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
