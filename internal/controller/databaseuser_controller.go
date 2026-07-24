@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -414,10 +415,8 @@ func duSuperuserSatisfied(observed []string) bool {
 		if !strings.Contains(strings.ToUpper(g), "WITH GRANT OPTION") {
 			continue
 		}
-		for _, tok := range parseGrantTokens(g) {
-			if tok == "all privileges@"+grantTargetAll {
-				return true
-			}
+		if slices.Contains(parseGrantTokens(g), "all privileges@"+grantTargetAll) {
+			return true
 		}
 	}
 	return false
