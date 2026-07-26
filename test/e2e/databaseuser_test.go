@@ -156,7 +156,10 @@ var _ = Describe("DatabaseUser", Ordered, Label("feature"), func() {
 			grants, err := mysqlExec(primary, "root", rootPass, "",
 				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(grants).To(ContainSubstring("ALL PRIVILEGES ON *.*"))
+			g.Expect(grants).To(Or(
+				ContainSubstring("ALL PRIVILEGES ON *.*"),
+				ContainSubstring("SUPER ON *.*"),
+			), "MySQL 8+ expands ALL PRIVILEGES; SUPER on *.* is a reliable proxy")
 			g.Expect(grants).To(ContainSubstring("WITH GRANT OPTION"))
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 

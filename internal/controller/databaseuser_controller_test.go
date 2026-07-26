@@ -299,7 +299,8 @@ func TestDatabaseUserSuperuserNoChangeWhenGrantOptionPresent(t *testing.T) {
 
 // SHOW GRANTS renders the superuser line differently per flavour: MySQL puts the
 // grant option straight after the account, MariaDB wedges the authentication
-// clause in between.
+// clause in between. MySQL 8+ expands ALL PRIVILEGES into individual privilege
+// names.
 func TestDuSuperuserSatisfiedAcrossFlavours(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -316,6 +317,20 @@ func TestDuSuperuserSatisfiedAcrossFlavours(t *testing.T) {
 			"GRANT ALL PRIVILEGES ON *.* TO 'tenant'@'%' IDENTIFIED BY PASSWORD " +
 				"'*6BB4837EB74329105EE4568DDA7DC67ED2CA2AD9' WITH GRANT OPTION",
 		}, true},
+		{"mysql 8+ expanded superuser", []string{
+			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, " +
+				"FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, " +
+				"LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, " +
+				"SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, " +
+				"CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `tenant`@`%` WITH GRANT OPTION",
+		}, true},
+		{"mysql 8+ expanded without grant option", []string{
+			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, " +
+				"FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, " +
+				"LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, " +
+				"SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, " +
+				"CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `tenant`@`%`",
+		}, false},
 		{"all privileges without grant option", []string{"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%`"}, false},
 		{"grant option on a schema only", []string{"GRANT SELECT ON `app`.* TO `tenant`@`%` WITH GRANT OPTION"}, false},
 		{"usage only", []string{"GRANT USAGE ON *.* TO `tenant`@`%`"}, false},

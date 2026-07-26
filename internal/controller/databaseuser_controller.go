@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -410,13 +409,21 @@ func duRevokes(revokes []mysqlv1alpha1.DatabaseUserRevoke) []user.Privilege {
 // carries the superuser grant the operator issues: ALL PRIVILEGES on *.* with
 // the grant option. An account can hold ALL PRIVILEGES from a plain grant and
 // still not be a superuser, so the grant option is part of the check.
+//
+// MySQL 8+ expands ALL PRIVILEGES into individual privilege names in SHOW
+// GRANTS output. The function accepts either the verbatim "all privileges@*.*"
+// token (MySQL 5.7, MariaDB) or the presence of "super@*.*" as a reliable
+// proxy for the expanded form, since SUPER is only part of the ALL PRIVILEGES
+// expansion.
 func duSuperuserSatisfied(observed []string) bool {
 	for _, g := range observed {
 		if !strings.Contains(strings.ToUpper(g), "WITH GRANT OPTION") {
 			continue
 		}
-		if slices.Contains(parseGrantTokens(g), "all privileges@"+grantTargetAll) {
-			return true
+		for _, tok := range parseGrantTokens(g) {
+			if tok == "all privileges@"+grantTargetAll || tok == "super@"+grantTargetAll {
+				return true
+			}
 		}
 	}
 	return false
@@ -432,7 +439,7 @@ func duGrantsSatisfied(observed []string, du *mysqlv1alpha1.DatabaseUser) bool {
 		}
 	}
 	if du.Spec.Superuser {
-		return have["all privileges@"+grantTargetAll]
+		return have["all privileges@"+grantTargetAll] || have["super@"+grantTargetAll]
 	}
 	for _, g := range du.Spec.Grants {
 		on := g.On
