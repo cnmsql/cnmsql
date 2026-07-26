@@ -18,6 +18,7 @@
 package scrapers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -47,7 +48,6 @@ func newInstance(db *sql.DB) (*instance, error) {
 
 	version, versionString, err := queryVersion(db)
 	if err != nil {
-		db.Close()
 		return nil, err
 	}
 
@@ -55,7 +55,6 @@ func newInstance(db *sql.DB) (*instance, error) {
 
 	versionMajorMinor, err := strconv.ParseFloat(fmt.Sprintf("%d.%d", i.version.Major, i.version.Minor), 64)
 	if err != nil {
-		db.Close()
 		return nil, err
 	}
 
@@ -75,18 +74,12 @@ func (i *instance) getDB() *sql.DB {
 }
 
 func (i *instance) Close() error {
-	return i.db.Close()
+	return nil
 }
 
 // Ping checks connection availability and possibly invalidates the connection if it fails.
 func (i *instance) Ping() error {
-	if err := i.db.Ping(); err != nil {
-		if cerr := i.Close(); cerr != nil {
-			return err
-		}
-		return err
-	}
-	return nil
+	return i.db.Ping()
 }
 
 // The result of SELECT version() is something like:
@@ -96,7 +89,7 @@ var versionRegex = regexp.MustCompile(`^((\d+)(\.\d+)(\.\d+))`)
 
 func queryVersion(db *sql.DB) (semver.Version, string, error) {
 	var version string
-	err := db.QueryRow("SELECT @@version;").Scan(&version)
+	err := db.QueryRowContext(context.Background(), "SELECT @@version;").Scan(&version)
 	if err != nil {
 		return semver.Version{}, version, err
 	}

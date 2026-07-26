@@ -140,8 +140,9 @@ func copyFile(srcPath, dstPath string) error {
 
 // adaptInstance rewrites the upstream constructor so the instance wraps a
 // caller-supplied *sql.DB (the instance manager's metrics pool) instead of
-// dialing its own connection from a DSN. The rest of the type — version/flavor
-// detection, getDB/Ping/Close — is preserved so the scrapers compile unchanged.
+// dialing its own connection from a DSN. It also removes harmful Pool.Close()
+// calls — Close/Ping/error-path closes — that would tear down the caller-owned
+// pool, and fixes queryVersion to use QueryRowContext.
 func adaptInstance(content string) (string, error) {
 	const upstream = `func newInstance(dsn string) (*instance, error) {
 	i := &instance{}
@@ -163,5 +164,35 @@ func newInstance(db *sql.DB) (*instance, error) {
 		return "", fmt.Errorf("instance.go: upstream newInstance signature not found; " +
 			"the vendored mysqld_exporter changed, update gen/main.go")
 	}
-	return strings.Replace(content, upstream, adapted, 1), nil
+	content = strings.Replace(content, upstream, adapted, 1)
+
+	content = strings.Replace(content,
+		"\n\t\tdb.Close()\n\t\treturn nil, err\n\t}",
+		"\n\t\treturn nil, err\n\t}", 2)
+
+	content = strings.Replace(content,
+		"func (i *instance) Close() error {\n\treturn i.db.Close()\n}",
+		"func (i *instance) Close() error {\n\treturn nil\n}", 1)
+
+	oldPing := "func (i *instance) Ping() error {\n" +
+		"\tif err := i.db.Ping(); err != nil {\n" +
+		"\t\tif cerr := i.Close(); cerr != nil {\n" +
+		"\t\t\treturn err\n" +
+		"\t\t}\n" +
+		"\t\treturn err\n" +
+		"\t}\n" +
+		"\treturn nil\n" +
+		"}"
+	newPing := "func (i *instance) Ping() error {\n\treturn i.db.Ping()\n}"
+	content = strings.Replace(content, oldPing, newPing, 1)
+
+	content = strings.Replace(content,
+		`err := db.QueryRow("SELECT @@version;").Scan(&version)`,
+		`err := db.QueryRowContext(context.Background(), "SELECT @@version;").Scan(&version)`, 1)
+
+	content = strings.Replace(content,
+		"import (\n\t\"database/sql\"",
+		"import (\n\t\"context\"\n\t\"database/sql\"", 1)
+
+	return content, nil
 }
