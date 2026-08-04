@@ -42,8 +42,27 @@ import (
 // Under async replication the operator maintains two PDBs:
 //
 //   - {cluster}-primary: maxUnavailable=1, matches the pod holding role=primary.
-//   - {cluster}-replicas: maxUnavailable=floor(N/2) for N replicas, matches pods
-//     with role=replica. Single-instance clusters (no replicas) skip it.
+//     In practice this blocks every voluntary primary eviction — see the
+//     expectedCount note below — which is the intent: the primary leaves a node
+//     via switchover-on-drain, not via the PDB.
+//   - {cluster}-replicas: minAvailable = R - max(1, floor(R/2)) for R replicas,
+//     matching pods with role=replica. Single-instance clusters (no replicas)
+//     skip it. Replicas tolerate losing up to half their number at once, and
+//     always at least one, so a node holding a replica can be drained without
+//     opening a maintenance window.
+//
+// The replica PDB deliberately uses minAvailable rather than maxUnavailable.
+// Cluster Pods are owned directly by the Cluster CR, which exposes a scale
+// subresource (.spec.instances), so Kubernetes resolves a PDB's expectedCount to
+// N — the whole cluster — even when the selector matches only a subset of the
+// Pods. For a maxUnavailable PDB that yields
+// desiredHealthy = N - maxUnavailable, compared against a currentHealthy of only
+// the R = N-1 matched replicas, leaving R - (N - maxUnavailable) =
+// maxUnavailable - 1 allowed disruptions: zero for any maxUnavailable of 1, at
+// every cluster size. An integer minAvailable takes desiredHealthy verbatim and
+// never consults the scale subresource, so it is immune to that mismatch. The
+// same reasoning is why the primary PDB (one matched Pod, expectedCount N)
+// permits no voluntary disruption at all.
 //
 // Under Group Replication a single quorum-aware PDB replaces the split:
 //
@@ -61,8 +80,8 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	// During a node maintenance window we must let nodes drain, so the PDBs that
 	// would block eviction are removed for the duration of the window — both the
 	// replica and the primary PDB. The primary PDB must go even for a multi-instance
-	// cluster: it selects only the role=primary Pod (one) while the owning
-	// StatefulSet's scale is N, so Kubernetes computes desiredHealthy = N - 1 and
+	// cluster: it selects only the role=primary Pod (one) while the Cluster's scale
+	// subresource reports N, so Kubernetes computes desiredHealthy = N - 1 and
 	// allows zero voluntary disruptions, which would block the drain outright.
 	// Switchover-on-drain (or, when disabled, reactive failover) provides the
 	// safety here, not the PDB.
@@ -94,10 +113,15 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	}
 
 	// Replicas tolerate losing up to half their number at once; the rest keep the
-	// cluster serving reads and available as failover candidates.
+	// cluster serving reads and available as failover candidates. Always allow
+	// at least 1 disruption so a node holding a replica can be drained without
+	// requiring a maintenance window — a single-replica cluster therefore pins
+	// minAvailable to 0, trading its only failover candidate for a drain that
+	// completes instead of blocking forever.
 	replicas := plan.Instances - 1
 	return r.reconcileOnePDB(ctx, cluster, replicaPDBName(cluster), wantReplica, func() *policyv1.PodDisruptionBudget {
-		return buildPDB(cluster, replicaPDBName(cluster), roleReplica, intstr.FromInt32(int32(replicas/2)))
+		return buildMinAvailablePDB(cluster, replicaPDBName(cluster), roleReplica,
+			intstr.FromInt32(int32(replicaMinAvailable(replicas))))
 	})
 }
 
@@ -129,6 +153,15 @@ func (r *ClusterReconciler) reconcileOnePDB(
 		return r.Delete(ctx, pdb)
 	}
 
+	// Operators upgrading from a release that expressed the replica budget as
+	// maxUnavailable carry a live PDB whose budget field differs from the one we
+	// now build. Swapping the field in place would leave both set on the patched
+	// object for the API server to reject, so retire the old object first and let
+	// CreateOrUpdate recreate it below.
+	if err := r.deletePDBOnBudgetFieldChange(ctx, cluster, name, build); err != nil {
+		return err
+	}
+
 	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{
 		Name:      name,
 		Namespace: cluster.Namespace,
@@ -142,6 +175,36 @@ func (r *ClusterReconciler) reconcileOnePDB(
 		return controllerutil.SetControllerReference(cluster, pdb, r.Scheme)
 	})
 	return err
+}
+
+// deletePDBOnBudgetFieldChange removes the named PDB when it exists and states
+// its budget in a different field (minAvailable vs maxUnavailable) than the one
+// the current build produces. A PDB must set exactly one of the two, so the
+// field cannot be swapped by patching; deleting lets the caller recreate it.
+// Missing PDBs and PDBs that already use the right field are left alone.
+func (r *ClusterReconciler) deletePDBOnBudgetFieldChange(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	name string,
+	build func() *policyv1.PodDisruptionBudget,
+) error {
+	existing := &policyv1.PodDisruptionBudget{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, existing)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	desired := build()
+	if usesMinAvailable(existing) == usesMinAvailable(desired) {
+		return nil
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, existing))
+}
+
+func usesMinAvailable(pdb *policyv1.PodDisruptionBudget) bool {
+	return pdb.Spec.MinAvailable != nil
 }
 
 // buildPDB returns a PodDisruptionBudget that selects the cluster's pods holding
@@ -167,8 +230,45 @@ func buildPDB(cluster *mysqlv1alpha1.Cluster, name, role string, maxUnavailable 
 	}
 }
 
+// replicaMinAvailable returns how many of the cluster's replicas must stay up,
+// given that replicas tolerate losing up to half their number at once and always
+// at least one. Returns 0 for a single replica, which permits its eviction.
+func replicaMinAvailable(replicas int) int {
+	if replicas <= 0 {
+		return 0
+	}
+	return replicas - max(replicas/2, 1)
+}
+
+// buildMinAvailablePDB returns a role-scoped PDB expressed as an integer
+// minAvailable. Unlike maxUnavailable, an integer minAvailable is taken as
+// desiredHealthy verbatim and never resolved against the owning controller's
+// scale, so it stays correct for a selector that matches only a subset of the
+// cluster's Pods. See reconcilePDB for why that matters here.
+func buildMinAvailablePDB(cluster *mysqlv1alpha1.Cluster, name, role string, minAvailable intstr.IntOrString) *policyv1.PodDisruptionBudget {
+	labels := labelsFor(cluster, "", "")
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					clusterLabel: cluster.Name,
+					roleLabel:    role,
+				},
+			},
+		},
+	}
+}
+
 // buildClusterWidePDB returns a PDB that selects every cluster Pod without a
-// role filter, used for the single quorum-aware GR PDB.
+// role filter, used for the single quorum-aware GR PDB. maxUnavailable is
+// correct here: the selector matches every cluster Pod, so expectedCount
+// resolves to the same N the quorum maths is based on.
 func buildClusterWidePDB(cluster *mysqlv1alpha1.Cluster, name string, maxUnavailable intstr.IntOrString) *policyv1.PodDisruptionBudget {
 	labels := labelsFor(cluster, "", "")
 	return &policyv1.PodDisruptionBudget{

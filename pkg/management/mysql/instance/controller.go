@@ -613,6 +613,20 @@ func (c *Controller) EnsureReplicaConfigured(ctx context.Context, opts replicati
 	return nil
 }
 
+// RepairReplication resets and reconfigures replication from scratch, clearing
+// corrupt relay logs and metadata. It is the remediation for a replica whose
+// relay logs or replication metadata are corrupt after a crash.
+func (c *Controller) RepairReplication(ctx context.Context, opts replication.SourceOptions) error {
+	logf.FromContext(ctx).WithName("instance-controller").Info("Repairing replication metadata",
+		"instance", c.name,
+		"sourceHost", opts.Host)
+	if err := c.repl.RepairReplication(ctx, opts); err != nil {
+		return err
+	}
+	c.expected = webserver.RoleReplica
+	return nil
+}
+
 // Restart restarts mysqld via the supervisor.
 func (c *Controller) Restart(ctx context.Context) error {
 	if c.supervisor == nil {
