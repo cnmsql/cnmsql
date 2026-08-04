@@ -240,7 +240,9 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&groupReplication, "group-replication", false, "Run as a MySQL Group Replication member (the group role strategy and GR status)")
 	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from cnmsql_S3_* env)")
 	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")
-	cmd.Flags().BoolVar(&archivePurge, "archive-purge", true, "Purge binary logs once archived (the active purge gate)")
+	cmd.Flags().BoolVar(&archivePurge, "archive-purge", false,
+		"Purge binary logs once archived (the active purge gate). Off by default: binlog_expire_logs_seconds "+
+			"governs expiry instead, so binlogs stay on disk long enough for a lagged or returning replica to catch up")
 	cmd.Flags().IntVar(&heartbeatMillis, "heartbeat-interval-millis", 0,
 		"Stamp the replication-lag heartbeat table this often on the primary; 0 disables the heartbeat")
 	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Path to the mysqlbinlog binary (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")

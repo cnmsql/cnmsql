@@ -351,6 +351,10 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 		args = append(args,
 			"--continuous-archiving",
 			fmt.Sprintf("--archive-rpo-seconds=%d", cluster.ArchiveRPOSeconds()),
+			// Passed explicitly rather than left to the flag default so the
+			// rendered args record the effective gate, and so a change to
+			// spec.backup.continuousArchiving.purgeAfterArchive rolls the Pod.
+			fmt.Sprintf("--archive-purge=%t", cluster.IsPurgeAfterArchiveEnabled()),
 		)
 	}
 	if cluster.IsHeartbeatEnabled() {
