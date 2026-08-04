@@ -813,13 +813,32 @@ type ContinuousArchivingConfiguration struct {
 	// +optional
 	MaxBinlogSizeMB int32 `json:"maxBinlogSizeMB,omitempty"`
 
-	// BinlogExpireSeconds is the conservative backstop after which mysqld may
-	// expire a binary log, applied under the active purge gate. Defaults to
-	// 604800 (7 days).
+	// BinlogExpireSeconds is how long mysqld keeps a binary log on the instance's
+	// data volume before expiring it. With the active purge gate off (the
+	// default) this is the only mechanism that reclaims binlog space, so it also
+	// sets the window in which a lagged or returning replica can still catch up
+	// from the primary's logs. Budget disk for it: the data volume must hold this
+	// many seconds of binlog writes on top of the dataset. 0 selects the default.
+	// Defaults to 604800 (7 days).
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default:=604800
 	// +optional
 	BinlogExpireSeconds int32 `json:"binlogExpireSeconds,omitempty"`
+
+	// PurgeAfterArchive turns on the active purge gate: the archiver runs PURGE
+	// BINARY LOGS up to the last successfully archived file, reclaiming binlog
+	// space as soon as it is safely in the object store instead of waiting for
+	// binlogExpireSeconds.
+	//
+	// Defaults to false. Purging on archive keeps the data volume small, but it
+	// removes binlogs a replica may still need: a replica that was down, lagged,
+	// or is rejoining must then be re-cloned from a backup rather than catching
+	// up from the primary. Enable it only when the data volume cannot hold
+	// binlogExpireSeconds worth of writes, and prefer lowering
+	// binlogExpireSeconds first.
+	// +kubebuilder:default:=false
+	// +optional
+	PurgeAfterArchive *bool `json:"purgeAfterArchive,omitempty"`
 }
 
 // BackupTarget describes which instance a backup is taken from.

@@ -105,6 +105,50 @@ The commit order for every binlog segment is:
 A crash between the raw upload and manifest write leaves the file uncommitted
 from cnmsql's perspective; the next archive pass retries it.
 
+### Local binlog retention
+
+Archiving a binlog to the object store does not remove it from the instance's
+data volume. Local retention is governed by `binlogExpireSeconds`, which cnmsql
+renders as mysqld's own `binlog_expire_logs_seconds` (or `expire_logs_days` on
+servers older than 8.0). It defaults to 604800, seven days.
+
+Keeping the logs locally is what lets a replica rejoin without a full re-clone.
+A replica that was down for maintenance, fell behind, or is returning after a
+node failure catches up by reading the primary's binlogs. If the primary has
+already discarded the segments that replica needs, replication cannot resume and
+the instance must be re-initialised from a backup instead — much slower, and it
+consumes object-store bandwidth. The retention window is therefore also the
+window in which a replica can be absent and still catch up cheaply.
+
+The cost is disk. The data volume must hold the dataset plus the binlogs written
+during the retention window:
+
+```
+binlog headroom ≈ write throughput (bytes/sec) × binlogExpireSeconds
+```
+
+A cluster writing 1 MiB/s of binlog needs roughly 600 GiB of headroom at the
+seven-day default. Size `spec.storage.size` accordingly, or shorten
+`binlogExpireSeconds` to trade catch-up window for disk.
+
+For clusters where that headroom is not available, the **active purge gate**
+reclaims space earlier:
+
+```yaml
+spec:
+  backup:
+    continuousArchiving:
+      enabled: true
+      purgeAfterArchive: true
+```
+
+With `purgeAfterArchive: true` the archiver runs `PURGE BINARY LOGS` up to the
+last successfully archived file on every pass, so local binlogs live only until
+they reach the object store. PITR is unaffected — recovery replays from the
+archive, not from local logs — but replicas lose the ability to catch up from
+the primary, so any replica that falls outside the (now very short) local window
+must be re-cloned. Prefer lowering `binlogExpireSeconds` before enabling it.
+
 ### Object store layout
 
 Continuous archives live under the cluster prefix:

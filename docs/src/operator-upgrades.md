@@ -175,6 +175,52 @@ of the primary.
 The setting has no effect until the operator executable hash changes, meaning
 the operator Deployment has been updated to a new image.
 
+## Version-specific upgrade notes
+
+### Binlogs are retained locally after archiving
+
+Clusters with `spec.backup.continuousArchiving.enabled: true` change their disk
+profile on upgrade. Previously the archiver purged each binary log from the data
+volume as soon as it reached the object store, so local binlogs stayed near
+zero. They are now kept until `binlogExpireSeconds` (default 604800, seven days)
+so a lagged or returning replica can catch up from the primary instead of being
+re-cloned from a backup.
+
+**Action required.** The data volume must now hold the dataset plus roughly
+`write throughput × binlogExpireSeconds` of binlogs. Before upgrading, check the
+headroom on your archiving clusters:
+
+```bash
+kubectl exec <instance> -c mysql -- df -h /var/lib/mysql
+kubectl exec <instance> -c mysql -- \
+  sh -c 'du -sh /var/lib/mysql/binlog.* 2>/dev/null | tail -1'
+```
+
+Then pick one:
+
+- **Grow the volume.** Raise `spec.storage.size`; see
+  [Storage](./storage.md). This is the option that preserves the new
+  catch-up behaviour.
+- **Shorten the window.** Lower
+  `spec.backup.continuousArchiving.binlogExpireSeconds` to fit the disk you
+  have. A shorter window still beats purge-on-archive for replica catch-up.
+- **Keep the old behaviour.** Set
+  `spec.backup.continuousArchiving.purgeAfterArchive: true` to restore
+  purge-on-archive exactly as it worked before.
+
+```yaml
+spec:
+  backup:
+    continuousArchiving:
+      enabled: true
+      purgeAfterArchive: true # pre-upgrade behaviour
+```
+
+PITR is unaffected either way: recovery replays from the object store, not from
+local binlogs. See [Local binlog
+retention](./pitr.md#local-binlog-retention) for the sizing model and the
+trade-off in full.
+
 ## Troubleshooting
 
 **The rollout is stuck in `WaitingForUser`.** The primary is stale and

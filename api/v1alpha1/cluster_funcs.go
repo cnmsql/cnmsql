@@ -1035,3 +1035,12 @@ func (cluster *Cluster) ArchiveRPOSeconds() int {
 	}
 	return int(ca.TargetRPOSeconds)
 }
+
+// IsPurgeAfterArchiveEnabled reports whether the active purge gate is on, so the
+// archiver purges binary logs as soon as they reach the object store. Defaults
+// to false: binlogs stay on the data volume until binlogExpireSeconds so a
+// lagged or returning replica can still catch up from the primary.
+func (cluster *Cluster) IsPurgeAfterArchiveEnabled() bool {
+	ca := cluster.ContinuousArchiving()
+	return ca != nil && ca.PurgeAfterArchive != nil && *ca.PurgeAfterArchive
+}

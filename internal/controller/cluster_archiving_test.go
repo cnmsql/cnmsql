@@ -64,6 +64,11 @@ func TestArchivingRunArgsAndEnv(t *testing.T) {
 	if !containsArg(args, "--archive-rpo-seconds=120") {
 		t.Fatalf("missing rpo arg: %v", args)
 	}
+	// The purge gate is off unless asked for, so binlogs stay on disk until
+	// binlogExpireSeconds and a lagged replica can still catch up.
+	if !containsArg(args, "--archive-purge=false") {
+		t.Fatalf("missing --archive-purge=false: %v", args)
+	}
 
 	env := runEnv(cluster, testPlan())
 	want := map[string]string{"cnmsql_S3_BUCKET": "backups", "cnmsql_S3_PATH": "cnmsql"}
@@ -80,6 +85,30 @@ func TestArchivingRunArgsAndEnv(t *testing.T) {
 		if !found {
 			t.Fatalf("env %s not injected", name)
 		}
+	}
+}
+
+func TestArchivingPurgeGateOptIn(t *testing.T) {
+	cluster := archivingCluster()
+	enabled := true
+	cluster.Spec.Backup.ContinuousArchiving.PurgeAfterArchive = &enabled
+
+	if !cluster.IsPurgeAfterArchiveEnabled() {
+		t.Fatal("purge gate should be enabled when purgeAfterArchive is true")
+	}
+	args := (&ClusterReconciler{}).runArgs(cluster, testPlan(), instancePlan{})
+	if !containsArg(args, "--archive-purge=true") {
+		t.Fatalf("missing --archive-purge=true: %v", args)
+	}
+}
+
+// An unset purgeAfterArchive must read as off, so a cluster created before the
+// field existed keeps its binlogs rather than purging them on archive.
+func TestArchivingPurgeGateDefaultsOff(t *testing.T) {
+	cluster := archivingCluster()
+	cluster.Spec.Backup.ContinuousArchiving.PurgeAfterArchive = nil
+	if cluster.IsPurgeAfterArchiveEnabled() {
+		t.Fatal("purge gate should be off when purgeAfterArchive is unset")
 	}
 }
 
