@@ -225,7 +225,7 @@ func grantsSatisfied(observed []string, role *mysqlv1alpha1.RoleConfiguration) b
 		}
 	}
 	if role.Superuser {
-		return have["all privileges@*.*"]
+		return grantsIncludeAllPrivileges(have)
 	}
 	for _, p := range role.Privileges {
 		on := p.On
@@ -237,6 +237,45 @@ func grantsSatisfied(observed []string, role *mysqlv1alpha1.RoleConfiguration) b
 			if !have[tok] {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+// mysqlStaticGlobalPrivileges is the set of static global privileges that every
+// supported server confers through GRANT ALL PRIVILEGES ON *.*.
+//
+// It exists because MySQL 8 stopped echoing "ALL PRIVILEGES" in SHOW GRANTS:
+// since 8.0 the token also covers dynamic privileges, whose set is not fixed,
+// so the server enumerates the static privileges it granted instead. MariaDB
+// and MySQL 5.7 still print the literal token.
+//
+// The list is MySQL 5.7's static set — the common floor. Later versions only
+// add to it (8.0 appended CREATE ROLE and DROP ROLE), so testing that the
+// observed privileges are a superset of this list recognises the expanded form
+// on every flavour without having to track per-version additions.
+var mysqlStaticGlobalPrivileges = []string{
+	"select", "insert", "update", "delete", "create", "drop", "reload",
+	"shutdown", "process", "file", "references", "index", "alter",
+	"show databases", "super", "create temporary tables", "lock tables",
+	"execute", "replication slave", "replication client", "create view",
+	"show view", "create routine", "alter routine", "create user", "event",
+	"trigger", "create tablespace",
+}
+
+// grantsIncludeAllPrivileges reports whether the parsed grant tokens amount to
+// ALL PRIVILEGES on *.*, either as the literal token or as MySQL 8's expansion.
+//
+// The whole static set is required rather than a single marker privilege: an
+// out-of-band REVOKE of one privilege has to read as drift, which a check for
+// any one privilege — SUPER included — would miss.
+func grantsIncludeAllPrivileges(have map[string]bool) bool {
+	if have["all privileges@"+grantTargetAll] {
+		return true
+	}
+	for _, priv := range mysqlStaticGlobalPrivileges {
+		if !have[priv+"@"+grantTargetAll] {
+			return false
 		}
 	}
 	return true

@@ -156,11 +156,8 @@ var _ = Describe("DatabaseUser", Ordered, Label("feature"), func() {
 			grants, err := mysqlExec(primary, "root", rootPass, "",
 				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(grants).To(Or(
-				ContainSubstring("ALL PRIVILEGES ON *.*"),
-				ContainSubstring("SUPER ON *.*"),
-			), "MySQL 8+ expands ALL PRIVILEGES; SUPER on *.* is a reliable proxy")
-			g.Expect(grants).To(ContainSubstring("WITH GRANT OPTION"))
+			g.Expect(grantsConferSuperuser(grants)).To(BeTrue(),
+				"account does not hold the superuser grant; SHOW GRANTS was:\n%s", grants)
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		// Revoking only the grant option leaves ALL PRIVILEGES in place, so a diff
@@ -175,8 +172,8 @@ var _ = Describe("DatabaseUser", Ordered, Label("feature"), func() {
 			grants, err := mysqlExec(primary, "root", rootPass, "",
 				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(grants).To(ContainSubstring("WITH GRANT OPTION"),
-				"superuser drift was not corrected")
+			g.Expect(grantsConferSuperuser(grants)).To(BeTrue(),
+				"superuser drift was not corrected; SHOW GRANTS was:\n%s", grants)
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
@@ -427,6 +424,44 @@ spec:
     - privileges: ["SELECT"]
       "on": "app.*"
 `, name, testNamespace, cluster, drift, userSecret)
+}
+
+// grantsConferSuperuser reports whether SHOW GRANTS output gives the account
+// ALL PRIVILEGES on *.* with the grant option.
+//
+// SHOW GRANTS cannot be matched as a substring here. MySQL 8 no longer prints
+// "ALL PRIVILEGES": since 8.0 the token also covers dynamic privileges, whose
+// set is not fixed, so the server enumerates the static privileges it granted
+// as a comma-separated list — "…, SHOW DATABASES, SUPER, CREATE TEMPORARY
+// TABLES, … ON *.*" — in which no single privilege is ever adjacent to " ON
+// *.*". MariaDB and MySQL 5.7 still print the literal token.
+//
+// So the line is parsed instead, and several privileges are required rather
+// than one: matching a lone marker would also pass on a partial grant. The
+// authoritative set lives in the controller (mysqlStaticGlobalPrivileges);
+// these are a representative few of it.
+func grantsConferSuperuser(showGrants string) bool {
+	for line := range strings.SplitSeq(showGrants, "\n") {
+		upper := strings.ToUpper(strings.TrimSpace(line))
+		if !strings.HasPrefix(upper, "GRANT ") || !strings.HasSuffix(upper, "WITH GRANT OPTION") {
+			continue
+		}
+		on := strings.Index(upper, " ON *.* TO ")
+		if on < 0 {
+			continue
+		}
+		granted := map[string]bool{}
+		for priv := range strings.SplitSeq(upper[len("GRANT "):on], ",") {
+			granted[strings.TrimSpace(priv)] = true
+		}
+		if granted["ALL PRIVILEGES"] {
+			return true
+		}
+		if granted["SUPER"] && granted["CREATE USER"] && granted["RELOAD"] && granted["SHUTDOWN"] {
+			return true
+		}
+	}
+	return false
 }
 
 // databaseUserSuperuserManifest builds a superuser DatabaseUser. It carries no

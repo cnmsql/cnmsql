@@ -299,8 +299,8 @@ func TestDatabaseUserSuperuserNoChangeWhenGrantOptionPresent(t *testing.T) {
 
 // SHOW GRANTS renders the superuser line differently per flavour: MySQL puts the
 // grant option straight after the account, MariaDB wedges the authentication
-// clause in between. MySQL 8+ expands ALL PRIVILEGES into individual privilege
-// names.
+// clause in between, and MySQL 8 prints the expansion of ALL PRIVILEGES rather
+// than the token itself.
 func TestDuSuperuserSatisfiedAcrossFlavours(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -331,6 +331,31 @@ func TestDuSuperuserSatisfiedAcrossFlavours(t *testing.T) {
 				"SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, " +
 				"CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `tenant`@`%`",
 		}, false},
+		// A partial out-of-band revoke leaves most of the expansion in place. It
+		// still has to read as drift, so the whole static set is required and no
+		// single privilege can stand in for it.
+		{"mysql 8+ expanded minus one privilege", []string{
+			"GRANT INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, " +
+				"FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, " +
+				"LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, " +
+				"SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, " +
+				"CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `tenant`@`%` WITH GRANT OPTION",
+		}, false},
+		{"super alone with grant option", []string{
+			"GRANT SUPER ON *.* TO `tenant`@`%` WITH GRANT OPTION",
+		}, false},
+		// MySQL 8 prints the dynamic privileges on a second line; neither line on
+		// its own is the whole grant, and the static one is what settles it.
+		{"mysql 8+ expanded with dynamic privileges line", []string{
+			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, " +
+				"FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, " +
+				"LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, " +
+				"SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, " +
+				"CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `tenant`@`%` WITH GRANT OPTION",
+			"GRANT APPLICATION_PASSWORD_ADMIN,AUDIT_ABORT_EXEMPT,AUDIT_ADMIN,BACKUP_ADMIN," +
+				"BINLOG_ADMIN,CLONE_ADMIN,CONNECTION_ADMIN,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN " +
+				"ON *.* TO `tenant`@`%` WITH GRANT OPTION",
+		}, true},
 		{"all privileges without grant option", []string{"GRANT ALL PRIVILEGES ON *.* TO `tenant`@`%`"}, false},
 		{"grant option on a schema only", []string{"GRANT SELECT ON `app`.* TO `tenant`@`%` WITH GRANT OPTION"}, false},
 		{"usage only", []string{"GRANT USAGE ON *.* TO `tenant`@`%`"}, false},

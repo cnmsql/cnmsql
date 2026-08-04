@@ -410,23 +410,20 @@ func duRevokes(revokes []mysqlv1alpha1.DatabaseUserRevoke) []user.Privilege {
 // the grant option. An account can hold ALL PRIVILEGES from a plain grant and
 // still not be a superuser, so the grant option is part of the check.
 //
-// MySQL 8+ expands ALL PRIVILEGES into individual privilege names in SHOW
-// GRANTS output. The function accepts either the verbatim "all privileges@*.*"
-// token (MySQL 5.7, MariaDB) or the presence of "super@*.*" as a reliable
-// proxy for the expanded form, since SUPER is only part of the ALL PRIVILEGES
-// expansion.
+// MySQL 8 does not print "ALL PRIVILEGES" but the expansion of it, so the
+// privileges are collected across every grant line that carries the grant
+// option and matched as a set — see grantsIncludeAllPrivileges.
 func duSuperuserSatisfied(observed []string) bool {
+	have := map[string]bool{}
 	for _, g := range observed {
 		if !strings.Contains(strings.ToUpper(g), "WITH GRANT OPTION") {
 			continue
 		}
 		for _, tok := range parseGrantTokens(g) {
-			if tok == "all privileges@"+grantTargetAll || tok == "super@"+grantTargetAll {
-				return true
-			}
+			have[tok] = true
 		}
 	}
-	return false
+	return grantsIncludeAllPrivileges(have)
 }
 
 // duGrantsSatisfied reports whether every declared grant is already present in
@@ -439,7 +436,7 @@ func duGrantsSatisfied(observed []string, du *mysqlv1alpha1.DatabaseUser) bool {
 		}
 	}
 	if du.Spec.Superuser {
-		return have["all privileges@"+grantTargetAll] || have["super@"+grantTargetAll]
+		return grantsIncludeAllPrivileges(have)
 	}
 	for _, g := range du.Spec.Grants {
 		on := g.On
