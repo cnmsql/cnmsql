@@ -94,10 +94,16 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *mysqlv1al
 	}
 
 	// Replicas tolerate losing up to half their number at once; the rest keep the
-	// cluster serving reads and available as failover candidates.
+	// cluster serving reads and available as failover candidates. Always allow
+	// at least 1 disruption so a node holding a replica can be drained without
+	// requiring a maintenance window.
 	replicas := plan.Instances - 1
+	replicaMax := replicas / 2
+	if replicaMax < 1 {
+		replicaMax = 1
+	}
 	return r.reconcileOnePDB(ctx, cluster, replicaPDBName(cluster), wantReplica, func() *policyv1.PodDisruptionBudget {
-		return buildPDB(cluster, replicaPDBName(cluster), roleReplica, intstr.FromInt32(int32(replicas/2)))
+		return buildPDB(cluster, replicaPDBName(cluster), roleReplica, intstr.FromInt32(int32(replicaMax)))
 	})
 }
 

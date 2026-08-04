@@ -89,7 +89,7 @@ func TestReconcilePDBReplicaMaxUnavailable(t *testing.T) {
 		instances          int
 		wantMaxUnavailable int
 	}{
-		{instances: 2, wantMaxUnavailable: 0}, // 1 replica → floor(1/2)=0
+		{instances: 2, wantMaxUnavailable: 1}, // 1 replica → max(1, floor(1/2))=1
 		{instances: 3, wantMaxUnavailable: 1}, // 2 replicas → floor(2/2)=1
 		{instances: 5, wantMaxUnavailable: 2}, // 4 replicas → floor(4/2)=2
 	}
