@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -82,16 +83,20 @@ func TestReconcilePDBSingleInstance(t *testing.T) {
 	}
 }
 
-func TestReconcilePDBReplicaMaxUnavailable(t *testing.T) {
+func TestReconcilePDBReplicaMinAvailable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	// The replica budget is stated as minAvailable so it is not resolved against
+	// the Cluster's scale subresource, which reports N rather than the R = N-1
+	// replicas the selector matches. minAvailable = R - max(1, floor(R/2)).
 	cases := []struct {
-		instances          int
-		wantMaxUnavailable int
+		instances        int
+		wantMinAvailable int
 	}{
-		{instances: 2, wantMaxUnavailable: 0}, // 1 replica → floor(1/2)=0
-		{instances: 3, wantMaxUnavailable: 1}, // 2 replicas → floor(2/2)=1
-		{instances: 5, wantMaxUnavailable: 2}, // 4 replicas → floor(4/2)=2
+		{instances: 2, wantMinAvailable: 0}, // 1 replica  → 1 - max(1, 0) = 0
+		{instances: 3, wantMinAvailable: 1}, // 2 replicas → 2 - 1 = 1
+		{instances: 4, wantMinAvailable: 2}, // 3 replicas → 3 - 1 = 2
+		{instances: 5, wantMinAvailable: 2}, // 4 replicas → 4 - 2 = 2
 	}
 	for _, tc := range cases {
 		cluster := baseCluster()
@@ -105,11 +110,65 @@ func TestReconcilePDBReplicaMaxUnavailable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("instances=%d replica PDB get = %v, want created", tc.instances, err)
 		}
-		if mu := replica.Spec.MaxUnavailable; mu == nil || mu.IntValue() != tc.wantMaxUnavailable {
-			t.Fatalf("instances=%d replica maxUnavailable = %v, want %d", tc.instances, mu, tc.wantMaxUnavailable)
+		if ma := replica.Spec.MinAvailable; ma == nil || ma.IntValue() != tc.wantMinAvailable {
+			t.Fatalf("instances=%d replica minAvailable = %v, want %d", tc.instances, ma, tc.wantMinAvailable)
+		}
+		// Exactly one budget field may be set; maxUnavailable must stay unset or
+		// the API server rejects the object.
+		if replica.Spec.MaxUnavailable != nil {
+			t.Fatalf("instances=%d replica maxUnavailable = %v, want unset",
+				tc.instances, replica.Spec.MaxUnavailable)
 		}
 		if got := replica.Spec.Selector.MatchLabels[roleLabel]; got != roleReplica {
 			t.Fatalf("replica selector role = %q, want %q", got, roleReplica)
+		}
+	}
+}
+
+// A cluster created by an earlier operator release carries a replica PDB stated
+// as maxUnavailable. Reconciling must retire that object and recreate it with
+// minAvailable rather than patching both fields onto one PDB.
+func TestReconcilePDBMigratesReplicaBudgetField(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 3
+	r := pdbReconciler(t, cluster)
+
+	legacy := buildPDB(cluster, replicaPDBName(cluster), roleReplica, intstr.FromInt32(1))
+	if err := r.Create(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.reconcilePDB(ctx, cluster, clusterPlan{Instances: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	replica, err := getPDB(t, r, cluster, replicaPDBName(cluster))
+	if err != nil {
+		t.Fatalf("replica PDB get = %v, want recreated", err)
+	}
+	if replica.Spec.MaxUnavailable != nil {
+		t.Fatalf("replica maxUnavailable = %v, want unset after migration", replica.Spec.MaxUnavailable)
+	}
+	if ma := replica.Spec.MinAvailable; ma == nil || ma.IntValue() != 1 {
+		t.Fatalf("replica minAvailable = %v, want 1 after migration", ma)
+	}
+}
+
+func TestReplicaMinAvailable(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ replicas, want int }{
+		{replicas: 0, want: 0},
+		{replicas: 1, want: 0},
+		{replicas: 2, want: 1},
+		{replicas: 3, want: 2},
+		{replicas: 4, want: 2},
+		{replicas: 5, want: 3},
+	}
+	for _, tc := range cases {
+		if got := replicaMinAvailable(tc.replicas); got != tc.want {
+			t.Errorf("replicaMinAvailable(%d) = %d, want %d", tc.replicas, got, tc.want)
 		}
 	}
 }
