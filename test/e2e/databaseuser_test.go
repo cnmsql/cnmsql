@@ -138,6 +138,45 @@ var _ = Describe("DatabaseUser", Ordered, Label("feature"), func() {
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
+	It("restores the superuser grant option after an out-of-band revoke", func() {
+		const suCR, suPass, suSec = "rootish", "rootish-secret", "rootish-pw"
+		primary := clusterPrimary(cluster)
+		rootPass := secretPassword(cluster + "-root")
+
+		By("creating a superuser DatabaseUser")
+		applyManifest(suSec, passwordSecretManifest(suSec, suPass))
+		applyManifest(suCR, databaseUserSuperuserManifest(suCR, cluster, suSec))
+		DeferCleanup(func() {
+			_, _ = kubectl("delete", "databaseuser", suCR, "-n", testNamespace, "--ignore-not-found")
+			_, _ = kubectl("delete", "secret", suSec, "-n", testNamespace, "--ignore-not-found")
+		})
+
+		By("waiting for the account to hold ALL PRIVILEGES with the grant option")
+		Eventually(func(g Gomega) {
+			grants, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(grantsConferSuperuser(grants)).To(BeTrue(),
+				"account does not hold the superuser grant; SHOW GRANTS was:\n%s", grants)
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		// Revoking only the grant option leaves ALL PRIVILEGES in place, so a diff
+		// that reads the superuser bit off the grants alone sees nothing to do.
+		By("revoking the grant option out of band, keeping ALL PRIVILEGES")
+		_, err := mysqlExec(primary, "root", rootPass, "",
+			fmt.Sprintf("REVOKE GRANT OPTION ON *.* FROM '%s'@'%%';", suCR))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying drift detection puts the grant option back")
+		Eventually(func(g Gomega) {
+			grants, err := mysqlExec(primary, "root", rootPass, "",
+				fmt.Sprintf("SHOW GRANTS FOR '%s'@'%%';", suCR))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(grantsConferSuperuser(grants)).To(BeTrue(),
+				"superuser drift was not corrected; SHOW GRANTS was:\n%s", grants)
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
 	It("refuses a pre-existing account until adopted", func() {
 		primary := clusterPrimary(cluster)
 		rootPass := secretPassword(cluster + "-root")
@@ -385,6 +424,64 @@ spec:
     - privileges: ["SELECT"]
       "on": "app.*"
 `, name, testNamespace, cluster, drift, userSecret)
+}
+
+// grantsConferSuperuser reports whether SHOW GRANTS output gives the account
+// ALL PRIVILEGES on *.* with the grant option.
+//
+// SHOW GRANTS cannot be matched as a substring here. MySQL 8 no longer prints
+// "ALL PRIVILEGES": since 8.0 the token also covers dynamic privileges, whose
+// set is not fixed, so the server enumerates the static privileges it granted
+// as a comma-separated list — "…, SHOW DATABASES, SUPER, CREATE TEMPORARY
+// TABLES, … ON *.*" — in which no single privilege is ever adjacent to " ON
+// *.*". MariaDB and MySQL 5.7 still print the literal token.
+//
+// So the line is parsed instead, and several privileges are required rather
+// than one: matching a lone marker would also pass on a partial grant. The
+// authoritative set lives in the controller (mysqlStaticGlobalPrivileges);
+// these are a representative few of it.
+func grantsConferSuperuser(showGrants string) bool {
+	for line := range strings.SplitSeq(showGrants, "\n") {
+		upper := strings.ToUpper(strings.TrimSpace(line))
+		if !strings.HasPrefix(upper, "GRANT ") || !strings.HasSuffix(upper, "WITH GRANT OPTION") {
+			continue
+		}
+		on := strings.Index(upper, " ON *.* TO ")
+		if on < 0 {
+			continue
+		}
+		granted := map[string]bool{}
+		for priv := range strings.SplitSeq(upper[len("GRANT "):on], ",") {
+			granted[strings.TrimSpace(priv)] = true
+		}
+		if granted["ALL PRIVILEGES"] {
+			return true
+		}
+		if granted["SUPER"] && granted["CREATE USER"] && granted["RELOAD"] && granted["SHUTDOWN"] {
+			return true
+		}
+	}
+	return false
+}
+
+// databaseUserSuperuserManifest builds a superuser DatabaseUser. It carries no
+// grants: the API rejects spec.grants alongside spec.superuser, since the
+// superuser bit already implies ALL PRIVILEGES on *.* with the grant option.
+func databaseUserSuperuserManifest(name, cluster, userSecret string) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: DatabaseUser
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster:
+    name: %s
+  reclaimPolicy: delete
+  superuser: true
+  passwordSecret:
+    name: %s
+    key: password
+`, name, testNamespace, cluster, userSecret)
 }
 
 // databaseUserCustomManifest builds a DatabaseUser with an optional MySQL user
