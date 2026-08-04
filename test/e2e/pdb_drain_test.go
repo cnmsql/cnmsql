@@ -13,11 +13,15 @@ import (
 )
 
 // This spec verifies that the replica PodDisruptionBudget does not block node
-// drains for a 2-instance cluster. Before the fix, maxUnavailable was
-// floor(1/2)=0, which meant zero voluntary disruptions were allowed on the
-// replica — a node holding a replica could not be drained without opening a
-// maintenance window. The fix clamps maxUnavailable to at least 1 so a replica
-// can always be evicted, letting the node drain proceed.
+// drains for a 2-instance cluster. Before the fix the replica budget was stated
+// as maxUnavailable=floor(1/2)=0, which allowed zero voluntary disruptions — a
+// node holding a replica could not be drained without opening a maintenance
+// window. Raising maxUnavailable alone does not fix it: the Cluster CR exposes a
+// scale subresource, so Kubernetes resolves the budget's expectedCount to N (the
+// whole cluster) while only the N-1 replicas match the selector, leaving
+// maxUnavailable-1 allowed disruptions. The fix states the budget as an integer
+// minAvailable, which is taken as desiredHealthy verbatim and never resolved
+// against the scale, so the single replica can be evicted and the drain proceeds.
 //
 // The test needs a multi-node Kind cluster so there is a second node for the
 // primary to survive on while the replica's node is drained. It uses the same
@@ -58,13 +62,31 @@ var _ = Describe("PDB draining", Ordered, Serial, Label("disruptive", "node-fail
 
 		By(fmt.Sprintf("primary is %s, replica is %s on node %s", primary, replica, replicaNode))
 
-		By("verifying the replica PDB allows at least 1 disruption")
+		By("verifying the replica PDB is stated as minAvailable=0")
 		Eventually(func(g Gomega) {
+			ma, err := kubectl("get", "pdb", cluster+"-replicas", "-n", testNamespace,
+				"-o", "jsonpath={.spec.minAvailable}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(ma)).To(Equal("0"),
+				"replica PDB minAvailable must be 0 for a 2-instance cluster, got %s", ma)
+
 			mu, err := kubectl("get", "pdb", cluster+"-replicas", "-n", testNamespace,
 				"-o", "jsonpath={.spec.maxUnavailable}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(mu)).To(Equal("1"),
-				"replica PDB maxUnavailable must be 1 for a 2-instance cluster, got %s", mu)
+			g.Expect(strings.TrimSpace(mu)).To(BeEmpty(),
+				"replica PDB must not also set maxUnavailable, got %s", mu)
+		}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
+
+		// The budget field is only half the story: assert Kubernetes itself agrees
+		// a disruption is permitted before we ask it to drain, so a regression here
+		// fails with a clear message rather than a drain timeout.
+		By("verifying Kubernetes computes at least 1 allowed disruption")
+		Eventually(func(g Gomega) {
+			allowed, err := kubectl("get", "pdb", cluster+"-replicas", "-n", testNamespace,
+				"-o", "jsonpath={.status.disruptionsAllowed}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(allowed)).To(Equal("1"),
+				"replica PDB must permit 1 disruption, got %s", allowed)
 		}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
 
 		By("seeding data on the primary before the drain")
