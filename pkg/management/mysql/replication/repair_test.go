@@ -17,7 +17,9 @@ limitations under the License.
 package replication
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +60,28 @@ func TestIsReplicationMetadataError(t *testing.T) {
 			err:  nil,
 			want: false,
 		},
+		// A match resets the replica, so healthy messages that merely mention the
+		// relay log must not qualify.
+		{
+			name: "replica caught up with the relay log",
+			err:  errors.New("Slave has read all relay log; waiting for more updates"),
+			want: false,
+		},
+		{
+			name: "relay log space limit",
+			err:  errors.New("relay log space limit exceeded, waiting for the applier to catch up"),
+			want: false,
+		},
+		{
+			name: "relay log purge notice",
+			err:  errors.New("Purging old relay log /var/lib/mysql/relay-bin.000001"),
+			want: false,
+		},
+		{
+			name: "authentication failure",
+			err:  errors.New("Access denied for user 'cnmsql_repl'@'10.0.0.1'"),
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,5 +90,24 @@ func TestIsReplicationMetadataError(t *testing.T) {
 				t.Errorf("IsReplicationMetadataError() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// RepairReplication discards the applier position, so it must refuse to run
+// without GTID auto-positioning rather than restart the replica from arbitrary
+// coordinates and diverge it.
+func TestRepairReplicationRequiresAutoPosition(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	err := m.RepairReplication(context.Background(), SourceOptions{
+		Host:         "primary",
+		Port:         3306,
+		AutoPosition: false,
+	})
+	if err == nil {
+		t.Fatal("RepairReplication must refuse to run without GTID auto-positioning")
+	}
+	if !strings.Contains(err.Error(), "auto-positioning") {
+		t.Fatalf("error = %q, want it to name the auto-positioning requirement", err)
 	}
 }

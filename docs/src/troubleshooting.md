@@ -110,6 +110,46 @@ is lost. It is always human-triggered, and the current primary is refused, so
 switch over first if you need to rebuild a former primary. See the
 [operations runbook](./operations.md#re-initialise-an-instance-from-scratch).
 
+## Instance will not start: InnoDB reports corrupt data
+
+When mysqld cannot start and its output shows InnoDB found damaged data, the
+instance manager records the diagnosis in the Pod's termination message before
+exiting. Read it with:
+
+```bash
+kubectl get pod <instance> -o \
+  jsonpath='{.status.containerStatuses[?(@.name=="mysql")].lastState.terminated.message}'
+```
+
+A diagnosed instance reports `CNMSQL_INNODB_CORRUPTION` followed by the InnoDB
+error lines that triggered it.
+
+**For a replica this is handled automatically.** The operator re-clones it from
+the primary as soon as it sees the diagnosis, rather than waiting out the full
+crash-loop budget it applies to failures with no stated cause. Watch for the
+`AutoReinitializing` event:
+
+```bash
+kubectl get events --field-selector reason=AutoReinitializing
+```
+
+**For a primary it is not**, because there is no healthy instance to clone from.
+Restore the cluster from a backup, or recover to a point in time before the
+damage (see [Point-in-time recovery](./pitr.md)). If neither is possible and you
+must salvage data from the damaged volume, that is a manual operation: start a
+throwaway mysqld over a *copy* of the data with `innodb_force_recovery` set (1,
+escalating only as far as needed), `mysqldump` what you can, and load it into a
+fresh cluster.
+
+The operator never sets `innodb_force_recovery` itself. MySQL blocks `INSERT`,
+`UPDATE` and `DELETE` whenever it is above zero, so a force-recovered server
+cannot accept writes as a primary or apply relay logs as a replica: it would
+appear healthy while refusing every write and falling permanently behind. It is
+a salvage tool, not a way back into service.
+
+**If the diagnosis is wrong**: the volume was fine and the failure was
+environmental, the marker clears itself the first time mysqld starts cleanly.
+
 ## Primary change is stuck
 
 Inspect:

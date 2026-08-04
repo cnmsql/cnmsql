@@ -27,8 +27,36 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
+
+// reinitCandidatePod builds a Pod whose mysqld container is in CrashLoopBackOff
+// with the given restart count, optionally carrying a termination message.
+func reinitCandidatePod(restarts int32, terminationMessage string) *corev1.Pod {
+	cs := corev1.ContainerStatus{
+		Name: instanceContainerName,
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+		},
+		RestartCount: restarts,
+	}
+	if terminationMessage != "" {
+		cs.LastTerminationState.Terminated = &corev1.ContainerStateTerminated{
+			Message:  terminationMessage,
+			ExitCode: 1,
+		}
+	}
+	return &corev1.Pod{Status: corev1.PodStatus{
+		Phase:             corev1.PodRunning,
+		ContainerStatuses: []corev1.ContainerStatus{cs},
+	}}
+}
+
+func corruptionMessage() string {
+	return instance.CorruptionSentinel + ": mysqld cannot start, InnoDB data is corrupt: " +
+		"InnoDB: Database page corruption on disk"
+}
 
 func TestShouldAutoReinit(t *testing.T) {
 	t.Parallel()
@@ -39,44 +67,70 @@ func TestShouldAutoReinit(t *testing.T) {
 	}{
 		{
 			name: "CrashLoopBackOff with high restart count",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					ContainerStatuses: []corev1.ContainerStatus{{
-						State: corev1.ContainerState{
-							Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
-						},
-						RestartCount: autoReinitRestartThreshold,
-					}},
-				},
-			},
+			pod:  reinitCandidatePod(autoReinitRestartThreshold, ""),
 			want: true,
 		},
 		{
 			name: "CrashLoopBackOff with low restart count",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					ContainerStatuses: []corev1.ContainerStatus{{
-						State: corev1.ContainerState{
-							Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
-						},
-						RestartCount: autoReinitRestartThreshold - 1,
-					}},
-				},
-			},
+			pod:  reinitCandidatePod(autoReinitRestartThreshold-1, ""),
 			want: false,
 		},
 		{
-			name: "PodFailed phase",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{Phase: corev1.PodFailed},
-			},
+			// A diagnosed corruption does not need the full restart budget:
+			// restarting cannot repair InnoDB data, so waiting only extends the
+			// outage.
+			name: "diagnosed corruption re-clones at the lower threshold",
+			pod:  reinitCandidatePod(corruptionReinitRestartThreshold, corruptionMessage()),
 			want: true,
 		},
 		{
+			name: "diagnosed corruption still needs one retry",
+			pod:  reinitCandidatePod(corruptionReinitRestartThreshold-1, corruptionMessage()),
+			want: false,
+		},
+		{
+			// An ordinary crash message must not be mistaken for the diagnosis.
+			name: "unrelated termination message uses the high threshold",
+			pod:  reinitCandidatePod(corruptionReinitRestartThreshold, "mysqld: out of memory"),
+			want: false,
+		},
+		{
+			// Eviction, preemption and node shutdown all land here with the data
+			// volume intact. Re-cloning would turn a reschedule into a full resync.
+			name: "PodFailed phase is not enough on its own",
+			pod:  &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed}},
+			want: false,
+		},
+		{
+			name: "evicted pod with no restarts",
+			pod: &corev1.Pod{Status: corev1.PodStatus{
+				Phase:  corev1.PodFailed,
+				Reason: "Evicted",
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:         instanceContainerName,
+					RestartCount: 0,
+				}},
+			}},
+			want: false,
+		},
+		{
 			name: "Running pod",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{Phase: corev1.PodRunning},
-			},
+			pod:  &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+			want: false,
+		},
+		{
+			// Only the mysqld container counts; a crash-looping sidecar is not
+			// grounds for discarding the instance's data.
+			name: "crash-looping non-instance container is ignored",
+			pod: &corev1.Pod{Status: corev1.PodStatus{
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: "sidecar",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+					},
+					RestartCount: autoReinitRestartThreshold,
+				}},
+			}},
 			want: false,
 		},
 	}
@@ -113,6 +167,7 @@ func TestReconcileAutoReinitReClonesFailedReplica(t *testing.T) {
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: instanceContainerName,
 				State: corev1.ContainerState{
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				},
@@ -150,6 +205,81 @@ func TestReconcileAutoReinitReClonesFailedReplica(t *testing.T) {
 	}
 	if got.Annotations[reinitAnnotation] != testReplica2 {
 		t.Fatalf("persisted reinit annotation = %q, want %q", got.Annotations[reinitAnnotation], testReplica2)
+	}
+}
+
+// autoReinitFixture builds an established 2-instance cluster with a ready
+// primary and the given replica Pod, wired for reconcileAutoReinit.
+func autoReinitFixture(t *testing.T, replicaStatus corev1.PodStatus) (
+	*ClusterReconciler, *mysqlv1alpha1.Cluster, observedCluster,
+) {
+	t.Helper()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	cluster.Status.CurrentPrimary = testPrimary
+
+	scheme := testScheme(t)
+	replicaPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testReplica2,
+			Namespace: cluster.Namespace,
+			Labels: map[string]string{
+				clusterLabel:  cluster.Name,
+				instanceLabel: testReplica2,
+				roleLabel:     roleReplica,
+			},
+		},
+		Status: replicaStatus,
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster, replicaPod).
+		Build()
+
+	return &ClusterReconciler{Client: c, Scheme: scheme}, cluster, observedCluster{
+		PrimaryName:     testPrimary,
+		FailedInstances: []string{testReplica2},
+		StatusByInstance: map[string]*webserver.Status{
+			testPrimary: {InstanceName: testPrimary, IsReady: true, Role: webserver.RolePrimary},
+		},
+	}
+}
+
+// A replica whose manager diagnosed InnoDB corruption is re-cloned without
+// waiting out the full restart budget: more restarts cannot repair the data.
+func TestReconcileAutoReinitActsEarlyOnDiagnosedCorruption(t *testing.T) {
+	t.Parallel()
+	r, cluster, observed := autoReinitFixture(t, reinitCandidatePod(
+		corruptionReinitRestartThreshold, corruptionMessage()).Status)
+
+	if err := r.reconcileAutoReinit(context.Background(), cluster, observed); err != nil {
+		t.Fatalf("reconcileAutoReinit: %v", err)
+	}
+	if !reinitRequested(cluster, testReplica2) {
+		t.Fatal("a replica with diagnosed corruption must be re-cloned at the lower threshold")
+	}
+}
+
+// An evicted replica still has its data; re-cloning it would turn a routine
+// reschedule into a full resync.
+func TestReconcileAutoReinitLeavesEvictedReplicaAlone(t *testing.T) {
+	t.Parallel()
+	r, cluster, observed := autoReinitFixture(t, corev1.PodStatus{
+		Phase:  corev1.PodFailed,
+		Reason: "Evicted",
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:         instanceContainerName,
+			RestartCount: 0,
+		}},
+	})
+
+	if err := r.reconcileAutoReinit(context.Background(), cluster, observed); err != nil {
+		t.Fatalf("reconcileAutoReinit: %v", err)
+	}
+	if reinitRequested(cluster, testReplica2) {
+		t.Fatal("an evicted replica must not be re-cloned: its data volume is intact")
 	}
 }
 

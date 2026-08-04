@@ -18,132 +18,182 @@ package instance
 
 import (
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
 )
 
-func TestShouldAttemptForceRecovery(t *testing.T) {
+func TestIndicatesInnoDBCorruption(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
-		stderr string
+		output string
 		want   bool
 	}{
+		// The subsystem prefix differs by engine, so each real log format must
+		// match. MySQL 8.0 tags the line "[InnoDB]"; 5.7 and MariaDB write
+		// "InnoDB:".
 		{
-			name:   "page corruption",
-			stderr: "InnoDB: Database page corruption on disk",
+			name: "MySQL 8.0 page corruption",
+			output: "2026-08-04T10:00:00.000000Z 1 [ERROR] [MY-012153] [InnoDB] " +
+				"Database page corruption on disk or a failed file read of page [page id: space=4, page number=3]",
+			want: true,
+		},
+		{
+			name:   "MySQL 5.7 page corruption",
+			output: "2026-08-04 10:00:00 0x7f [Note] InnoDB: Database page corruption on disk or a failed file read",
 			want:   true,
 		},
 		{
+			name: "MariaDB page corruption",
+			output: "2026-08-04 10:00:00 0 [ERROR] InnoDB: Database page corruption on disk " +
+				"or a failed read of file './ibdata1'",
+			want: true,
+		},
+		{
+			name: "MySQL 8.0 missing datafile",
+			output: "2026-08-04T10:00:00.000000Z 1 [ERROR] [MY-012216] [InnoDB] " +
+				"Cannot open datafile './app/t.ibd'",
+			want: true,
+		},
+		{
 			name:   "checksum mismatch",
-			stderr: "InnoDB: Page checksum mismatch in file space",
+			output: "[ERROR] [MY-012558] [InnoDB] Page checksum mismatch in file space",
+			want:   true,
+		},
+		{
+			name:   "corruption line among healthy noise",
+			output: "InnoDB: Using Linux native AIO\nInnoDB: unable to read a page\nAborting",
+			want:   true,
+		},
+		{
+			name:   "MySQL 8.0 unable to read page wording",
+			output: "[ERROR] [MY-011906] [InnoDB] Unable to read page [page id: space=0, page number=7]",
 			want:   true,
 		},
 		{
 			name:   "clean shutdown message",
-			stderr: "InnoDB: Normal shutdown",
+			output: "InnoDB: Normal shutdown",
 			want:   false,
 		},
 		{
 			name:   "empty output",
-			stderr: "",
+			output: "",
+			want:   false,
+		},
+		// The costly mistake is calling an environmental failure corruption: the
+		// caller responds by having the operator discard the data volume. None of
+		// these may match.
+		{
+			name:   "startup slower than the ready timeout",
+			output: "InnoDB: Buffer pool(s) load completed\nmysqld: ready for connections",
+			want:   false,
+		},
+		{
+			name:   "rejected config value",
+			output: "mysqld: unknown variable 'nonexistent_option=1'\nAborting",
+			want:   false,
+		},
+		{
+			name:   "out of memory",
+			output: "InnoDB: Cannot allocate memory for the buffer pool\nAborting",
+			want:   false,
+		},
+		{
+			name:   "disk full",
+			output: "InnoDB: Error while writing 16384 bytes: 28 (No space left on device)",
+			want:   false,
+		},
+		{
+			name:   "permission denied on the data directory",
+			output: "mysqld: Can't create/write to file '/var/lib/mysql/x' (Errcode: 13 - Permission denied)",
 			want:   false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := shouldAttemptForceRecovery(tt.stderr); got != tt.want {
-				t.Errorf("shouldAttemptForceRecovery(%q) = %v, want %v", tt.stderr, got, tt.want)
+			if got := indicatesInnoDBCorruption(tt.output); got != tt.want {
+				t.Errorf("indicatesInnoDBCorruption(%q) = %v, want %v", tt.output, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestNextForceRecoveryLevel(t *testing.T) {
+func TestCorruptionEvidence(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		current int
-		want    int
-	}{
-		{0, 1},
-		{1, 2},
-		{2, 3},
-		{3, 0},
-		{99, 0},
-	}
-	for _, tt := range tests {
-		if got := nextForceRecoveryLevel(tt.current); got != tt.want {
-			t.Errorf("nextForceRecoveryLevel(%d) = %d, want %d", tt.current, got, tt.want)
+
+	out := "InnoDB: Using Linux native AIO\n" +
+		"[ERROR] [MY-012153] [InnoDB] Database page corruption on disk\n" +
+		"[ERROR] [MY-012558] [InnoDB] Page checksum mismatch in file space\n"
+	got := corruptionEvidence(out)
+	for _, want := range []string{"Database page corruption", "Page checksum mismatch"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("corruptionEvidence = %q, want it to mention %q", got, want)
 		}
+	}
+	if strings.Contains(got, "native AIO") {
+		t.Errorf("corruptionEvidence = %q, want unrelated lines dropped", got)
+	}
+
+	if got := corruptionEvidence("nothing interesting"); got == "" {
+		t.Error("corruptionEvidence must describe the absence of a match, not return empty")
 	}
 }
 
-func TestForceRecoveryMarker(t *testing.T) {
+// corruptionEvidence caps how much it reports so the termination message stays
+// within the size Kubernetes retains, even when InnoDB repeats the diagnosis for
+// every damaged page.
+func TestCorruptionEvidenceIsBounded(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	for range 500 {
+		b.WriteString("InnoDB: Database page corruption on disk\n")
+	}
+	if got := corruptionEvidence(b.String()); len(got) > 512 {
+		t.Errorf("corruptionEvidence length = %d, want it bounded", len(got))
+	}
+}
+
+func TestCorruptionMarkerLifecycle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	if _, exists := readForceRecoveryMarker(dir); exists {
+	if hasCorruptionMarker(dir) {
 		t.Fatal("marker should not exist in a fresh directory")
 	}
 
-	if err := writeForceRecoveryMarker(dir, 2); err != nil {
-		t.Fatalf("writeForceRecoveryMarker: %v", err)
+	reportCorruption(logr.Discard(), dir, "InnoDB: Database page corruption on disk")
+
+	if !hasCorruptionMarker(dir) {
+		t.Fatal("marker should exist after reporting corruption")
+	}
+	body, err := os.ReadFile(markerPath(dir))
+	if err != nil {
+		t.Fatalf("reading marker: %v", err)
+	}
+	if !strings.Contains(string(body), CorruptionSentinel) {
+		t.Fatalf("marker = %q, want it to carry the sentinel", body)
 	}
 
-	level, exists := readForceRecoveryMarker(dir)
-	if !exists {
-		t.Fatal("marker should exist after writing")
-	}
-	if level != 2 {
-		t.Fatalf("level = %d, want 2", level)
-	}
-
-	clearForceRecoveryMarker(dir)
-	if _, exists := readForceRecoveryMarker(dir); exists {
+	clearCorruptionMarker(dir)
+	if hasCorruptionMarker(dir) {
 		t.Fatal("marker should not exist after clearing")
 	}
 }
 
-func TestEscalateForceRecovery(t *testing.T) {
+// Recording the diagnosis is best-effort: an unwritable data directory must not
+// panic or block the caller from returning the real startup error.
+func TestReportCorruptionToleratesUnwritableDataDir(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-
-	escalateForceRecovery(logr.Discard(), dir, false, 0)
-
-	level, exists := readForceRecoveryMarker(dir)
-	if !exists {
-		t.Fatal("marker should exist after first escalation")
-	}
-	if level != 1 {
-		t.Fatalf("level = %d, want 1", level)
-	}
-
-	escalateForceRecovery(logr.Discard(), dir, true, 1)
-	level, _ = readForceRecoveryMarker(dir)
-	if level != 2 {
-		t.Fatalf("level = %d, want 2", level)
-	}
-
-	escalateForceRecovery(logr.Discard(), dir, true, 2)
-	level, _ = readForceRecoveryMarker(dir)
-	if level != 3 {
-		t.Fatalf("level = %d, want 3", level)
-	}
-
-	escalateForceRecovery(logr.Discard(), dir, true, 3)
-	level, _ = readForceRecoveryMarker(dir)
-	if level != 3 {
-		t.Fatalf("level = %d, want 3 (should not escalate beyond 3)", level)
-	}
+	reportCorruption(logr.Discard(), "/nonexistent-dir-for-test", "InnoDB: Database page corruption on disk")
 }
 
-func TestForceRecoveryMarkerPath(t *testing.T) {
-	if got := markerPath("/var/lib/mysql"); got != "/var/lib/mysql/"+forceRecoveryMarker {
-		t.Fatalf("markerPath = %q, want %q", got, "/var/lib/mysql/"+forceRecoveryMarker)
+func TestCorruptionMarkerPath(t *testing.T) {
+	t.Parallel()
+	want := "/var/lib/mysql/" + corruptionMarker
+	if got := markerPath("/var/lib/mysql"); got != want {
+		t.Fatalf("markerPath = %q, want %q", got, want)
 	}
-	_ = filepath.Clean
-	_ = os.Stat
 }

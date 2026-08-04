@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -42,7 +43,16 @@ type FifoLog struct {
 
 	mu   sync.Mutex
 	done chan struct{}
+
+	// tail retains the most recent mysqld output lines so a failed startup can be
+	// diagnosed after the fact — mysqld reports InnoDB corruption on its way down,
+	// and by then the lines have already been forwarded to the structured log.
+	tail []string
 }
+
+// tailLines is how many mysqld output lines FifoLog retains for diagnosis. A
+// failing InnoDB start prints its diagnosis well within this many lines.
+const tailLines = 200
 
 // NewFifoLog creates the named FIFO, opens its read end with CLOEXEC cleared,
 // and opens the write end (which stays blocking until Start is called to begin
@@ -168,9 +178,30 @@ func (f *FifoLog) Start(ctx context.Context) {
 				return
 			default:
 			}
-			_, _ = writer.Write(append(scanner.Bytes(), '\n'))
+			line := scanner.Text()
+			f.recordTail(line)
+			_, _ = writer.Write(append([]byte(line), '\n'))
 		}
 	}()
+}
+
+// recordTail appends a line to the retained tail, dropping the oldest once the
+// buffer is full.
+func (f *FifoLog) recordTail(line string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.tail) == tailLines {
+		f.tail = append(f.tail[:0], f.tail[1:]...)
+	}
+	f.tail = append(f.tail, line)
+}
+
+// Tail returns the retained mysqld output as a single newline-joined string. It
+// is safe to call while the reader goroutine is running.
+func (f *FifoLog) Tail() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.tail, "\n")
 }
 
 // Close releases both ends of the FIFO and removes the filesystem node. Safe to

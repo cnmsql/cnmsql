@@ -102,7 +102,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			},
 		},
 		Containers: []corev1.Container{{
-			Name:            "mysql",
+			Name:            instanceContainerName,
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 			Command:         []string{"/controller/manager"},

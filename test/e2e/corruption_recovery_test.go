@@ -12,14 +12,19 @@ import (
 )
 
 // This spec verifies that the operator automatically re-clones a replica whose
-// mysqld cannot start due to InnoDB corruption. It corrupts a replica's data
-// directory by deleting a critical InnoDB file, then waits for the kubelet's
-// CrashLoopBackOff to exhaust the in-pod force-recovery escalation (levels
-// 1→2→3 across Pod restarts). Once all safe levels fail, the controller's
-// auto-reinit kicks in: it sets the reinit annotation, the topology reconciler
-// tears down the Pod and PVC, and the bootstrap init-container re-clones a
-// fresh copy from the primary. The replica rejoins and catches up with no data
+// mysqld cannot start because its InnoDB data is damaged. It corrupts a
+// replica's data directory, then waits for the instance manager to diagnose the
+// damage from mysqld's own output and publish it through the Pod's termination
+// message. The controller reads that diagnosis and re-clones without waiting out
+// the full crash-loop budget: it sets the reinit annotation, the topology
+// reconciler tears down the Pod and PVC, and the bootstrap init-container clones
+// a fresh copy from the primary. The replica rejoins and catches up with no data
 // loss.
+//
+// The instance is deliberately never started with innodb_force_recovery: MySQL
+// blocks INSERT, UPDATE and DELETE whenever it is above zero, so a
+// force-recovered server could not apply relay logs anyway. Re-cloning is the
+// remedy.
 //
 // The test uses the shared single-node cluster (no drain needed), so it runs in
 // parallel with other non-disruptive specs.
@@ -47,6 +52,19 @@ var _ = Describe("Auto corruption recovery", Label("corruption"), func() {
 
 		By("corrupting the replica's InnoDB data directory")
 		corruptReplica(replica)
+
+		// The diagnosis is what lets the operator act on evidence rather than on a
+		// restart count, so assert it reaches the Pod status before checking the
+		// re-clone it triggers.
+		By("waiting for the instance manager to publish a corruption diagnosis")
+		Eventually(func(g Gomega) {
+			msg, err := kubectl("get", "pod", replica, "-n", testNamespace,
+				"-o", "jsonpath={.status.containerStatuses[?(@.name=='mysql')]"+
+					".lastState.terminated.message}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(msg).To(ContainSubstring("CNMSQL_INNODB_CORRUPTION"),
+				"the manager must publish the corruption diagnosis in the termination message")
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for the operator to auto-reinit the replica")
 		Eventually(func(g Gomega) {

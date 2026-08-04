@@ -42,6 +42,13 @@ import (
 // (Kube- and MySQL-wise). The elected primary is always rolled last, after every
 // replica is back online.
 func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed observedCluster) (bool, error) {
+	// Flag replicas whose mysqld cannot be restarted back into service for an
+	// automatic re-clone. This runs first so the reinit annotation it sets is
+	// already present when the per-instance pass below reads it.
+	if err := r.reconcileAutoReinit(ctx, cluster, observed); err != nil {
+		return false, err
+	}
+
 	// A total outage (every member down, group view gone) recovers by re-forming
 	// the group from the last-seen primary alone — not by racing every member up at
 	// once and hoping. Bring only that primary up first; once it re-bootstraps and

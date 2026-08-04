@@ -24,102 +24,145 @@ import (
 	"github.com/go-logr/logr"
 )
 
-// forceRecoveryMarker is the file written to the data directory to record that
-// the instance started with innodb_force_recovery so subsequent restarts can
-// escalate the level, and so the operator can surface it in status.
-const forceRecoveryMarker = ".cnmsql_force_recovery"
+// CorruptionSentinel prefixes the Pod termination message written when mysqld
+// cannot start because its InnoDB data is damaged. Kubernetes surfaces whatever
+// the container writes to its termination-message path in the Pod's
+// lastState.terminated.message, which is how the operator distinguishes
+// irrecoverable data damage from an ordinary failed start (a slow boot, a bad
+// config, an OOM kill) without needing to read the data volume.
+//
+// The operator matches on this exact string; changing it changes the contract
+// with internal/controller's auto-reinit.
+const CorruptionSentinel = "CNMSQL_INNODB_CORRUPTION"
 
-// crashRecoveryLogPatterns are substrings that, when found in the mysqld error
-// output, indicate InnoDB page corruption that innodb_force_recovery can
-// address.
-var crashRecoveryLogPatterns = []string{
-	"InnoDB: Database page corruption",
-	"InnoDB: Page checksum mismatch",
-	"InnoDB: unable to read a page",
-	"InnoDB: Corruption in the file system",
-	"Database page corruption on disk",
+// terminationLogPath is the default Kubernetes termination-message path. A Pod
+// spec that overrides terminationMessagePath would need this changed to match;
+// the operator does not override it.
+const terminationLogPath = "/dev/termination-log"
+
+// corruptionMarker records, on the data volume, that this instance's InnoDB
+// data was diagnosed as corrupt. It survives Pod restarts, so a crash-looping
+// instance keeps reporting the diagnosis even on restarts where mysqld fails
+// too early to print it again.
+const corruptionMarker = ".cnmsql_innodb_corruption"
+
+// innodbCorruptionPatterns are phrases that, in mysqld's output, mean InnoDB
+// found damaged data rather than failing to start for an environmental reason.
+//
+// They are stored lowercased and matched case-insensitively against the bare
+// message, without the subsystem prefix. That prefix is not stable across the
+// engines this operator supports: MySQL 8.0 tags the line "[InnoDB] Database
+// page corruption ...", while MySQL 5.7 and MariaDB write "InnoDB: Database page
+// corruption ...". Matching the phrase alone covers all of them.
+//
+// These track upstream's English error text, so a wording or locale change makes
+// a pattern miss. That fails safe: the instance falls back to the operator's
+// generic crash-loop handling instead of taking a wrong action.
+var innodbCorruptionPatterns = []string{
+	"database page corruption",
+	"page checksum mismatch",
+	"unable to read page",
+	"unable to read a page",
+	"corruption in the file system",
+	"cannot open datafile",
+	"corrupted page identifier",
+	"your database may be corrupt",
+	"table is corrupt",
+	"tablespace is corrupt",
 }
 
-// shouldAttemptForceRecovery reports whether the mysqld error output indicates
-// InnoDB corruption that innodb_force_recovery can address.
-func shouldAttemptForceRecovery(stderr string) bool {
-	for _, pattern := range crashRecoveryLogPatterns {
-		if strings.Contains(stderr, pattern) {
+// indicatesInnoDBCorruption reports whether mysqld's output shows InnoDB data
+// damage. It is deliberately narrow: the caller acts on a positive result by
+// asking the operator to discard this instance's data and re-clone it, so a
+// false positive is expensive. Anything that merely means "mysqld did not come
+// up" must not match.
+func indicatesInnoDBCorruption(mysqldOutput string) bool {
+	return matchesCorruptionPattern(strings.ToLower(mysqldOutput))
+}
+
+// matchesCorruptionPattern reports whether already-lowercased text contains any
+// corruption phrase.
+func matchesCorruptionPattern(lowered string) bool {
+	for _, pattern := range innodbCorruptionPatterns {
+		if strings.Contains(lowered, pattern) {
 			return true
 		}
 	}
 	return false
 }
 
-// readForceRecoveryMarker reads the force-recovery marker from the data
-// directory, returning the level that was applied and whether the marker
-// existed. Level 0 means no force recovery has been attempted.
-func readForceRecoveryMarker(dataDir string) (level int, exists bool) {
-	data, err := os.ReadFile(markerPath(dataDir))
-	if err != nil {
-		return 0, false
+// reportCorruption records an InnoDB corruption diagnosis so it survives both
+// the process exit and subsequent Pod restarts: it writes the sentinel to the
+// Pod's termination message (where the operator reads it) and drops a marker on
+// the data volume (so a later restart that fails before printing anything still
+// reports the diagnosis).
+//
+// Every step is best-effort. Failing to record the diagnosis must never mask the
+// startup error the caller is about to return; the instance then falls back to
+// the operator's generic crash-loop handling.
+func reportCorruption(log logr.Logger, dataDir, mysqldOutput string) {
+	log.Error(nil, "mysqld cannot start: InnoDB reports corrupt data. "+
+		"The operator will re-clone this instance from a healthy primary; "+
+		"a primary with no healthy replica needs manual salvage",
+		"evidence", corruptionEvidence(mysqldOutput))
+
+	if err := os.WriteFile(markerPath(dataDir), []byte(CorruptionSentinel+"\n"), 0o644); err != nil {
+		log.Error(err, "Could not record the corruption marker on the data volume")
 	}
-	var n int
-	if _, err := fmt.Sscanf(string(data), "%d", &n); err != nil {
-		return 0, true
-	}
-	return n, true
+	writeTerminationMessage(log, corruptionEvidence(mysqldOutput))
 }
 
-// writeForceRecoveryMarker records the force-recovery level in the data
-// directory so a subsequent restart can escalate or clear it.
-func writeForceRecoveryMarker(dataDir string, level int) error {
-	content := fmt.Sprintf("%d\n", level)
-	return os.WriteFile(markerPath(dataDir), []byte(content), 0o644)
+// writeTerminationMessage publishes the corruption diagnosis to the Pod's
+// termination message. Truncated to stay under the 4 KiB Kubernetes retains.
+func writeTerminationMessage(log logr.Logger, evidence string) {
+	msg := fmt.Sprintf("%s: mysqld cannot start, InnoDB data is corrupt: %s\n",
+		CorruptionSentinel, evidence)
+	if len(msg) > 3072 {
+		msg = msg[:3072]
+	}
+	if err := os.WriteFile(terminationLogPath, []byte(msg), 0o644); err != nil {
+		// Expected outside Kubernetes (unit tests, local runs), where the path
+		// does not exist. The marker on the data volume still carries the
+		// diagnosis, so this is informational only.
+		log.V(1).Info("Could not write the Pod termination message",
+			"path", terminationLogPath, "error", err.Error())
+	}
 }
 
-// clearForceRecoveryMarker removes the force-recovery marker after a successful
-// clean start so the instance resumes normal operation on the next restart.
-func clearForceRecoveryMarker(dataDir string) {
+// corruptionEvidence extracts the matching lines from mysqld's output so the
+// logged diagnosis and the termination message name the actual error rather than
+// just asserting corruption.
+func corruptionEvidence(mysqldOutput string) string {
+	var matched []string
+	for line := range strings.SplitSeq(mysqldOutput, "\n") {
+		if matchesCorruptionPattern(strings.ToLower(line)) {
+			matched = append(matched, strings.TrimSpace(line))
+		}
+	}
+	if len(matched) == 0 {
+		return "no matching diagnostic line"
+	}
+	// The first few lines carry the diagnosis; later ones repeat it per page.
+	if len(matched) > 3 {
+		matched = matched[:3]
+	}
+	return strings.Join(matched, " | ")
+}
+
+// hasCorruptionMarker reports whether a previous start on this data volume
+// diagnosed InnoDB corruption.
+func hasCorruptionMarker(dataDir string) bool {
+	_, err := os.Stat(markerPath(dataDir))
+	return err == nil
+}
+
+// clearCorruptionMarker removes the marker after mysqld starts cleanly, so a
+// data volume that was replaced (or an instance whose failure turned out to be
+// environmental) stops reporting a stale diagnosis.
+func clearCorruptionMarker(dataDir string) {
 	_ = os.Remove(markerPath(dataDir))
 }
 
-// nextForceRecoveryLevel returns the next innodb_force_recovery level to try,
-// escalating 1 → 2 → 3 across successive attempts. Returns 0 when all safe
-// levels are exhausted (the instance must be re-cloned).
-func nextForceRecoveryLevel(current int) int {
-	switch current {
-	case 0:
-		return 1
-	case 1:
-		return 2
-	case 2:
-		return 3
-	default:
-		return 0
-	}
-}
-
 func markerPath(dataDir string) string {
-	return dataDir + "/" + forceRecoveryMarker
-}
-
-// escalateForceRecovery writes or escalates the force-recovery marker when
-// mysqld fails to start. On the first failure (hadMarker=false, level=0) it
-// writes level 1; on subsequent failures it escalates 1→2→3. When all safe
-// levels are exhausted (level 3 was tried and failed) it stops escalating —
-// the controller's auto-reinit will re-clone the instance from a healthy
-// primary.
-func escalateForceRecovery(log logr.Logger, dataDir string, hadMarker bool, currentLevel int) {
-	next := 0
-	if !hadMarker {
-		next = 1
-	} else {
-		next = nextForceRecoveryLevel(currentLevel)
-	}
-	if next == 0 {
-		log.Info("All innodb_force_recovery levels exhausted; instance must be re-cloned",
-			"lastLevel", currentLevel)
-		return
-	}
-	log.Info("Writing innodb_force_recovery marker for next restart",
-		"level", next, "previousLevel", currentLevel)
-	if err := writeForceRecoveryMarker(dataDir, next); err != nil {
-		log.Error(err, "Failed to write force-recovery marker")
-	}
+	return dataDir + "/" + corruptionMarker
 }
