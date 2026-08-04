@@ -385,6 +385,14 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if result, err, handled := r.reconcileUpgradeBackupGate(ctx, cluster, plan, observed); handled {
 		return result, err
 	}
+	// Automatically re-initialise replicas that have exhausted crash recovery
+	// (InnoDB force recovery levels 1→2→3 all failed). This sets the reinit
+	// annotation so the topology reconciler tears down and re-clones them.
+	// Must run before reconcileInstances so the annotation is present when the
+	// per-instance reconcile pass runs.
+	if err := r.reconcileAutoReinit(ctx, cluster, observed); err != nil {
+		return ctrl.Result{}, err
+	}
 	provisioned, err := r.reconcileInstances(ctx, cluster, plan, observed)
 	if err != nil {
 		return ctrl.Result{}, err

@@ -339,6 +339,18 @@ func Run(ctx context.Context, opts RunOptions) error {
 	fifoLog.Start(ctx)
 	defer fifoLog.Close()
 
+	// Check for a force-recovery marker from a previous crash. The marker
+	// escalates across Pod restarts: 0 (none) → 1 → 2 → 3. When present,
+	// innodb_force_recovery=N is appended to the mysqld args so InnoDB skips
+	// corrupt pages and the server can start. The marker is cleared after a
+	// successful clean start so the next restart is normal.
+	recoveryLevel, hadMarker := readForceRecoveryMarker(opts.DataDir)
+	if !adopting && hadMarker && recoveryLevel > 0 {
+		log.Info("Starting mysqld with innodb_force_recovery after previous crash",
+			"level", recoveryLevel)
+		args = append(args, fmt.Sprintf("--innodb_force_recovery=%d", recoveryLevel))
+	}
+
 	sup := NewDetachedSupervisor(opts.MysqldPath, args,
 		WithDetachedShutdownTimeout(opts.ShutdownTimeout),
 		WithFIFO(fifoLog),
@@ -376,10 +388,26 @@ func Run(ctx context.Context, opts RunOptions) error {
 	db, err := openControl(ctx, controlCfg, opts.ReadyTimeout)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
+		// If mysqld would not start and we have not yet exhausted force-recovery
+		// levels, write/escalate the marker so the next Pod restart tries a
+		// higher level. This lets the kubelet's CrashLoopBackOff restart cycle
+		// progressively escalate through levels 1 → 2 → 3 without operator
+		// intervention.
+		if !adopting {
+			escalateForceRecovery(log, opts.DataDir, hadMarker, recoveryLevel)
+		}
 		return err
 	}
 	log.Info("Connected to mysqld control interface")
 	defer func() { _ = db.Close() }()
+
+	// Clear the force-recovery marker after a successful start so the next
+	// restart is clean. innodb_force_recovery leaves the server read-only, so
+	// clearing it ensures the instance resumes normal operation.
+	if hadMarker {
+		log.Info("Clearing innodb_force_recovery marker after successful start")
+		clearForceRecoveryMarker(opts.DataDir)
+	}
 
 	// If the flavor requires an explicit upgrade step (MariaDB: mariadb-upgrade),
 	// run it now while mysqld is serving but before the version marker is

@@ -235,6 +235,54 @@ func (m *Manager) ResetReplica(ctx context.Context, all bool) error {
 	return m.exec(ctx, m.repl.ResetReplica(m.version, all))
 }
 
+// RepairReplication resets and reconfigures replication from scratch. It is the
+// remediation for a replica whose relay logs or replication metadata are corrupt
+// (e.g. a relay-log rotation failure after a crash, or a partially-written
+// master.info). RESET REPLICA ALL clears the relay logs, the source connection
+// metadata, and the applier position; then CHANGE REPLICATION SOURCE points the
+// replica at the primary and starts replication. The GTID set is preserved
+// (gtid_executed is not touched by RESET REPLICA), so the replica resumes from
+// where it left off rather than re-cloning.
+func (m *Manager) RepairReplication(ctx context.Context, opts SourceOptions) error {
+	if err := m.exec(ctx, m.repl.StopReplica(m.version)); err != nil {
+		return fmt.Errorf("stopping replica before repair: %w", err)
+	}
+	if err := m.exec(ctx, m.repl.ResetReplica(m.version, true)); err != nil {
+		return fmt.Errorf("resetting replica during repair: %w", err)
+	}
+	return m.configureSource(ctx, opts, true)
+}
+
+// IsReplicationMetadataError reports whether an error from EnsureReplicaConfigured
+// or StartReplica indicates corrupt relay logs or replication metadata that
+// RepairReplication can fix.
+func IsReplicationMetadataError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, pattern := range replicationMetadataErrorPatterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// replicationMetadataErrorPatterns are substrings that indicate relay-log or
+// replication-metadata corruption. RESET REPLICA ALL clears the relay logs and
+// metadata tables, letting CHANGE REPLICATION SOURCE reconfigure from scratch.
+var replicationMetadataErrorPatterns = []string{
+	"relay log",
+	"Could not parse relay log",
+	"Error initializing relay log position",
+	"Failed to open the relay log",
+	"Master information file",
+	"replication metadata repository",
+	"relay-log corruption",
+	"Relay log write failure",
+}
+
 // SetReadOnly toggles read_only.
 func (m *Manager) SetReadOnly(ctx context.Context, on bool) error {
 	return m.exec(ctx, SetReadOnlyStatement(on))
