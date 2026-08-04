@@ -53,6 +53,10 @@ type LocalInstance interface {
 	// EnsureReplicaConfigured points the instance at the given source and starts
 	// replication.
 	EnsureReplicaConfigured(ctx context.Context, source replication.SourceOptions) error
+	// RepairReplication resets and reconfigures replication from scratch,
+	// clearing corrupt relay logs and metadata. Used when EnsureReplicaConfigured
+	// fails with a metadata-corruption error.
+	RepairReplication(ctx context.Context, source replication.SourceOptions) error
 	// Shutdown stops mysqld so the Pod restarts clean (demotion fallback).
 	Shutdown(ctx context.Context) error
 	// Fence stops mysqld while keeping the manager alive (fenced instance).
@@ -279,6 +283,19 @@ func (r *Reconciler) reconcileAsyncRole(
 		}
 	}
 	if err := r.Local.EnsureReplicaConfigured(ctx, source); err != nil {
+		if replication.IsReplicationMetadataError(err) {
+			log.Info("Replication metadata corruption detected; resetting and reconfiguring replication",
+				"instance", me, "error", err.Error())
+			if repairErr := r.Local.RepairReplication(ctx, source); repairErr != nil {
+				log.Error(repairErr, "Replication repair failed", "instance", me)
+				if amPrimary {
+					return ctrl.Result{}, r.Local.Shutdown(ctx)
+				}
+				return ctrl.Result{}, repairErr
+			}
+			log.Info("Replication repair succeeded", "instance", me)
+			return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+		}
 		if amPrimary {
 			log.Error(err, "Configuring replication failed; requesting shutdown to rejoin clean", "instance", me)
 			return ctrl.Result{}, r.Local.Shutdown(ctx)

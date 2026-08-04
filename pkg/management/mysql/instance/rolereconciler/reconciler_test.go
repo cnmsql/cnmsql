@@ -47,6 +47,7 @@ type fakeLocal struct {
 	demoted        bool
 	demoteErr      error
 	configured     *replication.SourceOptions
+	repaired       *replication.SourceOptions
 	shutdownCalled bool
 	fenceCalled    bool
 	unfenceCalled  bool
@@ -75,6 +76,10 @@ func (f *fakeLocal) Promote(context.Context) error {
 func (f *fakeLocal) Demote(context.Context) error { f.demoted = true; return f.demoteErr }
 func (f *fakeLocal) EnsureReplicaConfigured(_ context.Context, s replication.SourceOptions) error {
 	f.configured = &s
+	return nil
+}
+func (f *fakeLocal) RepairReplication(_ context.Context, s replication.SourceOptions) error {
+	f.repaired = &s
 	return nil
 }
 func (f *fakeLocal) Shutdown(context.Context) error { f.shutdownCalled = true; return nil }

@@ -17,10 +17,13 @@ limitations under the License.
 package instance
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr/testr"
 )
@@ -67,5 +70,61 @@ func TestNewFifoLogRefusesNonFifo(t *testing.T) {
 	// The regular file must be left intact.
 	if data, err := os.ReadFile(path); err != nil || string(data) != "not a pipe" {
 		t.Fatalf("regular file was modified: data=%q err=%v", data, err)
+	}
+}
+
+// The tail is what lets a failed start be diagnosed: by the time openControl
+// gives up, mysqld's output has already been forwarded to the structured log, so
+// FifoLog must have retained it.
+func TestFifoLogRetainsTail(t *testing.T) {
+	t.Parallel()
+	fifoPath := filepath.Join(t.TempDir(), "mysqld.pid.fifo")
+
+	fl, err := NewFifoLog(fifoPath, testr.New(t))
+	if err != nil {
+		t.Fatalf("NewFifoLog: %v", err)
+	}
+	defer fl.Close()
+
+	fl.Start(t.Context())
+
+	want := "[ERROR] [MY-012153] [InnoDB] Database page corruption on disk"
+	for _, line := range []string{"InnoDB: Using Linux native AIO", want, "Aborting"} {
+		if _, err := fl.WriteEnd().WriteString(line + "\n"); err != nil {
+			t.Fatalf("writing to fifo: %v", err)
+		}
+	}
+
+	var tail string
+	for range 100 {
+		if tail = fl.Tail(); strings.Contains(tail, want) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(tail, want) {
+		t.Fatalf("Tail() = %q, want it to contain %q", tail, want)
+	}
+	if !indicatesInnoDBCorruption(tail) {
+		t.Fatalf("the retained tail must be diagnosable as corruption, got %q", tail)
+	}
+}
+
+// The tail is bounded so a long-running mysqld cannot grow it without limit.
+func TestFifoLogTailIsBounded(t *testing.T) {
+	t.Parallel()
+	fl := &FifoLog{}
+	for i := range tailLines * 3 {
+		fl.recordTail(fmt.Sprintf("line %d", i))
+	}
+	if got := len(fl.tail); got != tailLines {
+		t.Fatalf("retained %d lines, want %d", got, tailLines)
+	}
+	// The most recent lines are the ones that matter for a diagnosis.
+	if !strings.Contains(fl.Tail(), fmt.Sprintf("line %d", tailLines*3-1)) {
+		t.Fatal("tail must retain the most recent lines")
+	}
+	if strings.Contains(fl.Tail(), "line 0\n") {
+		t.Fatal("tail must drop the oldest lines")
 	}
 }

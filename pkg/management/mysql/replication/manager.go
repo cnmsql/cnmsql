@@ -18,6 +18,7 @@ package replication
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -233,6 +234,75 @@ func (m *Manager) StopReplica(ctx context.Context) error {
 // connection settings (RESET REPLICA ALL).
 func (m *Manager) ResetReplica(ctx context.Context, all bool) error {
 	return m.exec(ctx, m.repl.ResetReplica(m.version, all))
+}
+
+// RepairReplication resets and reconfigures replication from scratch. It is the
+// remediation for a replica whose relay logs or replication metadata are corrupt
+// (e.g. a relay-log rotation failure after a crash, or a partially-written
+// master.info). RESET REPLICA ALL clears the relay logs, the source connection
+// metadata, and the applier position; then CHANGE REPLICATION SOURCE points the
+// replica at the primary and starts replication.
+//
+// Correctness rests entirely on opts.AutoPosition. RESET REPLICA ALL discards
+// the applier position, so the replica can only resume at the right place if the
+// source connection negotiates it from the GTID set — which RESET REPLICA does
+// not touch. With file-and-position replication the same sequence would restart
+// from whatever coordinates opts happens to carry, silently skipping or
+// replaying transactions, so refuse rather than risk diverging the replica.
+func (m *Manager) RepairReplication(ctx context.Context, opts SourceOptions) error {
+	if !opts.AutoPosition {
+		return errors.New("repairing replication requires GTID auto-positioning: " +
+			"RESET REPLICA ALL discards the applier position and only a GTID handshake can recover it")
+	}
+	if err := m.exec(ctx, m.repl.StopReplica(m.version)); err != nil {
+		return fmt.Errorf("stopping replica before repair: %w", err)
+	}
+	if err := m.exec(ctx, m.repl.ResetReplica(m.version, true)); err != nil {
+		return fmt.Errorf("resetting replica during repair: %w", err)
+	}
+	return m.configureSource(ctx, opts, true)
+}
+
+// IsReplicationMetadataError reports whether an error from EnsureReplicaConfigured
+// or StartReplica indicates corrupt relay logs or replication metadata that
+// RepairReplication can fix.
+func IsReplicationMetadataError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, pattern := range replicationMetadataErrorPatterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// replicationMetadataErrorPatterns are substrings that indicate relay-log or
+// replication-metadata corruption. RESET REPLICA ALL clears the relay logs and
+// metadata tables, letting CHANGE REPLICATION SOURCE reconfigure from scratch.
+//
+// Each pattern names a specific failure. A bare "relay log" was deliberately not
+// used: it also matches healthy operational messages ("Slave has read all relay
+// log", relay-log space limits, purge notices), and misreading one of those as
+// corruption would reset a replica that is merely idle or throttled.
+//
+// These match the server's English error text, so a locale or wording change
+// makes a pattern miss. That fails safe: the error propagates as before and the
+// instance falls back to the operator's existing handling.
+var replicationMetadataErrorPatterns = []string{
+	"Could not parse relay log event entry",
+	"Error initializing relay log position",
+	"Failed to open the relay log",
+	"Error reading relay log event",
+	"Error counting relay log space",
+	"Relay log write failure",
+	"error writing relay log configuration",
+	"Master information file",
+	"replication metadata repository",
+	"Error creating relay log file",
+	"Could not open log file",
 }
 
 // SetReadOnly toggles read_only.

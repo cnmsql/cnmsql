@@ -339,6 +339,24 @@ func Run(ctx context.Context, opts RunOptions) error {
 	fifoLog.Start(ctx)
 	defer fifoLog.Close()
 
+	// A marker from a previous start means this data volume was already
+	// diagnosed as corrupt. Re-publish the diagnosis now: if mysqld fails again
+	// before printing anything InnoDB-specific, the operator still sees why.
+	//
+	// The instance is deliberately not started with innodb_force_recovery. MySQL
+	// blocks INSERT, UPDATE and DELETE whenever innodb_force_recovery is greater
+	// than zero, so a force-recovered server can neither accept writes as a
+	// primary nor apply relay logs as a replica: it would come up looking healthy
+	// while silently refusing every write and falling permanently behind. Force
+	// recovery is a salvage tool for a human dumping data off a primary that has
+	// no healthy replica, not a way to return an instance to service. The
+	// automated remedy is to re-clone from a healthy primary, which the operator
+	// does once it sees the diagnosis below.
+	if !adopting && hasCorruptionMarker(opts.DataDir) {
+		log.Info("Data volume carries an InnoDB corruption marker from an earlier start")
+		writeTerminationMessage(log, "corruption marker present from an earlier start")
+	}
+
 	sup := NewDetachedSupervisor(opts.MysqldPath, args,
 		WithDetachedShutdownTimeout(opts.ShutdownTimeout),
 		WithFIFO(fifoLog),
@@ -376,10 +394,29 @@ func Run(ctx context.Context, opts RunOptions) error {
 	db, err := openControl(ctx, controlCfg, opts.ReadyTimeout)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
+		// mysqld did not come up. Most causes are environmental — a boot slower
+		// than ReadyTimeout, a rejected config value, an OOM kill, bad
+		// credentials — and the right response to those is to let the kubelet
+		// restart the container and try again. Only when mysqld's own output
+		// shows InnoDB found damaged data do we record the diagnosis that tells
+		// the operator this instance's data is unusable and must be replaced.
+		if !adopting {
+			if tail := fifoLog.Tail(); indicatesInnoDBCorruption(tail) {
+				reportCorruption(log, opts.DataDir, tail)
+			}
+		}
 		return err
 	}
 	log.Info("Connected to mysqld control interface")
 	defer func() { _ = db.Close() }()
+
+	// mysqld started cleanly, so whatever the previous diagnosis was, it no
+	// longer holds — the volume was replaced by a re-clone, or the earlier
+	// failure was environmental after all.
+	if !adopting && hasCorruptionMarker(opts.DataDir) {
+		log.Info("Clearing the InnoDB corruption marker after a clean start")
+		clearCorruptionMarker(opts.DataDir)
+	}
 
 	// If the flavor requires an explicit upgrade step (MariaDB: mariadb-upgrade),
 	// run it now while mysqld is serving but before the version marker is

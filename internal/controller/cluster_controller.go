@@ -143,6 +143,11 @@ const (
 	configPath    = "/etc/mysql/my.cnf"
 	joinBackupDir = "/backup"
 
+	// instanceContainerName is the name of the instance Pod's mysqld container,
+	// as built by podSpec. Status checks match on it so an init container or a
+	// sidecar cannot be mistaken for the instance itself.
+	instanceContainerName = "mysql"
+
 	replicationUser = "cnmsql_repl"
 	backupUser      = "cnmsql_backup"
 	controlUser     = "cnmsql_control"
