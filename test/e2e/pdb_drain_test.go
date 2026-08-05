@@ -59,6 +59,13 @@ var _ = Describe("PDB draining", Ordered, Serial, Label("disruptive", "node-fail
 		primary := clusterPrimary(cluster)
 		replica := otherInstance(cluster, instances, primary)
 		replicaNode := nodeForPod(replica)
+		// Instance Pods carry a stable, ordinal-derived name, so the operator
+		// recreates the evicted replica under the very same name within seconds.
+		// The eviction is therefore only observable through the Pod identity: the
+		// recreated Pod is a different object. This is the same signal kubectl
+		// drain itself waits on.
+		replicaUID := podUID(replica)
+		Expect(replicaUID).NotTo(BeEmpty(), "failed to read the UID of replica %s before the drain", replica)
 
 		By(fmt.Sprintf("primary is %s, replica is %s on node %s", primary, replica, replicaNode))
 
@@ -102,8 +109,15 @@ var _ = Describe("PDB draining", Ordered, Serial, Label("disruptive", "node-fail
 
 		By("verifying the replica Pod is evicted from the drained node")
 		Eventually(func(g Gomega) {
-			g.Expect(podExists(replica)).To(BeFalse(),
+			uid, node, found := podUIDAndNode(replica)
+			if !found {
+				// Evicted and not yet recreated: the drain did its job.
+				return
+			}
+			g.Expect(uid).NotTo(Equal(replicaUID),
 				"replica %s must be evicted from the drained node", replica)
+			g.Expect(node).NotTo(Equal(replicaNode),
+				"the recreated replica %s must not land back on the cordoned node", replica)
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("uncordoning the node so the replica can reschedule")
@@ -124,7 +138,21 @@ var _ = Describe("PDB draining", Ordered, Serial, Label("disruptive", "node-fail
 	})
 })
 
-func podExists(name string) bool {
-	_, err := kubectl("get", "pod", name, "-n", testNamespace, "-o", "name")
-	return err == nil
+// podUIDAndNode returns a Pod's UID and the node it is scheduled on, reporting
+// found=false when the Pod is absent. The node is empty while the Pod is still
+// pending scheduling.
+func podUIDAndNode(name string) (uid, node string, found bool) {
+	out, err := kubectl("get", "pod", name, "-n", testNamespace,
+		"-o", "jsonpath={.metadata.uid} {.spec.nodeName}")
+	if err != nil {
+		return "", "", false
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return "", "", false
+	}
+	if len(fields) == 1 {
+		return fields[0], "", true
+	}
+	return fields[0], fields[1], true
 }
