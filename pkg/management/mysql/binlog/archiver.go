@@ -62,6 +62,29 @@ type Archiver struct {
 	scan         Scanner
 	now          func() time.Time
 	newSet       func() gtidOps
+	// verified memoizes files this process has already proven byte-identical to
+	// their archived copy, so a steady-state pass costs one stat per file instead
+	// of re-decoding and re-hashing the whole retained set on every tick.
+	verified map[string]archivedStamp
+}
+
+// archivedStamp records the identity a file had when it was proven archived,
+// together with the manifest that describes it. A rotated binlog is immutable,
+// so an unchanged identity means the proof still holds; anything else re-runs
+// the full verification, including the collision check.
+type archivedStamp struct {
+	info os.FileInfo
+	meta objectstore.BinlogMetadata
+}
+
+// matches reports whether a file is still the one this stamp was taken from.
+// os.SameFile compares device and inode, so a RESET MASTER that recreates a
+// binlog under a reused name fails the check even if the replacement happens to
+// have the same length and timestamp, and the collision check runs.
+func (s archivedStamp) matches(fi os.FileInfo) bool {
+	return os.SameFile(s.info, fi) &&
+		s.info.Size() == fi.Size() &&
+		s.info.ModTime().Equal(fi.ModTime())
 }
 
 // ArchiverOptions configures an Archiver.
@@ -115,6 +138,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		scan:         opts.Scan,
 		now:          now,
 		newSet:       newSet,
+		verified:     make(map[string]archivedStamp),
 	}, nil
 }
 
@@ -175,7 +199,17 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		if err := fileSet.Parse(meta.GTIDSet); err != nil {
 			return result, fmt.Errorf("binlog: parsing file gtid set for %q: %w", l.Name, err)
 		}
+		priorCovered := covered.String()
 		covered.Union(fileSet)
+		// A file already present whose coverage the persisted status already
+		// records leaves nothing to commit. Recomputing the same status and index
+		// objects on every tick would be two object-store writes per retained file
+		// forever, so only write when this pass actually moved something. A crash
+		// between the manifest and the status write lands here with coverage still
+		// missing, which makes the union change and the writes happen.
+		advanced := archived || covered.String() != priorCovered ||
+			(status.FirstGTID == "" && meta.FirstGTID != "")
+
 		result.LastArchivedBinlog = l.Name
 		if meta.LastGTID != "" {
 			result.LastArchivedGTID = meta.LastGTID
@@ -191,6 +225,9 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		status.LastArchivedBinlog = result.LastArchivedBinlog
 		status.LastArchivedGTID = result.LastArchivedGTID
 		status.CoveredGTIDSet = result.CoveredGTIDSet
+		if !advanced {
+			continue
+		}
 		status.UpdatedAt = a.now()
 		statusKey := objectstore.ArchiveStatusKey(a.objectStore, a.clusterName, a.serverUUID)
 		if err := a.store.PutJSON(ctx, bucket, statusKey, status); err != nil {
@@ -217,8 +254,47 @@ func (a *Archiver) archiveFile(
 	}
 	path := filepath.Join(a.binlogDir, l.Name)
 
-	// Scan first: we need the GTID range/timestamps for the manifest and the
-	// collision check, and it is cheap relative to the upload.
+	// A rotated log we already proved archived in this process cannot have
+	// changed, so re-reading it would buy nothing. Confirm its identity with a
+	// stat and reuse the manifest we recorded. Retention is unbounded when the
+	// purge gate is off, so this is what keeps a pass O(new files) rather than
+	// O(everything still on disk).
+	st, err := os.Stat(path)
+	if err != nil {
+		return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: stat %q: %w", l.Name, err)
+	}
+	if stamp, ok := a.verified[l.Name]; ok && stamp.matches(st) {
+		return stamp.meta, false, nil
+	}
+
+	// Check the archive before reading the file. A manifest means this file
+	// landed on a prior pass, and then only its hash is needed — to prove the
+	// bytes still match what was shipped. Decoding it with mysqlbinlog is only
+	// worthwhile for a file we are about to upload, which is the one case that
+	// needs a fresh GTID range and timestamps for the manifest.
+	existsManifest, err := a.store.Exists(ctx, bucket, keys.ManifestKey)
+	if err != nil {
+		return objectstore.BinlogMetadata{}, false, err
+	}
+	if existsManifest {
+		var prior objectstore.BinlogMetadata
+		if err := a.store.GetJSON(ctx, bucket, keys.ManifestKey, &prior); err != nil {
+			return objectstore.BinlogMetadata{}, false,
+				fmt.Errorf("binlog: reading existing manifest %q: %w", keys.ManifestKey, err)
+		}
+		sum, _, err := hashFile(path)
+		if err != nil {
+			return objectstore.BinlogMetadata{}, false, err
+		}
+		if prior.SHA256 != "" && prior.SHA256 != sum {
+			return objectstore.BinlogMetadata{}, false, fmt.Errorf("%w: %s (uuid %s): stored sha %s != local %s",
+				ErrCollision, l.Name, a.serverUUID, prior.SHA256, sum)
+		}
+		// Byte-identical: already archived, nothing to do.
+		a.verified[l.Name] = archivedStamp{info: st, meta: prior}
+		return prior, false, nil
+	}
+
 	scanRes, err := a.scan(ctx, path)
 	if err != nil {
 		return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: scanning %q: %w", l.Name, err)
@@ -245,25 +321,6 @@ func (a *Archiver) archiveFile(
 		ArchivedAt:     a.now(),
 	}
 
-	// If a manifest already exists, this file landed on a prior pass.
-	existsManifest, err := a.store.Exists(ctx, bucket, keys.ManifestKey)
-	if err != nil {
-		return objectstore.BinlogMetadata{}, false, err
-	}
-	if existsManifest {
-		var prior objectstore.BinlogMetadata
-		if err := a.store.GetJSON(ctx, bucket, keys.ManifestKey, &prior); err != nil {
-			return objectstore.BinlogMetadata{}, false,
-				fmt.Errorf("binlog: reading existing manifest %q: %w", keys.ManifestKey, err)
-		}
-		if prior.SHA256 != "" && prior.SHA256 != sum {
-			return objectstore.BinlogMetadata{}, false, fmt.Errorf("%w: %s (uuid %s): stored sha %s != local %s",
-				ErrCollision, l.Name, a.serverUUID, prior.SHA256, sum)
-		}
-		// Byte-identical: already archived, nothing to do.
-		return prior, false, nil
-	}
-
 	// Upload the raw bytes, then the manifest. A crash between the two leaves a
 	// body with no manifest, which the next pass retries (idempotent overwrite).
 	f, err := os.Open(path)
@@ -277,6 +334,7 @@ func (a *Archiver) archiveFile(
 	if err := a.store.PutJSON(ctx, bucket, keys.ManifestKey, meta); err != nil {
 		return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: writing manifest for %q: %w", l.Name, err)
 	}
+	a.verified[l.Name] = archivedStamp{info: st, meta: meta}
 	return meta, true, nil
 }
 
