@@ -49,9 +49,14 @@ func NewRootCommand() *cobra.Command {
   kubectl cnmsql logs -f cluster-sample`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			plugin.ConfigureColor(cmd)
+			return nil
+		},
 	}
 
 	configFlags.AddFlags(root.PersistentFlags())
+	plugin.AddColorControlFlag(root)
 
 	root.AddCommand(
 		newVersionCommand(),

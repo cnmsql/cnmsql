@@ -22,12 +22,18 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/logrusorgru/aurora/v4"
 	"sigs.k8s.io/yaml"
 )
 
 // Section prints a bold-ish section header followed by a blank line.
 func Section(title string) {
 	fmt.Printf("\n%s\n", title)
+}
+
+// SectionColor prints a colorized (bold) section header.
+func SectionColor(title string) {
+	fmt.Printf("\n%s\n", aurora.Bold(title))
 }
 
 // Table renders rows as an aligned table with the given header. Each row must
@@ -56,6 +62,11 @@ func KeyVal(key, value string) {
 	fmt.Printf("  %-22s %s\n", key+":", value)
 }
 
+// KeyValColor prints an indented "key: value" line with a colorized value.
+func KeyValColor(key string, value any) {
+	fmt.Printf("  %-22s %v\n", key+":", value)
+}
+
 // PrintObject marshals v as JSON or YAML to stdout. format must be "json" or
 // "yaml"; any other value returns an error.
 func PrintObject(v any, format string) error {
@@ -81,4 +92,30 @@ func PrintObject(v any, format string) error {
 func mustYAML(v any) []byte {
 	out, _ := yaml.Marshal(v)
 	return out
+}
+
+// Green wraps a value in green foreground color.
+func Green(v any) aurora.Value { return aurora.Green(v) }
+
+// Red wraps a value in red foreground color.
+func Red(v any) aurora.Value { return aurora.Red(v) }
+
+// Yellow wraps a value in yellow foreground color.
+func Yellow(v any) aurora.Value { return aurora.Yellow(v) }
+
+// Bold wraps a value in bold formatting.
+func Bold(v any) aurora.Value { return aurora.Bold(v) }
+
+// Badge renders a status badge: green for ok, red for bad, yellow for warning.
+// A label is colored green when ok is true, red when bad is true, otherwise
+// yellow.
+func Badge(label string, ok, bad bool) aurora.Value {
+	switch {
+	case ok:
+		return aurora.Green(label)
+	case bad:
+		return aurora.Red(label)
+	default:
+		return aurora.Yellow(label)
+	}
 }
