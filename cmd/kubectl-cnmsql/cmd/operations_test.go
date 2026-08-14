@@ -17,6 +17,11 @@ import (
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
+// testClusterName is the canonical cluster name used across the cmd test
+// suite, kept as a constant so the goconst linter does not flag the repeated
+// literal.
+const testClusterName = "demo"
+
 func TestBackupCommandCreatesBackup(t *testing.T) {
 	env := installFakeEnv(t, testCluster(), nil)
 	command := newBackupCommand()
@@ -213,12 +218,13 @@ func installFakeEnv(t *testing.T, cluster mysqlv1alpha1.Cluster, pods []corev1.P
 }
 
 func testCluster() mysqlv1alpha1.Cluster {
-	return mysqlv1alpha1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"}}
+	return mysqlv1alpha1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: testClusterName, Namespace: "test"}}
 }
 
 func testPod(name string) corev1.Pod {
 	return corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name: name, Namespace: "test", Labels: map[string]string{plugin.ClusterLabel: "demo"},
+		Name: name, Namespace: "test",
+		Labels: map[string]string{plugin.ClusterLabel: "demo", plugin.RoleLabel: "replica"},
 	}}
 }
 
@@ -230,4 +236,17 @@ func getTestCluster(t *testing.T, env *plugin.Env) *mysqlv1alpha1.Cluster {
 		t.Fatalf("getting Cluster: %v", err)
 	}
 	return cluster
+}
+
+// fakeClientWith builds a controller-runtime fake client preloaded with the
+// given objects (Clusters, Secrets, etc.), registered against the plugin
+// scheme.
+func fakeClientWith(objs []any) client.Client {
+	objects := make([]client.Object, 0, len(objs))
+	for _, o := range objs {
+		if c, ok := o.(client.Object); ok {
+			objects = append(objects, c)
+		}
+	}
+	return clientfake.NewClientBuilder().WithScheme(plugin.Scheme).WithObjects(objects...).Build()
 }

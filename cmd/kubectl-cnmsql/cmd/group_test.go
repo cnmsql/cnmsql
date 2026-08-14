@@ -26,7 +26,7 @@ const firstInstance = "demo-1"
 
 func grTestCluster(gr *mysqlv1alpha1.GroupReplicationStatus) *mysqlv1alpha1.Cluster {
 	c := &mysqlv1alpha1.Cluster{}
-	c.Name = "demo"
+	c.Name = testClusterName
 	c.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
 		Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
 	}

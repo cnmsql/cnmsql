@@ -19,9 +19,15 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
 	"sync"
 
+	"github.com/logrusorgru/aurora/v4"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 
@@ -30,29 +36,40 @@ import (
 )
 
 func newLogsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Stream and prettify logs from a cluster",
+		Long: "Stream container logs from a cluster's instances, or pretty-print " +
+			"structured JSON logs read from standard input.",
+	}
+	cmd.AddCommand(newLogsClusterCommand(), newLogsPrettyCommand())
+	return cmd
+}
+
+func newLogsClusterCommand() *cobra.Command {
 	var (
 		follow     bool
 		timestamps bool
 		tail       int64
 	)
 	cmd := &cobra.Command{
-		Use:   "logs [CLUSTER] [INSTANCE]",
+		Use:   "cluster [CLUSTER] [INSTANCE]",
 		Short: "Stream logs from a cluster's instances",
 		Long: "Stream container logs from the cluster's Pods. Without INSTANCE, " +
 			"logs from all instances are merged with a per-instance prefix.",
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeClusterInstanceArgs,
 		Example: `  # Stream logs from all instances (merged with [podname] prefix)
-  kubectl cnmsql logs cluster-sample
+  kubectl cnmsql logs cluster cluster-sample
 
   # Stream logs from a single instance
-  kubectl cnmsql logs cluster-sample cluster-sample-2
+  kubectl cnmsql logs cluster cluster-sample cluster-sample-2
 
   # Follow new log entries as they arrive
-  kubectl cnmsql logs -f cluster-sample
+  kubectl cnmsql logs cluster -f cluster-sample
 
   # Show the last 100 lines with timestamps
-  kubectl cnmsql logs cluster-sample --tail=100 --timestamps`,
+  kubectl cnmsql logs cluster cluster-sample --tail=100 --timestamps`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()
@@ -76,6 +93,29 @@ func newLogsCommand() *cobra.Command {
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "stream new logs as they arrive")
 	cmd.Flags().BoolVarP(&timestamps, "timestamps", "t", false, "include timestamps")
 	cmd.Flags().Int64Var(&tail, "tail", -1, "number of recent lines to show (-1 = all)")
+	return cmd
+}
+
+func newLogsPrettyCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pretty",
+		Short: "Prettify structured JSON logs from standard input",
+		Long: `Reads structured JSON log lines from standard input (as emitted by the
+operator and instance manager) and pretty-prints them for human consumption:
+the timestamp is dimmed, the level is color-coded (info green, warning yellow,
+error red), and remaining key=value pairs are listed. Non-JSON lines are
+echoed unchanged.`,
+		Args: cobra.NoArgs,
+		Example: `  # Pretty-print operator logs
+  kubectl logs -n cnmsql-system deployment/controller-manager -c manager -f | \
+      kubectl cnmsql logs pretty
+
+  # Pretty-print instance logs
+  kubectl cnmsql logs cluster cluster-sample -f | kubectl cnmsql logs pretty`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return prettyLogs(cmd.Context(), os.Stdin, plugin.Out)
+		},
+	}
 	return cmd
 }
 
@@ -123,4 +163,119 @@ func streamPodLogs(
 		}
 	}
 	return scanner.Err()
+}
+
+// logRecord is the subset of a structured JSON log line that prettyLogs
+// colorizes. Extra fields are rendered as key=value pairs.
+type logRecord struct {
+	Level  string `json:"level"`
+	Msg    string `json:"msg"`
+	Logger string `json:"logger"`
+	TS     string `json:"ts"`
+	Pod    string `json:"logging_pod"`
+	extras []kv
+}
+
+type kv struct {
+	key string
+	val any
+}
+
+// prettyLogs reads JSON log lines from r, colorizes them, and writes to w.
+// Non-JSON lines are echoed unchanged. It stops at EOF or context cancellation.
+func prettyLogs(ctx context.Context, r io.Reader, w io.Writer) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		line := scanner.Bytes()
+		rec, err := parseLogRecord(line)
+		if err != nil {
+			// Non-JSON (or unparseable) line: echo as-is.
+			_, _ = fmt.Fprintln(w, string(line))
+			continue
+		}
+		_, _ = fmt.Fprintln(w, formatLogRecord(rec))
+	}
+	return scanner.Err()
+}
+
+func parseLogRecord(data []byte) (*logRecord, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	rec := &logRecord{
+		Level:  stringVal(raw, "level"),
+		Msg:    stringVal(raw, "msg"),
+		Logger: stringVal(raw, "logger"),
+		TS:     stringVal(raw, "ts"),
+		Pod:    stringVal(raw, "logging_pod"),
+	}
+	skip := map[string]bool{
+		"level": true, "msg": true, "logger": true, "ts": true, "logging_pod": true,
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		if !skip[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rec.extras = append(rec.extras, kv{key: k, val: raw[k]})
+	}
+	return rec, nil
+}
+
+func stringVal(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// formatLogRecord renders one record as a colorized line.
+func formatLogRecord(rec *logRecord) string {
+	ts := aurora.Blue(rec.TS)
+	level := colorizeLevel(rec.Level)
+	pod := aurora.Magenta(rec.Pod)
+	logger := aurora.Blue(rec.Logger)
+	msg := rec.Msg
+	if msg == "" {
+		msg = "<no message>"
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s %s %s %s %s", ts, level, pod, logger, aurora.Bold(msg))
+	for _, e := range rec.extras {
+		out.WriteString(" " + aurora.Gray(8, e.key+"=").String() + fmtVal(e.val))
+	}
+	return out.String()
+}
+
+func colorizeLevel(level string) aurora.Value {
+	switch strings.ToLower(level) {
+	case "info":
+		return aurora.Green(level)
+	case "warn", "warning":
+		return aurora.Yellow(level)
+	case "error":
+		return aurora.Red(level)
+	default:
+		return aurora.Blue(level)
+	}
+}
+
+func fmtVal(v any) string {
+	switch x := v.(type) {
+	case string:
+		return aurora.Cyan(x).String()
+	default:
+		b, _ := json.Marshal(v)
+		return aurora.Cyan(string(b)).String()
+	}
 }

@@ -54,8 +54,8 @@ Key status fields on the Cluster resource:
 ## Stream logs
 
 ```bash
-kubectl cnmsql logs cluster-sample          # all instances, merged with a prefix
-kubectl cnmsql logs cluster-sample cluster-sample-2  # single instance
+kubectl cnmsql logs cluster cluster-sample          # all instances, merged with a prefix
+kubectl cnmsql logs cluster cluster-sample cluster-sample-2  # single instance
 ```
 
 ## Scale up

@@ -46,15 +46,23 @@ func NewRootCommand() *cobra.Command {
   kubectl cnmsql promote cluster-sample cluster-sample-2
 
   # Stream logs from all instances
-  kubectl cnmsql logs -f cluster-sample`,
+  kubectl cnmsql logs cluster -f cluster-sample`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			plugin.ConfigureColor(cmd)
+			return nil
+		},
 	}
 
 	configFlags.AddFlags(root.PersistentFlags())
+	plugin.AddColorControlFlag(root)
 
-	root.AddCommand(
-		newVersionCommand(),
+	for _, g := range commandGroups {
+		root.AddGroup(&g)
+	}
+
+	clusterCmds := []*cobra.Command{
 		newStatusCommand(),
 		newGroupCommand(),
 		newFenceCommand(),
@@ -63,17 +71,48 @@ func NewRootCommand() *cobra.Command {
 		newRestartInPlaceCommand(),
 		newReinitCommand(),
 		newReloadCommand(),
-		newUserCommand(),
-		newDatabaseCommand(),
-		newDatabaseUserCommand(),
-		newMetricsCommand(),
-		newLogsCommand(),
 		newBackupCommand(),
 		newMaintenanceCommand(),
 		newDestroyCommand(),
+	}
+	for _, c := range clusterCmds {
+		c.GroupID = groupCluster
+	}
+
+	dbCmds := []*cobra.Command{
+		newUserCommand(),
+		newDatabaseCommand(),
+		newDatabaseUserCommand(),
 		newShellCommand(),
+	}
+	for _, c := range dbCmds {
+		c.GroupID = groupDatabase
+	}
+
+	troubleshootingCmds := []*cobra.Command{
+		newLogsCommand(),
+		newMetricsCommand(),
+		newReportCommand(),
 		newBenchCommand(),
-	)
+	}
+	for _, c := range troubleshootingCmds {
+		c.GroupID = groupTroubleshooting
+	}
+
+	miscCmds := []*cobra.Command{
+		newVersionCommand(),
+		newCertificateCommand(),
+	}
+	for _, c := range miscCmds {
+		c.GroupID = groupMisc
+	}
+
+	allCmds := make([]*cobra.Command, 0, len(clusterCmds)+len(dbCmds)+len(troubleshootingCmds)+len(miscCmds))
+	allCmds = append(allCmds, clusterCmds...)
+	allCmds = append(allCmds, dbCmds...)
+	allCmds = append(allCmds, troubleshootingCmds...)
+	allCmds = append(allCmds, miscCmds...)
+	root.AddCommand(allCmds...)
 	return root
 }
 

@@ -14,7 +14,7 @@ instance-manager logs.
 
 ```bash
 kubectl cnmsql status <cluster>
-kubectl cnmsql logs <cluster>
+kubectl cnmsql logs cluster <cluster>
 kubectl describe cluster <cluster>
 kubectl get events --sort-by=.lastTimestamp
 kubectl get backup
@@ -39,7 +39,7 @@ Check:
 
 ```bash
 kubectl cnmsql status <cluster>
-kubectl cnmsql logs <cluster>
+kubectl cnmsql logs cluster <cluster>
 kubectl describe pod <pod>
 ```
 

@@ -45,6 +45,13 @@ type ControlClient struct {
 	http     *http.Client
 }
 
+// ControlDialer opens a control connection to an instance. It is abstracted so
+// callers (e.g. the status command) can fetch per-instance live data and tests
+// can inject a fake client instead of opening real port-forwards.
+type ControlDialer func(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string,
+) (*ControlClient, error)
+
 // DialControl opens a port-forward to the instance's control port and prepares
 // an mTLS HTTP client. The caller owns the returned client and must Close it.
 func (e *Env) DialControl(
@@ -97,6 +104,23 @@ func (e *Env) dial(
 func (c *ControlClient) Close() {
 	if c != nil {
 		c.forward.Close()
+	}
+}
+
+// NewControlClientForTesting builds a ControlClient that talks to a custom
+// HTTP transport instead of a real port-forward. It is intended only for unit
+// tests that need to inject canned control-API responses.
+func NewControlClientForTesting(local string, httpClient *http.Client) *ControlClient {
+	doneCh := make(chan struct{})
+	close(doneCh)
+	return &ControlClient{
+		scheme: "http",
+		forward: &PortForward{
+			Local:  local,
+			stopCh: make(chan struct{}),
+			doneCh: doneCh,
+		},
+		http: httpClient,
 	}
 }
 

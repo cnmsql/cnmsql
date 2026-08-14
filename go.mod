@@ -9,6 +9,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/uuid v1.6.0
+	github.com/logrusorgru/aurora/v4 v4.0.0
 	github.com/minio/minio-go/v7 v7.2.0
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.3
