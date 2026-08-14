@@ -46,7 +46,7 @@ func NewRootCommand() *cobra.Command {
   kubectl cnmsql promote cluster-sample cluster-sample-2
 
   # Stream logs from all instances
-  kubectl cnmsql logs -f cluster-sample`,
+  kubectl cnmsql logs cluster -f cluster-sample`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {

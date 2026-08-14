@@ -37,17 +37,25 @@ kubectl plugin list | grep cnmsql
 
 Most commands take an optional `CLUSTER` argument. When omitted, the plugin
 defaults to the only cluster in the current namespace (and warns if there are
-several).
+several). Commands are grouped under `--help` headings:
+
+- **Cluster Administration:** `status`, `group`, `promote`, `fence`, `restart`,
+  `restart-inplace`, `reinit`, `reload`, `backup`, `maintenance`, `destroy`
+- **Database Administration:** `user`, `database`, `databaseuser`, `shell`
+- **Troubleshooting:** `logs`, `metrics`, `report`, `bench`
+- **Miscellaneous:** `version`, `certificate`
 
 | Command | Tier | Description |
 | --- | --- | --- |
-| `status [CLUSTER]` | API | Topology, phase and per-instance health |
+| `status [CLUSTER]` | API+control | Topology, phase, per-instance health, GTID/lag/uptime, archiving, backups, certs, services, PDBs |
 | `group status [CLUSTER]` | API | Group Replication view: members, roles, quorum |
 | `group recover [CLUSTER]` | API | Request a guarded quorum recovery (last resort) |
-| `logs [CLUSTER] [INSTANCE]` | API | Stream pod logs (merged with a prefix) |
+| `logs cluster [CLUSTER] [INSTANCE]` | API | Stream pod logs (merged with a prefix) |
+| `logs pretty` | — | Pretty-print structured JSON logs from stdin |
 | `promote CLUSTER INSTANCE` | API | Planned switchover |
 | `fence on\|off CLUSTER INSTANCE` | API | Isolate / restore an instance |
 | `restart [CLUSTER] [INSTANCE]` | API | Rolling restart, or one Pod |
+| `restart-inplace [CLUSTER] [INSTANCE]` | control | Re-exec the instance manager in place |
 | `reinit CLUSTER INSTANCE` | API | Re-init a replica from scratch (destroys data, re-clones) |
 | `reload [CLUSTER]` | API | Re-apply dynamic `my.cnf` params (no restart) |
 | `backup [CLUSTER]` | API | Create a `Backup` |
@@ -55,7 +63,13 @@ several).
 | `destroy CLUSTER INSTANCE` | API | Delete a Pod and its PVC |
 | `user create\|alter\|drop\|list [CLUSTER]` | control | Manage MySQL users |
 | `database create\|drop\|list [CLUSTER]` | control | Manage MySQL schemas |
+| `databaseuser ...` | control | Manage installation-wide `DatabaseUser` resources |
+| `shell [CLUSTER]` | control | Open a database client shell on the primary |
 | `metrics [CLUSTER] [INSTANCE]` | control | Scrape an instance's Prometheus metrics |
+| `report cluster CLUSTER` | API | Collect a diagnostic ZIP for a cluster (read-only; redacts by default) |
+| `report operator` | API | Collect a diagnostic ZIP for the operator (read-only; redacts by default) |
+| `certificate [SECRET]` | API | Generate a client cert signed by the cluster CA (`--dry-run` to print) |
+| `version` | — | Print plugin version information |
 
 "control"-tier commands open an mTLS port-forward to the instance manager.
 
@@ -65,6 +79,17 @@ several).
 ```sh
 kubectl cnmsql status -w
 kubectl cnmsql metrics -w --watch-interval=5s --filter=mysql_global_status_threads
+```
+
+### Color output
+
+All human-readable output respects a global `--color=always|auto|never` flag
+(default `auto`, colorizing only when stdout is a terminal). Machine-readable
+output (`-o json|yaml`) is never colorized.
+
+```sh
+kubectl cnmsql status --color=always
+kubectl cnmsql report cluster mydb | kubectl cnmsql logs pretty
 ```
 
 ### Group Replication
@@ -100,6 +125,25 @@ kubectl cnmsql group status -w
 | --- | --- | --- | --- |
 | `group status` | no | none (read-only) | — |
 | `group recover` | annotates Cluster | forces new membership; split-brain risk if a lost member is still live | prompt unless `--yes` |
+| `report cluster` | no | none (read-only; secrets redacted unless `--stop-redaction` only on operator) | — |
+| `report operator` | no | none (read-only; secrets/configmaps redacted by default, `--stop-redaction` to keep) | — |
+| `certificate` | creates a Secret | adds a client cert Secret | `--dry-run` to print instead |
+
+### Reports
+
+`report cluster` and `report operator` gather diagnostic manifests (and
+optional pod logs) into a timestamped ZIP file for support:
+
+```sh
+kubectl cnmsql report cluster mydb                # report_cluster_mydb_<ts>.zip
+kubectl cnmsql report cluster mydb -o json -l      # JSON manifests + logs
+kubectl cnmsql report operator                     # report_operator_<ts>.zip
+kubectl cnmsql report operator -S                  # do NOT redact secrets (use with caution)
+```
+
+By default secrets and configmaps are redacted (keys kept, values blanked)
+and webhook CA bundles are obfuscated. Use `-S/--stop-redaction` on `report
+operator` to include raw material.
 
 ### Passwords
 
