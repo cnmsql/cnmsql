@@ -237,3 +237,16 @@ func getTestCluster(t *testing.T, env *plugin.Env) *mysqlv1alpha1.Cluster {
 	}
 	return cluster
 }
+
+// fakeClientWith builds a controller-runtime fake client preloaded with the
+// given objects (Clusters, Secrets, etc.), registered against the plugin
+// scheme.
+func fakeClientWith(objs []any) client.Client {
+	objects := make([]client.Object, 0, len(objs))
+	for _, o := range objs {
+		if c, ok := o.(client.Object); ok {
+			objects = append(objects, c)
+		}
+	}
+	return clientfake.NewClientBuilder().WithScheme(plugin.Scheme).WithObjects(objects...).Build()
+}
