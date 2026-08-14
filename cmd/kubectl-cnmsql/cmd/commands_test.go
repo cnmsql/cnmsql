@@ -10,7 +10,7 @@ import (
 func TestRootCommandContainsExpectedCommands(t *testing.T) {
 	want := []string{
 		"backup", "bench", "database", "destroy", "fence", "group", "logs", "maintenance", "metrics",
-		"promote", "reinit", "reload", "restart", "status", "user", "version",
+		"promote", "reinit", "reload", "restart", "status", "user", "version", "report",
 	}
 	root := NewRootCommand()
 	for _, name := range want {
