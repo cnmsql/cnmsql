@@ -24,6 +24,28 @@ func TestRootCommandContainsExpectedCommands(t *testing.T) {
 	}
 }
 
+func TestRootCommandGroupsAssigned(t *testing.T) {
+	root := NewRootCommand()
+	want := map[string]string{
+		"status": groupCluster, "promote": groupCluster, "backup": groupCluster,
+		"user": groupDatabase, "database": groupDatabase, "shell": groupDatabase,
+		"logs": groupTroubleshooting, "metrics": groupTroubleshooting, "report": groupTroubleshooting,
+		"version": groupMisc, "certificate": groupMisc,
+	}
+	for name, gid := range want {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil || cmd == root {
+			t.Fatalf("root command missing %q", name)
+		}
+		if cmd.GroupID != gid {
+			t.Errorf("command %q group = %q, want %q", name, cmd.GroupID, gid)
+		}
+	}
+	if len(root.Groups()) != len(commandGroups) {
+		t.Errorf("root has %d groups, want %d", len(root.Groups()), len(commandGroups))
+	}
+}
+
 func TestCommandValidationDoesNotRequireCluster(t *testing.T) {
 	tests := []struct {
 		name        string
