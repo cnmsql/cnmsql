@@ -68,10 +68,18 @@ func TestListPodsSelectsCluster(t *testing.T) {
 
 	env := &Env{Clientset: fake.NewClientset(
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-			Name: "demo-1", Namespace: "test", Labels: map[string]string{ClusterLabel: "demo"},
+			Name: "demo-1", Namespace: "test",
+			Labels: map[string]string{ClusterLabel: "demo", RoleLabel: "primary"},
 		}},
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-			Name: "other-1", Namespace: "test", Labels: map[string]string{ClusterLabel: "other"},
+			Name: "other-1", Namespace: "test",
+			Labels: map[string]string{ClusterLabel: "other", RoleLabel: "replica"},
+		}},
+		// backup-worker Job pod carries the cluster label but NOT the role
+		// label; it must be excluded from the instance list.
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: "demo-backup-xyz", Namespace: "test",
+			Labels: map[string]string{ClusterLabel: "demo"},
 		}},
 	)}
 	testCluster := &mysqlv1alpha1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"}}

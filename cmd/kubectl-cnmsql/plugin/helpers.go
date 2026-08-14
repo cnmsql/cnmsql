@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -60,6 +61,12 @@ func metaListByCluster(cluster string) metav1.ListOptions {
 	return metav1.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{ClusterLabel: cluster}).String(),
 	}
+}
+
+// MetaListByCluster returns the ListOptions matching the cluster label, for
+// listing cluster-owned resources (pods, services, PDBs) via the typed clientset.
+func MetaListByCluster(cluster string) metav1.ListOptions {
+	return metaListByCluster(cluster)
 }
 
 // GetCluster fetches a Cluster CR by name in the environment's namespace.
@@ -102,10 +109,23 @@ func (e *Env) ResolveCluster(ctx context.Context, name string) (*mysqlv1alpha1.C
 	}
 }
 
-// ListPods returns the Pods belonging to a cluster, selected by the cluster
-// label the operator stamps on every instance.
+// ListPods returns the instance Pods belonging to a cluster. It selects by the
+// cluster label AND requires the role label, which the operator stamps on
+// every instance pod but not on ancillary workloads (e.g. backup-worker Job
+// pods) that also carry the cluster label.
 func (e *Env) ListPods(ctx context.Context, cluster *mysqlv1alpha1.Cluster) ([]corev1.Pod, error) {
-	pods, err := e.Clientset.CoreV1().Pods(cluster.Namespace).List(ctx, metaListByCluster(cluster.Name))
+	clusterReq, err := labels.NewRequirement(ClusterLabel, selection.Equals, []string{cluster.Name})
+	if err != nil {
+		return nil, fmt.Errorf("building instance pod selector: %w", err)
+	}
+	roleReq, err := labels.NewRequirement(RoleLabel, selection.Exists, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building instance pod selector: %w", err)
+	}
+	selector := labels.NewSelector().Add(*clusterReq, *roleReq)
+	pods, err := e.Clientset.CoreV1().Pods(cluster.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pods for cluster %q: %w", cluster.Name, err)
 	}
