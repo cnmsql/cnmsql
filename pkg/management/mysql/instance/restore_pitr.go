@@ -300,9 +300,14 @@ func findAnchorIndex(files []string, anchorFile, anchorServer string) (int, erro
 // the recovery target. The temp server runs with --skip-grant-tables (same
 // pattern as reconcileCredentials) so the client connects as root without a
 // password; GTID tracking is independent of the grant system.
+//
+// The whole replay streams through one SQL client session started before the
+// grant tables are loaded (replaySession): that session both opens the
+// connection and loads the grant tables, so replayed account-management
+// statements execute on it no matter what the stream does to the accounts.
 func (o *RestoreOptions) applyReplay(
 	ctx context.Context, bt engine.BackupTool, eng engine.Engine, plan binlog.ReplayPlan, files []string,
-) error {
+) (err error) {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
 	args := []string{}
@@ -333,12 +338,26 @@ func (o *RestoreOptions) applyReplay(
 	}
 	_ = db.Close()
 
+	sess, err := o.startReplaySession(ctx, bt)
+	if err != nil {
+		return err
+	}
+	// Always reap the session's SQL client, and let its exit status surface only
+	// when the streaming reported no error: a mid-stream decode failure
+	// truncates the stream, which makes the client exit too, and the streaming
+	// error is the root cause worth reporting.
+	defer func() {
+		if finErr := sess.finish(); err == nil {
+			err = finErr
+		}
+	}()
+
 	isMariaDB := eng.Flavor() == engine.FlavorMariaDB
 
 	// A MariaDB targetGTID recovery is bounded by byte offsets (mariadb-binlog has
 	// no --include-gtids), computed by scanning the downloaded binlogs.
 	if isMariaDB && plan.MariaDBPositional {
-		return o.replayMariadbPositional(ctx, bt, plan, files)
+		return o.replayMariadbPositional(ctx, plan, files, sess)
 	}
 
 	replayFiles := files
@@ -347,9 +366,9 @@ func (o *RestoreOptions) applyReplay(
 	// For MariaDB positional replay: find the anchor file in the downloaded files
 	// and skip everything before it.
 	if isMariaDB && plan.AnchorFile != "" {
-		ai, err := findAnchorIndex(files, plan.AnchorFile, plan.AnchorServerUUID)
-		if err != nil {
-			return err
+		ai, anchorErr := findAnchorIndex(files, plan.AnchorFile, plan.AnchorServerUUID)
+		if anchorErr != nil {
+			return anchorErr
 		}
 		if ai >= 0 {
 			replayFiles = files[ai:]
@@ -362,7 +381,7 @@ func (o *RestoreOptions) applyReplay(
 		}
 	}
 
-	replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
+	replayArgs, argsErr := binlog.ReplayArgs(binlog.ReplayOptions{
 		Files:         replayFiles,
 		StopDatetime:  plan.StopDatetime,
 		IncludeGTIDs:  plan.IncludeGTIDs,
@@ -370,22 +389,23 @@ func (o *RestoreOptions) applyReplay(
 		StartPosition: startPos,
 		MariaDB:       isMariaDB,
 	})
-	if err != nil {
-		return fmt.Errorf("pitr: building replay args: %w", err)
+	if argsErr != nil {
+		return fmt.Errorf("pitr: building replay args: %w", argsErr)
 	}
 
 	log.Info("Replaying archived binlogs into restored data", "files", len(files))
-	return o.runReplayChunk(ctx, bt, replayArgs)
+	return sess.streamChunk(ctx, replayArgs)
 }
 
 // replayMariadbPositional executes a MariaDB targetGTID recovery as byte-offset-
 // bounded chunks. It scans each downloaded binlog for its transaction boundaries,
 // plans the ordered chunks that cover (anchorSeq, targetSeq], and streams each
-// chunk into the already-running temporary mysqld. Because a stop offset requires a
-// single file, the last chunk is the target file bounded by --stop-position; the
-// server's GTID state advances across chunks so the result ends exactly at target.
+// chunk into the session's already-connected SQL client. Because a stop offset
+// requires a single file, the last chunk is the target file bounded by
+// --stop-position; the server's GTID state advances across chunks so the result
+// ends exactly at target.
 func (o *RestoreOptions) replayMariadbPositional(
-	ctx context.Context, bt engine.BackupTool, plan binlog.ReplayPlan, files []string,
+	ctx context.Context, plan binlog.ReplayPlan, files []string, sess *replaySession,
 ) error {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
@@ -455,42 +475,65 @@ func (o *RestoreOptions) replayMariadbPositional(
 		}
 		log.Info("Replaying MariaDB binlog chunk", "chunk", i, "files", len(chunk.Files),
 			"startPosition", chunk.StartPosition, "stopPosition", chunk.StopPosition)
-		if err := o.runReplayChunk(ctx, bt, replayArgs); err != nil {
+		if err := sess.streamChunk(ctx, replayArgs); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// runReplayChunk runs the binlog client piped into the SQL client for one bounded
-// set of files, decoding the archived binlogs and applying them to the temporary
-// server. It is invoked once per replay chunk (MariaDB positional recovery streams
-// several in sequence against the same server); both child processes' stderr is
-// captured as structured logs, while the binlog stream itself is a data path and
-// never logged.
-func (o *RestoreOptions) runReplayChunk(ctx context.Context, bt engine.BackupTool, replayArgs []string) error {
+// replayPrologue primes the replay's SQL stream. The temporary server runs with
+// --skip-grant-tables, which leaves the grant tables unloaded, so every
+// account-management statement in the replayed binlogs (CREATE USER, GRANT,
+// ALTER USER, DROP USER, SET PASSWORD — e.g. a user granted during the
+// backup-to-target window) fails with ER_OPTION_PREVENTS_STATEMENT
+// (ERROR 1290) until the grant tables are loaded. FLUSH PRIVILEGES loads them,
+// on the already-established connection, and re-enables those statements.
+//
+// The FLUSH runs with the session's binary logging disabled: on MySQL it would
+// otherwise be written to the temporary server's binary log as a GTID
+// transaction of the restored identity, polluting the replication timeline the
+// recovery just reconstructed (reconcileCredentials guards the same way with
+// --skip-log-bin).
+const replayPrologue = "SET @@SESSION.SQL_LOG_BIN=0;\n" +
+	"FLUSH PRIVILEGES;\n" +
+	"SET @@SESSION.SQL_LOG_BIN=1;\n"
+
+// replaySession is the single SQL client session a whole replay streams
+// through. One connection for the entire replay (not one per chunk) is a
+// correctness requirement: the connection is established while the temporary
+// server still runs --skip-grant-tables, and the stream opens with the
+// replayPrologue, which loads the restored grant tables on that same session.
+// The session keeps the skip-grants authority it received at connect time, so
+// the replayed account-management statements execute; any connection opened
+// after the FLUSH would instead authenticate normally against the restored
+// data's own accounts, whose passwords the recovery flow does not control.
+// The MariaDB positional path streams several chunks, so all chunks share
+// this one process.
+type replaySession struct {
+	o      *RestoreOptions
+	bt     engine.BackupTool
+	sqlBin string
+	apply  *exec.Cmd
+	pr     *io.PipeReader
+	pw     *io.PipeWriter
+}
+
+// startReplaySession starts the replay's SQL client with the grant-loading
+// prologue already queued on its stdin.
+func (o *RestoreOptions) startReplaySession(ctx context.Context, bt engine.BackupTool) (*replaySession, error) {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
-
-	pr, pw := io.Pipe()
-
-	decodeBin := o.MysqlbinlogPath
-	if decodeBin == "" {
-		decodeBin = bt.BinlogClientBinary()
-	}
-	decode := exec.CommandContext(ctx, decodeBin, replayArgs...)
-	decode.Stdout = pw
-	_, decodeErr := newProcessLogWriters(log.WithName(decodeBin))
-	decode.Stderr = decodeErr
 
 	sqlBin := o.MysqlPath
 	if sqlBin == "" {
 		sqlBin = bt.SQLClientBinary()
 	}
+	pr, pw := io.Pipe()
 	apply := exec.CommandContext(ctx, sqlBin,
 		"--socket="+o.Socket, "--user=root", "--binary-mode")
 	apply.Stdin = pr
-	// MYSQL_PWD keeps the (empty here) password off the argv; harmless under
-	// --skip-grant-tables but keeps the invocation consistent.
+	// MYSQL_PWD keeps the (empty here) password off the argv; the connection is
+	// established under --skip-grant-tables, before grant checking exists.
 	apply.Env = append(os.Environ(), "MYSQL_PWD="+o.RootPassword)
 	applyOut, applyErr := newProcessLogWriters(log.WithName(sqlBin))
 	apply.Stdout = applyOut
@@ -498,23 +541,56 @@ func (o *RestoreOptions) runReplayChunk(ctx context.Context, bt engine.BackupToo
 
 	if err := apply.Start(); err != nil {
 		_ = pr.CloseWithError(err)
-		return fmt.Errorf("pitr: starting %s: %w", sqlBin, err)
-	}
-	if err := decode.Start(); err != nil {
 		_ = pw.CloseWithError(err)
+		return nil, fmt.Errorf("pitr: starting %s: %w", sqlBin, err)
+	}
+	if _, err := pw.Write([]byte(replayPrologue)); err != nil {
+		// A write fails only once the read side is gone, i.e. the client exited;
+		// reap it before reporting.
+		_ = pw.CloseWithError(err)
+		_ = apply.Wait()
+		return nil, fmt.Errorf("pitr: priming %s stream: %w", sqlBin, err)
+	}
+	return &replaySession{o: o, bt: bt, sqlBin: sqlBin, apply: apply, pr: pr, pw: pw}, nil
+}
+
+// streamChunk runs the binlog client for one bounded set of files into the
+// session's persistent SQL client, decoding the archived binlogs and applying
+// them to the temporary server. It is invoked once per replay chunk (MariaDB
+// positional recovery streams several in sequence against the same session);
+// the binlog client's stderr is captured as structured logs, while the binlog
+// stream itself is a data path and is never logged.
+func (s *replaySession) streamChunk(ctx context.Context, replayArgs []string) error {
+	log := logf.FromContext(ctx).WithName("instance-pitr")
+
+	decodeBin := s.o.MysqlbinlogPath
+	if decodeBin == "" {
+		decodeBin = s.bt.BinlogClientBinary()
+	}
+	decode := exec.CommandContext(ctx, decodeBin, replayArgs...)
+	decode.Stdout = s.pw
+	_, decodeErrW := newProcessLogWriters(log.WithName(decodeBin))
+	decode.Stderr = decodeErrW
+
+	if err := decode.Start(); err != nil {
 		return fmt.Errorf("pitr: starting %s: %w", decodeBin, err)
 	}
-
-	decErr := decode.Wait()
-	_ = pw.CloseWithError(decErr)
-	appErr := apply.Wait()
-	_ = pr.CloseWithError(appErr)
-
-	if decErr != nil {
+	if decErr := decode.Wait(); decErr != nil {
 		return fmt.Errorf("pitr: %s: %w", decodeBin, decErr)
 	}
+	return nil
+}
+
+// finish closes the replay stream and reaps the SQL client. It must be called
+// exactly once per session (applyReplay defers it); when the stream was
+// truncated by an earlier decode failure, the client's own exit status is
+// secondary and the caller reports the streaming error instead.
+func (s *replaySession) finish() error {
+	_ = s.pw.Close() // EOF: the client drains any remaining stream and exits
+	appErr := s.apply.Wait()
+	_ = s.pr.Close()
 	if appErr != nil {
-		return fmt.Errorf("pitr: %s apply: %w", sqlBin, appErr)
+		return fmt.Errorf("pitr: %s apply: %w", s.sqlBin, appErr)
 	}
 	return nil
 }

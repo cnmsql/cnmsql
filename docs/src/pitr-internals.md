@@ -207,7 +207,11 @@ The steps:
    collide on disk.
 5. **Replay** into a temporary socket-only `mysqld` started with
    `--skip-networking --skip-grant-tables`, then write the `.cnmsql-pitr-done`
-   sentinel.
+   sentinel. The replay stream opens with `FLUSH PRIVILEGES` (kept off the
+   binary log): under `--skip-grant-tables` the grant tables are unloaded, so
+   every account-management statement in the replayed binlogs — a user
+   created or granted during the backup-to-target window — would otherwise
+   fail with ERROR 1290.
 
 ```mermaid
 sequenceDiagram
@@ -218,13 +222,32 @@ sequenceDiagram
     Init->>Init: prepare + copy-back, read anchor
     Init->>Store: _index.json + planned binlogs
     Init->>Temp: start (socket, skip-grant-tables)
-    Init->>Temp: decode | apply, bounded to target
+    Init->>Temp: FLUSH PRIVILEGES, then decode | apply, bounded to target
     Init->>Init: write .cnmsql-pitr-done
 ```
 
-The replay itself is `mysqlbinlog <bounded args> | mysql --socket=<temp>`. The
-binlog stream is data and is never logged, while both child processes' stderr is
-captured as structured logs.
+The replay itself is `mysqlbinlog <bounded args> | mysql --socket=<temp>`, with
+the stream opening with `SET SQL_LOG_BIN=0; FLUSH PRIVILEGES; SET
+SQL_LOG_BIN=1`. Two properties of that opening are load-bearing:
+
+- **The grant tables must be loaded.** Under `--skip-grant-tables` the server
+  never reads them, and account-management statements (CREATE USER, GRANT,
+  ALTER USER, DROP USER, SET PASSWORD) are rejected with ERROR 1290. FLUSH
+  PRIVILEGES loads them, on the connection that was established while grant
+  checking was still disabled.
+- **All chunks share that one connection.** Once the grant tables are loaded,
+  any *new* connection authenticates normally against the restored data's own
+  accounts — whose passwords the recovery flow does not control (a replayed
+  root password change among them). The connection predates the FLUSH, keeps
+  its skip-grants authority for the whole replay, and both the MySQL
+  single-chunk path and the MariaDB positional chunks stream through it.
+
+The FLUSH itself runs with the session's binary logging disabled: MySQL writes
+`FLUSH PRIVILEGES` to the binary log as a GTID transaction, and the recovered
+server's timeline must contain only the replayed history, not recovery
+artifacts (reconcileCredentials guards the same way with `--skip-log-bin`).
+The binlog stream is data and is never logged, while both child processes'
+stderr is captured as structured logs.
 
 ### Recovery targets
 
