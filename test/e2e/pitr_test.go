@@ -17,7 +17,11 @@ import (
 // binlogs; a fresh cluster then bootstraps from that base backup and replays the
 // archive up to a chosen GTID. Correctness is asserted by data: the recovered
 // cluster must contain the write at the target and must NOT contain a later write
-// committed past it.
+// committed past it. The window also contains account-management statements
+// committed manually mid-window (a CREATE USER + GRANT, as an operator would run
+// them on a live cluster): the replay loads the restored grant tables before
+// streaming (FLUSH PRIVILEGES prologue), so those statements execute instead of
+// failing with ERROR 1290 under --skip-grant-tables.
 //
 // One Percona version is exercised (the first of the archive matrix) to bound
 // runtime; the replay mechanism itself is version-agnostic and covered per
@@ -54,7 +58,7 @@ var _ = Describe("Point-in-time recovery", Ordered, Label("flavor"), func() {
 		password = appPassword(sourceCluster)
 	})
 
-	It("recovers to a chosen GTID, seeing the target write but not a later one", func() {
+	It("recovers to a chosen GTID, replaying a mid-window user grant but not later writes", func() {
 		primary := clusterPrimary(sourceCluster)
 
 		By("taking a base backup before any application data exists")
@@ -74,17 +78,27 @@ var _ = Describe("Point-in-time recovery", Ordered, Label("flavor"), func() {
 				"INSERT INTO ledger VALUES (1, 'target');")
 		Expect(err).NotTo(HaveOccurred(), "Failed to write the target row")
 
+		By("creating a user manually and granting it on the app db, inside the replay window")
+		_, err = mysqlExec(primary, "root", rootPassword(sourceCluster), "",
+			"CREATE USER 'pitr_user'@'%' IDENTIFIED BY 'pitr-in-window'; "+
+				"GRANT SELECT ON app.* TO 'pitr_user'@'%';")
+		Expect(err).NotTo(HaveOccurred(), "Failed to create and grant the in-window user")
+
 		By("capturing gtid_executed at the target and waiting for the archive to cover it")
 		targetGTID = flushBinaryLogs(sourceCluster, primary, password)
 		Expect(targetGTID).NotTo(BeEmpty(), "target GTID parsed empty")
 		expectArchiveCovers(sourceCluster, targetGTID, 5*time.Minute)
 
-		By("writing a later row (id=2) that must NOT be recovered")
+		By("writing a later row (id=2) and a later user that must NOT be recovered")
 		_, err = mysqlExec(primary, "app", password, "app",
 			"INSERT INTO ledger VALUES (2, 'past-target');")
 		Expect(err).NotTo(HaveOccurred(), "Failed to write the post-target row")
-		// Rotate so the post-target write is shippable too; the archive holding it
-		// must not change the recovery result, which is bounded by targetGTID.
+		_, err = mysqlExec(primary, "root", rootPassword(sourceCluster), "",
+			"CREATE USER 'pitr_late'@'%' IDENTIFIED BY 'pitr-after-target'; "+
+				"GRANT SELECT ON app.* TO 'pitr_late'@'%';")
+		Expect(err).NotTo(HaveOccurred(), "Failed to create the post-target user")
+		// Rotate so the post-target writes are shippable too; the archive holding
+		// them must not change the recovery result, which is bounded by targetGTID.
 		flushBinaryLogs(sourceCluster, primary, password)
 
 		By("bootstrapping a fresh cluster recovering to the target GTID")
@@ -110,6 +124,27 @@ var _ = Describe("Point-in-time recovery", Ordered, Label("flavor"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(parseSingleValue(out)).To(Equal("0"),
 			"recovered cluster contains a write past the recovery target")
+
+		By("verifying the mid-window user was replayed and can use its grant")
+		// Logging in as the replayed user and reading through its grant proves
+		// both the account and the GRANT statement executed during replay: under
+		// --skip-grant-tables they fail with ERROR 1290 unless the replay loaded
+		// the restored grant tables first.
+		Eventually(func(g Gomega) {
+			out, err := mysqlExec(restoredPrimary, "pitr_user", "pitr-in-window", "app",
+				"SELECT COUNT(*) FROM ledger WHERE id = 1;")
+			g.Expect(err).NotTo(HaveOccurred(),
+				"replayed user could not authenticate or lacked its grant")
+			g.Expect(parseSingleValue(out)).To(Equal("1"), "replayed user saw wrong data")
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("verifying the post-target user was NOT replayed")
+		// Connecting with the account's own password: success would mean the
+		// post-target CREATE USER was replayed, so only "Access denied" passes.
+		_, err = mysqlExec(restoredPrimary, "pitr_late", "pitr-after-target", "app", "SELECT 1;")
+		Expect(err).To(HaveOccurred(), "post-target user exists in the recovered cluster")
+		Expect(err.Error()).To(ContainSubstring("Access denied"),
+			"expected authentication failure for the post-target user, got: %v", err)
 	})
 
 	AfterAll(func() {
