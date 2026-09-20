@@ -10,7 +10,7 @@ cnmsql uses an S3-compatible object store for physical backups and continuous
 binlog archiving. The same `S3ObjectStore` API is used by one-shot Backups,
 ScheduledBackup-generated Backups, recovery, and PITR.
 
-## Minimal MinIO-style configuration
+## Minimal self-hosted configuration
 
 ```yaml
 spec:
@@ -18,20 +18,20 @@ spec:
     objectStore:
       bucket: cnmsql-backups
       path: production
-      endpoint: http://minio.minio.svc:9000
+      endpoint: http://seaweedfs.objectstore.svc:8333
       region: us-east-1
       forcePathStyle: true
       credentials:
         accessKeyId:
-          name: minio-creds
+          name: objectstore-creds
           key: accessKey
         secretAccessKey:
-          name: minio-creds
+          name: objectstore-creds
           key: secretKey
 ```
 
 `forcePathStyle: true` is the compatibility-friendly default and is required by
-many S3-compatible providers such as MinIO and Ceph RGW.
+many self-hosted S3-compatible providers such as SeaweedFS, MinIO and Ceph RGW.
 
 ## AWS-style configuration
 
@@ -92,7 +92,7 @@ a new Cluster bootstraps from the bucket directly, without a `Backup` CR.
 | `path` | Key prefix inside the bucket. Optional. |
 | `endpoint` | S3-compatible endpoint. Empty means AWS S3. |
 | `region` | Signing and regional endpoint region. When empty, cnmsql signs with `auto` against Cloudflare R2 and `us-east-1` elsewhere. |
-| `forcePathStyle` | Path-style addressing for MinIO/Ceph-style stores. |
+| `forcePathStyle` | Path-style addressing for self-hosted S3 stores (SeaweedFS, MinIO, Ceph RGW). |
 | `signatureVersion` | `s3v4` by default, `s3v2` for legacy providers. |
 | `serverSideEncryption` | SSE header on every upload: `AES256`, `aws:kms`, or `aws:kms:<key-id>`. Leave unset outside AWS. |
 | `storageClass` | Storage class of every upload, e.g. `STANDARD_IA`. Leave unset on providers with a single class. |
@@ -200,8 +200,8 @@ to configure anything.
 
 | Provider | Status | Notes |
 |---|---|---|
-| MinIO | Verified | `forcePathStyle: true`. Region defaults to `us-east-1`. Exercised by the e2e suite on every CI run. |
-| SeaweedFS | Verified | `forcePathStyle: true`. Requires an `s3.config` identity with `Admin`/`Read`/`Write`/`List`. |
+| SeaweedFS | Verified | `forcePathStyle: true`. Requires an `s3.config` identity with `Admin`/`Read`/`Write`/`List`. Exercised by the e2e suite on every CI run. |
+| MinIO | Verified | `forcePathStyle: true`. Region defaults to `us-east-1`. No longer exercised in CI: MinIO withdrew the `minio/minio` and `minio/mc` images from Docker Hub. |
 | AWS S3 | Expected to work | Leave `endpoint` empty, set the real `region`, prefer `credentials.inheritFromIAMRole` with IRSA. The only provider where `serverSideEncryption` and `storageClass` are broadly meaningful. |
 | Ceph RGW | Expected to work | `forcePathStyle: true`. |
 | Cloudflare R2 | Expected to work | Leave `region` empty (cnmsql signs with `auto`, which is the only region R2 accepts). Do not set `serverSideEncryption`: R2 encrypts at rest unconditionally and rejects the header. |

@@ -573,13 +573,13 @@ spec:
       objectStore:
         bucket: cnmsql-backups
         path: production
-        endpoint: http://minio.minio.svc:9000
+        endpoint: http://seaweedfs.objectstore.svc:8333
         credentials:
           accessKeyId:
-            name: minio-creds
+            name: objectstore-creds
             key: accessKey
           secretAccessKey:
-            name: minio-creds
+            name: objectstore-creds
             key: secretKey
 ```
 

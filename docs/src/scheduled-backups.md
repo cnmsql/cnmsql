@@ -235,7 +235,7 @@ Unit tests cover schedule parsing, defaults, deterministic names, Backup field
 propagation, suspended schedules, immediate creation and adoption, first-check
 status stamping, due-slot creation, owner-reference modes, concurrency guarding,
 name-collision skips, and the retention GC planner (count limits, time window,
-terminal-only eligibility, and the newest-completed floor). Live Kind + MinIO e2e
+terminal-only eligibility, and the newest-completed floor). Live Kind + SeaweedFS e2e
 specs exercise retention end to end on both the MySQL and MariaDB engines: each
 drives a schedule down to a single kept Backup and confirms a `Delete`-policy
 Backup's archive is reclaimed when GC removes it.
