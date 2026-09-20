@@ -12,7 +12,7 @@ import (
 )
 
 // This spec exercises point-in-time recovery (M7.2) end-to-end against a real
-// Kind cluster backed by in-cluster MinIO. It builds on the M7.1 archiving
+// Kind cluster backed by an in-cluster S3 store. It builds on the M7.1 archiving
 // foundation: a source cluster takes a base backup and continuously archives its
 // binlogs; a fresh cluster then bootstraps from that base backup and replays the
 // archive up to a chosen GTID. Correctness is asserted by data: the recovered
@@ -44,10 +44,10 @@ var _ = Describe("Point-in-time recovery", Ordered, Label("flavor"), func() {
 		prevNS = testNamespace
 		ns = createTestNamespace("pitr")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating the source cluster with continuous archiving enabled")
 		applyManifest(sourceCluster, continuousArchivingClusterManifest(sourceCluster, version, 1))

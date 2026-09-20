@@ -30,13 +30,13 @@ func init() {
 			BeforeAll(func() {
 				prevNS = testNamespace
 				ns = createTestNamespace("retention-" + sanitize(v))
-				setupMinio()
-				setupMC()
+				setupObjectStore()
+				setupS3Client()
 			})
 
 			AfterAll(func() {
-				teardownMC()
-				teardownMinio()
+				teardownS3Client()
+				teardownObjectStore()
 				deleteTestNamespace(ns, prevNS)
 			})
 

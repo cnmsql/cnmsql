@@ -95,3 +95,33 @@ func archiveVersions() []string {
 	}
 	return []string{"8.0", "8.4", "9.x"}
 }
+
+// envOr returns the trimmed value of the environment variable, or def when it is
+// unset or empty.
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+// The suite's third-party images. They are pinned and registry-qualified on
+// purpose: an unpinned `:latest` from an implicit Docker Hub is exactly how the
+// suite broke when MinIO withdrew minio/minio and minio/mc (#113). Every ref is
+// overridable so a registry move — or a pull-through mirror in a restricted
+// network — is an environment change rather than a patch.
+var (
+	// objectStoreImage is the S3-compatible server the backup, archiving,
+	// recovery and retention specs write to. SeaweedFS is Apache-2.0, ships a
+	// single-binary `weed server -s3`, and passes the object-store conformance
+	// suite (see docs/src/object-store.md).
+	objectStoreImage = envOr("E2E_OBJECT_STORE_IMAGE", "docker.io/chrislusf/seaweedfs:4.47")
+
+	// s3ClientImage is the toolbox the specs drive to read the store back. It
+	// speaks the S3 API rather than reaching into the server's internals, so an
+	// assertion still proves the operator wrote a real, readable S3 object.
+	s3ClientImage = envOr("E2E_S3_CLIENT_IMAGE", "docker.io/rclone/rclone:1.75.1")
+
+	// curlImage backs the small HTTP-probe Pods (instance-manager endpoints).
+	curlImage = envOr("E2E_CURL_IMAGE", "docker.io/curlimages/curl:8.22.0")
+)

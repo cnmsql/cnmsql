@@ -118,7 +118,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: curl
-    image: curlimages/curl:latest
+    image: %[5]s
     command: ["sh", "-c"]
     args:
     - >
@@ -136,7 +136,7 @@ spec:
   - name: ca
     secret:
       secretName: %[4]s-ca
-`, name, testNamespace, url, cluster)
+`, name, testNamespace, url, cluster, curlImage)
 
 	applyManifest(name, manifest)
 	DeferCleanup(func() {

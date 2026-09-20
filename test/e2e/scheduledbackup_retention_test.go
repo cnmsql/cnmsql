@@ -36,10 +36,10 @@ var _ = Describe("Scheduled backup retention", Ordered, Label("feature"), func()
 		prevNS = testNamespace
 		ns = createTestNamespace("sched-retention")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating the source cluster that archives to object storage")
 		applyManifest(sourceCluster, archivingClusterManifest(sourceCluster))
@@ -92,7 +92,7 @@ var _ = Describe("Scheduled backup retention", Ordered, Label("feature"), func()
 
 		By("confirming the to-be-pruned archives exist before GC")
 		for _, b := range pruned {
-			Expect(mcObjectExists(b.archiveKey)).To(BeTrue(),
+			Expect(s3ObjectExists(b.archiveKey)).To(BeTrue(),
 				"archive for %s should exist before GC", b.name)
 		}
 
@@ -111,13 +111,13 @@ var _ = Describe("Scheduled backup retention", Ordered, Label("feature"), func()
 		By("verifying the pruned Delete-policy archives were reclaimed")
 		for _, b := range pruned {
 			Eventually(func(g Gomega) {
-				g.Expect(mcObjectExists(b.archiveKey)).To(BeFalse(),
+				g.Expect(s3ObjectExists(b.archiveKey)).To(BeFalse(),
 					"archive for pruned backup %s should be reclaimed", b.name)
 			}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 		}
 
 		By("verifying the floor Backup's archive is retained")
-		Expect(mcObjectExists(floor.archiveKey)).To(BeTrue(),
+		Expect(s3ObjectExists(floor.archiveKey)).To(BeTrue(),
 			"the surviving floor backup's archive must not be reclaimed")
 	})
 
@@ -141,7 +141,7 @@ func childBackupPhases(g Gomega, selector string) []string {
 }
 
 // completedBackupArchives returns the completed child Backups newest-first, each
-// paired with its mc archive key (local/<bucket>/<cluster>/<name>/<backupId>/backup.xbstream).
+// paired with its toolbox archive key (<remote>:<bucket>/<cluster>/<name>/<backupId>/backup.xbstream).
 func completedBackupArchives(cluster, selector string) []backupArchive {
 	out, err := kubectl("get", "backups", "-n", testNamespace, "-l", selector,
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\t\"}{.status.phase}{\"\\t\"}"+
@@ -170,9 +170,8 @@ func completedBackupArchives(cluster, selector string) []backupArchive {
 	archives := make([]backupArchive, 0, len(rows))
 	for _, r := range rows {
 		archives = append(archives, backupArchive{
-			name: r.name,
-			archiveKey: fmt.Sprintf("local/%s/%s/%s/%s/backup.xbstream",
-				minioBucket, cluster, r.name, r.backupID),
+			name:       r.name,
+			archiveKey: objectKey("%s/%s/%s/backup.xbstream", cluster, r.name, r.backupID),
 		})
 	}
 	return archives

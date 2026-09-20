@@ -34,8 +34,8 @@ var _ = Describe("MariaDB scheduled backups", Ordered, Label("flavor", "mariadb"
 		prevNS = testNamespace
 		ns = createTestNamespace("mdb-sched")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
 
 		By("creating the MariaDB source cluster that archives to object storage")
 		applyManifest(sourceCluster, mariadbArchivingClusterManifest(sourceCluster))

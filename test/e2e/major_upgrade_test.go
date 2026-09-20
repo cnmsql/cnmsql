@@ -511,9 +511,9 @@ var _ = Describe("MySQL major-version upgrade with backupBeforeUpgrade", Ordered
 		prevNS = testNamespace
 		ns = createTestNamespace("major-upgrade-backup")
 
-		By("deploying MinIO for backup storage")
-		setupMinio()
-		DeferCleanup(teardownMinio)
+		By("preparing the object store for backup storage")
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
 
 		By("creating the multi-series image catalog")
 		applyManifest(catalog, majorUpgradeCatalogManifest(catalog, ns))

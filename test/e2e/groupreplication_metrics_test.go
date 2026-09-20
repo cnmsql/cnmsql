@@ -68,13 +68,13 @@ var _ = Describe("Group Replication operator metrics", Ordered, Label("feature")
 		By("scraping the operator metrics endpoint from an in-cluster curl pod")
 		cmd := exec.Command("kubectl", "run", grCurlPod, "--restart=Never",
 			"--namespace", namespace,
-			"--image=curlimages/curl:latest",
+			"--image="+curlImage,
 			"--overrides",
 			fmt.Sprintf(`{
 				"spec": {
 					"containers": [{
 						"name": "curl",
-						"image": "curlimages/curl:latest",
+						"image": "`+curlImage+`",
 						"command": ["/bin/sh", "-c"],
 						"args": [
 							"for i in $(seq 1 30); do curl -sS -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"

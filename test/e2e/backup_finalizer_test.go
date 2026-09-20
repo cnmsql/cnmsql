@@ -34,10 +34,10 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		prevNS = testNamespace
 		ns = createTestNamespace("backup-finalizer")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating the source cluster that archives to object storage")
 		applyManifest(finCluster, archivingClusterManifest(finCluster))
@@ -78,8 +78,8 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		metadataKey := backupObjectKey(finCluster, finalizedBkp, id, "metadata.json")
 
 		By("confirming the archive exists in the store before deletion")
-		Expect(mcObjectExists(archiveKey)).To(BeTrue(), "archive should exist before deletion")
-		Expect(mcObjectExists(metadataKey)).To(BeTrue(), "metadata should exist before deletion")
+		Expect(s3ObjectExists(archiveKey)).To(BeTrue(), "archive should exist before deletion")
+		Expect(s3ObjectExists(metadataKey)).To(BeTrue(), "metadata should exist before deletion")
 
 		By("deleting the Backup object")
 		// The finalizer blocks removal until the operator cleans the store, so do
@@ -89,8 +89,8 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 
 		By("verifying the archive and metadata are removed from the store")
 		Eventually(func(g Gomega) {
-			g.Expect(mcObjectExists(archiveKey)).To(BeFalse(), "archive should be deleted")
-			g.Expect(mcObjectExists(metadataKey)).To(BeFalse(), "metadata should be deleted")
+			g.Expect(s3ObjectExists(archiveKey)).To(BeFalse(), "archive should be deleted")
+			g.Expect(s3ObjectExists(metadataKey)).To(BeFalse(), "metadata should be deleted")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the finalizer is released and the Backup object is gone")
@@ -143,7 +143,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(id).NotTo(BeEmpty(), "generated backup has no backupId")
 		archiveKey := backupObjectKey(finCluster, genBackup, id, "backup.xbstream")
-		Expect(mcObjectExists(archiveKey)).To(BeTrue(), "archive should exist before deletion")
+		Expect(s3ObjectExists(archiveKey)).To(BeTrue(), "archive should exist before deletion")
 
 		By("deleting the generated Backup")
 		_, err = kubectl("delete", "backup", genBackup, "-n", testNamespace, "--wait=false")
@@ -151,7 +151,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 
 		By("verifying the finalizer cleaned the archive from the store")
 		Eventually(func(g Gomega) {
-			g.Expect(mcObjectExists(archiveKey)).To(BeFalse(), "archive should be deleted by the finalizer")
+			g.Expect(s3ObjectExists(archiveKey)).To(BeFalse(), "archive should be deleted by the finalizer")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
@@ -182,7 +182,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		By("verifying the archive is retained in the store")
 		// Give the operator time to (not) act, then assert the archive still exists.
 		Consistently(func(g Gomega) {
-			g.Expect(mcObjectExists(archiveKey)).To(BeTrue(), "archive should be retained without the finalizer")
+			g.Expect(s3ObjectExists(archiveKey)).To(BeTrue(), "archive should be retained without the finalizer")
 		}, 30*time.Second, 5*time.Second).Should(Succeed())
 	})
 
@@ -191,11 +191,11 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 	})
 })
 
-// backupObjectKey builds the mc-addressed object key for one of a backup's
+// backupObjectKey builds the toolbox-addressed object key for one of a backup's
 // archive-directory objects. The store uses no path prefix in these specs, so
 // the layout is <bucket>/<cluster>/<backup>/<backupId>/<object>.
 func backupObjectKey(cluster, backup, backupID, object string) string {
-	return fmt.Sprintf("local/%s/%s/%s/%s/%s", minioBucket, cluster, backup, backupID, object)
+	return objectKey("%s/%s/%s/%s", cluster, backup, backupID, object)
 }
 
 func scheduledBackupCleanupManifest(name, cluster, schedule string) string {

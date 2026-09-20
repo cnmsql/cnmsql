@@ -17,52 +17,36 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
-// setupMC deploys a long-lived mc (MinIO client) toolbox Pod with the bucket
-// credentials pre-wired through MC_HOST_local, so the archiving specs can read
-// archive objects synchronously with `kubectl exec` (fast enough to poll inside
-// Eventually, unlike a per-poll Job).
-func setupMC() {
-	By("deploying the mc toolbox pod")
-	applyManifest("mc-toolbox", mcToolboxManifest())
-	_, err := kubectl("wait", "deployment/mc-toolbox", "-n", testNamespace,
+// s3ToolboxName is the Deployment name of the long-lived S3 client toolbox.
+const s3ToolboxName = "s3-toolbox"
+
+// setupS3Client deploys a long-lived S3 client toolbox Pod with the bucket
+// credentials pre-wired through the rclone remote environment, so the archiving
+// specs can read archive objects synchronously with `kubectl exec` (fast enough
+// to poll inside Eventually, unlike a per-poll Job).
+func setupS3Client() {
+	By("deploying the S3 client toolbox pod")
+	applyManifest(s3ToolboxName, s3ToolboxManifest())
+	_, err := kubectl("wait", "deployment/"+s3ToolboxName, "-n", testNamespace,
 		"--for=condition=Available", "--timeout=3m")
-	Expect(err).NotTo(HaveOccurred(), "mc toolbox did not become available")
+	Expect(err).NotTo(HaveOccurred(), "S3 client toolbox did not become available")
 }
 
-func teardownMC() {
-	deleteManifest("mc-toolbox", mcToolboxManifest())
+func teardownS3Client() {
+	deleteManifest(s3ToolboxName, s3ToolboxManifest())
 }
 
-// mcExec runs an mc command in the toolbox pod and returns its combined output.
-func mcExec(args ...string) (string, error) {
-	full := append([]string{"exec", "deploy/mc-toolbox", "-n", testNamespace, "--"}, args...)
+// s3Exec runs a command in the toolbox pod and returns its combined output.
+func s3Exec(args ...string) (string, error) {
+	full := append([]string{"exec", "deploy/" + s3ToolboxName, "-n", testNamespace, "--"}, args...)
 	return kubectl(full...)
 }
 
-// isTransientObjectStoreError reports whether an mc failure is a transport blip
-// (the single-replica MinIO restarting or briefly unreachable) rather than a
-// definitive answer like "object does not exist". Callers retry on true.
-func isTransientObjectStoreError(out string, err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := out + err.Error()
-	for _, s := range []string{
-		"connection refused",
-		"dial tcp",
-		"no endpoints available",
-		"EOF",
-		"i/o timeout",
-		"context deadline exceeded",
-		"connection reset by peer",
-		"Server not initialized",
-		"503 Service Unavailable",
-	} {
-		if strings.Contains(msg, s) {
-			return true
-		}
-	}
-	return false
+// rcloneExec runs an rclone subcommand in the toolbox pod. rclone writes progress
+// and retry chatter to stderr, which kubectl folds into the combined output the
+// specs parse, so every call is quiet by default.
+func rcloneExec(args ...string) (string, error) {
+	return s3Exec(append([]string{"rclone", "--quiet", "--retries=1"}, args...)...)
 }
 
 // dumpBackupWorkerLogs prints recent logs from the backup worker Job's Pod(s) for
@@ -88,8 +72,8 @@ func dumpBackupWorkerLogs(backup string) {
 // archiver has not written one yet) surfaces as an error so callers can poll.
 func readArchiveIndex(cluster string) (objectstore.ArchiveIndex, error) {
 	var idx objectstore.ArchiveIndex
-	key := fmt.Sprintf("local/%s/%s/binlogs/_index.json", minioBucket, cluster)
-	out, err := mcExec("mc", "--quiet", "cat", key)
+	key := objectKey("%s/binlogs/_index.json", cluster)
+	out, err := rcloneExec("cat", key)
 	if err != nil {
 		return idx, fmt.Errorf("reading archive index %s: %w (%s)", key, err, out)
 	}
@@ -200,7 +184,7 @@ func expectFlavorArchiveCovers(cluster string, flavor engine.Flavor, want string
 		idx, err := readArchiveIndex(cluster)
 		// The archiver writes the index only after it ships a rotated file, so a
 		// missing index usually means it has shipped nothing. Its own reported
-		// failure reason is far more actionable than mc's "object not found", so
+		// failure reason is far more actionable than the client's "not found", so
 		// fold it into the message — computed only on failure to spare the happy
 		// path three kubectl calls per poll.
 		if err != nil {
@@ -258,30 +242,29 @@ spec:
 `, name, testNamespace, instances, instanceImageFor(version), e2eInstanceResources, e2eMySQLParameters, objectStoreYAML("    "))
 }
 
-func mcToolboxManifest() string {
+func s3ToolboxManifest() string {
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mc-toolbox
-  namespace: %[1]s
+  name: %[1]s
+  namespace: %[2]s
   labels:
-    app: mc-toolbox
+    app: %[1]s
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: mc-toolbox
+      app: %[1]s
   template:
     metadata:
       labels:
-        app: mc-toolbox
+        app: %[1]s
     spec:
       containers:
-      - name: mc
-        image: minio/mc:latest
+      - name: s3client
+        image: %[3]s
         command: ["/bin/sh", "-c", "sleep infinity"]
         env:
-        - name: MC_HOST_local
-          value: http://minioadmin:minioadmin@minio.%[2]s.svc:9000
-`, testNamespace, minioNamespace)
+%[4]s
+`, s3ToolboxName, testNamespace, s3ClientImage, s3ClientEnvYAML("        ", objectStoreEndpoint()))
 }

@@ -30,10 +30,10 @@ var _ = Describe("MariaDB scheduled backup retention", Ordered, Label("flavor", 
 		prevNS = testNamespace
 		ns = createTestNamespace("mdb-sched-retention")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating the MariaDB source cluster that archives to object storage")
 		applyManifest(sourceCluster, mariadbArchivingClusterManifest(sourceCluster))
@@ -85,7 +85,7 @@ var _ = Describe("MariaDB scheduled backup retention", Ordered, Label("flavor", 
 
 		By("confirming the to-be-pruned archives exist before GC")
 		for _, b := range pruned {
-			Expect(mcObjectExists(b.archiveKey)).To(BeTrue(),
+			Expect(s3ObjectExists(b.archiveKey)).To(BeTrue(),
 				"archive for %s should exist before GC", b.name)
 		}
 
@@ -104,13 +104,13 @@ var _ = Describe("MariaDB scheduled backup retention", Ordered, Label("flavor", 
 		By("verifying the pruned Delete-policy archives were reclaimed")
 		for _, b := range pruned {
 			Eventually(func(g Gomega) {
-				g.Expect(mcObjectExists(b.archiveKey)).To(BeFalse(),
+				g.Expect(s3ObjectExists(b.archiveKey)).To(BeFalse(),
 					"archive for pruned backup %s should be reclaimed", b.name)
 			}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 		}
 
 		By("verifying the floor Backup's archive is retained")
-		Expect(mcObjectExists(floor.archiveKey)).To(BeTrue(),
+		Expect(s3ObjectExists(floor.archiveKey)).To(BeTrue(),
 			"the surviving floor backup's archive must not be reclaimed")
 	})
 

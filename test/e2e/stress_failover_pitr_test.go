@@ -41,10 +41,10 @@ var _ = Describe("Failover + PITR under heavy writes", Ordered, Label("flavor", 
 		prevNS = testNamespace
 		ns = createTestNamespace("stress-pitr")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating a 3-instance cluster with continuous archiving")
 		applyManifest(sourceCluster, continuousArchivingClusterManifest(sourceCluster, version, 3))

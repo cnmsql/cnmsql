@@ -12,7 +12,7 @@ import (
 )
 
 // This spec exercises point-in-time recovery into a Group Replication cluster
-// end-to-end against a real Kind cluster backed by in-cluster MinIO. It combines
+// end-to-end against a real Kind cluster backed by an in-cluster S3 store. It combines
 // the M7.2 PiTR mechanism with the M-GR.7 fresh-group recovery guarantee: a
 // 3-member source group takes a base backup and continuously archives its
 // binlogs; a fresh 3-member group then bootstraps from that base backup and
@@ -48,10 +48,10 @@ var _ = Describe("Group Replication point-in-time recovery", Ordered, Label("fla
 		prevNS = testNamespace
 		ns = createTestNamespace("gr-pitr")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating a 3-member Group Replication source cluster with continuous archiving enabled")
 		applyManifest(sourceCluster, grArchivingClusterManifest(sourceCluster, version, instances))

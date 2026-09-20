@@ -31,8 +31,8 @@ var _ = Describe("Group Replication backup and restore into a fresh group", Orde
 		prevNS = testNamespace
 		ns = createTestNamespace("gr-backup")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
 
 		By("creating a 3-member Group Replication source cluster that archives to object storage")
 		applyManifest(sourceCluster, grBackupClusterManifest(sourceCluster, instances))

@@ -17,10 +17,7 @@ import (
 )
 
 var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
-	const (
-		clusterName = "mdb-e2e"
-		minioNS     = "e2e-minio"
-	)
+	const clusterName = "mdb-e2e"
 
 	var (
 		ns, prevNS string
@@ -181,8 +178,8 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 			bkpName     = "mdb-backup"
 		)
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
 
 		By("creating a source cluster with archiving enabled")
 		applyManifest(bkpSource, mariadbArchivingClusterManifest(bkpSource))
@@ -236,10 +233,10 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 			pitrBackup   = "mdb-pitr-backup"
 		)
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating the source cluster that archives to object store")
 		applyManifest(pitrSource, mariadbContinuousArchivingClusterManifest(pitrSource))

@@ -48,17 +48,40 @@ const defaultTestNamespace = "default"
 // test group sets this to its own namespace before creating resources.
 var testNamespace = defaultTestNamespace
 
-// minioNamespace is the shared namespace where MinIO runs once for the whole
-// suite, avoiding per-Describe deploy/teardown cycles.
-const minioNamespace = "e2e-minio"
+// objectStoreNamespace is the shared namespace where the in-cluster S3 store runs
+// once for the whole suite, avoiding per-Describe deploy/teardown cycles.
+const objectStoreNamespace = "e2e-objectstore"
 
-// minioBucket is the bucket pre-created in the in-cluster MinIO and targeted by
-// the backup/recovery specs.
-const minioBucket = "cnmsql-backups"
+// objectStoreName is the Deployment/Service name of the in-cluster S3 store. The
+// specs that simulate an object-store outage scale this Deployment.
+const objectStoreName = "seaweedfs"
 
-// minioCredsSecret is the Secret holding the MinIO access credentials consumed
-// by Clusters and Backups through their object-store configuration.
-const minioCredsSecret = "minio-creds"
+// objectStorePort is the port the in-cluster S3 store serves the S3 API on.
+const objectStorePort = 8333
+
+// objectStoreBucket is the bucket pre-created in the in-cluster S3 store and
+// targeted by the backup/recovery specs.
+const objectStoreBucket = "cnmsql-backups"
+
+// objectStoreAccessKey and objectStoreSecretKey are the static credentials the
+// in-cluster store is configured with. They are test-only and never leave Kind.
+const (
+	objectStoreAccessKey = "cnmsqladmin"
+	objectStoreSecretKey = "cnmsqladmin"
+)
+
+// objectStoreCredsSecret is the Secret holding the store's access credentials
+// consumed by Clusters and Backups through their object-store configuration.
+const objectStoreCredsSecret = "objectstore-creds"
+
+// s3Remote is the rclone remote name the toolbox is configured with. Object keys
+// the specs pass to the toolbox are addressed as "<s3Remote>:<bucket>/<key>".
+const s3Remote = "local"
+
+// objectKey builds a toolbox-addressable path for a key in the suite's bucket.
+func objectKey(format string, args ...any) string {
+	return fmt.Sprintf("%s:%s/%s", s3Remote, objectStoreBucket, fmt.Sprintf(format, args...))
+}
 
 // generateTestNamespace returns a unique namespace name using the current
 // Ginkgo parallel process id, so parallel nodes never collide.
@@ -525,7 +548,7 @@ func mariadbExecCols(pod, user, password, database, sql string) (string, error) 
 // control API using a one-shot curl Pod that mounts the cluster client cert and
 // CA (the same material the operator authenticates with). The DB container image
 // does not necessarily ship curl — the MariaDB instance image does not — so we
-// cannot `kubectl exec ... -- curl` inside it; the curlimages/curl Pod is
+// cannot `kubectl exec ... -- curl` inside it; the curl Pod is
 // engine-agnostic. It blocks until the Pod reports the call returned HTTP 200.
 func createUserViaControlAPI(cluster, instance, jsonBody string) {
 	GinkgoHelper()
@@ -540,7 +563,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: curl
-    image: curlimages/curl:latest
+    image: %[6]s
     command: ["sh", "-c"]
     args:
     - >
@@ -559,7 +582,7 @@ spec:
   - name: ca
     secret:
       secretName: %[5]s-ca
-`, name, testNamespace, jsonBody, url, cluster)
+`, name, testNamespace, jsonBody, url, cluster, curlImage)
 
 	applyManifest(name, manifest)
 	DeferCleanup(func() {
@@ -578,74 +601,105 @@ spec:
 	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
 }
 
-// minioEndpoint returns the HTTP endpoint for the shared in-cluster MinIO, which
-// runs once in minioNamespace and is reachable from every test namespace.
-func minioEndpoint() string {
-	return fmt.Sprintf("http://minio.%s.svc:9000", minioNamespace)
+// objectStoreEndpoint returns the HTTP endpoint for the shared in-cluster S3
+// store, which runs once in objectStoreNamespace and is reachable from every
+// test namespace.
+func objectStoreEndpoint() string {
+	return fmt.Sprintf("http://%s.%s.svc:%d", objectStoreName, objectStoreNamespace, objectStorePort)
 }
 
-// deploySharedMinio creates the shared MinIO namespace and deploys a single-node
-// MinIO instance once for the whole suite. This avoids per-Describe deploy/teardown
-// cycles (each ~6 minutes), saving significant wall-clock time in parallel runs
-// since every Describe that needs an object store stands up and tears down its own
-// MinIO instance.
-func deploySharedMinio() {
-	By("creating shared MinIO namespace")
-	_, _ = kubectl("create", "ns", minioNamespace)
+// deploySharedObjectStore creates the shared object-store namespace and deploys a
+// single-node S3 store once for the whole suite. This avoids per-Describe
+// deploy/teardown cycles (each ~6 minutes), saving significant wall-clock time in
+// parallel runs since every Describe that needs an object store would otherwise
+// stand up and tear down its own instance.
+func deploySharedObjectStore() {
+	By("creating shared object-store namespace")
+	_, _ = kubectl("create", "ns", objectStoreNamespace)
 
-	By("deploying shared in-cluster MinIO")
-	applyManifest("minio-shared", sharedMinioManifest())
+	By("deploying the shared in-cluster object store")
+	applyManifest("objectstore-shared", objectStoreManifest(objectStoreNamespace))
 
-	By("waiting for shared MinIO to become available")
-	_, err := kubectl("wait", "deployment/minio", "-n", minioNamespace,
+	By("waiting for the shared object store to become available")
+	_, err := kubectl("wait", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
 		"--for=condition=Available", "--timeout=3m")
-	Expect(err).NotTo(HaveOccurred(), "Shared MinIO did not become available")
+	Expect(err).NotTo(HaveOccurred(), "Shared object store did not become available")
 
-	By("waiting for the shared MinIO bucket-creation Job to complete")
-	_, err = kubectl("wait", "job/minio-mkbucket", "-n", minioNamespace,
+	By("waiting for the shared bucket-creation Job to complete")
+	_, err = kubectl("wait", "job/"+objectStoreName+"-mkbucket", "-n", objectStoreNamespace,
 		"--for=condition=Complete", "--timeout=3m")
-	Expect(err).NotTo(HaveOccurred(), "Shared MinIO bucket-creation Job did not complete")
+	Expect(err).NotTo(HaveOccurred(), "Shared bucket-creation Job did not complete")
 }
 
-// teardownSharedMinio removes the shared MinIO namespace and all its resources.
-func teardownSharedMinio() {
-	_, _ = kubectl("delete", "ns", minioNamespace, "--ignore-not-found", "--wait=false")
+// teardownSharedObjectStore removes the shared object-store namespace and all its
+// resources.
+func teardownSharedObjectStore() {
+	_, _ = kubectl("delete", "ns", objectStoreNamespace, "--ignore-not-found", "--wait=false")
 }
 
-// ensureMinioCreds creates the minio-creds Secret in the current testNamespace
-// so Cluster CRs can reference it locally. The shared MinIO runs in minioNamespace
-// and this Secret mirrors its credentials in each test namespace.
-func ensureMinioCreds() {
-	_, _ = kubectl("delete", "secret", minioCredsSecret, "-n", testNamespace, "--ignore-not-found")
-	_, err := kubectl("create", "secret", "generic", minioCredsSecret, "-n", testNamespace,
-		"--from-literal=ACCESS_KEY_ID=minioadmin",
-		"--from-literal=SECRET_ACCESS_KEY=minioadmin")
-	Expect(err).NotTo(HaveOccurred(), "Failed to create %s secret in %s", minioCredsSecret, testNamespace)
+// ensureObjectStoreCreds creates the credentials Secret in the current
+// testNamespace so Cluster CRs can reference it locally. The shared store runs in
+// objectStoreNamespace and this Secret mirrors its credentials in each test
+// namespace.
+func ensureObjectStoreCreds() {
+	_, _ = kubectl("delete", "secret", objectStoreCredsSecret, "-n", testNamespace, "--ignore-not-found")
+	_, err := kubectl("create", "secret", "generic", objectStoreCredsSecret, "-n", testNamespace,
+		"--from-literal=ACCESS_KEY_ID="+objectStoreAccessKey,
+		"--from-literal=SECRET_ACCESS_KEY="+objectStoreSecretKey)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create %s secret in %s", objectStoreCredsSecret, testNamespace)
 }
 
-// setupMinio ensures the shared MinIO is ready and creates the credentials Secret
-// in the current test namespace. The shared MinIO is deployed once by the suite,
-// so this is a fast idempotent operation per Describe.
-func setupMinio() {
-	// The shared MinIO is a single replica; if it is mid-restart when this
+// setupObjectStore ensures the shared store is ready and creates the credentials
+// Secret in the current test namespace. The shared store is deployed once by the
+// suite, so this is a fast idempotent operation per Describe.
+func setupObjectStore() {
+	// The shared store is a single replica; if it is mid-restart when this
 	// Describe begins, re-gate on its readiness so the first object-store call
 	// does not race a connection-refused window.
-	_, err := kubectl("wait", "deployment/minio", "-n", minioNamespace,
+	_, err := kubectl("wait", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
 		"--for=condition=Available", "--timeout=2m")
-	Expect(err).NotTo(HaveOccurred(), "shared MinIO not available at setup")
-	ensureMinioCreds()
+	Expect(err).NotTo(HaveOccurred(), "shared object store not available at setup")
+	ensureObjectStoreCreds()
 }
 
-// teardownMinio removes the per-namespace credentials Secret. The shared MinIO
-// instance survives across Describes and is torn down by SynchronizedAfterSuite.
-func teardownMinio() {
-	_, _ = kubectl("delete", "secret", minioCredsSecret, "-n", testNamespace, "--ignore-not-found")
+// teardownObjectStore removes the per-namespace credentials Secret. The shared
+// store survives across Describes and is torn down by SynchronizedAfterSuite.
+func teardownObjectStore() {
+	_, _ = kubectl("delete", "secret", objectStoreCredsSecret, "-n", testNamespace, "--ignore-not-found")
 }
 
-// seedObjectStoreMarker writes a small object at the given key in the MinIO
-// bucket via a one-shot mc Job and waits for it to complete. It is used to make
-// a destination prefix non-empty deterministically. The Job targets the shared
-// MinIO in minioNamespace.
+// s3ClientEnvYAML renders the rclone remote configuration as Pod env entries, at
+// the given indentation. rclone reads a remote wholly from the environment
+// (RCLONE_CONFIG_<REMOTE>_*), so the toolbox needs no config file or mounted
+// secret.
+func s3ClientEnvYAML(indent, endpoint string) string {
+	prefix := "RCLONE_CONFIG_" + strings.ToUpper(s3Remote) + "_"
+	vars := [][2]string{
+		{"TYPE", "s3"},
+		{"PROVIDER", "Other"},
+		{"ENDPOINT", endpoint},
+		{"ACCESS_KEY_ID", objectStoreAccessKey},
+		{"SECRET_ACCESS_KEY", objectStoreSecretKey},
+		{"REGION", "us-east-1"},
+		{"FORCE_PATH_STYLE", "true"},
+		// rclone otherwise writes a NOTICE about the absent config file to
+		// stderr, which lands in the combined output the specs parse.
+		{"", ""},
+	}
+	var b strings.Builder
+	for _, v := range vars {
+		if v[0] == "" {
+			fmt.Fprintf(&b, "%s- name: RCLONE_CONFIG\n%s  value: /dev/null\n", indent, indent)
+			continue
+		}
+		fmt.Fprintf(&b, "%s- name: %s%s\n%s  value: %q\n", indent, prefix, v[0], indent, v[1])
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// seedObjectStoreMarker writes a small object at the given key in the bucket via
+// a one-shot toolbox Job and waits for it to complete. It is used to make a
+// destination prefix non-empty deterministically.
 func seedObjectStoreMarker(key string) {
 	name := "seed-" + strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(key)
 	manifest := fmt.Sprintf(`apiVersion: batch/v1
@@ -659,15 +713,17 @@ spec:
     spec:
       restartPolicy: OnFailure
       containers:
-      - name: mc
-        image: minio/mc:latest
+      - name: s3client
+        image: %[3]s
         command:
-        - sh
+        - /bin/sh
         - -c
         - |
-          until mc alias set local %[3]s minioadmin minioadmin; do sleep 2; done
-          echo cnmsql-guard-marker | mc pipe local/%[4]s/%[5]s
-`, name, testNamespace, minioEndpoint(), minioBucket, key)
+          set -e
+          echo cnmsql-guard-marker | rclone rcat %[4]s
+        env:
+%[5]s
+`, name, testNamespace, s3ClientImage, objectKey("%s", key), s3ClientEnvYAML("        ", objectStoreEndpoint()))
 	applyManifest(name, manifest)
 	DeferCleanup(func() {
 		deleteManifest(name, manifest)
@@ -678,21 +734,21 @@ spec:
 }
 
 // objectStoreYAML returns the indented spec.backup.objectStore block pointing at
-// the shared in-cluster MinIO. indent is the leading whitespace for the
+// the shared in-cluster object store. indent is the leading whitespace for the
 // `objectStore` key so the snippet can be embedded under spec.backup.
 func objectStoreYAML(indent string) string {
 	lines := []string{
 		"objectStore:",
-		"  endpoint: " + minioEndpoint(),
+		"  endpoint: " + objectStoreEndpoint(),
 		"  region: us-east-1",
-		"  bucket: " + minioBucket,
+		"  bucket: " + objectStoreBucket,
 		"  forcePathStyle: true",
 		"  credentials:",
 		"    accessKeyId:",
-		"      name: " + minioCredsSecret,
+		"      name: " + objectStoreCredsSecret,
 		"      key: ACCESS_KEY_ID",
 		"    secretAccessKey:",
-		"      name: " + minioCredsSecret,
+		"      name: " + objectStoreCredsSecret,
 		"      key: SECRET_ACCESS_KEY",
 	}
 	for i, l := range lines {
@@ -701,39 +757,69 @@ func objectStoreYAML(indent string) string {
 	return strings.Join(lines, "\n")
 }
 
-func minioManifest() string {
-	return fmt.Sprintf(`apiVersion: apps/v1
+// objectStoreManifest renders the single-node S3 store (SeaweedFS) plus its PVC,
+// Service, credentials Secret and bucket-creation Job into the given namespace.
+//
+// The namespace is an explicit parameter rather than read from testNamespace:
+// the suite renders this for the shared object-store namespace, and a rendered
+// manifest cannot be retargeted by string replacement without also rewriting any
+// unrelated occurrence of the old namespace name.
+func objectStoreManifest(namespace string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: %[1]s-config
+  namespace: %[2]s
+data:
+  s3.json: |
+    {
+      "identities": [
+        {
+          "name": "cnmsql",
+          "credentials": [{"accessKey": "%[6]s", "secretKey": "%[7]s"}],
+          "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: minio
-  namespace: %[1]s
+  name: %[1]s
+  namespace: %[2]s
   labels:
-    app: minio
+    app: %[1]s
 spec:
   replicas: 1
+  # The store owns a ReadWriteOnce PVC, so a rolling update would deadlock on the
+  # old Pod still holding the volume. Recreate detaches first.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: minio
+      app: %[1]s
   template:
     metadata:
       labels:
-        app: minio
+        app: %[1]s
     spec:
       containers:
-      - name: minio
-        image: minio/minio:latest
-        args: ["server", "/data", "--console-address", ":9001"]
-        env:
-        - name: MINIO_ROOT_USER
-          value: minioadmin
-        - name: MINIO_ROOT_PASSWORD
-          value: minioadmin
+      - name: %[1]s
+        image: %[3]s
+        args:
+        - server
+        - -dir=/data
+        - -s3
+        - -s3.port=%[4]d
+        - -s3.config=/etc/seaweedfs/s3.json
         ports:
-        - containerPort: 9000
+        - containerPort: %[4]d
         volumeMounts:
         - name: data
           mountPath: /data
-        # Reserve headroom so MinIO is not evicted under node memory pressure
+        - name: config
+          mountPath: /etc/seaweedfs
+        # Reserve headroom so the store is not evicted under node memory pressure
         # mid-suite; a single-replica restart otherwise refuses connections for
         # the whole detach/reattach + boot window and flakes the backup specs.
         resources:
@@ -741,87 +827,89 @@ spec:
             cpu: 100m
             memory: 256Mi
           limits:
-            memory: 512Mi
+            memory: 768Mi
         readinessProbe:
           httpGet:
-            path: /minio/health/ready
-            port: 9000
+            path: /healthz
+            port: %[4]d
           initialDelaySeconds: 5
           periodSeconds: 3
         livenessProbe:
           httpGet:
-            path: /minio/health/live
-            port: 9000
-          initialDelaySeconds: 10
+            path: /healthz
+            port: %[4]d
+          # The store brings up master, volume, filer and S3 in one process and
+          # replays its metadata on restart; that takes appreciably longer than
+          # the readiness gate, so the liveness probe must not reap it mid-boot.
+          initialDelaySeconds: 60
           periodSeconds: 10
+          failureThreshold: 6
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: minio-data
+          claimName: %[1]s-data
+      - name: config
+        configMap:
+          name: %[1]s-config
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: minio-data
-  namespace: %[1]s
+  name: %[1]s-data
+  namespace: %[2]s
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: minio
-  namespace: %[1]s
+  name: %[1]s
+  namespace: %[2]s
 spec:
   selector:
-    app: minio
+    app: %[1]s
   ports:
-  - port: 9000
-    targetPort: 9000
+  - port: %[4]d
+    targetPort: %[4]d
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: %[2]s
-  namespace: %[1]s
+  name: %[5]s
+  namespace: %[2]s
 stringData:
-  ACCESS_KEY_ID: minioadmin
-  SECRET_ACCESS_KEY: minioadmin
+  ACCESS_KEY_ID: %[6]s
+  SECRET_ACCESS_KEY: %[7]s
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: minio-mkbucket
-  namespace: %[1]s
+  name: %[1]s-mkbucket
+  namespace: %[2]s
 spec:
   backoffLimit: 20
   template:
     spec:
       restartPolicy: OnFailure
       containers:
-      - name: mc
-        image: minio/mc:latest
+      - name: s3client
+        image: %[8]s
         command:
-        - sh
+        - /bin/sh
         - -c
         - |
-          until mc alias set local http://minio.%[1]s.svc:9000 minioadmin minioadmin; do sleep 2; done
-          mc mb --ignore-existing local/%[3]s
-          mc ls local
-`, testNamespace, minioCredsSecret, minioBucket)
-}
-
-// sharedMinioManifest returns the MinIO manifest for the shared namespace. It is
-// identical to minioManifest but uses minioNamespace instead of testNamespace so
-// the suite deploys MinIO once in a dedicated namespace reachable from all tests.
-func sharedMinioManifest() string {
-	m := minioManifest()
-	// Replace every occurrence of the per-test namespace with the shared one.
-	// minioManifest uses %[1]s=testNamespace — the formatted string contains the
-	// actual namespace name, so we do a plain string replace.
-	return strings.ReplaceAll(m, testNamespace, minioNamespace)
+          set -e
+          until rclone lsd %[10]s: >/dev/null 2>&1; do sleep 2; done
+          rclone mkdir %[10]s:%[9]s
+          rclone lsd %[10]s:
+        env:
+%[11]s
+`, objectStoreName, namespace, objectStoreImage, objectStorePort, objectStoreCredsSecret,
+		objectStoreAccessKey, objectStoreSecretKey, s3ClientImage, objectStoreBucket,
+		s3Remote, s3ClientEnvYAML("        ",
+			fmt.Sprintf("http://%s.%s.svc:%d", objectStoreName, namespace, objectStorePort)))
 }

@@ -114,13 +114,13 @@ func scrapeInstanceMetrics(instance string) string {
 	})
 	cmd := exec.Command("kubectl", "run", curlPod, "--restart=Never",
 		"--namespace", testNamespace,
-		"--image=curlimages/curl:latest",
+		"--image="+curlImage,
 		"--overrides",
 		fmt.Sprintf(`{
 			"spec": {
 				"containers": [{
 					"name": "curl",
-					"image": "curlimages/curl:latest",
+					"image": "`+curlImage+`",
 					"command": ["/bin/sh", "-c"],
 					"args": [
 						"for i in $(seq 1 30); do curl -sS http://%s:9187/metrics && exit 0 || sleep 2; done; exit 1"
