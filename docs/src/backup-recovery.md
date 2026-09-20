@@ -44,15 +44,15 @@ spec:
     objectStore:
       bucket: cnmsql-backups
       path: production
-      endpoint: http://minio.minio.svc:9000
+      endpoint: http://seaweedfs.objectstore.svc:8333
       region: us-east-1
       forcePathStyle: true
       credentials:
         accessKeyId:
-          name: minio-creds
+          name: objectstore-creds
           key: accessKey
         secretAccessKey:
-          name: minio-creds
+          name: objectstore-creds
           key: secretKey
 ```
 
@@ -213,13 +213,13 @@ spec:
     objectStore:
       bucket: cnmsql-backups
       path: production
-      endpoint: http://minio.minio.svc:9000
+      endpoint: http://seaweedfs.objectstore.svc:8333
       credentials:
         accessKeyId:
-          name: minio-creds
+          name: objectstore-creds
           key: accessKey
         secretAccessKey:
-          name: minio-creds
+          name: objectstore-creds
           key: secretKey
 ```
 
@@ -266,13 +266,13 @@ spec:
       objectStore:
         bucket: cnmsql-backups
         path: production
-        endpoint: http://minio.minio.svc:9000
+        endpoint: http://seaweedfs.objectstore.svc:8333
         credentials:
           accessKeyId:
-            name: minio-creds
+            name: objectstore-creds
             key: accessKey
           secretAccessKey:
-            name: minio-creds
+            name: objectstore-creds
             key: secretKey
 ```
 
@@ -324,5 +324,5 @@ Kubernetes primitives.
 
 Unit tests cover object-store key construction, checksum helpers, backup target
 selection, Job rendering, status transitions, and restore command behavior. The
-Kind + MinIO e2e suite validates backup upload, metadata writing, restore into a
+Kind + SeaweedFS e2e suite validates backup upload, metadata writing, restore into a
 new Cluster, and recovered data correctness.

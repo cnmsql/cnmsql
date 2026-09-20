@@ -42,10 +42,10 @@ var _ = Describe("MariaDB failover + PITR under heavy writes", Ordered, Label("f
 		prevNS = testNamespace
 		ns = createTestNamespace("mdb-stress-pitr")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating a 3-instance MariaDB cluster with continuous archiving")
 		applyManifest(sourceCluster, mariadbStressArchivingClusterManifest(sourceCluster))

@@ -116,10 +116,10 @@ func runReinitUnionPITR(f reinitUnionFlavor, sourceCluster, restoredCluster, bac
 		prevNS = testNamespace
 		ns = createTestNamespace("reinit-union")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating a 2-instance cluster with continuous archiving")
 		applyManifest(sourceCluster, f.sourceManifest(sourceCluster))

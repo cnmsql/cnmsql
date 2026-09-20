@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,10 +30,10 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 		prevNS = testNamespace
 		ns = createTestNamespace("retention")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating an archiving cluster with a 1-day retention policy")
 		applyManifest(retCluster, retentionClusterManifest(retCluster, "1d"))
@@ -69,11 +70,11 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 		meta := fmt.Sprintf(`{"backupID":"stale-id","clusterName":"%s","backupName":"stale-backup",`+
 			`"method":"xtrabackup","archiveKey":"%s/backup.xbstream","sizeBytes":1,`+
 			`"startedAt":"%s","completedAt":"%s"}`, retCluster, oldPrefix, oldTime, oldTime)
-		mcPipe(meta, fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))
-		mcPipe("stale-archive-bytes", fmt.Sprintf("local/%s/%s/backup.xbstream", minioBucket, oldPrefix))
+		s3Pipe(meta, objectKey("%s/metadata.json", oldPrefix))
+		s3Pipe("stale-archive-bytes", objectKey("%s/backup.xbstream", oldPrefix))
 
 		By("confirming the stale backup is present before GC")
-		Expect(mcObjectExists(fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))).
+		Expect(s3ObjectExists(objectKey("%s/metadata.json", oldPrefix))).
 			To(BeTrue(), "seeded stale backup should exist before GC")
 
 		By("clearing the retention throttle so the next reconcile runs the pass")
@@ -91,7 +92,7 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 
 		By("verifying the stale backup directory is GC'd")
 		Eventually(func(g Gomega) {
-			g.Expect(mcObjectExists(fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))).
+			g.Expect(s3ObjectExists(objectKey("%s/metadata.json", oldPrefix))).
 				To(BeFalse(), "stale backup metadata should be deleted")
 		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 
@@ -100,8 +101,7 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 			"-o", "jsonpath={.status.backupId}")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(id).NotTo(BeEmpty())
-		out, err := mcExec("mc", "--quiet", "ls", "-r",
-			fmt.Sprintf("local/%s/%s/", minioBucket, retCluster))
+		out, err := rcloneExec("lsf", "-R", "--files-only", objectKey("%s/", retCluster))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring(realBackup), "recent backup should still be present")
 
@@ -118,35 +118,36 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 	})
 })
 
-// mcPipe writes content to the given object key through the mc toolbox pod. The
-// shared MinIO is a single replica, so a mid-suite restart briefly refuses
+// s3Pipe writes content to the given object key through the toolbox pod. The
+// shared store is a single replica, so a mid-suite restart briefly refuses
 // connections; the write is idempotent, so retry it rather than failing the spec
 // on a transient blip.
-func mcPipe(content, key string) {
+func s3Pipe(content, key string) {
 	Eventually(func() error {
-		_, err := mcExec("sh", "-c", fmt.Sprintf("printf '%%s' %q | mc --quiet pipe %s", content, key))
+		_, err := s3Exec("sh", "-c",
+			fmt.Sprintf("printf '%%s' %q | rclone --quiet --retries=1 rcat %s", content, key))
 		return err
 	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed(), "Failed to write object %s", key)
 }
 
-// mcObjectExists reports whether an object exists in the store via mc stat. A
-// genuine "object does not exist" is a definitive false; a transient transport
-// error (MinIO restarting) is retried so it is never misreported as absence.
-func mcObjectExists(key string) bool {
+// s3ObjectExists reports whether an object exists in the store.
+//
+// Existence is read from `rclone lsf`'s output, not its exit status: a miss is a
+// successful listing that returned nothing, so a non-zero exit is never an answer
+// — it is the store restarting, an unreachable endpoint or a missing bucket. Such
+// a failure is retried rather than reported as absence, which would silently pass
+// a retention assertion that only ever proves objects are gone.
+func s3ObjectExists(key string) bool {
 	var exists bool
 	Eventually(func() error {
-		out, err := mcExec("mc", "--quiet", "stat", key)
-		if err == nil {
-			exists = true
-			return nil
+		out, err := rcloneExec("lsf", key)
+		if err != nil {
+			return fmt.Errorf("listing %s: %w (%s)", key, err, out)
 		}
-		if isTransientObjectStoreError(out, err) {
-			return err // keep polling until MinIO answers definitively
-		}
-		exists = false // definitive: the object is not there
+		exists = strings.TrimSpace(out) != ""
 		return nil
 	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed(),
-		"mc stat %s kept failing transiently", key)
+		"listing %s never succeeded", key)
 	return exists
 }
 

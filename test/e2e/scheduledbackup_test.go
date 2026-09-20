@@ -14,7 +14,7 @@ import (
 
 // This spec exercises the ScheduledBackup controller end to end: an immediate
 // backup fires on creation and the cron cadence keeps producing Backups, each
-// labeled with its parent ScheduledBackup. It reuses the single-node MinIO store
+// labeled with its parent ScheduledBackup. It reuses the single-node object store
 // stood up for the one-shot backup specs.
 var _ = Describe("Scheduled backups", Ordered, Label("feature"), func() {
 	const (
@@ -35,8 +35,8 @@ var _ = Describe("Scheduled backups", Ordered, Label("feature"), func() {
 		prevNS = testNamespace
 		ns = createTestNamespace("scheduled")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
 
 		By("creating the source cluster that archives to object storage")
 		applyManifest(sourceCluster, archivingClusterManifest(sourceCluster))

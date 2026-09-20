@@ -23,7 +23,7 @@ const trueEnvValue = "true"
 var shouldCleanupCertManager = false
 
 // sharedSetupEnabled reports whether the suite should deploy the shared operator,
-// MinIO and cert-manager on the suite cluster. Disruptive lanes set
+// the object store and cert-manager on the suite cluster. Disruptive lanes set
 // E2E_SHARED_SETUP=false because every disruptive spec provisions its OWN
 // ephemeral cluster — so deploying them on the shared cluster is unused overhead,
 // and running a second cluster's control plane alongside it on the single runner
@@ -93,7 +93,7 @@ var _ = SynchronizedAfterSuite(func() {
 	// Per-process teardown (no-op — each spec handles its own namespace cleanup).
 }, func() {
 	if sharedSetupEnabled() {
-		teardownSharedMinio()
+		teardownSharedObjectStore()
 		undeployOperator()
 	}
 	teardownCertManager()
@@ -136,14 +136,14 @@ func doSuiteSetup() {
 
 	configureKubectlKubeRC()
 
-	// Disruptive lanes (E2E_SHARED_SETUP=false) skip the shared operator/MinIO:
+	// Disruptive lanes (E2E_SHARED_SETUP=false) skip the shared operator/object store:
 	// every disruptive spec provisions its own ephemeral cluster, so this is pure
 	// overhead and a second running control plane on the single runner. Instance
 	// images are still pulled above so those dedicated clusters can load them.
 	if sharedSetupEnabled() {
 		setupCertManager()
 		deployOperator()
-		deploySharedMinio()
+		deploySharedObjectStore()
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // These specs exercise physical backups to object storage, bootstrapping a new
 // cluster by recovering one of those backups, and the safety guard that keeps a
 // fresh cluster from overwriting a non-empty backup destination. They stand up a
-// single-node MinIO inside the test cluster to act as the S3-compatible store.
+// single-node object store inside the test cluster to act as the S3-compatible store.
 var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func() {
 	const (
 		sourceCluster   = "bkp-src"
@@ -28,8 +28,8 @@ var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func(
 		prevNS = testNamespace
 		ns = createTestNamespace("backup")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
 
 		By("creating the source cluster that archives to object storage")
 		applyManifest(sourceCluster, archivingClusterManifest(sourceCluster))
@@ -69,7 +69,7 @@ var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func(
 		dest, err := kubectl("get", "backup", backupName, "-n", testNamespace,
 			"-o", "jsonpath={.status.destinationPath}")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(dest).To(ContainSubstring("s3://"+minioBucket), "unexpected destination path")
+		Expect(dest).To(ContainSubstring("s3://"+objectStoreBucket), "unexpected destination path")
 	})
 
 	It("shapes the backup worker Job from spec.jobTemplate", func() {

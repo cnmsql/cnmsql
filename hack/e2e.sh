@@ -5,7 +5,7 @@
 # It owns the whole lifecycle: ensure a Kind cluster, build & load the manager
 # image once (outside Ginkgo), run the suite with the requested focus / labels /
 # parallelism, and tear the cluster down on success. The operator, instance
-# images, cert-manager and MinIO are still set up by the suite's
+# images, cert-manager and the object store are still set up by the suite's
 # SynchronizedBeforeSuite.
 #
 # See design/025-e2e-testing-overhaul.md.

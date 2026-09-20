@@ -31,10 +31,10 @@ var _ = Describe("MariaDB backup retention GC", Ordered, Label("flavor", "mariad
 		prevNS = testNamespace
 		ns = createTestNamespace("mdb-retention")
 
-		setupMinio()
-		DeferCleanup(teardownMinio)
-		setupMC()
-		DeferCleanup(teardownMC)
+		setupObjectStore()
+		DeferCleanup(teardownObjectStore)
+		setupS3Client()
+		DeferCleanup(teardownS3Client)
 
 		By("creating a MariaDB archiving cluster with a 1-day retention policy")
 		applyManifest(retCluster, mariadbRetentionClusterManifest(retCluster, "1d"))
@@ -63,11 +63,11 @@ var _ = Describe("MariaDB backup retention GC", Ordered, Label("flavor", "mariad
 		meta := fmt.Sprintf(`{"backupID":"stale-id","clusterName":"%s","backupName":"stale-backup",`+
 			`"method":"xtrabackup","archiveKey":"%s/backup.mbstream","sizeBytes":1,`+
 			`"startedAt":"%s","completedAt":"%s"}`, retCluster, oldPrefix, oldTime, oldTime)
-		mcPipe(meta, fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))
-		mcPipe("stale-archive-bytes", fmt.Sprintf("local/%s/%s/backup.mbstream", minioBucket, oldPrefix))
+		s3Pipe(meta, objectKey("%s/metadata.json", oldPrefix))
+		s3Pipe("stale-archive-bytes", objectKey("%s/backup.mbstream", oldPrefix))
 
 		By("confirming the stale backup is present before GC")
-		Expect(mcObjectExists(fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))).
+		Expect(s3ObjectExists(objectKey("%s/metadata.json", oldPrefix))).
 			To(BeTrue(), "seeded stale backup should exist before GC")
 
 		By("clearing the retention throttle so the next reconcile runs the pass")
@@ -81,7 +81,7 @@ var _ = Describe("MariaDB backup retention GC", Ordered, Label("flavor", "mariad
 
 		By("verifying the stale backup directory is GC'd")
 		Eventually(func(g Gomega) {
-			g.Expect(mcObjectExists(fmt.Sprintf("local/%s/%s/metadata.json", minioBucket, oldPrefix))).
+			g.Expect(s3ObjectExists(objectKey("%s/metadata.json", oldPrefix))).
 				To(BeFalse(), "stale backup metadata should be deleted")
 		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 
@@ -90,8 +90,7 @@ var _ = Describe("MariaDB backup retention GC", Ordered, Label("flavor", "mariad
 			"-o", "jsonpath={.status.backupId}")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(id).NotTo(BeEmpty())
-		out, err := mcExec("mc", "--quiet", "ls", "-r",
-			fmt.Sprintf("local/%s/%s/", minioBucket, retCluster))
+		out, err := rcloneExec("lsf", "-R", "--files-only", objectKey("%s/", retCluster))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring(realBackup), "recent backup should still be present")
 

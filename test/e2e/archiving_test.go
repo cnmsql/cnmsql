@@ -12,7 +12,7 @@ import (
 )
 
 // These specs exercise continuous binary-log archiving (M7.1) end-to-end against
-// a real Kind cluster backed by in-cluster MinIO. Binlog archiving is the
+// a real Kind cluster backed by an in-cluster S3 store. Binlog archiving is the
 // foundation of point-in-time recovery, so correctness here is non-negotiable:
 // the suite proves the archive stays gapless through forced rotation, an
 // ungraceful primary crash, an automatic failover, and an object-store outage —
@@ -27,7 +27,7 @@ import (
 //
 // Each Percona version is declared as a separate Describe container so that
 // Ginkgo's --procs can run them in parallel across different processes. Each
-// version gets its own namespace and its own in-cluster MinIO so there is no
+// version gets its own namespace and shares the in-cluster S3 store so there is no
 // resource contention.
 
 func init() {
@@ -39,13 +39,13 @@ func init() {
 			BeforeAll(func() {
 				prevNS = testNamespace
 				ns = createTestNamespace("arch-" + sanitize(v))
-				setupMinio()
-				setupMC()
+				setupObjectStore()
+				setupS3Client()
 			})
 
 			AfterAll(func() {
-				teardownMC()
-				teardownMinio()
+				teardownS3Client()
+				teardownObjectStore()
 				deleteTestNamespace(ns, prevNS)
 			})
 
@@ -143,20 +143,20 @@ func archivingVersionSpecs(version string) {
 		It("degrades then recovers across an object-store outage", func() {
 			primary := clusterPrimary(cluster)
 
-			By("scaling MinIO down to simulate an object-store outage")
-			_, err := kubectl("scale", "deployment/minio", "-n", minioNamespace, "--replicas=0")
-			Expect(err).NotTo(HaveOccurred(), "Failed to scale MinIO down")
+			By("scaling the object store down to simulate an outage")
+			_, err := kubectl("scale", "deployment/"+objectStoreName, "-n", objectStoreNamespace, "--replicas=0")
+			Expect(err).NotTo(HaveOccurred(), "Failed to scale the object store down")
 			DeferCleanup(func() {
-				_, _ = kubectl("scale", "deployment/minio", "-n", minioNamespace, "--replicas=1")
-				_, _ = kubectl("wait", "deployment/minio", "-n", minioNamespace,
+				_, _ = kubectl("scale", "deployment/"+objectStoreName, "-n", objectStoreNamespace, "--replicas=1")
+				_, _ = kubectl("wait", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
 					"--for=condition=Available", "--timeout=3m")
 			})
-			By("waiting for MinIO to have no available replicas")
+			By("waiting for the object store to have no available replicas")
 			Eventually(func(g Gomega) {
-				ready, err := kubectl("get", "deployment/minio", "-n", minioNamespace,
+				ready, err := kubectl("get", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
 					"-o", "jsonpath={.status.availableReplicas}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(ready).To(BeEmpty(), "MinIO still has available replicas")
+				g.Expect(ready).To(BeEmpty(), "The object store still has available replicas")
 			}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
 
 			By("writing and rotating so rotated files pile up un-shippable")
@@ -179,16 +179,23 @@ func archivingVersionSpecs(version string) {
 				g.Expect(reason).NotTo(BeEmpty(), "no archiving failure was recorded")
 			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
-			By("restoring MinIO and waiting for it to come back")
-			_, err = kubectl("scale", "deployment/minio", "-n", minioNamespace, "--replicas=1")
-			Expect(err).NotTo(HaveOccurred(), "Failed to scale MinIO back up")
-			_, err = kubectl("wait", "deployment/minio", "-n", minioNamespace,
+			By("restoring the object store and waiting for it to come back")
+			_, err = kubectl("scale", "deployment/"+objectStoreName, "-n", objectStoreNamespace, "--replicas=1")
+			Expect(err).NotTo(HaveOccurred(), "Failed to scale the object store back up")
+			_, err = kubectl("wait", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
 				"--for=condition=Available", "--timeout=3m")
-			Expect(err).NotTo(HaveOccurred(), "MinIO did not come back")
+			Expect(err).NotTo(HaveOccurred(), "The object store did not come back")
 
-			By("recreating the MinIO bucket lost when the pod was rescheduled")
-			_, err = mcExec("mc", "mb", "--ignore-existing", "local/"+minioBucket)
-			Expect(err).NotTo(HaveOccurred(), "Failed to recreate MinIO bucket")
+			By("recreating the bucket in case it was lost when the pod was rescheduled")
+			// The Deployment reports Available as soon as the S3 port answers its
+			// health check, which can be a moment before the store will serve a
+			// bucket write. mkdir is idempotent, so poll rather than fail the spec
+			// on that window.
+			Eventually(func() error {
+				_, err := rcloneExec("mkdir", s3Remote+":"+objectStoreBucket)
+				return err
+			}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed(),
+				"Failed to recreate the bucket")
 
 			By("verifying the backlog drains and the archive catches up gaplessly")
 			executed := flushBinaryLogs(cluster, primary, password)

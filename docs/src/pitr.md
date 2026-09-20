@@ -227,13 +227,13 @@ spec:
     objectStore:
       bucket: cnmsql-backups
       path: production
-      endpoint: http://minio.minio.svc:9000
+      endpoint: http://seaweedfs.objectstore.svc:8333
       credentials:
         accessKeyId:
-          name: minio-creds
+          name: objectstore-creds
           key: accessKey
         secretAccessKey:
-          name: minio-creds
+          name: objectstore-creds
           key: secretKey
     continuousArchiving:
       enabled: true
@@ -256,13 +256,13 @@ spec:
     objectStore:
       bucket: cnmsql-backups
       path: production
-      endpoint: http://minio.minio.svc:9000
+      endpoint: http://seaweedfs.objectstore.svc:8333
       credentials:
         accessKeyId:
-          name: minio-creds
+          name: objectstore-creds
           key: accessKey
         secretAccessKey:
-          name: minio-creds
+          name: objectstore-creds
           key: secretKey
 ```
 
@@ -402,6 +402,6 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 The implementation is covered by unit tests for archive key construction,
 archiver idempotency, collision detection, replay planning, recovery target
 validation, and controller wiring. Integration tests exercise real Percona
-`mysqlbinlog | mysql` replay to a target GTID. The Kind + MinIO e2e suite covers
+`mysqlbinlog | mysql` replay to a target GTID. The Kind + SeaweedFS e2e suite covers
 gapless archiving, failover continuity, object-store outage surfacing, and PITR
 to `targetGTID` with exact data assertions.
