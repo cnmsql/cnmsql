@@ -165,6 +165,79 @@ func TestScaleDownKeepsCurrentPrimaryByName(t *testing.T) {
 	}
 }
 
+// A failover can elect the highest ordinal just as spec.instances drops below
+// it. Removing that target would leave the cluster switching over to an
+// instance that no longer exists, so scale-down waits for the change to land.
+func TestScaleDownDefersWhilePrimaryChangeInFlight(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Status.CurrentPrimary = demoPrimaryInstance
+	cluster.Status.TargetPrimary = testReplica2
+	scheme := testScheme(t)
+	objects := []client.Object{cluster}
+	for i := 1; i <= 3; i++ {
+		objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name:      instanceName(cluster, i),
+			Namespace: cluster.Namespace,
+			Labels:    map[string]string{clusterLabel: cluster.Name},
+		}})
+	}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
+		Scheme: scheme,
+	}
+	plan := testPlan() // Instances == 1
+
+	if err := reconciler.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{testReplica2, "demo-3"} {
+		if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &corev1.Pod{}); err != nil {
+			t.Fatalf("pod %s should be kept while the primary change is in flight: %v", name, err)
+		}
+	}
+
+	// Once the target is the current primary, the other surplus replica goes and
+	// the new primary stays.
+	cluster.Status.CurrentPrimary = testReplica2
+	plan.PrimaryName = testReplica2
+	if err := reconciler.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testReplica2}, &corev1.Pod{}); err != nil {
+		t.Fatalf("promoted primary should be kept: %v", err)
+	}
+	err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: "demo-3"}, &corev1.Pod{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("pod demo-3 get = %v, want removed", err)
+	}
+}
+
+func TestScaleDownKeepsTargetPrimaryWithoutCurrentPrimary(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Status.TargetPrimary = testReplica2
+	scheme := testScheme(t)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      testReplica2,
+		Namespace: cluster.Namespace,
+		Labels:    map[string]string{clusterLabel: cluster.Name},
+	}}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pod).Build(),
+		Scheme: scheme,
+	}
+
+	if err := reconciler.scaleDownReplicas(ctx, cluster, testPlan()); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testReplica2}, &corev1.Pod{}); err != nil {
+		t.Fatalf("target primary should be kept: %v", err)
+	}
+}
+
 // TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary checks that a brand-new
 // replica is not created while the primary is not OK: it would be cloned from a
 // primary that is unreachable or not acting as primary. Once the primary is OK

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,52 @@ func observePartitionedReplica(t *testing.T, previousPhase string) observedClust
 		t.Fatalf("readyInstances = %d, want 1", observed.ReadyInstances)
 	}
 	return observed
+}
+
+// A promotion target above the desired count must still be observed, or the
+// switchover can never see it, yet it must not count toward the desired
+// instances being ready.
+func TestObserveIncludesOutOfRangePromotionTarget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 1
+	cluster.Status.CurrentPrimary = testPrimary
+	cluster.Status.TargetPrimary = testReplica2
+	scheme := testScheme(t)
+
+	control := &recordingControlClient{statuses: map[string]*webserver.Status{
+		testPrimary:  {InstanceName: testPrimary, Role: webserver.RolePrimary, IsReady: true, GTIDExecuted: testGTID},
+		testReplica2: healthyReplicaStatus(testReplica2, testGTID),
+	}}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, readyPod(cluster, testPrimary, rolePrimary), readyPod(cluster, testReplica2, roleReplica)).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	plan := testPlan()
+	plan.Instances = 1
+	observed, err := reconciler.observe(ctx, cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(observed.InstanceNames, testReplica2) {
+		t.Fatalf("instanceNames = %v, want the out-of-range target %s", observed.InstanceNames, testReplica2)
+	}
+	if observed.StatusByInstance[testReplica2] == nil {
+		t.Fatalf("target %s was not observed", testReplica2)
+	}
+	if observed.ReadyInstances != 1 {
+		t.Fatalf("readyInstances = %d, want 1 (the out-of-range target is not a desired instance)", observed.ReadyInstances)
+	}
+	if !observed.Ready {
+		t.Fatal("ready = false, want true: the one desired instance is ready")
+	}
 }
 
 func TestObserveEstablishedClusterDegradesWhenInstanceUnreachable(t *testing.T) {

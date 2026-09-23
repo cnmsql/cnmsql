@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -125,7 +126,16 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		Progressing:              true,
 	}
 
-	for i := 1; i <= plan.Instances; i++ {
+	// A primary, or a promotion target, can sit above the desired count: a
+	// failover can pick the highest ordinal just as a scale-down lowers
+	// spec.instances. Scale-down never removes it, so observe it too, or the
+	// switchover could never see its target and the rw Service would lose its
+	// primary. It is left out of ReadyInstances, which Ready compares to the
+	// desired count.
+	outOfRange := outOfRangePrimaries(cluster, plan)
+	observed.InstanceNames = append(observed.InstanceNames, outOfRange...)
+
+	for _, i := range observedOrdinals(cluster, plan, outOfRange) {
 		inst := plan.instanceFor(cluster, i)
 		// Check the data PVC independently of the Pod: an offline-expand resize
 		// lingers precisely while the volume is detached (no Pod), so gating this on
@@ -180,7 +190,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		if status.ReplicationLag != nil && status.ReplicationLag.LagMillis != nil {
 			observed.ReplicationLagByInstance[inst.Name] = *status.ReplicationLag.LagMillis
 		}
-		if status.IsReady {
+		if status.IsReady && i <= plan.Instances {
 			observed.ReadyInstances++
 		}
 	}
@@ -220,6 +230,35 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
+}
+
+// outOfRangePrimaries returns the current primary and the promotion target when
+// their ordinal is above the desired instance count, deduplicated and in that
+// order.
+func outOfRangePrimaries(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
+	var names []string
+	for _, name := range []string{cluster.Status.CurrentPrimary, cluster.Status.TargetPrimary} {
+		ordinal, ok := instanceOrdinal(cluster, name)
+		if !ok || ordinal <= plan.Instances || slices.Contains(names, name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// observedOrdinals lists the ordinals observe polls: every desired instance,
+// then the out-of-range primaries.
+func observedOrdinals(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, outOfRange []string) []int {
+	ordinals := make([]int, 0, plan.Instances+len(outOfRange))
+	for i := 1; i <= plan.Instances; i++ {
+		ordinals = append(ordinals, i)
+	}
+	for _, name := range outOfRange {
+		ordinal, _ := instanceOrdinal(cluster, name)
+		ordinals = append(ordinals, ordinal)
+	}
+	return ordinals
 }
 
 // evaluateStoragePressure aggregates the per-instance data-volume usage into the
