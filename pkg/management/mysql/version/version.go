@@ -230,9 +230,15 @@ type SemiSyncNaming struct {
 	EnabledVarSource  string
 	EnabledVarReplica string
 	// WaitForCountVar bounds how many acknowledgements the source waits for.
+	// Empty when the engine always waits for exactly one (MariaDB).
 	WaitForCountVar string
 	// TimeoutVar bounds the acknowledgement wait, in milliseconds.
 	TimeoutVar string
+	// WaitPointVar, when set, is pinned to AFTER_SYNC so the source waits for
+	// the acknowledgement before committing to its storage engine: no other
+	// session sees a transaction that a failover could lose. Empty where that
+	// is already the default (MySQL).
+	WaitPointVar string
 	// PluginSource / PluginReplica are the INSTALL PLUGIN names.
 	PluginSource  string
 	PluginReplica string

@@ -574,7 +574,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 			pair{"loose-" + naming.EnabledVarSource, "1"},
 			pair{"loose-" + naming.EnabledVarReplica, "1"},
 		)
-		if c.SemiSync.WaitForReplicaCount > 0 {
+		if c.SemiSync.WaitForReplicaCount > 0 && naming.WaitForCountVar != "" {
 			pairs = append(pairs, pair{
 				"loose-" + naming.WaitForCountVar,
 				strconv.Itoa(c.SemiSync.WaitForReplicaCount),
@@ -585,6 +585,9 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 				"loose-" + naming.TimeoutVar,
 				strconv.Itoa(c.SemiSync.TimeoutMillis),
 			})
+		}
+		if naming.WaitPointVar != "" {
+			pairs = append(pairs, pair{"loose-" + naming.WaitPointVar, "AFTER_SYNC"})
 		}
 	}
 

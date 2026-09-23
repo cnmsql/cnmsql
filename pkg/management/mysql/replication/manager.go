@@ -383,8 +383,13 @@ func (m *Manager) EnableSemiSync(ctx context.Context) error {
 // (rpl_semi_sync_source_wait_for_replica_count / the legacy slave-count
 // variable). The operator lowers this below minSyncReplicas while replicas are
 // unhealthy under "preferred" data durability, then restores it as they recover.
+// It is a no-op on an engine with no such variable (MariaDB always waits for
+// exactly one acknowledgement).
 func (m *Manager) SetSemiSyncWaitForReplicaCount(ctx context.Context, count int) error {
 	naming := m.repl.SemiSyncNaming(m.version)
+	if naming.WaitForCountVar == "" {
+		return nil
+	}
 	return m.exec(ctx, SetGlobalStatement(naming.WaitForCountVar, strconv.Itoa(count)))
 }
 

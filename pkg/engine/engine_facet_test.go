@@ -267,10 +267,13 @@ func TestMariaDBReplDialect(t *testing.T) {
 		t.Errorf("ServerIdentityQuery() = %q, want %q", got, want)
 	}
 
-	// Semi-sync naming uses source/replica spelling.
-	if naming := r.SemiSyncNaming(v); naming.EnabledVarSource != "rpl_semi_sync_source_enabled" ||
-		naming.EnabledVarReplica != "rpl_semi_sync_replica_enabled" {
-		t.Errorf("SemiSyncNaming() = %+v, want source/replica spelling", naming)
+	// Semi-sync naming is the engine's master/slave spelling, so the runtime
+	// setters and the rendered my.cnf agree.
+	if naming, want := r.SemiSyncNaming(v), mariadbSemiSyncNaming(); naming != want {
+		t.Errorf("SemiSyncNaming() = %+v, want %+v", naming, want)
+	}
+	if naming := r.SemiSyncNaming(v); naming.EnabledVarSource != "rpl_semi_sync_master_enabled" {
+		t.Errorf("SemiSyncNaming().EnabledVarSource = %q, want rpl_semi_sync_master_enabled", naming.EnabledVarSource)
 	}
 }
 
@@ -316,13 +319,20 @@ func TestMariaDBFacets(t *testing.T) {
 		t.Error("MariaDB IsGroupReplicationManagedKey(plugin_load_add) = true, want false")
 	}
 
-	// SemiSync uses source/replica naming.
-	n := eng.SemiSync(v)
-	if n.EnabledVarSource != "rpl_semi_sync_source_enabled" {
-		t.Errorf("MariaDB SemiSync EnabledVarSource = %q, want rpl_semi_sync_source_enabled", n.EnabledVarSource)
+	// SemiSync keeps the master/slave naming on every supported series: mariadbd
+	// does not know the MySQL source/replica names, and has no acknowledgement
+	// count variable.
+	want := version.SemiSyncNaming{
+		EnabledVarSource:  "rpl_semi_sync_master_enabled",
+		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
+		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		WaitPointVar:      "rpl_semi_sync_master_wait_point",
 	}
-	if n.EnabledVarReplica != "rpl_semi_sync_replica_enabled" {
-		t.Errorf("MariaDB SemiSync EnabledVarReplica = %q, want rpl_semi_sync_replica_enabled", n.EnabledVarReplica)
+	for _, s := range []string{"10.11.9", "11.4.3", "12.3.2"} {
+		sv := mustVersion(t, s)
+		if n := eng.SemiSync(sv); n != want {
+			t.Errorf("MariaDB SemiSync(%s) = %+v, want %+v", s, n, want)
+		}
 	}
 }
 

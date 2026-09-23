@@ -234,6 +234,8 @@ func TestRenderSemiSync(t *testing.T) {
 	assertContains(t, out, "loose-rpl_semi_sync_replica_enabled = 1")
 	assertContains(t, out, "loose-rpl_semi_sync_source_wait_for_replica_count = 1")
 	assertContains(t, out, "loose-rpl_semi_sync_source_timeout = 5000")
+	// AFTER_SYNC is already MySQL's default.
+	assertNotContains(t, out, "wait_point")
 }
 
 // TestRenderEngineCapabilityOverrides covers the engine-aware rendering path:
@@ -242,12 +244,13 @@ func TestRenderSemiSync(t *testing.T) {
 // controller takes for MariaDB, whose 11.4 version string would otherwise be
 // (mis)read with MySQL semantics.
 func TestRenderEngineCapabilityOverrides(t *testing.T) {
-	// MariaDB uses source/replica semi-sync naming.
+	// MariaDB keeps the master/slave semi-sync naming and has no
+	// acknowledgement count variable.
 	mariadbNaming := version.SemiSyncNaming{
-		EnabledVarSource:  "rpl_semi_sync_source_enabled",
-		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
-		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
-		TimeoutVar:        "rpl_semi_sync_source_timeout",
+		EnabledVarSource:  "rpl_semi_sync_master_enabled",
+		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
+		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		WaitPointVar:      "rpl_semi_sync_master_wait_point",
 	}
 
 	c := baseConfig()
@@ -276,9 +279,14 @@ func TestRenderEngineCapabilityOverrides(t *testing.T) {
 	// A replica is read_only, but MariaDB has no super_read_only.
 	assertContains(t, out, "read_only = ON")
 	assertNotContains(t, out, "super_read_only")
-	// Semi-sync uses source/replica naming.
-	assertContains(t, out, "loose-rpl_semi_sync_source_enabled = 1")
-	assertNotContains(t, out, "rpl_semi_sync_master_enabled")
+	// Semi-sync uses the master/slave naming, pins the lossless wait point and
+	// renders no acknowledgement count.
+	assertContains(t, out, "loose-rpl_semi_sync_master_enabled = 1")
+	assertContains(t, out, "loose-rpl_semi_sync_slave_enabled = 1")
+	assertContains(t, out, "loose-rpl_semi_sync_master_timeout = 5000")
+	assertContains(t, out, "loose-rpl_semi_sync_master_wait_point = AFTER_SYNC")
+	assertNotContains(t, out, "rpl_semi_sync_source")
+	assertNotContains(t, out, "wait_for")
 }
 
 func TestRenderAdminInterfaceModern(t *testing.T) {
