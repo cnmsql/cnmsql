@@ -476,18 +476,36 @@ func TestPodSpecSwitchoverPreStopHook(t *testing.T) {
 
 	maxStop := int64(baseCluster().GetMaxStopDelay())
 
-	t.Run("single instance has no blocking preStop hook", func(t *testing.T) {
+	// Scaling in or out of a single instance must not change an existing member's
+	// template: the primary roll it forced deleted a primary that had no preStop
+	// yet, which stopped at once and failed over instead of switching over.
+	t.Run("hook and template hash do not depend on the instance count", func(t *testing.T) {
 		t.Parallel()
-		cluster := baseCluster() // Instances: 1, switchover-on-drain default-enabled
-		plan := testPlan()       // plan.Instances: 1
-		spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
-
-		if lc := spec.Containers[0].Lifecycle; lc != nil {
-			t.Fatalf("single-instance Pod must not get a preStop hook (it can never be demoted): %+v", lc)
+		r := &ClusterReconciler{}
+		templateHash := func(instances int) (corev1.PodSpec, string) {
+			cluster := baseCluster() // switchover-on-drain default-enabled
+			cluster.Spec.Instances = instances
+			plan := testPlan()
+			plan.Instances = instances
+			inst := plan.instanceFor(cluster, 1)
+			spec := r.podSpec(cluster, plan, inst)
+			annotations, err := r.podAnnotations(cluster, plan, inst, labelsFor(cluster, inst.Name, roleOf(inst)), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return spec, annotations[podTemplateHashAnnotation]
 		}
-		// Grace period stays at the bare mysqld stop budget — no handoff extension.
-		if got := *spec.TerminationGracePeriodSeconds; got != maxStop {
-			t.Fatalf("grace period = %d, want %d (no handoff extension)", got, maxStop)
+		single, singleHash := templateHash(1)
+		_, pairHash := templateHash(2)
+
+		if lc := single.Containers[0].Lifecycle; lc == nil || lc.PreStop == nil {
+			t.Fatal("single-instance Pod must carry the preStop hook too")
+		}
+		if got, want := *single.TerminationGracePeriodSeconds, maxStop+switchoverHandoffSeconds; got != want {
+			t.Fatalf("grace period = %d, want %d (stop delay + handoff)", got, want)
+		}
+		if singleHash != pairHash {
+			t.Fatalf("template hash moved from %q to %q when scaling 1 -> 2; the primary would be rolled", singleHash, pairHash)
 		}
 	})
 

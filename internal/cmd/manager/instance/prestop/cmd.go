@@ -77,16 +77,27 @@ func NewCommand() *cobra.Command {
 
 // WaitUntilDemoted blocks until the local mysqld reports read_only=ON — meaning
 // the instance has been demoted to a replica, so any switchover has completed —
-// or the timeout elapses. A replica is already read_only, so it returns at once.
+// or the timeout elapses. A replica is already read_only, so it returns at once,
+// and so does a primary that no replica is streaming from.
 //
 // It always returns nil: a preStop hook must never fail the Pod's termination.
 // On timeout or any error it simply lets the normal shutdown proceed, which
 // degrades to the operator's reactive failover path.
 func WaitUntilDemoted(ctx context.Context, db pool.Connection, timeout, interval time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	for {
+	for first := true; ; first = false {
 		readOnly, err := isReadOnly(ctx, db)
 		if err == nil && readOnly {
+			return nil
+		}
+		// A writable primary with no replica streaming from it has nobody to hand
+		// the role to, so waiting would only delay its shutdown by the whole
+		// timeout. The hook is installed whatever the instance count, so that
+		// scaling a cluster in or out of one instance does not change the Pod
+		// template and force a primary roll; this is what keeps it harmless on a
+		// single-instance cluster. Checked once, on entry: during a handoff the
+		// replicas detach only after the primary has been demoted.
+		if first && err == nil && !hasStreamingReplica(ctx, db) {
 			return nil
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
@@ -98,6 +109,18 @@ func WaitUntilDemoted(ctx context.Context, db pool.Connection, timeout, interval
 		case <-time.After(interval):
 		}
 	}
+}
+
+// hasStreamingReplica reports whether any replica is streaming this server's
+// binlog, going by its binlog dump threads (named the same on MySQL and
+// MariaDB). It answers true when the check itself fails, so that an unreadable
+// processlist keeps the hook waiting for a handoff rather than skipping one.
+func hasStreamingReplica(ctx context.Context, db pool.Connection) bool {
+	var dumps int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND IN ('Binlog Dump', 'Binlog Dump GTID')").
+		Scan(&dumps)
+	return err != nil || dumps > 0
 }
 
 // isReadOnly reports whether the local server has global read_only enabled,

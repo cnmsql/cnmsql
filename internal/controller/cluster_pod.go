@@ -38,12 +38,15 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 	// intact. Replicas return from preStop immediately, so the extension only ever
 	// matters for the primary.
 	//
-	// A single-instance cluster has no replica to hand off to, so its sole primary
-	// could never be demoted: the hook would only ever burn its whole timeout on a
-	// teardown. Skip it entirely there. The handoff budget is small (a switchover
-	// takes seconds), so a stuck preStop on a multi-instance teardown is bounded.
+	// The hook is installed whatever the instance count. Were it tied to it, the
+	// Pod template would change whenever the cluster scaled in or out of a single
+	// instance, and the resulting primary roll would delete a primary that has no
+	// preStop yet: it would stop at once and fail over instead of switching over.
+	// A primary with no replica to hand off to (a single-instance cluster) returns
+	// from the hook immediately rather than burning its timeout. The handoff
+	// budget is small (a switchover takes seconds), so a stuck preStop is bounded.
 	var mysqlLifecycle *corev1.Lifecycle
-	if cluster.IsSwitchoverOnDrainEnabled() && plan.Instances > 1 {
+	if cluster.IsSwitchoverOnDrainEnabled() {
 		handoff := switchoverHandoffSeconds
 		gracePeriod += handoff
 		mysqlLifecycle = &corev1.Lifecycle{
