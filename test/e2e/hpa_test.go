@@ -79,6 +79,44 @@ var _ = Describe("Horizontal Pod Autoscaler", Ordered, Label("feature"), func() 
 		expectClusterReady(cluster, initial, 10*time.Minute)
 	})
 
+	// A failover can hand the primary to the highest ordinal just as a scale-down
+	// lowers spec.instances. Scale-down never removes a primary, so the operator
+	// must switch the role back in range before it can drop the instance. The
+	// primary is put on the top ordinal deliberately here, with a switchover, to
+	// reproduce that state without relying on a racing failover.
+	It("moves a primary above the desired count back in range to finish a scale-down", func() {
+		top := fmt.Sprintf("%s-%d", cluster, scaled)
+		bottom := fmt.Sprintf("%s-%d", cluster, initial)
+
+		By(fmt.Sprintf("scaling up to %d instances", scaled))
+		_, err := kubectl("scale", "cluster", cluster, "-n", testNamespace, fmt.Sprintf("--replicas=%d", scaled))
+		Expect(err).NotTo(HaveOccurred())
+		expectClusterReady(cluster, scaled, 15*time.Minute)
+
+		By("moving the primary onto the top ordinal " + top)
+		requestSwitchoverIn(testNamespace, cluster, top)
+		Eventually(func(g Gomega) {
+			primary, err := clusterField(cluster, "{.status.currentPrimary}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(primary).To(Equal(top))
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+		expectClusterReady(cluster, scaled, 5*time.Minute)
+
+		By(fmt.Sprintf("scaling down to %d, below the primary's ordinal", initial))
+		_, err = kubectl("scale", "cluster", cluster, "-n", testNamespace, fmt.Sprintf("--replicas=%d", initial))
+		Expect(err).NotTo(HaveOccurred())
+		expectClusterReady(cluster, initial, 10*time.Minute)
+
+		By("verifying the primary moved back in range and the top instance is gone")
+		primary, err := clusterField(cluster, "{.status.currentPrimary}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(primary).To(Equal(bottom), "the primary must be handed back to an instance within the desired count")
+		Eventually(func() []string {
+			return clusterPods(cluster)
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(ConsistOf(bottom),
+			"scale-down must remove the former primary once the role has moved")
+	})
+
 	AfterAll(func() {
 		deleteTestNamespace(ns, prevNS)
 	})

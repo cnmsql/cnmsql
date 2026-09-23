@@ -213,6 +213,54 @@ func TestObserveIncludesOutOfRangePromotionTarget(t *testing.T) {
 	}
 }
 
+// A primary left above the desired count keeps the cluster one instance over
+// what it was asked for, so it must not read Ready until the role moves back in
+// range and scale-down removes it.
+func TestObserveOutOfRangePrimaryIsNotReady(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 1
+	cluster.Status.CurrentPrimary = testReplica2
+	cluster.Status.TargetPrimary = testReplica2
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	scheme := testScheme(t)
+
+	control := &recordingControlClient{statuses: map[string]*webserver.Status{
+		testPrimary:  healthyReplicaStatus(testPrimary, testGTID),
+		testReplica2: {InstanceName: testReplica2, Role: webserver.RolePrimary, IsReady: true, GTIDExecuted: testGTID},
+	}}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, readyPod(cluster, testPrimary, roleReplica), readyPod(cluster, testReplica2, rolePrimary)).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	plan := testPlan()
+	plan.Instances = 1
+	plan.PrimaryName = testReplica2
+	observed, err := reconciler.observe(ctx, cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.OutOfRangePrimary != testReplica2 {
+		t.Fatalf("outOfRangePrimary = %q, want %q", observed.OutOfRangePrimary, testReplica2)
+	}
+	if observed.Ready {
+		t.Fatal("ready = true, want false while the primary is above the desired count")
+	}
+	if observed.Phase != topology.PhaseProvisioning {
+		t.Fatalf("phase = %q, want %q", observed.Phase, topology.PhaseProvisioning)
+	}
+	if !strings.Contains(observed.PhaseReason, testReplica2) {
+		t.Fatalf("phaseReason = %q, want it to name the out-of-range primary %q", observed.PhaseReason, testReplica2)
+	}
+}
+
 func TestObserveEstablishedClusterDegradesWhenInstanceUnreachable(t *testing.T) {
 	t.Parallel()
 	observed := observePartitionedReplica(t, topology.PhaseReady)

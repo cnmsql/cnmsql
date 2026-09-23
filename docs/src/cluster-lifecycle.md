@@ -204,7 +204,9 @@ primary and makes failures easier to diagnose.
 Scale-down removes highest-ordinal replicas first. The Pod is deleted, but the
 PVC is retained so the user can inspect or delete data deliberately. cnmsql
 never scales below one instance and never removes the current primary as part of
-ordinary scale-down.
+ordinary scale-down. When the primary's ordinal is above the new count, the
+operator performs a planned switchover to an in-range replica first and removes
+the former primary afterwards; the cluster is not `Ready` until it has.
 
 ## Operational notes
 

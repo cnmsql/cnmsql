@@ -537,13 +537,19 @@ spec:
 })
 
 func requestSwitchover(clusterName, targetPrimary string) {
+	requestSwitchoverIn("default", clusterName, targetPrimary)
+}
+
+// requestSwitchoverIn asks for a planned switchover of a cluster in namespace by
+// setting its targetPrimary, as the kubectl plugin's promote does.
+func requestSwitchoverIn(namespace, clusterName, targetPrimary string) {
 	payload := fmt.Sprintf(
 		`{"status":{"targetPrimary":%q,"targetPrimaryTimestamp":%q,"phase":"Switchover","phaseReason":"Switching over to %s"}}`,
 		targetPrimary,
 		time.Now().UTC().Format(time.RFC3339),
 		targetPrimary,
 	)
-	cmd := exec.Command("kubectl", "patch", "cluster", clusterName,
+	cmd := exec.Command("kubectl", "patch", "cluster", clusterName, "-n", namespace,
 		"--subresource=status",
 		"--type=merge",
 		"-p", payload)

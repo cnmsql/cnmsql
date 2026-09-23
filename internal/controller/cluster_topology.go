@@ -476,3 +476,10 @@ func instanceOrdinal(cluster *mysqlv1alpha1.Cluster, name string) (int, bool) {
 	}
 	return ordinal, true
 }
+
+// instanceInRange reports whether name is one of the desired instances, that is
+// its ordinal is within the planned count.
+func instanceInRange(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, name string) bool {
+	ordinal, ok := instanceOrdinal(cluster, name)
+	return ok && ordinal <= plan.Instances
+}

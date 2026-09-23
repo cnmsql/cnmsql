@@ -78,6 +78,13 @@ Scale-down removes highest-ordinal replicas first. cnmsql deletes replica Pods
 but retains PVCs. It never scales below one instance and does not remove the
 current primary during normal scale-down.
 
+If the primary itself sits above the new count (for example a failover promoted
+`cluster-sample-3` and you then scale to 2), cnmsql first switches the primary
+over to a healthy replica within the desired count, then removes the old one.
+While that happens the cluster reports `Ready=False` with phase `Provisioning`
+and a reason naming the primary. Scale-down also waits for any switchover or
+failover already in progress to finish before removing anything.
+
 List retained PVCs:
 
 ```bash

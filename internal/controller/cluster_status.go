@@ -108,6 +108,10 @@ type observedCluster struct {
 	// member is observed ONLINE. The sticky groupName/bootstrapped fields are
 	// merged in patchStatus, not here.
 	GroupReplication *mysqlv1alpha1.GroupReplicationStatus
+	// OutOfRangePrimary is the acting primary when its ordinal is above the
+	// desired count, empty otherwise. Scale-down cannot remove it, so the cluster
+	// is not converged until a switchover brings the role back in range.
+	OutOfRangePrimary string
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -223,13 +227,23 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
-	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
-	observed.Progressing = !observed.Ready
+	observed.settleReadiness(cluster, plan)
 
 	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
 
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
+}
+
+// settleReadiness decides Ready: every desired instance reports ready, none has
+// diverged, and the primary is within the desired count. A primary above it
+// means the cluster still holds an instance it was asked to drop.
+func (o *observedCluster) settleReadiness(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) {
+	if o.PrimaryName != "" && !instanceInRange(cluster, plan, o.PrimaryName) {
+		o.OutOfRangePrimary = o.PrimaryName
+	}
+	o.Ready = o.ReadyInstances == plan.Instances && len(o.DivergedInstances) == 0 && o.OutOfRangePrimary == ""
+	o.Progressing = !o.Ready
 }
 
 // outOfRangePrimaries returns the current primary and the promotion target when
@@ -238,8 +252,8 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 func outOfRangePrimaries(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 	var names []string
 	for _, name := range []string{cluster.Status.CurrentPrimary, cluster.Status.TargetPrimary} {
-		ordinal, ok := instanceOrdinal(cluster, name)
-		if !ok || ordinal <= plan.Instances || slices.Contains(names, name) {
+		if _, ok := instanceOrdinal(cluster, name); !ok || instanceInRange(cluster, plan, name) ||
+			slices.Contains(names, name) {
 			continue
 		}
 		names = append(names, name)
@@ -319,6 +333,13 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 		case len(o.FailedInstances) > 0 || len(o.ReplicationBrokenInstances) > 0:
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = degradedReason(*o, plan)
+		case o.OutOfRangePrimary != "" && o.ReadyInstances == plan.Instances:
+			// Every desired instance is fine; the cluster only still holds a primary
+			// it was asked to drop. The switchover path moves the role, then
+			// scale-down removes it.
+			o.Phase = topology.PhaseProvisioning
+			o.PhaseReason = fmt.Sprintf("primary %s is above the desired %d instances; switching over before scaling down",
+				o.OutOfRangePrimary, plan.Instances)
 		case cluster.IsEstablished():
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = degradedReason(*o, plan)
