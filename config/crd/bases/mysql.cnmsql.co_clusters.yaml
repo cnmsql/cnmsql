@@ -1118,6 +1118,15 @@ spec:
                       per-Backup spec.jobTemplate overrides it field by field. During recovery the
                       resources from this template are also applied to the restore init container.
                     properties:
+                      activeDeadline:
+                        description: |-
+                          ActiveDeadline bounds how long the backup worker Job may run (its
+                          activeDeadlineSeconds). A worker still running past it is killed and the
+                          Backup fails with reason DeadlineExceeded, so a stalled upload or source
+                          stream surfaces as a failure instead of a Backup left running forever. When
+                          unset on both the Backup and the cluster, the operator uses 24h. A zero
+                          duration disables the deadline.
+                        type: string
                       affinity:
                         description: |-
                           Affinity sets the affinity/anti-affinity rules for the backup worker Job's

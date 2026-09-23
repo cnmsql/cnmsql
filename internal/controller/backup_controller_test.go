@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -622,6 +623,77 @@ func TestBackupJobTTLSeconds(t *testing.T) {
 	}
 }
 
+func TestBackupJobActiveDeadlineSeconds(t *testing.T) {
+	t.Parallel()
+
+	dur := func(d time.Duration) *metav1.Duration { return &metav1.Duration{Duration: d} }
+	const defaultDeadline = int64(24 * 60 * 60)
+
+	cases := []struct {
+		name     string
+		deadline *metav1.Duration
+		want     *int64
+	}{
+		{"default when unset", nil, ptr.To(defaultDeadline)},
+		{"two hours", dur(2 * time.Hour), ptr.To(int64(7200))},
+		{"zero disables", dur(0), nil},
+		{"sub-second disables", dur(500 * time.Millisecond), nil},
+		{"negative falls back to default", dur(-time.Second), ptr.To(defaultDeadline)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := backupJobActiveDeadlineSeconds(mysqlv1alpha1.BackupJobTemplate{ActiveDeadline: tc.deadline})
+			if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+				t.Fatalf("backupJobActiveDeadlineSeconds = %v, want %v", ptr.Deref(got, -1), ptr.Deref(tc.want, -1))
+			}
+		})
+	}
+}
+
+// A worker killed at its active deadline must fail the Backup and say why,
+// rather than leave it Running or report a bare "Job failed".
+func TestBackupFailsWithJobFailureReason(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	backup := baseBackup()
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "backup-sample-backup", Namespace: "default"},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+			Type:    batchv1.JobFailed,
+			Status:  corev1.ConditionTrue,
+			Reason:  "DeadlineExceeded",
+			Message: "Job was active longer than specified deadline",
+		}}},
+	}
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod(), job).
+			Build(),
+		Scheme: scheme,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	updated := &mysqlv1alpha1.Backup{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != mysqlv1alpha1.BackupPhaseFailed {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, mysqlv1alpha1.BackupPhaseFailed)
+	}
+	if !strings.Contains(updated.Status.Error, "DeadlineExceeded") {
+		t.Fatalf("error = %q, want it to name DeadlineExceeded", updated.Status.Error)
+	}
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, mysqlv1alpha1.ConditionDegraded)
+	if cond == nil || cond.Reason != "DeadlineExceeded" {
+		t.Fatalf("degraded condition = %#v, want reason DeadlineExceeded", cond)
+	}
+}
+
 func TestResolveBackupJobTemplate(t *testing.T) {
 	t.Parallel()
 
@@ -640,6 +712,7 @@ func TestResolveBackupJobTemplate(t *testing.T) {
 		cluster := baseBackupCluster()
 		cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
 			TTL:               dur(time.Hour),
+			ActiveDeadline:    dur(3 * time.Hour),
 			PriorityClassName: "high",
 			Resources:         cpu("250m"),
 			Labels:            map[string]string{"env": "prod", "shared": "cluster"},
@@ -649,6 +722,9 @@ func TestResolveBackupJobTemplate(t *testing.T) {
 
 		if got.TTL == nil || got.TTL.Duration != 30*time.Minute {
 			t.Fatalf("TTL = %v, want backup's 30m", got.TTL)
+		}
+		if got.ActiveDeadline == nil || got.ActiveDeadline.Duration != 3*time.Hour {
+			t.Fatalf("ActiveDeadline = %v, want cluster's 3h", got.ActiveDeadline)
 		}
 		if got.NodeSelector["disk"] != testNodeSSD {
 			t.Fatalf("NodeSelector = %v, want backup's", got.NodeSelector)
@@ -683,6 +759,7 @@ func TestBackupWorkerJobAppliesTemplate(t *testing.T) {
 	cluster := baseBackupCluster()
 	cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
 		TTL:               &metav1.Duration{Duration: 2 * time.Hour},
+		ActiveDeadline:    &metav1.Duration{Duration: 6 * time.Hour},
 		NodeSelector:      map[string]string{"disk": testNodeSSD},
 		PriorityClassName: "high",
 		Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
@@ -710,6 +787,9 @@ func TestBackupWorkerJobAppliesTemplate(t *testing.T) {
 	}
 	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != int32(2*60*60) {
 		t.Fatalf("job TTL = %v, want 7200", job.Spec.TTLSecondsAfterFinished)
+	}
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != int64(6*60*60) {
+		t.Fatalf("job activeDeadlineSeconds = %v, want 21600", job.Spec.ActiveDeadlineSeconds)
 	}
 	pod := job.Spec.Template.Spec
 	if pod.NodeSelector["disk"] != testNodeSSD {
