@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	admissionv1 "k8s.io/api/admission/v1"
@@ -216,5 +217,42 @@ func TestClusterSpecValidatorIgnoresStatusSubresource(t *testing.T) {
 	}
 	if resp := validator.Handle(t.Context(), req); !resp.Allowed {
 		t.Errorf("status subresource updates should be allowed by the spec validator")
+	}
+}
+
+// A MariaDB cluster asking for more than one semi-sync acknowledgement is
+// admitted, with a warning that the flavor only ever waits for one.
+func TestClusterSpecValidatorWarnsOnMariaDBSemiSyncCount(t *testing.T) {
+	d := admission.NewDecoder(schemeForTests())
+	validator := &ClusterSpecValidator{Decoder: d}
+	c := &mysqlv1alpha1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},
+		Spec: mysqlv1alpha1.ClusterSpec{
+			Flavor:          mysqlv1alpha1.FlavorMariaDB,
+			ImageCatalogRef: &mysqlv1alpha1.ImageCatalogRef{Series: "11.4"},
+			Instances:       3,
+			MinSyncReplicas: 2,
+			MaxSyncReplicas: 2,
+			Storage:         mysqlv1alpha1.StorageConfiguration{Size: "1Gi"},
+		},
+	}
+	c.Spec.MySQL.SemiSync = &mysqlv1alpha1.SemiSyncConfiguration{Enabled: true}
+	c.SetDefaults()
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal Cluster: %v", err)
+	}
+
+	resp := validator.Handle(t.Context(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		Name:      "demo",
+		Namespace: "default",
+		Operation: admissionv1.Create,
+		Object:    runtime.RawExtension{Raw: raw},
+	}})
+	if !resp.Allowed {
+		t.Fatalf("allowed = false, want true (reason: %s)", resp.Result.Message)
+	}
+	if len(resp.Warnings) != 1 || !strings.Contains(resp.Warnings[0], "exactly one replica acknowledgement") {
+		t.Fatalf("warnings = %q, want the MariaDB acknowledgement count warning", resp.Warnings)
 	}
 }

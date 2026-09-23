@@ -36,9 +36,11 @@ func (r *Reconciler) ReconcileAvailability(
 	if !cluster.IsSemiSyncEnabled() || minSync <= 0 {
 		return nil
 	}
-	// MariaDB 11.4+ has semi-sync built into the server core; there are no
-	// rpl_semi_sync_* GLOBAL variables to configure at runtime, so the
-	// operator cannot self-heal through variable manipulation.
+	// MariaDB semi-sync has no acknowledgement count to adjust: the primary
+	// always waits for exactly one replica, up to rpl_semi_sync_master_timeout,
+	// then falls back to asynchronous replication on its own and returns to
+	// semi-sync once a replica catches up. The count never drops below one on
+	// MySQL either, so there is nothing to self-heal.
 	if cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB {
 		return nil
 	}

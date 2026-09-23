@@ -320,6 +320,25 @@ func isInstanceNameOf(clusterName, name string) bool {
 	return err == nil && ordinal > 0
 }
 
+// Warnings returns admission warnings for a spec that is valid but does not do
+// what it appears to ask for. Unlike Validate, they never reject the resource.
+func (cluster *Cluster) Warnings() []string {
+	var warnings []string
+	spec := &cluster.Spec
+	// MariaDB semi-sync has no acknowledgement count: the primary always waits
+	// for exactly one replica, so there is nothing for minSyncReplicas,
+	// maxSyncReplicas or dataDurability to tune.
+	if cluster.ResolvedFlavor() == FlavorMariaDB && cluster.IsSemiSyncEnabled() &&
+		(spec.MinSyncReplicas > 1 || spec.MaxSyncReplicas > 1) {
+		warnings = append(warnings, fmt.Sprintf(
+			"spec.minSyncReplicas=%d, spec.maxSyncReplicas=%d: MariaDB semi-synchronous replication "+
+				"always waits for exactly one replica acknowledgement, so values above 1 and "+
+				"spec.mysql.semiSync.dataDurability have no effect",
+			spec.MinSyncReplicas, spec.MaxSyncReplicas))
+	}
+	return warnings
+}
+
 // ValidateUpdate returns the validation errors specific to updating an existing
 // Cluster: the fields that are immutable once set. It is additive to Validate,
 // which the caller still runs for field-level checks.
