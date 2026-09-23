@@ -409,8 +409,8 @@ func (mariadbEngine) Repl() ReplDialect {
 	return mariadbReplDialect{}
 }
 
-// semi-sync — MariaDB uses source/replica naming and semi-sync is built-in (no
-// INSTALL PLUGIN).
+// semi-sync — MariaDB keeps the master/slave naming and semi-sync is built-in
+// (no INSTALL PLUGIN).
 
 func (mariadbEngine) SemiSync(version.Version) version.SemiSyncNaming {
 	return mariadbSemiSyncNaming()
@@ -418,17 +418,22 @@ func (mariadbEngine) SemiSync(version.Version) version.SemiSyncNaming {
 
 // mariadbSemiSyncNaming is the single source of truth for MariaDB's semi-sync
 // system-variable names, shared by the engine's config facet (SemiSync) and its
-// replication dialect (SemiSyncNaming). MariaDB 10.5+ uses the source/replica
-// spelling; older versions kept the master/slave legacy names as aliases.
+// replication dialect (SemiSyncNaming). Every supported series (10.11 through
+// 12.3) still spells them rpl_semi_sync_master_* / rpl_semi_sync_slave_*; the
+// MySQL source/replica names are unknown to mariadbd, which only warns about
+// them under the loose- prefix and leaves semi-sync off. There is no
+// acknowledgement count variable: the source always waits for exactly one
+// replica, so WaitForCountVar is empty. The wait point defaults to AFTER_COMMIT
+// on MariaDB, and is pinned to AFTER_SYNC to match MySQL.
 // Semi-sync is built into the MariaDB server: there is no INSTALL PLUGIN and no
 // shared library, so Plugin*/Lib* are intentionally left empty — reading them
 // without gating on SemiSyncIsPlugin() (which is false) is a bug.
 func mariadbSemiSyncNaming() version.SemiSyncNaming {
 	return version.SemiSyncNaming{
-		EnabledVarSource:  "rpl_semi_sync_source_enabled",
-		EnabledVarReplica: "rpl_semi_sync_replica_enabled",
-		WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
-		TimeoutVar:        "rpl_semi_sync_source_timeout",
+		EnabledVarSource:  "rpl_semi_sync_master_enabled",
+		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
+		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		WaitPointVar:      "rpl_semi_sync_master_wait_point",
 	}
 }
 
