@@ -67,6 +67,64 @@ func dumpBackupWorkerLogs(backup string) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "\nbackup worker logs (%s):\n%s\n", selector, out)
 }
 
+// expectBackupCompleted waits for a Backup to reach phase=completed. The worker
+// Job runs with backoffLimit 1, so phase=failed is terminal and stops the wait
+// at once instead of burning the timeout. Either way out, it dumps what explains
+// the failure: the Backup's own error, the worker Job and its logs, and the
+// object store's logs, none of which the cluster-level dump collects.
+func expectBackupCompleted(name string, timeout time.Duration) {
+	GinkgoHelper()
+	var phase, failure string
+	// A local Gomega records the failure instead of aborting the spec, so the
+	// diagnostics below still get to run.
+	waiter := NewGomega(func(message string, _ ...int) { failure = message })
+	waiter.Eventually(func(g Gomega) {
+		var err error
+		phase, err = kubectl("get", "backup", name, "-n", testNamespace,
+			"-o", "jsonpath={.status.phase}")
+		g.Expect(err).NotTo(HaveOccurred())
+		if phase == "failed" {
+			StopTrying("backup " + name + " reached terminal phase=failed").Now()
+		}
+		g.Expect(phase).To(Equal("completed"), "backup %s not completed yet", name)
+	}, e2eTimeout(timeout), 5*time.Second).Should(Succeed())
+	if failure != "" {
+		By(fmt.Sprintf("backup %s did not complete (phase %q); dumping diagnostics", name, phase))
+		dumpBackupDiagnostics(name)
+		Fail(fmt.Sprintf("backup %s did not complete (last phase %q): %s", name, phase, failure))
+	}
+}
+
+// dumpBackupDiagnostics prints everything needed to tell a worker failure (auth,
+// xtrabackup, a stalled source stream) from an object-store failure, followed by
+// the suite-wide cluster diagnostics.
+func dumpBackupDiagnostics(backup string) {
+	job := backup + "-backup"
+	store := "deployment/" + objectStoreName
+	dumps := []struct {
+		name string
+		args []string
+	}{
+		{name: "backup", args: []string{"get", "backup", backup, "-n", testNamespace, "-o", "yaml"}},
+		{name: "backup worker job", args: []string{"describe", "job", job, "-n", testNamespace}},
+		{name: "backup worker pods", args: []string{"describe", "pods", "-n", testNamespace, "-l", "job-name=" + job}},
+		{name: "object store pods", args: []string{"get", "pods", "-n", objectStoreNamespace, "-o", "wide"}},
+		{name: "object store logs", args: []string{"logs", store, "-n", objectStoreNamespace, "--tail=200"}},
+		{name: "object store previous logs",
+			args: []string{"logs", store, "-n", objectStoreNamespace, "--previous", "--tail=100"}},
+	}
+	for _, dump := range dumps {
+		out, err := kubectl(dump.args...)
+		if err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "\nFailed to collect %s: %v\n%s\n", dump.name, err, out)
+			continue
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "\n%s:\n%s\n", dump.name, out)
+	}
+	dumpBackupWorkerLogs(backup)
+	dumpE2EDiagnostics()
+}
+
 // readArchiveIndex fetches and decodes the cluster-level binlog archive index
 // (`<cluster>/binlogs/_index.json`) from object storage. A missing index (the
 // archiver has not written one yet) surfaces as an error so callers can poll.

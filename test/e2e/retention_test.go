@@ -48,20 +48,7 @@ var _ = Describe("Backup retention GC", Ordered, Label("flavor"), func() {
 		// end of that It, which would delete the backup before the next spec needs
 		// it. The AfterAll namespace teardown removes it instead.
 		applyManifest(realBackup, backupManifest(realBackup, retCluster))
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", realBackup, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			if phase == "failed" {
-				// The worker Job runs with backoffLimit 1, so "failed" is terminal:
-				// it will never progress to "completed". Stop polling immediately and
-				// surface the worker's own logs instead of burning the whole timeout
-				// on a backup that has already given up.
-				dumpBackupWorkerLogs(realBackup)
-				StopTrying("real backup reached terminal phase=failed").Now()
-			}
-			g.Expect(phase).To(Equal("completed"), "real backup not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(realBackup, 8*time.Minute)
 	})
 
 	It("expires the stale base backup while keeping the recent one", func() {
