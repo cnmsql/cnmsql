@@ -18,6 +18,7 @@ package prestop
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -32,9 +33,11 @@ func TestWaitUntilDemotedReturnsWhenReadOnly(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// First poll: still the writable primary. Second poll: demoted to replica.
+	// First poll: still the writable primary, with a replica to hand off to.
+	// Second poll: demoted to replica.
 	mock.ExpectQuery("SELECT @@global.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(0))
+	expectStreamingReplicas(mock, 1)
 	mock.ExpectQuery("SELECT @@global.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(1))
 
@@ -44,6 +47,63 @@ func TestWaitUntilDemotedReturnsWhenReadOnly(t *testing.T) {
 	}
 	if time.Since(start) >= 5*time.Second {
 		t.Fatal("WaitUntilDemoted blocked for the full timeout instead of returning on demotion")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// expectStreamingReplicas queues the one-off check for replicas streaming from
+// this server.
+func expectStreamingReplicas(mock sqlmock.Sqlmock, count int) {
+	mock.ExpectQuery("information_schema.PROCESSLIST").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(count))
+}
+
+// A primary no replica streams from (a single-instance cluster) has nobody to
+// hand off to, so the hook must not hold its shutdown for the whole timeout.
+func TestWaitUntilDemotedReturnsImmediatelyWithoutReplicas(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT @@global.read_only").
+		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(0))
+	expectStreamingReplicas(mock, 0)
+
+	start := time.Now()
+	if err := WaitUntilDemoted(context.Background(), db, 5*time.Second, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) >= time.Second {
+		t.Fatal("WaitUntilDemoted waited on a primary with no replica to hand off to")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// When the replica check itself fails, the hook must keep waiting for a
+// handoff rather than skip one it cannot rule out.
+func TestWaitUntilDemotedKeepsWaitingWhenReplicaCheckFails(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT @@global.read_only").
+		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(0))
+	mock.ExpectQuery("information_schema.PROCESSLIST").WillReturnError(errors.New("access denied"))
+	mock.ExpectQuery("SELECT @@global.read_only").
+		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(1))
+
+	if err := WaitUntilDemoted(context.Background(), db, 5*time.Second, time.Millisecond); err != nil {
+		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -82,6 +142,7 @@ func TestWaitUntilDemotedDegradesOnTimeout(t *testing.T) {
 	// must still return nil (never fail the Pod's termination) once the timeout
 	// elapses, degrading to the operator's reactive failover path.
 	mock.MatchExpectationsInOrder(false)
+	expectStreamingReplicas(mock, 1)
 	mock.ExpectQuery("SELECT @@global.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(0)).
 		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow(0))
@@ -110,6 +171,7 @@ func TestWaitUntilDemotedHandlesOnOffSpelling(t *testing.T) {
 
 	mock.ExpectQuery("SELECT @@global.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow("OFF"))
+	expectStreamingReplicas(mock, 1)
 	mock.ExpectQuery("SELECT @@global.read_only").
 		WillReturnRows(sqlmock.NewRows([]string{"@@global.read_only"}).AddRow("ON"))
 
