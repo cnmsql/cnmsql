@@ -57,6 +57,9 @@ jobs:
       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
       with:
         go-version-file: go.mod
+        # The self-hosted runner is persistent and already holds the module
+        # cache, so restoring the Actions cache over it only fails file by file.
+        cache: ${{ github.repository_owner != 'cnmsql' }}
 
     - name: Install kind
       run: |

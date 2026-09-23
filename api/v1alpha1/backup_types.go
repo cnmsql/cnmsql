@@ -36,6 +36,15 @@ type BackupJobTemplate struct {
 	// +optional
 	TTL *metav1.Duration `json:"ttl,omitempty"`
 
+	// ActiveDeadline bounds how long the backup worker Job may run (its
+	// activeDeadlineSeconds). A worker still running past it is killed and the
+	// Backup fails with reason DeadlineExceeded, so a stalled upload or source
+	// stream surfaces as a failure instead of a Backup left running forever. When
+	// unset on both the Backup and the cluster, the operator uses 24h. A zero
+	// duration disables the deadline.
+	// +optional
+	ActiveDeadline *metav1.Duration `json:"activeDeadline,omitempty"`
+
 	// Resources sets the resource requests and limits on the backup worker
 	// container. Streaming xbstream can be memory-hungry, so operators often want
 	// explicit limits. During recovery the same requests/limits from the

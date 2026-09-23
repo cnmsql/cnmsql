@@ -122,6 +122,10 @@ The template exposes:
 - `ttl`: how long a finished worker Job is kept before Kubernetes
   garbage-collects it (`ttlSecondsAfterFinished`). Defaults to 24h so you can
   inspect its logs. A zero duration (`0s`) deletes the Job as soon as it finishes.
+- `activeDeadline`: how long the worker Job may run before Kubernetes kills it
+  (`activeDeadlineSeconds`), failing the Backup with reason `DeadlineExceeded`
+  instead of leaving a stalled upload `running` forever. Defaults to 24h; raise it
+  for very large databases. A zero duration (`0s`) disables the deadline.
 
 ```yaml
 apiVersion: mysql.cnmsql.co/v1alpha1
@@ -130,6 +134,7 @@ spec:
   backup:
     jobTemplate:
       ttl: 1h
+      activeDeadline: 6h
       priorityClassName: batch-low
       nodeSelector:
         node-role.kubernetes.io/backup: ""

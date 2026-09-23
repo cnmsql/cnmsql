@@ -52,13 +52,7 @@ var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func(
 		applyManifest(backupName, backupManifest(backupName, sourceCluster))
 
 		By("waiting for the backup to complete")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", backupName, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "backup failed")
-			g.Expect(phase).To(Equal("completed"), "backup is not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(backupName, 8*time.Minute)
 
 		By("verifying the backup recorded an id and a destination path")
 		id, err := kubectl("get", "backup", backupName, "-n", testNamespace,
@@ -105,13 +99,7 @@ var _ = Describe("Physical backup and recovery", Ordered, Label("flavor"), func(
 		}
 
 		By("verifying the shaped backup still completes")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", tmplBackup, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "shaped backup failed")
-			g.Expect(phase).To(Equal("completed"), "shaped backup is not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(tmplBackup, 8*time.Minute)
 	})
 
 	It("bootstraps a new cluster by recovering the backup", func() {

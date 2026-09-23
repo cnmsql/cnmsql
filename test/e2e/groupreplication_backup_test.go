@@ -60,13 +60,7 @@ var _ = Describe("Group Replication backup and restore into a fresh group", Orde
 		applyManifest(backupName, backupManifest(backupName, sourceCluster))
 
 		By("waiting for the backup to complete")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", backupName, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "backup failed")
-			g.Expect(phase).To(Equal("completed"), "backup is not completed yet")
-		}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(backupName, 10*time.Minute)
 	})
 
 	It("recovers the backup into a brand-new group with a fresh group name and no data loss", func() {
