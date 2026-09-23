@@ -132,12 +132,15 @@ type ClusterSpec struct {
 
 	// MinSyncReplicas is the minimum number of semi-synchronous replicas that
 	// must acknowledge a transaction before it is committed on the primary.
+	// MariaDB always waits for exactly one acknowledgement, so on that flavor
+	// values above 1 have no effect.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MinSyncReplicas int `json:"minSyncReplicas,omitempty"`
 
 	// MaxSyncReplicas is the maximum number of semi-synchronous replicas the
-	// primary will wait for. Must be lower than the number of instances.
+	// primary will wait for. Must be lower than the number of instances. On
+	// MariaDB, values above 1 have no effect.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MaxSyncReplicas int `json:"maxSyncReplicas,omitempty"`
@@ -399,7 +402,8 @@ type SemiSyncConfiguration struct {
 	// replicas are unhealthy. "preferred" (the default) keeps the primary
 	// writable by self-healing the acknowledgement count down to the number of
 	// healthy replicas; "required" leaves it fixed so writes block until enough
-	// replicas acknowledge.
+	// replicas acknowledge. It has no effect on MariaDB, whose primary always
+	// waits for exactly one acknowledgement.
 	// +kubebuilder:validation:Enum=preferred;required
 	// +kubebuilder:default:=preferred
 	// +optional

@@ -95,6 +95,10 @@ for that model.
 
 The flavor cannot change after creation, as described above.
 
+The webhook also warns, without rejecting the resource, when semi-synchronous
+replication asks for more than one acknowledgement. See
+[Semi-synchronous replication](#semi-synchronous-replication).
+
 ## What behaves the same
 
 The following work the same way on MariaDB as on MySQL, and their existing
@@ -131,6 +135,32 @@ itself, and it still holds as of MariaDB 12.3:
   `DatabaseUser` revoke that depends on that pattern will not take effect. Grant
   only what a user should have rather than granting broadly and revoking the
   difference.
+
+## Semi-synchronous replication
+
+Semi-synchronous replication works on MariaDB and is enabled the same way, with
+`spec.mysql.semiSync.enabled`. MariaDB has no setting for how many replicas must
+acknowledge a transaction, though: the primary always waits for exactly one.
+Two settings therefore have no effect on a MariaDB cluster:
+
+- `minSyncReplicas` and `maxSyncReplicas` above 1. The webhook accepts them but
+  returns a warning.
+- `spec.mysql.semiSync.dataDurability`. There is no acknowledgement count for
+  the operator to lower, so `preferred` and `required` behave the same.
+
+When no replica acknowledges a commit, for example because every replica is
+down or fenced, the primary holds the commit for up to `timeoutMillis` (10
+seconds when unset), then switches to asynchronous replication and keeps
+accepting writes. It switches back to semi-synchronous replication by itself
+once a replica catches up. Writes are never blocked for longer than the timeout,
+but while the cluster runs asynchronously a committed transaction may exist only
+on the primary. This is how a MySQL cluster behaves with one required
+acknowledgement.
+
+The operator also sets `rpl_semi_sync_master_wait_point` to `AFTER_SYNC`, as on
+MySQL. MariaDB's own default, `AFTER_COMMIT`, lets other sessions read a
+transaction before any replica has it, and a failover can then lose a
+transaction that clients already saw.
 
 ## GTID model
 

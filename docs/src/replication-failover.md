@@ -99,6 +99,10 @@ With `required`, the count stays pinned to `minSyncReplicas`. When fewer healthy
 replicas can acknowledge, writes block until `timeoutMillis` elapses and
 replication falls back to async. This favours durability over availability.
 
+MariaDB always waits for exactly one acknowledgement, so on a MariaDB cluster
+`dataDurability`, and `minSyncReplicas` above 1, have no effect. See
+[MariaDB flavor](mariadb.md#semi-synchronous-replication).
+
 The operator applies the change on the primary over the mTLS control API during
 its steady-state reconcile. It is a runtime adjustment only; the static
 `my.cnf` floor does not change.

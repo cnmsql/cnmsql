@@ -640,3 +640,37 @@ var _ = Describe("Failover policy validation", func() {
 		Expect(bare.PreferredPrimary()).To(BeEmpty())
 	})
 })
+
+var _ = Describe("Cluster admission warnings", func() {
+	semiSyncCluster := func(flavor Flavor, minSync, maxSync int) *Cluster {
+		cluster := &Cluster{}
+		cluster.Spec.Flavor = flavor
+		cluster.Spec.Instances = 3
+		cluster.Spec.MinSyncReplicas = minSync
+		cluster.Spec.MaxSyncReplicas = maxSync
+		cluster.Spec.MySQL.SemiSync = &SemiSyncConfiguration{Enabled: true, DataDurability: DataDurabilityRequired}
+		return cluster
+	}
+
+	It("warns that MariaDB semi-sync ignores an acknowledgement count above one", func() {
+		warnings := semiSyncCluster(FlavorMariaDB, 2, 2).Warnings()
+		Expect(warnings).To(HaveLen(1))
+		Expect(warnings[0]).To(ContainSubstring("exactly one replica acknowledgement"))
+		Expect(warnings[0]).To(ContainSubstring("dataDurability"))
+	})
+
+	It("does not warn when MariaDB semi-sync asks for a single acknowledgement", func() {
+		Expect(semiSyncCluster(FlavorMariaDB, 1, 1).Warnings()).To(BeEmpty())
+	})
+
+	It("does not warn when MariaDB semi-sync is disabled", func() {
+		cluster := semiSyncCluster(FlavorMariaDB, 2, 2)
+		cluster.Spec.MySQL.SemiSync.Enabled = false
+		Expect(cluster.Warnings()).To(BeEmpty())
+	})
+
+	It("does not warn on MySQL, which honours the acknowledgement count", func() {
+		Expect(semiSyncCluster(FlavorMySQL, 2, 2).Warnings()).To(BeEmpty())
+		Expect(semiSyncCluster("", 2, 2).Warnings()).To(BeEmpty())
+	})
+})

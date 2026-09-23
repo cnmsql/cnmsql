@@ -95,7 +95,7 @@ func (v *ClusterSpecValidator) Handle(_ context.Context, req admission.Request) 
 		clusterspeclog.V(1).Info("Rejecting Cluster spec", "cluster", req.Name, "errors", allErrs.ToAggregate().Error())
 		return admission.Denied(allErrs.ToAggregate().Error())
 	}
-	return admission.Allowed("")
+	return admission.Allowed("").WithWarnings(newCluster.Warnings()...)
 }
 
 // ClusterStatusValidator validates Cluster status updates from instance
