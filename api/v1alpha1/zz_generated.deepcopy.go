@@ -129,6 +129,11 @@ func (in *BackupJobTemplate) DeepCopyInto(out *BackupJobTemplate) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.ActiveDeadline != nil {
+		in, out := &in.ActiveDeadline, &out.ActiveDeadline
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	in.Resources.DeepCopyInto(&out.Resources)
 	if in.NodeSelector != nil {
 		in, out := &in.NodeSelector, &out.NodeSelector

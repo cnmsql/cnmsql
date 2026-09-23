@@ -195,8 +195,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, backupPhaseCompleted, "Backup completed", backup.Generation)
 			setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, backupPhaseCompleted, "Backup completed", backup.Generation)
 		})
-	case latestJob.Status.Failed > 0 && jobFinished(latestJob, batchv1.JobFailed):
-		return ctrl.Result{}, r.failBackup(ctx, backup, "JobFailed", "Backup worker Job failed")
+	case jobFinished(latestJob, batchv1.JobFailed):
+		// Not gated on Status.Failed: a Job killed at its active deadline can be
+		// marked Failed before any pod is counted as failed.
+		reason, message := jobFailure(latestJob)
+		return ctrl.Result{}, r.failBackup(ctx, backup, reason, message)
 	default:
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
@@ -255,6 +258,9 @@ func resolveBackupJobTemplate(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alph
 		if out.TTL == nil && t.TTL != nil {
 			out.TTL = t.TTL
 		}
+		if out.ActiveDeadline == nil && t.ActiveDeadline != nil {
+			out.ActiveDeadline = t.ActiveDeadline
+		}
 		if !hasResourceRequirements(out.Resources) && hasResourceRequirements(t.Resources) {
 			out.Resources = t.Resources
 		}
@@ -305,6 +311,27 @@ func backupJobTTLSeconds(tpl mysqlv1alpha1.BackupJobTemplate) int32 {
 		return int32(d.Seconds())
 	}
 	return int32(defaultBackupJobTTL.Seconds())
+}
+
+// defaultBackupJobActiveDeadline bounds a backup worker Job's runtime when
+// neither the Backup nor the cluster overrides it. It is generous on purpose: it
+// exists to fail a stalled worker, not to race a large but healthy backup.
+const defaultBackupJobActiveDeadline = 24 * time.Hour
+
+// backupJobActiveDeadlineSeconds resolves the worker Job's activeDeadlineSeconds
+// from the resolved template, falling back to the 24h default. A negative
+// duration is invalid and falls back to the default; a zero duration disables
+// the deadline (nil), since Kubernetes rejects activeDeadlineSeconds of 0.
+func backupJobActiveDeadlineSeconds(tpl mysqlv1alpha1.BackupJobTemplate) *int64 {
+	d := defaultBackupJobActiveDeadline
+	if tpl.ActiveDeadline != nil && tpl.ActiveDeadline.Duration >= 0 {
+		d = tpl.ActiveDeadline.Duration
+	}
+	seconds := int64(d.Seconds())
+	if seconds <= 0 {
+		return nil
+	}
+	return &seconds
 }
 
 func backupWorkerImage(cluster *mysqlv1alpha1.Cluster) string {
@@ -396,6 +423,7 @@ func backupJob(
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
+			ActiveDeadlineSeconds:   backupJobActiveDeadlineSeconds(tpl),
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -662,6 +690,26 @@ func setBackupCondition(status *mysqlv1alpha1.BackupStatus, conditionType string
 		Message:            message,
 		ObservedGeneration: generation,
 	})
+}
+
+// jobFailure returns the reason and message a failed worker Job reported on its
+// Failed condition (e.g. DeadlineExceeded, BackoffLimitExceeded), so the Backup
+// says why the worker gave up rather than only that it did.
+func jobFailure(job *batchv1.Job) (string, string) {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type != batchv1.JobFailed || condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		if condition.Reason == "" {
+			break
+		}
+		message := "Backup worker Job failed: " + condition.Reason
+		if condition.Message != "" {
+			message += ": " + condition.Message
+		}
+		return condition.Reason, message
+	}
+	return "JobFailed", "Backup worker Job failed"
 }
 
 func jobFinished(job *batchv1.Job, conditionType batchv1.JobConditionType) bool {
