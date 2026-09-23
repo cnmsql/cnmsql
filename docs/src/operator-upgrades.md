@@ -221,6 +221,21 @@ local binlogs. See [Local binlog
 retention](./pitr.md#local-binlog-retention) for the sizing model and the
 trade-off in full.
 
+### Single-instance clusters restart once
+
+Instance Pods now carry the switchover-on-drain `preStop` hook whatever the
+instance count. Previously a single-instance cluster's Pod had no hook, so its
+Pod template changed whenever the cluster was scaled to or from one instance.
+That rolled the primary without a handoff and, on a scale-up, failed it over
+instead of switching over. The hook now returns immediately when no replica is
+streaming from the primary, so a single-instance teardown is not delayed.
+
+**Expect one restart.** Each single-instance cluster with switchover-on-drain
+enabled (the default) gets a new Pod template, so its only instance is restarted
+once during the operator upgrade. Multi-instance clusters already carry the hook
+and are not rolled for this change. Plan the operator upgrade for a window in
+which a brief outage of your single-instance clusters is acceptable.
+
 ## Troubleshooting
 
 **The rollout is stuck in `WaitingForUser`.** The primary is stale and
