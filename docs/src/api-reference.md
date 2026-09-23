@@ -806,8 +806,8 @@ _Appears in:_
 | `imagePullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#pullpolicy-v1-core)_ | ImagePullPolicy is the policy used to pull the container image. |  | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](#localobjectreference) array_ | ImagePullSecrets is the list of pull secrets used to pull the image. |  | Optional: \{\} <br /> |
 | `instances` _integer_ | Instances is the number of MySQL instances (one primary + replicas). | 1 | Minimum: 1 <br />Optional: \{\} <br /> |
-| `minSyncReplicas` _integer_ | MinSyncReplicas is the minimum number of semi-synchronous replicas that<br />must acknowledge a transaction before it is committed on the primary. |  | Minimum: 0 <br />Optional: \{\} <br /> |
-| `maxSyncReplicas` _integer_ | MaxSyncReplicas is the maximum number of semi-synchronous replicas the<br />primary will wait for. Must be lower than the number of instances. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `minSyncReplicas` _integer_ | MinSyncReplicas is the minimum number of semi-synchronous replicas that<br />must acknowledge a transaction before it is committed on the primary.<br />MariaDB always waits for exactly one acknowledgement, so on that flavor<br />values above 1 have no effect. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxSyncReplicas` _integer_ | MaxSyncReplicas is the maximum number of semi-synchronous replicas the<br />primary will wait for. Must be lower than the number of instances. On<br />MariaDB, values above 1 have no effect. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `mysql` _[MySQLConfiguration](#mysqlconfiguration)_ | MySQL holds the engine configuration (my.cnf parameters, replication<br />options). |  | Optional: \{\} <br /> |
 | `replication` _[ReplicationConfiguration](#replicationconfiguration)_ | Replication selects and tunes the replication topology (asynchronous /<br />semi-synchronous GTID replication, or quorum-based Group Replication). The<br />mode is immutable after creation; when omitted the cluster is async. |  | Optional: \{\} <br /> |
 | `storage` _[StorageConfiguration](#storageconfiguration)_ | Storage configuration for the instance data directory. |  | Required: \{\} <br /> |
@@ -2157,7 +2157,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled turns on semi-synchronous replication. | false | Optional: \{\} <br /> |
 | `timeoutMillis` _integer_ | Timeout in milliseconds the primary waits for a replica acknowledgement<br />before falling back to asynchronous replication. |  | Minimum: 0 <br />Optional: \{\} <br /> |
-| `dataDurability` _string_ | DataDurability controls how strictly minSyncReplicas is enforced when<br />replicas are unhealthy. "preferred" (the default) keeps the primary<br />writable by self-healing the acknowledgement count down to the number of<br />healthy replicas; "required" leaves it fixed so writes block until enough<br />replicas acknowledge. | preferred | Enum: [preferred required] <br />Optional: \{\} <br /> |
+| `dataDurability` _string_ | DataDurability controls how strictly minSyncReplicas is enforced when<br />replicas are unhealthy. "preferred" (the default) keeps the primary<br />writable by self-healing the acknowledgement count down to the number of<br />healthy replicas; "required" leaves it fixed so writes block until enough<br />replicas acknowledge. It has no effect on MariaDB, whose primary always<br />waits for exactly one acknowledgement. | preferred | Enum: [preferred required] <br />Optional: \{\} <br /> |
 
 
 #### ServiceAccountTemplate
