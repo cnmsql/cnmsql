@@ -48,13 +48,7 @@ var _ = Describe("MariaDB backup retention GC", Ordered, Label("flavor", "mariad
 		// No DeferCleanup here: it would delete the backup before the next spec
 		// needs it. The AfterAll namespace teardown removes it instead.
 		applyManifest(realBackup, backupManifest(realBackup, retCluster))
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", realBackup, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "real backup failed")
-			g.Expect(phase).To(Equal("completed"), "real backup not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(realBackup, 8*time.Minute)
 	})
 
 	It("expires the stale base backup while keeping the recent one", func() {
