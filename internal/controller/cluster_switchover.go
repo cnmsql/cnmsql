@@ -34,7 +34,14 @@ func (r *ClusterReconciler) reconcileSwitchover(
 	cluster *mysqlv1alpha1.Cluster,
 	observed observedCluster,
 ) (bool, error) {
-	// Bring the primary home first. When the cluster names a preferred primary and
+	// A primary left above the desired count (a failover elected it just as a
+	// scale-down lowered spec.instances) goes back in range first, so the
+	// scale-down can finish. It outranks the preference: an instance the cluster
+	// was asked to drop cannot be where the primary belongs.
+	if requested, err := r.reconcileInRangePrimary(ctx, cluster, observed); requested || err != nil {
+		return requested, err
+	}
+	// Bring the primary home next. When the cluster names a preferred primary and
 	// the role has ended up elsewhere — a failover moved it, and the preferred
 	// instance has since come back healthy — this requests a switchover back to it
 	// by setting targetPrimary, which the switchover below drives on the next pass.
@@ -69,15 +76,60 @@ func (r *ClusterReconciler) reconcilePreferredPrimary(
 	failover := topologyFailoverState(observed)
 	reconciler := r.topologyReconciler(cluster)
 	target := topology.PreferredFailbackTarget(cluster, failover, func(instanceName string) bool {
-		return reconciler.SwitchoverTargetReady(cluster, failover, instanceName)
+		// A preferred instance above the desired count is on its way out; handing
+		// it the role would only strand the scale-down.
+		return instanceInRange(cluster, observed.Plan, instanceName) &&
+			reconciler.SwitchoverTargetReady(cluster, failover, instanceName)
 	})
 	if target == "" {
 		return false, nil
 	}
+	return true, r.requestSwitchover(ctx, cluster, target,
+		"Switching over to the preferred primary",
+		fmt.Sprintf("Switching over to %s, the preferred primary", target))
+}
 
-	current := cluster.Status.CurrentPrimary
-	message := fmt.Sprintf("Switching over to %s, the preferred primary", target)
-	logf.FromContext(ctx).Info("Switching over to the preferred primary", "from", current, "to", target)
+// reconcileInRangePrimary hands the primary role to an instance within the
+// desired count when the current primary sits above it. Scale-down never removes
+// a primary, so without this a primary stranded there by a failover keeps the
+// cluster one instance over what it was asked for, indefinitely. The handoff is an
+// ordinary planned switchover; once it lands, scale-down removes the old primary.
+//
+// Group Replication is left alone: the group elects its primary, so a
+// targetPrimary there would move nothing.
+func (r *ClusterReconciler) reconcileInRangePrimary(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	observed observedCluster,
+) (bool, error) {
+	if cluster.IsGroupReplication() {
+		return false, nil
+	}
+	failover := topologyFailoverState(observed)
+	reconciler := r.topologyReconciler(cluster)
+	target := topology.InRangeSwitchoverTarget(cluster, failover,
+		func(instanceName string) bool { return instanceInRange(cluster, observed.Plan, instanceName) },
+		func(instanceName string) bool {
+			return reconciler.SwitchoverTargetReady(cluster, failover, instanceName)
+		},
+	)
+	if target == "" {
+		return false, nil
+	}
+	return true, r.requestSwitchover(ctx, cluster, target,
+		"Switching over to scale down",
+		fmt.Sprintf("Switching over to %s so the cluster can scale down to %d instances",
+			target, observed.Plan.Instances))
+}
+
+// requestSwitchover records target as the primary to switch over to, which the
+// switchover path drives from the next pass on.
+func (r *ClusterReconciler) requestSwitchover(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	target, logMessage, message string,
+) error {
+	logf.FromContext(ctx).Info(logMessage, "from", cluster.Status.CurrentPrimary, "to", target)
 	now := metav1.Now()
 	if err := topology.PatchClusterStatus(ctx, r.Client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
 		status.TargetPrimary = target
@@ -85,12 +137,12 @@ func (r *ClusterReconciler) reconcilePreferredPrimary(
 		status.Phase = topology.PhaseSwitchover
 		status.PhaseReason = message
 	}); err != nil {
-		return true, err
+		return err
 	}
 	if r.Recorder != nil {
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, topology.PhaseSwitchover, message)
 	}
-	return true, nil
+	return nil
 }
 
 // reconcileDrainSwitchover initiates a planned switchover when the primary Pod is

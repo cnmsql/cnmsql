@@ -118,43 +118,14 @@ func PreferredFailbackTarget(
 ) string {
 	preferred := cluster.PreferredPrimary()
 	current := cluster.Status.CurrentPrimary
-	if len(preferred) == 0 || current == "" || observed.PrimaryName == "" {
-		return ""
-	}
-	// A switchover is already under way, or a failover has already picked a target:
-	// whatever it is, let it land before asking for another move.
-	if target := cluster.Status.TargetPrimary; target != "" && target != current {
-		return ""
-	}
-	// The primary must be healthy and be the primary. A failback is an optimisation
-	// of a working cluster; when the primary is failing, failover owns the decision
-	// and it applies the preference itself when it elects.
-	if status, ok := observed.Instances[current]; !ok || !status.Ready || !status.Primary {
-		return ""
-	}
-	// The primary is on its way out, which the drain switchover handles: it picks
-	// the safest candidate under the same preference, and it is not worth racing it
-	// to hand the role to an instance that will have to give it back.
-	if slices.Contains(observed.Terminating, current) {
-		return ""
-	}
-	// A failback is an automatic promotion like any other, so it waits out the
-	// anti-flapping cooldown. Without this a preferred instance that keeps dying
-	// would drag the primary back onto itself every time it briefly came back.
-	if FailoverCooldownRemaining(cluster) > 0 {
+	if len(preferred) == 0 || !primaryMovable(cluster, observed) {
 		return ""
 	}
 	for _, name := range preferred {
 		if name == current {
 			return ""
 		}
-		if slices.Contains(observed.Fenced, name) || slices.Contains(observed.Diverged, name) {
-			continue
-		}
-		if slices.Contains(cluster.Status.DivergedInstances, name) {
-			continue
-		}
-		if slices.Contains(observed.Terminating, name) {
+		if !candidateEligible(cluster, observed, name) {
 			continue
 		}
 		if promotable(name) {
@@ -162,4 +133,88 @@ func PreferredFailbackTarget(
 		}
 	}
 	return ""
+}
+
+// InRangeSwitchoverTarget returns the instance the primary should be handed to
+// because the primary sits above the desired instance count, or empty when it
+// should stay where it is.
+//
+// A primary ends up there when a failover elects the highest ordinal just as a
+// scale-down lowers spec.instances. Scale-down never removes a primary, so until
+// the role moves the cluster keeps an instance it was asked to drop. This moves
+// it with an ordinary planned switchover, which is lossless: the target only has
+// to be a healthy replica, and the switchover waits for it to catch up.
+//
+// inRange reports whether an instance is within the desired count. Candidates
+// are the in-range instances in the preferred order first, then in ordinal order
+// (instanceNames is expected in ordinal order); the first one promotable accepts
+// wins. The same conditions as a failback apply: nothing else in flight, a
+// healthy primary that is not draining, and the anti-flapping cooldown elapsed.
+func InRangeSwitchoverTarget(
+	cluster *mysqlv1alpha1.Cluster,
+	observed FailoverState,
+	inRange func(instanceName string) bool,
+	promotable func(instanceName string) bool,
+) string {
+	current := cluster.Status.CurrentPrimary
+	if current == "" || inRange(current) || !primaryMovable(cluster, observed) {
+		return ""
+	}
+	candidates := slices.Clone(cluster.PreferredPrimary())
+	for _, name := range observed.InstanceNames {
+		if !slices.Contains(candidates, name) {
+			candidates = append(candidates, name)
+		}
+	}
+	for _, name := range candidates {
+		if name == current || !inRange(name) || !candidateEligible(cluster, observed, name) {
+			continue
+		}
+		if promotable(name) {
+			return name
+		}
+	}
+	return ""
+}
+
+// primaryMovable reports whether the current primary may be handed off by an
+// automatic planned switchover right now.
+func primaryMovable(cluster *mysqlv1alpha1.Cluster, observed FailoverState) bool {
+	current := cluster.Status.CurrentPrimary
+	if current == "" || observed.PrimaryName == "" {
+		return false
+	}
+	// A switchover is already under way, or a failover has already picked a target:
+	// whatever it is, let it land before asking for another move.
+	if target := cluster.Status.TargetPrimary; target != "" && target != current {
+		return false
+	}
+	// The primary must be healthy and be the primary. A failback is an optimisation
+	// of a working cluster; when the primary is failing, failover owns the decision
+	// and it applies the preference itself when it elects.
+	if status, ok := observed.Instances[current]; !ok || !status.Ready || !status.Primary {
+		return false
+	}
+	// The primary is on its way out, which the drain switchover handles: it picks
+	// the safest candidate under the same preference, and it is not worth racing it
+	// to hand the role to an instance that will have to give it back.
+	if slices.Contains(observed.Terminating, current) {
+		return false
+	}
+	// A failback is an automatic promotion like any other, so it waits out the
+	// anti-flapping cooldown. Without this a preferred instance that keeps dying
+	// would drag the primary back onto itself every time it briefly came back.
+	if FailoverCooldownRemaining(cluster) > 0 {
+		return false
+	}
+	return true
+}
+
+// candidateEligible reports whether name is not ruled out as a switchover
+// target: fenced, diverged (now or on record), or draining.
+func candidateEligible(cluster *mysqlv1alpha1.Cluster, observed FailoverState, name string) bool {
+	return !slices.Contains(observed.Fenced, name) &&
+		!slices.Contains(observed.Diverged, name) &&
+		!slices.Contains(cluster.Status.DivergedInstances, name) &&
+		!slices.Contains(observed.Terminating, name)
 }

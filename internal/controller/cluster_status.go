@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -107,6 +108,10 @@ type observedCluster struct {
 	// member is observed ONLINE. The sticky groupName/bootstrapped fields are
 	// merged in patchStatus, not here.
 	GroupReplication *mysqlv1alpha1.GroupReplicationStatus
+	// OutOfRangePrimary is the acting primary when its ordinal is above the
+	// desired count, empty otherwise. Scale-down cannot remove it, so the cluster
+	// is not converged until a switchover brings the role back in range.
+	OutOfRangePrimary string
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -125,7 +130,16 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		Progressing:              true,
 	}
 
-	for i := 1; i <= plan.Instances; i++ {
+	// A primary, or a promotion target, can sit above the desired count: a
+	// failover can pick the highest ordinal just as a scale-down lowers
+	// spec.instances. Scale-down never removes it, so observe it too, or the
+	// switchover could never see its target and the rw Service would lose its
+	// primary. It is left out of ReadyInstances, which Ready compares to the
+	// desired count.
+	outOfRange := outOfRangePrimaries(cluster, plan)
+	observed.InstanceNames = append(observed.InstanceNames, outOfRange...)
+
+	for _, i := range observedOrdinals(cluster, plan, outOfRange) {
 		inst := plan.instanceFor(cluster, i)
 		// Check the data PVC independently of the Pod: an offline-expand resize
 		// lingers precisely while the volume is detached (no Pod), so gating this on
@@ -180,7 +194,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		if status.ReplicationLag != nil && status.ReplicationLag.LagMillis != nil {
 			observed.ReplicationLagByInstance[inst.Name] = *status.ReplicationLag.LagMillis
 		}
-		if status.IsReady {
+		if status.IsReady && i <= plan.Instances {
 			observed.ReadyInstances++
 		}
 	}
@@ -213,13 +227,52 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
-	observed.Ready = observed.ReadyInstances == plan.Instances && len(observed.DivergedInstances) == 0
-	observed.Progressing = !observed.Ready
+	observed.settleReadiness(cluster, plan)
 
 	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
 
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
+}
+
+// settleReadiness decides Ready: every desired instance reports ready, none has
+// diverged, and the primary is within the desired count. A primary above it
+// means the cluster still holds an instance it was asked to drop.
+func (o *observedCluster) settleReadiness(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) {
+	if o.PrimaryName != "" && !instanceInRange(cluster, plan, o.PrimaryName) {
+		o.OutOfRangePrimary = o.PrimaryName
+	}
+	o.Ready = o.ReadyInstances == plan.Instances && len(o.DivergedInstances) == 0 && o.OutOfRangePrimary == ""
+	o.Progressing = !o.Ready
+}
+
+// outOfRangePrimaries returns the current primary and the promotion target when
+// their ordinal is above the desired instance count, deduplicated and in that
+// order.
+func outOfRangePrimaries(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
+	var names []string
+	for _, name := range []string{cluster.Status.CurrentPrimary, cluster.Status.TargetPrimary} {
+		if _, ok := instanceOrdinal(cluster, name); !ok || instanceInRange(cluster, plan, name) ||
+			slices.Contains(names, name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// observedOrdinals lists the ordinals observe polls: every desired instance,
+// then the out-of-range primaries.
+func observedOrdinals(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, outOfRange []string) []int {
+	ordinals := make([]int, 0, plan.Instances+len(outOfRange))
+	for i := 1; i <= plan.Instances; i++ {
+		ordinals = append(ordinals, i)
+	}
+	for _, name := range outOfRange {
+		ordinal, _ := instanceOrdinal(cluster, name)
+		ordinals = append(ordinals, ordinal)
+	}
+	return ordinals
 }
 
 // evaluateStoragePressure aggregates the per-instance data-volume usage into the
@@ -280,6 +333,13 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 		case len(o.FailedInstances) > 0 || len(o.ReplicationBrokenInstances) > 0:
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = degradedReason(*o, plan)
+		case o.OutOfRangePrimary != "" && o.ReadyInstances == plan.Instances:
+			// Every desired instance is fine; the cluster only still holds a primary
+			// it was asked to drop. The switchover path moves the role, then
+			// scale-down removes it.
+			o.Phase = topology.PhaseProvisioning
+			o.PhaseReason = fmt.Sprintf("primary %s is above the desired %d instances; switching over before scaling down",
+				o.OutOfRangePrimary, plan.Instances)
 		case cluster.IsEstablished():
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = degradedReason(*o, plan)

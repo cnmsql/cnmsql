@@ -394,6 +394,146 @@ func TestReconcilePreferredPrimaryWaitsForTheFailoverCooldown(t *testing.T) {
 	}
 }
 
+// setPrimary records name as both the current and the target primary: the
+// settled state once a promotion has landed.
+func setPrimary(t *testing.T, reconciler *ClusterReconciler, cluster *mysqlv1alpha1.Cluster, name string) {
+	t.Helper()
+	cluster.Status.CurrentPrimary = name
+	cluster.Status.TargetPrimary = name
+	if err := reconciler.Status().Update(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requestedTarget runs reconcileInRangePrimary and returns the targetPrimary it
+// left on the cluster, or empty when it requested nothing.
+func requestedTarget(t *testing.T, reconciler *ClusterReconciler, cluster *mysqlv1alpha1.Cluster, observed observedCluster) string {
+	t.Helper()
+	ctx := context.Background()
+	requested, err := reconciler.reconcileInRangePrimary(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requested {
+		return ""
+	}
+	gotCluster := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster); err != nil {
+		t.Fatal(err)
+	}
+	if gotCluster.Status.Phase != topology.PhaseSwitchover {
+		t.Fatalf("phase = %q, want %q", gotCluster.Status.Phase, topology.PhaseSwitchover)
+	}
+	return gotCluster.Status.TargetPrimary
+}
+
+// A failover left the primary on demo-3 and the cluster was then scaled to 2.
+// Scale-down cannot remove a primary, so the role moves back in range first.
+func TestReconcileInRangePrimarySwitchesOverToAnInRangeReplica(t *testing.T) {
+	t.Parallel()
+	cluster, reconciler, _ := failoverCluster(t, 0)
+	setPrimary(t, reconciler, cluster, testReplica3)
+	observed := healthyClusterObserved(testReplica3)
+	observed.Plan.Instances = 2
+
+	if got := requestedTarget(t, reconciler, cluster, observed); got != testPrimary {
+		t.Fatalf("targetPrimary = %q, want the first in-range replica %q", got, testPrimary)
+	}
+}
+
+func TestReconcileInRangePrimaryHonoursTheInRangePreference(t *testing.T) {
+	t.Parallel()
+	cluster, reconciler := policyCluster(t, &mysqlv1alpha1.FailoverPolicy{
+		PreferredPrimary: []string{testReplica3, testReplica2},
+	})
+	setPrimary(t, reconciler, cluster, testReplica3)
+	observed := healthyClusterObserved(testReplica3)
+	observed.Plan.Instances = 2
+
+	if got := requestedTarget(t, reconciler, cluster, observed); got != testReplica2 {
+		t.Fatalf("targetPrimary = %q, want the preferred in-range %q", got, testReplica2)
+	}
+}
+
+func TestReconcileInRangePrimarySkipsAnUnfitReplica(t *testing.T) {
+	t.Parallel()
+	cluster, reconciler, _ := failoverCluster(t, 0)
+	setPrimary(t, reconciler, cluster, testReplica3)
+	observed := healthyClusterObserved(testReplica3)
+	observed.Plan.Instances = 2
+	broken := healthyReplicaStatus(testPrimary, testGTID)
+	broken.Replication.SQLRunning = false
+	observed.StatusByInstance[testPrimary] = broken
+
+	if got := requestedTarget(t, reconciler, cluster, observed); got != testReplica2 {
+		t.Fatalf("targetPrimary = %q, want the healthy in-range %q", got, testReplica2)
+	}
+}
+
+func TestReconcileInRangePrimaryLeavesAnInRangePrimaryAlone(t *testing.T) {
+	t.Parallel()
+	cluster, reconciler, _ := failoverCluster(t, 0)
+	setPrimary(t, reconciler, cluster, testReplica2)
+	observed := healthyClusterObserved(testReplica2)
+	observed.Plan.Instances = 2
+
+	if got := requestedTarget(t, reconciler, cluster, observed); got != "" {
+		t.Fatalf("targetPrimary = %q, want no switchover for a primary within the desired count", got)
+	}
+}
+
+// A promotion already in flight lands first; asking for another move on top of
+// it would race the one under way.
+func TestReconcileInRangePrimaryWaitsForAPromotionInFlight(t *testing.T) {
+	t.Parallel()
+	cluster, reconciler, _ := failoverCluster(t, 0)
+	cluster.Status.CurrentPrimary = testReplica3
+	cluster.Status.TargetPrimary = testReplica2
+	if err := reconciler.Status().Update(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	observed := healthyClusterObserved(testReplica3)
+	observed.Plan.Instances = 2
+
+	if got := requestedTarget(t, reconciler, cluster, observed); got != "" {
+		t.Fatalf("targetPrimary = %q, want no new request while a promotion is in flight", got)
+	}
+}
+
+func TestReconcileInRangePrimaryWaitsForAHealthyPrimary(t *testing.T) {
+	t.Parallel()
+	cluster, reconciler, _ := failoverCluster(t, 0)
+	setPrimary(t, reconciler, cluster, testReplica3)
+	observed := healthyClusterObserved(testReplica3)
+	observed.Plan.Instances = 2
+	delete(observed.StatusByInstance, testReplica3)
+
+	if got := requestedTarget(t, reconciler, cluster, observed); got != "" {
+		t.Fatalf("targetPrimary = %q, want failover, not a switchover, to own an unreachable primary", got)
+	}
+}
+
+// A preferred instance above the desired count is on its way out: failing back
+// onto it would only strand the scale-down.
+func TestReconcilePreferredPrimarySkipsAnOutOfRangeInstance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler := policyCluster(t, &mysqlv1alpha1.FailoverPolicy{
+		PreferredPrimary: []string{testReplica3},
+	})
+	setPrimary(t, reconciler, cluster, testReplica2)
+	observed := healthyClusterObserved(testReplica2)
+	observed.Plan.Instances = 2
+
+	requested, err := reconciler.reconcilePreferredPrimary(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requested {
+		t.Fatal("failed back onto a preferred instance above the desired count")
+	}
+}
+
 // healthyPrimaryObserved is the cluster as it looks when nothing is wrong: the
 // expected primary is up and acting as primary.
 func healthyPrimaryObserved() observedCluster {

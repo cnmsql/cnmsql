@@ -381,11 +381,19 @@ func (r *ClusterReconciler) instancePVCExists(ctx context.Context, cluster *mysq
 
 // scaleDownReplicas removes instances whose ordinal exceeds the desired count.
 // Per the M4 retention policy the PVC is left in place for the user to keep or
-// delete; the current primary is never removed. Under Group Replication, a
+// delete; neither the current primary nor a promotion target is ever removed,
+// and nothing is removed while a primary change is in flight, since the target
+// was elected against the instances that exist now. Under Group Replication, a
 // member is first fenced (STOP GROUP_REPLICATION) so it gracefully leaves the
 // group before the Pod is deleted, and removal is refused when it would drop
 // the group below quorum.
 func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
+	current, target := cluster.Status.CurrentPrimary, cluster.Status.TargetPrimary
+	if current != "" && target != "" && target != current {
+		logf.FromContext(ctx).Info("Deferring scale down until the primary change completes",
+			"currentPrimary", current, "targetPrimary", target, "desiredInstances", plan.Instances)
+		return nil
+	}
 	pods := &corev1.PodList{}
 	if err := r.List(ctx, pods, client.InNamespace(cluster.Namespace), client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
 		return err
@@ -393,7 +401,7 @@ func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysq
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		ordinal, ok := instanceOrdinal(cluster, pod.Name)
-		if !ok || ordinal <= plan.Instances || pod.Name == plan.primaryName(cluster) {
+		if !ok || ordinal <= plan.Instances || pod.Name == plan.primaryName(cluster) || pod.Name == target {
 			continue
 		}
 		topo := r.topologyReconciler(cluster)
@@ -467,4 +475,11 @@ func instanceOrdinal(cluster *mysqlv1alpha1.Cluster, name string) (int, bool) {
 		return 0, false
 	}
 	return ordinal, true
+}
+
+// instanceInRange reports whether name is one of the desired instances, that is
+// its ordinal is within the planned count.
+func instanceInRange(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, name string) bool {
+	ordinal, ok := instanceOrdinal(cluster, name)
+	return ok && ordinal <= plan.Instances
 }

@@ -59,8 +59,13 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 		return err
 	}
 
-	desired := make(map[string]string, plan.Instances) // SA name -> instance name
-	for _, inst := range plan.instanceNames(cluster) {
+	// A primary or promotion target above the desired count keeps its Pod until
+	// the role moves back in range, so it keeps its identity too: deleting its
+	// ServiceAccount would invalidate the Pod's token, and it could then neither
+	// take the primary lease nor report its promotion.
+	instances := append(plan.instanceNames(cluster), outOfRangePrimaries(cluster, plan)...)
+	desired := make(map[string]string, len(instances)) // SA name -> instance name
+	for _, inst := range instances {
 		saName := inst + "-instance"
 		desired[saName] = inst
 		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: cluster.Namespace}}
