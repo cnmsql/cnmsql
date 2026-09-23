@@ -203,12 +203,7 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		})
 
 		By("waiting for the backup to complete")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", bkpName, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).To(Equal("completed"), "backup phase: %s", phase)
-		}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(bkpName, 10*time.Minute)
 
 		By("restoring the backup to a new cluster")
 		applyManifest(bkpRestored, mariadbRecoveryClusterManifest(bkpRestored, bkpName))
@@ -260,11 +255,7 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 			deleteManifest(pitrBackup, backupManifest(pitrBackup, pitrSource))
 		})
 
-		Eventually(func(g Gomega) {
-			phase, _ := kubectl("get", "backup", pitrBackup, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(phase).To(Equal("completed"))
-		}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(pitrBackup, 10*time.Minute)
 
 		By("writing data after the backup for PITR validation")
 		_, err = mariadbExec(pitrPrimary, "app", password, "app",

@@ -61,13 +61,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		}, e2eTimeout(1*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for the backup to complete")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", finalizedBkp, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "backup failed")
-			g.Expect(phase).To(Equal("completed"), "backup not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(finalizedBkp, 8*time.Minute)
 
 		id, err := kubectl("get", "backup", finalizedBkp, "-n", testNamespace,
 			"-o", "jsonpath={.status.backupId}")
@@ -130,13 +124,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		}, e2eTimeout(1*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for the generated Backup to complete")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", genBackup, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "generated backup failed")
-			g.Expect(phase).To(Equal("completed"), "generated backup not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(genBackup, 8*time.Minute)
 
 		id, err := kubectl("get", "backup", genBackup, "-n", testNamespace,
 			"-o", "jsonpath={.status.backupId}")
@@ -160,13 +148,7 @@ var _ = Describe("Backup cleanup finalizer", Ordered, Label("flavor"), func() {
 		applyManifest(retainedBkp, backupManifest(retainedBkp, finCluster))
 
 		By("waiting for the backup to complete")
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", retainedBkp, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "backup failed")
-			g.Expect(phase).To(Equal("completed"), "backup not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(retainedBkp, 8*time.Minute)
 
 		id, err := kubectl("get", "backup", retainedBkp, "-n", testNamespace,
 			"-o", "jsonpath={.status.backupId}")

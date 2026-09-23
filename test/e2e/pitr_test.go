@@ -64,13 +64,7 @@ var _ = Describe("Point-in-time recovery", Ordered, Label("flavor"), func() {
 		By("taking a base backup before any application data exists")
 		applyManifest(backupName, backupManifest(backupName, sourceCluster))
 		DeferCleanup(func() { deleteManifest(backupName, backupManifest(backupName, sourceCluster)) })
-		Eventually(func(g Gomega) {
-			phase, err := kubectl("get", "backup", backupName, "-n", testNamespace,
-				"-o", "jsonpath={.status.phase}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).NotTo(Equal("failed"), "base backup failed")
-			g.Expect(phase).To(Equal("completed"), "base backup not completed yet")
-		}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+		expectBackupCompleted(backupName, 8*time.Minute)
 
 		By("writing the target row (id=1) after the base backup")
 		_, err := mysqlExec(primary, "app", password, "app",
