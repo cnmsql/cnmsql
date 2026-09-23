@@ -157,6 +157,11 @@ but while the cluster runs asynchronously a committed transaction may exist only
 on the primary. This is how a MySQL cluster behaves with one required
 acknowledgement.
 
+The operator also sets `rpl_semi_sync_master_wait_point` to `AFTER_SYNC`, as on
+MySQL. MariaDB's own default, `AFTER_COMMIT`, lets other sessions read a
+transaction before any replica has it, and a failover can then lose a
+transaction that clients already saw.
+
 ## GTID model
 
 MariaDB names transactions differently from MySQL, and you will see that in a
