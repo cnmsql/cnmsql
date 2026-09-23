@@ -21,7 +21,10 @@ import (
 	"slices"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -72,6 +75,49 @@ func TestEnsureInstanceRBACScopesGroupReplicationDoorbell(t *testing.T) {
 			binding.RoleRef.Name != name {
 			t.Fatalf("doorbell binding %s is not instance-specific: %+v", name, binding)
 		}
+	}
+}
+
+// A primary above the desired count keeps running until the role moves back in
+// range. Deleting its ServiceAccount would invalidate its token (Unauthorized),
+// so it could never take the lease or report a promotion; the surplus replica's
+// identity is still removed.
+func TestEnsureInstanceRBACKeepsAnOutOfRangePrimaryIdentity(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Status.CurrentPrimary = testReplica2
+	cluster.Status.TargetPrimary = testReplica2
+	plan := testPlan() // Instances == 1
+	scheme := testScheme(t)
+	stale := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name:      testReplica3 + "-instance",
+		Namespace: cluster.Namespace,
+		Labels:    map[string]string{clusterLabel: cluster.Name},
+	}}
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, stale).Build(),
+		Scheme: scheme,
+	}
+	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, instance := range []string{demoPrimaryInstance, testReplica2} {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: instance + "-instance"}, &corev1.ServiceAccount{}); err != nil {
+			t.Fatalf("ServiceAccount for %s should exist: %v", instance, err)
+		}
+	}
+	err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testReplica3 + "-instance"}, &corev1.ServiceAccount{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("surplus replica ServiceAccount get = %v, want removed", err)
+	}
+	binding := &rbacv1.RoleBinding{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: "demo-instance"}, binding); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(binding.Subjects, func(s rbacv1.Subject) bool { return s.Name == testReplica2+"-instance" }) {
+		t.Fatalf("binding subjects = %+v, want the out-of-range primary kept", binding.Subjects)
 	}
 }
 

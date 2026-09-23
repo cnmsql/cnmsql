@@ -99,7 +99,10 @@ var _ = Describe("Horizontal Pod Autoscaler", Ordered, Label("feature"), func() 
 			primary, err := clusterField(cluster, "{.status.currentPrimary}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(primary).To(Equal(top))
-		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed(), func() string {
+			dumpE2EDiagnostics()
+			return "the switchover onto " + top + " did not land"
+		})
 		expectClusterReady(cluster, scaled, 5*time.Minute)
 
 		By(fmt.Sprintf("scaling down to %d, below the primary's ordinal", initial))
