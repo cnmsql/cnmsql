@@ -129,13 +129,24 @@ func copyFile(srcPath, dstPath string) error {
 		return err
 	}
 	content := packageRE.ReplaceAllString(string(data), "package scrapers")
-	if filepath.Base(srcPath) == "instance.go" {
+	switch filepath.Base(srcPath) {
+	case "instance.go":
 		content, err = adaptInstance(content)
 		if err != nil {
 			return err
 		}
+	case "binlog.go":
+		content = adaptBinlog(content)
 	}
 	return os.WriteFile(dstPath, []byte(genHeader+content), 0o644)
+}
+
+// adaptBinlog fixes an upstream format verb mismatch (%q with an int) that
+// `go vet` rejects. It is a no-op once upstream fixes it.
+func adaptBinlog(content string) string {
+	return strings.Replace(content,
+		`fmt.Errorf("invalid number of columns: %q", columnCount)`,
+		`fmt.Errorf("invalid number of columns: %d", columnCount)`, 1)
 }
 
 // adaptInstance rewrites the upstream constructor so the instance wraps a
