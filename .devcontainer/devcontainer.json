@@ -1,6 +1,6 @@
 {
   "name": "Kubebuilder DevContainer",
-  "image": "golang:1.25",
+  "image": "golang:1.27",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false,
@@ -11,9 +11,10 @@
       "upgradePackages": true
     }
   },
-
-  "runArgs": ["--privileged", "--init"],
-
+  "runArgs": [
+    "--privileged",
+    "--init"
+  ],
   "customizations": {
     "vscode": {
       "settings": {
@@ -25,11 +26,8 @@
       ]
     }
   },
-
   "remoteEnv": {
     "GO111MODULE": "on"
   },
-
   "onCreateCommand": "bash .devcontainer/post-install.sh"
 }
-

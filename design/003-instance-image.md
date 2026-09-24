@@ -37,7 +37,7 @@ Stop shipping the operator's instance on top of the fat upstream `percona/percon
 Multi-stage, driven entirely by build args so one file covers all versions:
 
 ```
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.57
 ARG BASE_IMAGE=debian:bookworm-slim
 ARG PS_REPO=ps-80
 ARG PXB_REPO=pxb-80
