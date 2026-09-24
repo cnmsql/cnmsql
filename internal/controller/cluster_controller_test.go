@@ -35,7 +35,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -540,7 +539,7 @@ func TestPodSpecSwitchoverPreStopHook(t *testing.T) {
 		t.Parallel()
 		cluster := baseCluster()
 		cluster.Spec.Instances = 3
-		cluster.Spec.EnableSwitchoverOnDrain = ptr.To(false)
+		cluster.Spec.EnableSwitchoverOnDrain = new(false)
 		plan := testPlan()
 		plan.Instances = 3
 		spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))

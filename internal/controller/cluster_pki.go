@@ -29,6 +29,7 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
+//nolint:goconst // cert-manager spec field names read clearer inline.
 func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	certs := cluster.Spec.Certificates
 	needServerCertificates := certs == nil || certs.ServerTLSSecret == ""
@@ -46,7 +47,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 			"commonName": cluster.Name + ".ca.cnmsql",
 			"issuerRef": map[string]any{
 				"name": plan.SelfSignedIssuer,
-				"kind": "Issuer",
+				"kind": issuerGVK.Kind,
 			},
 		}, certificateGVK); err != nil {
 			return err
@@ -78,7 +79,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 				},
 				"issuerRef": map[string]any{
 					"name": plan.CAIssuer,
-					"kind": "Issuer",
+					"kind": issuerGVK.Kind,
 				},
 			}, certificateGVK); err != nil {
 				return err
@@ -97,7 +98,7 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 		},
 		"issuerRef": map[string]any{
 			"name": plan.CAIssuer,
-			"kind": "Issuer",
+			"kind": issuerGVK.Kind,
 		},
 	}, certificateGVK)
 }

@@ -503,7 +503,7 @@ func resolveServerVersion(image string, clusterEng engine.Engine) (string, error
 }
 
 func imageTag(image string) string {
-	imageWithoutDigest := strings.SplitN(image, "@", 2)[0]
+	imageWithoutDigest, _, _ := strings.Cut(image, "@")
 	lastSlash := strings.LastIndexByte(imageWithoutDigest, '/')
 	lastColon := strings.LastIndexByte(imageWithoutDigest, ':')
 	if lastColon <= lastSlash {

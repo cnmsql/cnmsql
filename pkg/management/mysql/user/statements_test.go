@@ -21,8 +21,6 @@ import (
 	"testing"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 func TestCreateUserStatements(t *testing.T) {
 	stmts, err := CreateUserStatements(CreateUserRequest{
 		Name:               "app",
@@ -185,8 +183,8 @@ func TestAlterUserOnlyTouchesSetFields(t *testing.T) {
 	stmts, err := AlterUserStatements(AlterUserRequest{
 		Name:               "app",
 		Host:               "10.0.0.1",
-		Password:           ptr("newpw"),
-		MaxUserConnections: ptr(int32(10)),
+		Password:           new("newpw"),
+		MaxUserConnections: new(int32(10)),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

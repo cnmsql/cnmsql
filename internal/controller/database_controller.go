@@ -98,7 +98,8 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Update(ctx, db); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// The update itself triggers the next reconcile.
+		return ctrl.Result{}, nil
 	}
 
 	if primary == "" {

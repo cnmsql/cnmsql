@@ -22,7 +22,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("ScheduledBackup defaulting", func() {
@@ -42,12 +41,12 @@ var _ = Describe("ScheduledBackup defaulting", func() {
 	It("does not override explicitly set values", func() {
 		sb := &ScheduledBackup{
 			Spec: ScheduledBackupSpec{
-				Suspend:              ptr.To(true),
-				Immediate:            ptr.To(true),
+				Suspend:              new(true),
+				Immediate:            new(true),
 				BackupOwnerReference: "cluster",
 				Method:               BackupMethodXtrabackup,
 				Target:               BackupTargetPrimary,
-				Online:               ptr.To(false),
+				Online:               new(false),
 			},
 		}
 		sb.SetDefaults()
@@ -74,8 +73,8 @@ var _ = Describe("ScheduledBackup accessors", func() {
 		Expect(sb.IsSuspended()).To(BeFalse())
 		Expect(sb.IsImmediate()).To(BeFalse())
 
-		sb.Spec.Suspend = ptr.To(true)
-		sb.Spec.Immediate = ptr.To(true)
+		sb.Spec.Suspend = new(true)
+		sb.Spec.Immediate = new(true)
 		Expect(sb.IsSuspended()).To(BeTrue())
 		Expect(sb.IsImmediate()).To(BeTrue())
 	})
@@ -111,7 +110,7 @@ var _ = Describe("ScheduledBackup BackupName", func() {
 
 var _ = Describe("ScheduledBackup CreateBackup", func() {
 	It("propagates the cluster, method, target and online settings", func() {
-		online := ptr.To(false)
+		online := new(false)
 		sb := &ScheduledBackup{
 			ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"},
 			Spec: ScheduledBackupSpec{
@@ -192,7 +191,7 @@ var _ = Describe("ScheduledBackup retention", func() {
 
 	It("reports retention when any knob is set", func() {
 		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{RetentionPolicy: "1w"}}).HasRetention()).To(BeTrue())
-		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{SuccessfulBackupsHistoryLimit: ptr.To(int32(3))}}).HasRetention()).To(BeTrue())
-		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{FailedBackupsHistoryLimit: ptr.To(int32(1))}}).HasRetention()).To(BeTrue())
+		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{SuccessfulBackupsHistoryLimit: new(int32(3))}}).HasRetention()).To(BeTrue())
+		Expect((&ScheduledBackup{Spec: ScheduledBackupSpec{FailedBackupsHistoryLimit: new(int32(1))}}).HasRetention()).To(BeTrue())
 	})
 })

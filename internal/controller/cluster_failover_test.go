@@ -27,7 +27,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -458,7 +457,7 @@ func TestReconcilePrimaryChangeAbortsWhenTargetLagsPastMaxSwitchoverDelay(t *tes
 	cluster.Status.CurrentPrimary = testPrimary
 	cluster.Status.TargetPrimary = testReplica2
 	// The switchover started well beyond maxSwitchoverDelay ago.
-	cluster.Status.TargetPrimaryTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-time.Hour)))
+	cluster.Status.TargetPrimaryTimestamp = new(metav1.NewTime(time.Now().Add(-time.Hour)))
 	scheme := testScheme(t)
 	pods := []*corev1.Pod{
 		readyPod(cluster, testPrimary, rolePrimary),
@@ -516,7 +515,7 @@ func failoverCluster(t *testing.T, failoverDelay int32) (*mysqlv1alpha1.Cluster,
 	cluster.Spec.FailoverDelay = failoverDelay
 	cluster.Status.CurrentPrimary = testPrimary
 	cluster.Status.TargetPrimary = testPrimary
-	cluster.Status.CurrentPrimaryTimestamp = ptr.To(metav1.Now())
+	cluster.Status.CurrentPrimaryTimestamp = new(metav1.Now())
 	scheme := testScheme(t)
 	// The old primary Pod still exists (unreachable, but not yet deleted).
 	oldPod := readyPod(cluster, testPrimary, rolePrimary)
@@ -756,7 +755,7 @@ func TestReconcileFailoverClearsMarkerWhenPrimaryHealthy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster, reconciler, control := failoverCluster(t, 0)
-	cluster.Status.PrimaryFailingSince = ptr.To(metav1.Now())
+	cluster.Status.PrimaryFailingSince = new(metav1.Now())
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}

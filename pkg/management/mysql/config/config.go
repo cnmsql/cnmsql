@@ -218,7 +218,7 @@ var managedKeys = map[string]struct{}{
 	"sync_binlog":                {},
 	"max_binlog_size":            {},
 	"binlog_expire_logs_seconds": {},
-	"expire_logs_days":           {},
+	keyExpireLogsDays:            {},
 }
 
 // deniedKeys are [mysqld] keys that the operator does not itself set but which
@@ -274,7 +274,7 @@ var removedKeys = map[string]removedKey{
 	"default_authentication_plugin": {8, 4, "removed in 8.4; use authentication_policy"},
 	"master_info_repository":        {8, 4, "removed in 8.4; replication metadata is stored in tables"},
 	"relay_log_info_repository":     {8, 4, "removed in 8.4; replication metadata is stored in tables"},
-	"expire_logs_days":              {8, 4, "removed in 8.4; use binlog_expire_logs_seconds"},
+	keyExpireLogsDays:               {8, 4, "removed in 8.4; use binlog_expire_logs_seconds"},
 	"log_bin_use_v1_row_events":     {8, 4, "removed in 8.4"},
 	"slave_rows_search_algorithms":  {8, 4, "removed in 8.4"},
 }
@@ -322,10 +322,16 @@ func normalizeKey(key string) string {
 // as managed so a user parameter can never destabilise the group.
 const groupReplicationKeyPrefix = "group_replication_"
 
+// Server variable names referenced from more than one code path.
+const (
+	keyPluginLoadAdd  = "plugin_load_add"
+	keyExpireLogsDays = "expire_logs_days"
+)
+
 // isGroupReplicationManagedKey reports whether the (normalized) key falls in the
 // operator-owned Group Replication namespace.
 func isGroupReplicationManagedKey(normalized string) bool {
-	return strings.HasPrefix(normalized, groupReplicationKeyPrefix) || normalized == "plugin_load_add"
+	return strings.HasPrefix(normalized, groupReplicationKeyPrefix) || normalized == keyPluginLoadAdd
 }
 
 // IsGroupReplicationManagedKey is the exported wrapper for the engine package.
@@ -623,7 +629,7 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 func (c *ServerConfig) groupReplicationSettings(ver version.Version) []pair {
 	gr := c.GroupReplication
 	pairs := []pair{
-		{"plugin_load_add", "group_replication.so"},
+		{keyPluginLoadAdd, "group_replication.so"},
 		{"group_replication_group_name", gr.GroupName},
 		{"group_replication_local_address", gr.LocalAddress},
 		{"group_replication_group_seeds", gr.GroupSeeds},
@@ -656,7 +662,7 @@ func (c *ServerConfig) groupReplicationSettings(ver version.Version) []pair {
 	// is the safe GR-native behaviour, so the operator only loads the plugin and
 	// does not override the threshold. The clone shared library is mysql_clone.so.
 	if ver.HasGroupReplicationClone() {
-		pairs = append(pairs, pair{"plugin_load_add", "mysql_clone.so"})
+		pairs = append(pairs, pair{keyPluginLoadAdd, "mysql_clone.so"})
 	}
 	if gr.RecoverySSL.isset() {
 		pairs = append(pairs,
@@ -686,7 +692,7 @@ func binlogExpire(ver version.Version, seconds int) (string, string) {
 		return "binlog_expire_logs_seconds", strconv.Itoa(seconds)
 	}
 	days := max((seconds+86399)/86400, 1)
-	return "expire_logs_days", strconv.Itoa(days)
+	return keyExpireLogsDays, strconv.Itoa(days)
 }
 
 // BinlogExpire is the exported wrapper for the engine package.

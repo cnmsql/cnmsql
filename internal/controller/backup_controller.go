@@ -405,8 +405,8 @@ func backupJob(
 	// Operator-owned labels take precedence over the template's, so a user can
 	// add labels but not clobber the ones the operator selects on.
 	operatorLabels := map[string]string{
-		"app.kubernetes.io/name":       "cnmsql",
-		"app.kubernetes.io/managed-by": "cnmsql",
+		"app.kubernetes.io/name":       appLabelValue,
+		"app.kubernetes.io/managed-by": appLabelValue,
 		clusterLabel:                   cluster.Name,
 		"mysql.cnmsql.co/backup":       backup.Name,
 	}
@@ -443,15 +443,15 @@ func backupJob(
 						Name:         "bootstrap-controller",
 						Image:        operatorImage,
 						Command:      []string{"/manager"},
-						Args:         []string{"bootstrap", "/controller/manager"},
+						Args:         []string{managerBootstrapCmd, managerBinary},
 						VolumeMounts: backupWorkerVolumeMounts(),
 					}},
 					Containers: []corev1.Container{{
 						Name:    "backup",
 						Image:   image,
-						Command: []string{"/controller/manager"},
+						Command: []string{managerBinary},
 						Args: []string{
-							"instance", "backup", "upload",
+							managerInstanceCmd, "backup", "upload",
 							"--source-manager-url=https://" + sourceHost + ":8080/cluster/backup",
 							"--source-manager-server-name=" + sourceHost,
 							"--bucket=" + store.Bucket,
@@ -528,17 +528,17 @@ func secretKeyEnv(name string, selector mysqlv1alpha1.SecretKeySelector) corev1.
 
 func backupWorkerVolumes(clusterName string) []corev1.Volume {
 	return []corev1.Volume{
-		{Name: "scratch-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: scratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "client-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: clusterName + "-client-tls"}}},
-		{Name: "client-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: clusterName + "-ca"}}},
+		{Name: clientCAVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: clusterName + "-ca"}}},
 	}
 }
 
 func backupWorkerVolumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
-		{Name: "scratch-data", MountPath: "/controller"},
+		{Name: scratchVolumeName, MountPath: "/controller"},
 		{Name: "client-tls", MountPath: topology.ServerTLSPath, ReadOnly: true},
-		{Name: "client-ca", MountPath: topology.ClientCAPath, ReadOnly: true},
+		{Name: clientCAVolumeName, MountPath: topology.ClientCAPath, ReadOnly: true},
 	}
 }
 

@@ -97,7 +97,8 @@ func (r *DatabaseUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Update(ctx, du); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// The update itself triggers the next reconcile.
+		return ctrl.Result{}, nil
 	}
 
 	if errs := du.Validate(); len(errs) > 0 {

@@ -27,11 +27,7 @@ import (
 // context this package adds to it. minio.ToErrorResponse only type-asserts, so
 // it would miss a wrapped one.
 func asErrorResponse(err error) (minio.ErrorResponse, bool) {
-	var response minio.ErrorResponse
-	if errors.As(err, &response) {
-		return response, true
-	}
-	return minio.ErrorResponse{}, false
+	return errors.AsType[minio.ErrorResponse](err)
 }
 
 // isNotFound reports whether err is an object-store "this key is not there"

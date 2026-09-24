@@ -24,7 +24,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	controllerasync "github.com/cnmsql/cnmsql/internal/controller/async"
@@ -110,7 +109,7 @@ func TestReconcileFailoverBlocksWithinTheFailoverCooldown(t *testing.T) {
 	// The previous failover promoted this primary three minutes ago, and it has
 	// been healthy ever since. With no stability window it settled on promotion, so
 	// the cooldown has seven minutes left to run.
-	cluster.Status.LastFailoverTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-3 * time.Minute)))
+	cluster.Status.LastFailoverTimestamp = new(metav1.NewTime(time.Now().Add(-3 * time.Minute)))
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +145,7 @@ func TestReconcileFailoverProceedsOnceTheCooldownHasElapsed(t *testing.T) {
 	cluster, reconciler := policyCluster(t, &mysqlv1alpha1.FailoverPolicy{
 		MinTimeBetweenFailovers: &metav1.Duration{Duration: time.Minute},
 	})
-	cluster.Status.LastFailoverTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-time.Hour)))
+	cluster.Status.LastFailoverTimestamp = new(metav1.NewTime(time.Now().Add(-time.Hour)))
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
@@ -189,10 +188,10 @@ func TestReconcileFailoverBlocksWhileTheFlappingPrimaryHasNotSettled(t *testing.
 	})
 	// The failover that promoted this primary is long past, so the plain cooldown
 	// would have expired hours ago...
-	cluster.Status.LastFailoverTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-time.Hour)))
+	cluster.Status.LastFailoverTimestamp = new(metav1.NewTime(time.Now().Add(-time.Hour)))
 	// ...but the primary dropped out and came back a minute ago, restarting the
 	// healthy stretch it has to complete before it counts as settled.
-	cluster.Status.PrimaryHealthySince = ptr.To(metav1.NewTime(time.Now().Add(-time.Minute)))
+	cluster.Status.PrimaryHealthySince = new(metav1.NewTime(time.Now().Add(-time.Minute)))
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +219,7 @@ func TestReconcileFailoverPromotesWhenThePromotedPrimaryNeverBecameHealthy(t *te
 		MinTimeBetweenFailovers: &metav1.Duration{Duration: time.Minute},
 		PrimaryStabilityWindow:  &metav1.Duration{Duration: 10 * time.Minute},
 	})
-	cluster.Status.LastFailoverTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-time.Hour)))
+	cluster.Status.LastFailoverTimestamp = new(metav1.NewTime(time.Now().Add(-time.Hour)))
 	cluster.Status.PrimaryHealthySince = nil
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
@@ -261,8 +260,8 @@ func TestReconcileFailoverRestampsPrimaryHealthySinceOnRecovery(t *testing.T) {
 	ctx := context.Background()
 	cluster, reconciler, _ := failoverCluster(t, 0)
 	stale := metav1.NewTime(time.Now().Add(-time.Hour))
-	cluster.Status.PrimaryHealthySince = ptr.To(stale)
-	cluster.Status.PrimaryFailingSince = ptr.To(metav1.NewTime(time.Now().Add(-time.Minute)))
+	cluster.Status.PrimaryHealthySince = new(stale)
+	cluster.Status.PrimaryFailingSince = new(metav1.NewTime(time.Now().Add(-time.Minute)))
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +378,7 @@ func TestReconcilePreferredPrimaryWaitsForTheFailoverCooldown(t *testing.T) {
 	})
 	cluster.Status.CurrentPrimary = testReplica2
 	cluster.Status.TargetPrimary = testReplica2
-	cluster.Status.LastFailoverTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-time.Minute)))
+	cluster.Status.LastFailoverTimestamp = new(metav1.NewTime(time.Now().Add(-time.Minute)))
 	if err := reconciler.Status().Update(ctx, cluster); err != nil {
 		t.Fatal(err)
 	}

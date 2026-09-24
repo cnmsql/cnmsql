@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -103,7 +102,7 @@ func TestScheduledBackupSuspendedIsNoOp(t *testing.T) {
 
 	scheme := testScheme(t)
 	sb := baseScheduledBackup()
-	sb.Spec.Suspend = ptr.To(true)
+	sb.Spec.Suspend = new(true)
 	r := newScheduledBackupReconciler(t, scheme, sb)
 
 	result := reconcileScheduled(t, r)
@@ -120,7 +119,7 @@ func TestScheduledBackupImmediateCreatesOneBackup(t *testing.T) {
 
 	scheme := testScheme(t)
 	sb := baseScheduledBackup()
-	sb.Spec.Immediate = ptr.To(true)
+	sb.Spec.Immediate = new(true)
 	r := newScheduledBackupReconciler(t, scheme, sb)
 
 	reconcileScheduled(t, r)
@@ -158,7 +157,7 @@ func TestScheduledBackupImmediateAdoptsExistingOnRetry(t *testing.T) {
 
 	scheme := testScheme(t)
 	sb := baseScheduledBackup()
-	sb.Spec.Immediate = ptr.To(true)
+	sb.Spec.Immediate = new(true)
 	// Simulate a prior reconcile that created the immediate Backup but failed to
 	// land the status patch (LastCheckTime still nil).
 	existing := &mysqlv1alpha1.Backup{
@@ -250,7 +249,7 @@ func TestScheduledBackupClusterOwnerReference(t *testing.T) {
 
 	scheme := testScheme(t)
 	sb := baseScheduledBackup()
-	sb.Spec.Immediate = ptr.To(true)
+	sb.Spec.Immediate = new(true)
 	sb.Spec.BackupOwnerReference = "cluster"
 	cluster := baseCluster()
 	r := newScheduledBackupReconciler(t, scheme, sb, cluster)
@@ -272,7 +271,7 @@ func TestScheduledBackupNoneOwnerReference(t *testing.T) {
 
 	scheme := testScheme(t)
 	sb := baseScheduledBackup()
-	sb.Spec.Immediate = ptr.To(true)
+	sb.Spec.Immediate = new(true)
 	sb.Spec.BackupOwnerReference = "none"
 	r := newScheduledBackupReconciler(t, scheme, sb)
 

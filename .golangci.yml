@@ -32,12 +32,27 @@ linters:
       rules:
         - name: comment-spacings
         - name: import-shadowing
+    goconst:
+      # Boolean-style server/DSN values read better inline than as constants.
+      ignore-string-values:
+        - "^(true|false|ON|OFF)$"
     modernize:
       disable:
         - omitzero
+        # Flattening ObjectMeta into promoted-field literals hurts readability
+        # of Kubernetes object construction.
+        - embedlit
   exclusions:
     generated: lax
     rules:
+      # Tests repeat literal fixtures (versions, GTIDs, column names) on purpose.
+      - linters:
+          - goconst
+        path: _test\.go
+      # kubectl plugin table headers ("Name", "Role", ...) are UI text.
+      - linters:
+          - goconst
+        path: cmd/kubectl-cnmsql/
       - linters:
           - lll
         path: api/*

@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
@@ -124,12 +123,12 @@ func (cluster *Cluster) SetDefaults() {
 	}
 
 	if spec.SmartShutdownTimeout == nil {
-		spec.SmartShutdownTimeout = ptr.To(int32(DefaultSmartShutdownTimeout))
+		spec.SmartShutdownTimeout = new(int32(DefaultSmartShutdownTimeout))
 	}
 	// The smart shutdown must finish before the hard stop delay so there is
 	// headroom for the forced fallback; clamp it if it was set too high.
 	if *spec.SmartShutdownTimeout >= spec.MaxStopDelay {
-		spec.SmartShutdownTimeout = ptr.To(spec.MaxStopDelay / 2)
+		spec.SmartShutdownTimeout = new(spec.MaxStopDelay / 2)
 	}
 
 	if spec.MaxSwitchoverDelay == 0 {
@@ -137,19 +136,19 @@ func (cluster *Cluster) SetDefaults() {
 	}
 
 	if spec.EnablePDB == nil {
-		spec.EnablePDB = ptr.To(true)
+		spec.EnablePDB = new(true)
 	}
 
 	if spec.EnablePrimaryLease == nil {
-		spec.EnablePrimaryLease = ptr.To(true)
+		spec.EnablePrimaryLease = new(true)
 	}
 
 	if spec.EnableSuperuserAccess == nil {
-		spec.EnableSuperuserAccess = ptr.To(false)
+		spec.EnableSuperuserAccess = new(false)
 	}
 
 	if spec.Storage.ResizeInUseVolumes == nil {
-		spec.Storage.ResizeInUseVolumes = ptr.To(true)
+		spec.Storage.ResizeInUseVolumes = new(true)
 	}
 
 	if spec.Backup != nil {
@@ -170,7 +169,7 @@ func (cluster *Cluster) SetDefaults() {
 // SetDefaults fills in the object store's optional fields with their defaults.
 func (store *S3ObjectStore) SetDefaults() {
 	if store.ForcePathStyle == nil {
-		store.ForcePathStyle = ptr.To(true)
+		store.ForcePathStyle = new(true)
 	}
 	if store.SignatureVersion == "" {
 		store.SignatureVersion = SignatureVersionV4
@@ -431,7 +430,7 @@ func (spec *ClusterSpec) targetSeries() (version.Version, bool) {
 // digest and registry/repository path. It mirrors the resolver in the
 // controller so admission can read a series from imageName without a lookup.
 func imageTag(image string) string {
-	imageWithoutDigest := strings.SplitN(image, "@", 2)[0]
+	imageWithoutDigest, _, _ := strings.Cut(image, "@")
 	lastSlash := strings.LastIndexByte(imageWithoutDigest, '/')
 	lastColon := strings.LastIndexByte(imageWithoutDigest, ':')
 	if lastColon < 0 || lastColon < lastSlash {

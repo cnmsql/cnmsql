@@ -30,7 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -480,7 +479,7 @@ func parseInstanceTime(stamp string) *metav1.Time {
 	if err != nil {
 		return nil
 	}
-	return ptr.To(metav1.NewTime(parsed))
+	return new(metav1.NewTime(parsed))
 }
 
 // archivingHealthy reports whether continuous archiving is keeping up: no

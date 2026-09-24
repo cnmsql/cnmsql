@@ -36,8 +36,7 @@ const (
 // mysqlErrorNumber returns the MySQL server error number for an error, or 0 if
 // it is not a *mysql.MySQLError.
 func mysqlErrorNumber(err error) uint16 {
-	var myErr *mysql.MySQLError
-	if errors.As(err, &myErr) {
+	if myErr, ok := errors.AsType[*mysql.MySQLError](err); ok {
 		return myErr.Number
 	}
 	return 0

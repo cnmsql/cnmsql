@@ -635,7 +635,7 @@ func TestBackupJobActiveDeadlineSeconds(t *testing.T) {
 		want     *int64
 	}{
 		{"default when unset", nil, ptr.To(defaultDeadline)},
-		{"two hours", dur(2 * time.Hour), ptr.To(int64(7200))},
+		{"two hours", dur(2 * time.Hour), new(int64(7200))},
 		{"zero disables", dur(0), nil},
 		{"sub-second disables", dur(500 * time.Millisecond), nil},
 		{"negative falls back to default", dur(-time.Second), ptr.To(defaultDeadline)},

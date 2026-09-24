@@ -24,7 +24,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -231,7 +230,7 @@ func TestDatabaseDriftDetectionDisabledStopsReapply(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{}
 	db := newDatabase(func(d *mysqlv1alpha1.Database) {
-		d.Spec.DriftDetection = ptr.To(false)
+		d.Spec.DriftDetection = new(false)
 	})
 	r := databaseReconciler(t, control, readyClusterForDB(), db)
 
@@ -258,7 +257,7 @@ func TestDatabaseDriftDetectionDisabledReappliesOnSecretChange(t *testing.T) {
 		Data:       map[string][]byte{"password": []byte("s3cret")},
 	}
 	db := newDatabase(func(d *mysqlv1alpha1.Database) {
-		d.Spec.DriftDetection = ptr.To(false)
+		d.Spec.DriftDetection = new(false)
 		d.Spec.Users = []mysqlv1alpha1.InlineUser{{
 			Name:           appName,
 			Host:           "%",

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -82,7 +81,7 @@ func TestPlanBackupGC(t *testing.T) {
 				gcBackup("c-mid", mysqlv1alpha1.BackupPhaseCompleted, 2),
 				gcBackup("c-new", mysqlv1alpha1.BackupPhaseCompleted, 1),
 			},
-			succLimit: ptr.To(int32(2)),
+			succLimit: new(int32(2)),
 			wantDel:   []string{"c-old"},
 		},
 		{
@@ -92,8 +91,8 @@ func TestPlanBackupGC(t *testing.T) {
 				gcBackup("f-old", mysqlv1alpha1.BackupPhaseFailed, 3),
 				gcBackup("f-new", mysqlv1alpha1.BackupPhaseFailed, 1),
 			},
-			succLimit: ptr.To(int32(5)),
-			failLimit: ptr.To(int32(1)),
+			succLimit: new(int32(5)),
+			failLimit: new(int32(1)),
 			wantDel:   []string{"f-old"},
 		},
 		{
@@ -122,7 +121,7 @@ func TestPlanBackupGC(t *testing.T) {
 				gcBackup("r", mysqlv1alpha1.BackupPhaseRunning, 100),
 				gcBackup("c-new", mysqlv1alpha1.BackupPhaseCompleted, 1),
 			},
-			succLimit: ptr.To(int32(1)),
+			succLimit: new(int32(1)),
 			window:    1 * day,
 			wantDel:   nil,
 		},
@@ -134,7 +133,7 @@ func TestPlanBackupGC(t *testing.T) {
 				gcBackup("c-3", mysqlv1alpha1.BackupPhaseCompleted, 3),     // over count
 				gcBackup("c-aged", mysqlv1alpha1.BackupPhaseCompleted, 40), // over count AND over window
 			},
-			succLimit: ptr.To(int32(2)),
+			succLimit: new(int32(2)),
 			window:    30 * day,
 			wantDel:   []string{"c-3", "c-aged"},
 		},
@@ -144,7 +143,7 @@ func TestPlanBackupGC(t *testing.T) {
 				gcBackup("c-new", mysqlv1alpha1.BackupPhaseCompleted, 1),
 				gcBackup("c-old", mysqlv1alpha1.BackupPhaseCompleted, 2),
 			},
-			succLimit: ptr.To(int32(0)),
+			succLimit: new(int32(0)),
 			wantDel:   []string{"c-old"}, // c-new kept as the mandatory floor
 		},
 	}
@@ -176,8 +175,8 @@ func TestScheduledBackupReconcileGCDeletesExpired(t *testing.T) {
 
 	scheme := testScheme(t)
 	sb := baseScheduledBackup()
-	sb.Spec.Suspend = ptr.To(true) // isolate GC from the scheduling path
-	sb.Spec.SuccessfulBackupsHistoryLimit = ptr.To(int32(1))
+	sb.Spec.Suspend = new(true) // isolate GC from the scheduling path
+	sb.Spec.SuccessfulBackupsHistoryLimit = new(int32(1))
 
 	child := func(name string, phase mysqlv1alpha1.BackupPhase, ageMin int) *mysqlv1alpha1.Backup {
 		return &mysqlv1alpha1.Backup{

@@ -23,7 +23,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -221,7 +220,7 @@ func TestUpgradeBackupGateDisabledProceeds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster := baseCluster()
-	cluster.Spec.Upgrade = &mysqlv1alpha1.UpgradeConfiguration{BackupBeforeUpgrade: ptr.To(false)}
+	cluster.Spec.Upgrade = &mysqlv1alpha1.UpgradeConfiguration{BackupBeforeUpgrade: new(false)}
 	scheme := testScheme(t)
 	r := &ClusterReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),

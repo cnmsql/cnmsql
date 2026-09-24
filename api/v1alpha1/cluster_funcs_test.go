@@ -23,7 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("Cluster instance selector", func() {
@@ -77,7 +76,7 @@ var _ = Describe("Cluster defaulting", func() {
 		cluster := &Cluster{
 			Spec: ClusterSpec{
 				Instances:             3,
-				EnableSuperuserAccess: ptr.To(true),
+				EnableSuperuserAccess: new(true),
 				MySQL:                 MySQLConfiguration{BinlogFormat: "MIXED"},
 			},
 		}
@@ -210,7 +209,7 @@ var _ = Describe("Cluster validation", func() {
 	It("rejects a recovery target without an object store", func() {
 		cluster := recoveryCluster()
 		cluster.Spec.Backup = nil
-		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{TargetImmediate: ptr.To(true)}
+		cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &RecoveryTarget{TargetImmediate: new(true)}
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
 
@@ -399,14 +398,14 @@ var _ = Describe("Cluster helpers", func() {
 		cluster.Spec.Replica = &ReplicaClusterConfiguration{Source: "origin"}
 		Expect(cluster.IsReplica()).To(BeTrue())
 
-		cluster.Spec.Replica.Enabled = ptr.To(false)
+		cluster.Spec.Replica.Enabled = new(false)
 		Expect(cluster.IsReplica()).To(BeFalse())
 	})
 
 	It("resolves superuser access default", func() {
 		cluster := &Cluster{}
 		Expect(cluster.GetEnableSuperuserAccess()).To(BeFalse())
-		cluster.Spec.EnableSuperuserAccess = ptr.To(true)
+		cluster.Spec.EnableSuperuserAccess = new(true)
 		Expect(cluster.GetEnableSuperuserAccess()).To(BeTrue())
 	})
 
@@ -581,7 +580,7 @@ var _ = Describe("BackupBeforeUpgrade defaulting", func() {
 
 	It("honours an explicit false", func() {
 		cluster := &Cluster{Spec: ClusterSpec{Upgrade: &UpgradeConfiguration{
-			BackupBeforeUpgrade: ptr.To(false),
+			BackupBeforeUpgrade: new(false),
 		}}}
 		Expect(cluster.BackupBeforeUpgradeEnabled()).To(BeFalse())
 	})

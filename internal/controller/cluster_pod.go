@@ -53,7 +53,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			PreStop: &corev1.LifecycleHandler{
 				Exec: &corev1.ExecAction{
 					Command: []string{
-						"/controller/manager", "instance", "prestop",
+						managerBinary, managerInstanceCmd, "prestop",
 						"--socket=" + socketPath,
 						"--control-user=" + controlUser,
 						fmt.Sprintf("--timeout=%ds", handoff),
@@ -73,13 +73,13 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 		TerminationGracePeriodSeconds: &gracePeriod,
 		ServiceAccountName:            instanceServiceAccountName(inst),
 		Volumes: []corev1.Volume{
-			{Name: "scratch-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: scratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: inst.PVCName}}},
-			{Name: "run", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			{Name: "backup", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: runVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: backupVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: inst.ConfigMapName}}}},
 			{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: inst.ServerTLSSecret}}},
-			{Name: "client-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.ClientCASecretName}}},
+			{Name: clientCAVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.ClientCASecretName}}},
 		},
 		InitContainers: []corev1.Container{
 			{
@@ -87,7 +87,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				Image:           operatorImage,
 				ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 				Command:         []string{"/manager"},
-				Args:            []string{"bootstrap", "/controller/manager"},
+				Args:            []string{managerBootstrapCmd, managerBinary},
 				VolumeMounts:    volumeMounts(),
 				Resources:       cluster.Spec.Resources,
 				SecurityContext: cluster.Spec.SecurityContext,
@@ -96,7 +96,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				Name:            "bootstrap",
 				Image:           plan.Image,
 				ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-				Command:         []string{"/controller/manager"},
+				Command:         []string{managerBinary},
 				Args:            r.bootstrapArgs(cluster, plan, inst),
 				Env:             bootstrapEnv(plan, inst),
 				VolumeMounts:    volumeMounts(),
@@ -108,13 +108,13 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			Name:            instanceContainerName,
 			Image:           plan.Image,
 			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-			Command:         []string{"/controller/manager"},
+			Command:         []string{managerBinary},
 			Args:            r.runArgs(cluster, plan, inst),
 			Lifecycle:       mysqlLifecycle,
 			Env:             runEnv(cluster, plan),
 			EnvFrom:         cluster.Spec.EnvFrom,
 			Ports: []corev1.ContainerPort{
-				{Name: "mysql", ContainerPort: 3306},
+				{Name: mysqlPortName, ContainerPort: 3306},
 				{Name: "control", ContainerPort: 8080},
 				{Name: "health", ContainerPort: 8081},
 				{Name: metricsPortName, ContainerPort: 9187},
@@ -210,12 +210,16 @@ func (r *ClusterReconciler) bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan c
 	return joinArgs(cluster, plan)
 }
 
+// serverVersionArg passes the image's MySQL version (from the MYSQL_VERSION env
+// var the kubelet expands) to every instance subcommand that renders my.cnf.
+const serverVersionArg = "--server-version=$(MYSQL_VERSION)"
+
 // restoreArgs builds the recovering primary's init-container command: download
 // and restore a physical backup from object storage into the data directory,
 // then (for point-in-time recovery) replay archived binlogs up to the target.
 func restoreArgs(plan clusterPlan) []string {
 	args := []string{
-		"instance", "restore",
+		managerInstanceCmd, "restore",
 		"--data-dir=" + dataDir,
 		"--backup-dir=" + joinBackupDir,
 		"--bucket=" + plan.Recovery.Bucket,
@@ -226,7 +230,7 @@ func restoreArgs(plan clusterPlan) []string {
 		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--socket=" + socketPath,
-		"--server-version=$(MYSQL_VERSION)",
+		serverVersionArg,
 		"--control-user=" + controlUser,
 		"--backup-user=" + backupUser,
 	}
@@ -249,12 +253,12 @@ func restoreArgs(plan clusterPlan) []string {
 
 func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapInitDB) []string {
 	args := []string{
-		"instance", "initdb",
+		managerInstanceCmd, "initdb",
 		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
-		"--server-version=$(MYSQL_VERSION)",
+		serverVersionArg,
 		"--replication-user=" + replicationUser,
 		"--replication-require-x509",
 		"--backup-user=" + backupUser,
@@ -286,12 +290,12 @@ func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *m
 func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 	primaryFQDN := plan.primaryName(cluster) + "." + cluster.Namespace + ".svc"
 	return []string{
-		"instance", "join",
+		managerInstanceCmd, "join",
 		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
-		"--server-version=$(MYSQL_VERSION)",
+		serverVersionArg,
 		"--backup-dir=" + joinBackupDir,
 		"--source-host=" + primaryFQDN,
 		"--source-port=3306",
@@ -312,12 +316,12 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 	// Cluster identity and the static replication connection parameters (the
 	// source host is derived from currentPrimary at runtime).
 	args := []string{
-		"instance", "run",
+		managerInstanceCmd, "run",
 		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
-		"--server-version=$(MYSQL_VERSION)",
+		serverVersionArg,
 		"--instance-name=$(POD_NAME)",
 		"--cluster-name=" + cluster.Name,
 		"--namespace=$(POD_NAMESPACE)",
@@ -439,13 +443,13 @@ func secretEnv(name, secretName string) corev1.EnvVar {
 
 func volumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
-		{Name: "scratch-data", MountPath: "/controller"},
+		{Name: scratchVolumeName, MountPath: "/controller"},
 		{Name: "data", MountPath: dataDir},
-		{Name: "run", MountPath: "/var/run/mysqld"},
-		{Name: "backup", MountPath: joinBackupDir},
+		{Name: runVolumeName, MountPath: "/var/run/mysqld"},
+		{Name: backupVolumeName, MountPath: joinBackupDir},
 		{Name: "config", MountPath: configPath, SubPath: "my.cnf", ReadOnly: true},
 		{Name: "server-tls", MountPath: topology.ServerTLSPath, ReadOnly: true},
-		{Name: "client-ca", MountPath: topology.ClientCAPath, ReadOnly: true},
+		{Name: clientCAVolumeName, MountPath: topology.ClientCAPath, ReadOnly: true},
 	}
 }
 

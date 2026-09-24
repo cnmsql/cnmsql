@@ -101,7 +101,7 @@ func TestReconcileDrainSwitchoverDisabledIsNoOp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster := drainCluster()
-	cluster.Spec.EnableSwitchoverOnDrain = ptrBool(false)
+	cluster.Spec.EnableSwitchoverOnDrain = new(false)
 	r, _ := newDrainReconciler(t, cluster)
 
 	result, err := r.ReconcileDrainSwitchover(ctx, cluster, drainState())
@@ -186,5 +186,3 @@ func assertTargetUnchanged(t *testing.T, r *Reconciler, cluster *mysqlv1alpha1.C
 		t.Fatalf("TargetPrimary = %q, want it unchanged (demo-1)", got.Status.TargetPrimary)
 	}
 }
-
-func ptrBool(b bool) *bool { return &b }

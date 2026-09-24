@@ -56,7 +56,7 @@ var (
 
 func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	if cluster.Spec.RootPasswordSecret == nil {
-		if err := r.ensurePasswordSecret(ctx, cluster, plan.RootSecretName, map[string]string{"username": "root"}); err != nil {
+		if err := r.ensurePasswordSecret(ctx, cluster, plan.RootSecretName, map[string]string{corev1.BasicAuthUsernameKey: "root"}); err != nil {
 			return err
 		}
 	}
@@ -67,17 +67,17 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 		if user == "" {
 			user = "app"
 		}
-		if err := r.ensurePasswordSecret(ctx, cluster, plan.AppSecretName, map[string]string{"username": user}); err != nil {
+		if err := r.ensurePasswordSecret(ctx, cluster, plan.AppSecretName, map[string]string{corev1.BasicAuthUsernameKey: user}); err != nil {
 			return err
 		}
 	}
-	if err := r.ensurePasswordSecret(ctx, cluster, plan.ReplicationSecret, map[string]string{"username": "cnmsql_repl"}); err != nil {
+	if err := r.ensurePasswordSecret(ctx, cluster, plan.ReplicationSecret, map[string]string{corev1.BasicAuthUsernameKey: replicationUser}); err != nil {
 		return err
 	}
-	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{"username": "cnmsql_backup"}); err != nil {
+	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{corev1.BasicAuthUsernameKey: backupUser}); err != nil {
 		return err
 	}
-	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{"username": "cnmsql_control"})
+	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{corev1.BasicAuthUsernameKey: controlUser})
 }
 
 // ensurePasswordSecret creates the named credential Secret with a generated
@@ -387,7 +387,7 @@ func (r *ClusterReconciler) ensureInstanceService(ctx context.Context, cluster *
 
 func servicePorts() []corev1.ServicePort {
 	return []corev1.ServicePort{
-		{Name: "mysql", Port: 3306, TargetPort: intstr.FromString("mysql")},
+		{Name: mysqlPortName, Port: 3306, TargetPort: intstr.FromString(mysqlPortName)},
 		{Name: "control", Port: 8080, TargetPort: intstr.FromString("control")},
 	}
 }
@@ -562,7 +562,7 @@ func roleOf(inst instancePlan) string {
 
 func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName, role string) map[string]string {
 	labels := map[string]string{
-		"app.kubernetes.io/name":      "cnmsql",
+		"app.kubernetes.io/name":      appLabelValue,
 		"app.kubernetes.io/instance":  cluster.Name,
 		"app.kubernetes.io/component": "mysql",
 		clusterLabel:                  cluster.Name,

@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -99,7 +98,7 @@ func TestEnsurePVCResizeRollGatedOnResizeInUseVolumes(t *testing.T) {
 			ctx := context.Background()
 			cluster := baseCluster()
 			cluster.Spec.Storage.Size = "1Gi"
-			cluster.Spec.Storage.ResizeInUseVolumes = ptr.To(tc.resizeInUse)
+			cluster.Spec.Storage.ResizeInUseVolumes = new(tc.resizeInUse)
 			scheme := testScheme(t)
 			inst := testPlan().instanceFor(cluster, 1)
 			// Request already matches desired; only the pending condition should drive the roll.

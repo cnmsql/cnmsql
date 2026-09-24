@@ -143,7 +143,7 @@ func (r *ClusterReconciler) buildRoutingService(
 ) *corev1.Service {
 	selector := roleSelector(cluster, role)
 	ports := []corev1.ServicePort{
-		{Name: "mysql", Port: 3306, TargetPort: intstr.FromString("mysql")},
+		{Name: mysqlPortName, Port: 3306, TargetPort: intstr.FromString(mysqlPortName)},
 	}
 	// The rw Service must never publish a not-ready primary; under async, ro/r
 	// tolerate in-progress replicas so clients can discover them as they catch up.

@@ -148,6 +148,27 @@ const (
 	// sidecar cannot be mistaken for the instance itself.
 	instanceContainerName = "mysql"
 
+	// mysqlPortName names the mysqld container port; Services target it by name.
+	mysqlPortName = "mysql"
+
+	// managerBinary is where the bootstrap-controller init container copies the
+	// instance manager, on the shared scratch volume.
+	managerBinary = "/controller/manager"
+
+	// Subcommands of the instance manager binary.
+	managerInstanceCmd  = "instance"
+	managerBootstrapCmd = "bootstrap"
+
+	// Instance Pod volume names; scratch and client CA are shared with the
+	// backup worker Job.
+	scratchVolumeName  = "scratch-data"
+	clientCAVolumeName = "client-ca"
+	runVolumeName      = "run"
+	backupVolumeName   = "backup"
+
+	// appLabelValue is the app.kubernetes.io/name (and managed-by) label value.
+	appLabelValue = "cnmsql"
+
 	replicationUser = "cnmsql_repl"
 	backupUser      = "cnmsql_backup"
 	controlUser     = "cnmsql_control"
