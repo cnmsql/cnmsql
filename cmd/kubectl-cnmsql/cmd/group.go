@@ -91,7 +91,7 @@ func runGroupStatus(ctx context.Context, clusterName, output string) error {
 		return plugin.PrintObject(gr, output)
 	}
 	if gr == nil {
-		fmt.Printf("cluster %q has not reported a group view yet\n", cluster.Name)
+		_, _ = fmt.Fprintf(plugin.Out, "cluster %q has not reported a group view yet\n", cluster.Name)
 		return nil
 	}
 
@@ -102,29 +102,25 @@ func runGroupStatus(ctx context.Context, clusterName, output string) error {
 
 func printGroupSummary(c *mysqlv1alpha1.Cluster, gr *mysqlv1alpha1.GroupReplicationStatus) {
 	plugin.Section("Group Replication")
-	plugin.KeyVal("Cluster", c.Name)
-	plugin.KeyVal("Group Name", orNone(gr.GroupName))
-	plugin.KeyVal("Bootstrapped", yesNo(gr.Bootstrapped))
-	quorum := yesNo(gr.HasQuorum)
-	if !gr.HasQuorum {
-		quorum += "  (group has lost majority — writes are blocked)"
-	}
-	plugin.KeyVal("Quorum", quorum)
-	plugin.KeyVal("Primary", orNone(gr.PrimaryMember))
-	plugin.KeyVal("Online Members", fmt.Sprintf("%d/%d", countOnline(gr), gr.ObservedViewMax))
-	if gr.ViewID != "" {
-		plugin.KeyVal("View ID", gr.ViewID)
-	}
+	f := plugin.Fields{}
+	f.Add("Cluster", c.Namespace+"/"+c.Name)
+	f.Add("Group name", gr.GroupName)
+	f.Add("Bootstrapped", yesNo(gr.Bootstrapped))
+	f.Add("Quorum", quorumCell(gr))
+	f.Add("Primary", plugin.Or(gr.PrimaryMember))
+	f.Add("Online members", fmt.Sprintf("%d/%d", countOnline(gr), gr.ObservedViewMax))
+	f.Add("View ID", gr.ViewID)
+	f.Print()
 }
 
 func printGroupMembers(gr *mysqlv1alpha1.GroupReplicationStatus) {
 	plugin.Section("Members")
 	rows := groupMemberRows(gr)
 	if len(rows) == 0 {
-		fmt.Println("  <no members reported>")
+		_, _ = fmt.Fprintln(plugin.Out, plugin.Yellow("No members reported"))
 		return
 	}
-	plugin.Table([]string{"INSTANCE", "STATE", "ROLE", "REACHABLE"}, rows)
+	plugin.Table([]string{"Instance", "State", "Role", "Reachable"}, rows)
 }
 
 // groupMemberRows renders the per-member table, sorted by instance name so the
@@ -137,7 +133,9 @@ func groupMemberRows(gr *mysqlv1alpha1.GroupReplicationStatus) [][]string {
 	sort.Slice(members, func(i, j int) bool { return members[i].Instance < members[j].Instance })
 	rows := make([][]string, 0, len(members))
 	for _, m := range members {
-		rows = append(rows, []string{m.Instance, m.State, m.Role, yesNo(m.Reachable)})
+		state := plugin.Badge(m.State, m.State == memberOnline, m.State != "RECOVERING").String()
+		reachable := plugin.Badge(yesNo(m.Reachable), m.Reachable, !m.Reachable).String()
+		rows = append(rows, []string{m.Instance, state, m.Role, reachable})
 	}
 	return rows
 }
@@ -180,7 +178,7 @@ func runGroupRecover(ctx context.Context, clusterName string, yes bool) error {
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -229,10 +227,13 @@ func checkRecoverable(cluster *mysqlv1alpha1.Cluster) error {
 	return nil
 }
 
+// memberOnline is the Group Replication state of a healthy member.
+const memberOnline = "ONLINE"
+
 func countOnline(gr *mysqlv1alpha1.GroupReplicationStatus) int {
 	n := 0
 	for _, m := range gr.Members {
-		if m.State == "ONLINE" {
+		if m.State == memberOnline {
 			n++
 		}
 	}

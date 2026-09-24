@@ -41,7 +41,7 @@ func TestBackupCommandCreatesBackup(t *testing.T) {
 
 func TestRunMaintenance(t *testing.T) {
 	env := installFakeEnv(t, testCluster(), nil)
-	if err := runMaintenance(context.Background(), "demo", true, true); err != nil {
+	if err := runMaintenance(context.Background(), "demo", true, true, true); err != nil {
 		t.Fatalf("runMaintenance(set) error = %v", err)
 	}
 	cluster := getTestCluster(t, env)
@@ -49,7 +49,7 @@ func TestRunMaintenance(t *testing.T) {
 		cluster.Spec.NodeMaintenanceWindow.ReusePVC == nil || !*cluster.Spec.NodeMaintenanceWindow.ReusePVC {
 		t.Fatalf("maintenance window = %#v", cluster.Spec.NodeMaintenanceWindow)
 	}
-	if err := runMaintenance(context.Background(), "demo", false, false); err != nil {
+	if err := runMaintenance(context.Background(), "demo", false, false, true); err != nil {
 		t.Fatalf("runMaintenance(unset) error = %v", err)
 	}
 	if getTestCluster(t, env).Spec.NodeMaintenanceWindow.InProgress {
@@ -70,7 +70,7 @@ func TestRunReloadSetsAnnotation(t *testing.T) {
 func TestRunFence(t *testing.T) {
 	pod := testPod("demo-2")
 	env := installFakeEnv(t, testCluster(), []corev1.Pod{pod})
-	if err := runFence(context.Background(), true, "demo", pod.Name); err != nil {
+	if err := runFence(context.Background(), true, "demo", pod.Name, true); err != nil {
 		t.Fatalf("runFence(on) error = %v", err)
 	}
 	got := &corev1.Pod{}
@@ -82,7 +82,7 @@ func TestRunFence(t *testing.T) {
 	}
 	pod.Annotations = map[string]string{plugin.FencingAnnotation: plugin.FencingValue}
 	env = installFakeEnv(t, testCluster(), []corev1.Pod{pod})
-	if err := runFence(context.Background(), false, "demo", pod.Name); err != nil {
+	if err := runFence(context.Background(), false, "demo", pod.Name, true); err != nil {
 		t.Fatalf("runFence(off) error = %v", err)
 	}
 	if err := env.Client.Get(context.Background(), client.ObjectKeyFromObject(&pod), got); err != nil {
@@ -95,7 +95,9 @@ func TestRunFence(t *testing.T) {
 
 func TestRunRestart(t *testing.T) {
 	pod := testPod("demo-2")
-	env := installFakeEnv(t, testCluster(), []corev1.Pod{pod})
+	cluster := testCluster()
+	cluster.Status.InstanceNames = []string{firstInstance, pod.Name}
+	env := installFakeEnv(t, cluster, []corev1.Pod{pod})
 	if err := runRestart(context.Background(), "demo", pod.Name, true); err != nil {
 		t.Fatalf("runRestart(instance) error = %v", err)
 	}
@@ -143,7 +145,7 @@ func TestRunReinitRejectsInvalidTarget(t *testing.T) {
 
 func TestRunFenceRejectsMissingInstance(t *testing.T) {
 	installFakeEnv(t, testCluster(), []corev1.Pod{testPod(firstInstance)})
-	err := runFence(context.Background(), true, "demo", "missing")
+	err := runFence(context.Background(), true, "demo", "missing", true)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("runFence() error = %v", err)
 	}

@@ -22,8 +22,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
@@ -63,7 +65,7 @@ func runRestart(ctx context.Context, clusterName, instance string, yes bool) err
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -86,15 +88,35 @@ func runRestart(ctx context.Context, clusterName, instance string, yes bool) err
 	}
 
 	// Single-instance restart: delete the Pod and let the operator recreate it.
+	// The delete is graceful so the preStop hook can hand a primary's role
+	// over before mysqld stops, and mysqld itself shuts down cleanly.
+	if !plugin.Contains(cluster.Status.InstanceNames, instance) {
+		return fmt.Errorf("instance %q is not part of cluster %q", instance, cluster.Name)
+	}
 	if instance == plugin.PrimaryInstance(cluster) {
-		if !plugin.Confirm(fmt.Sprintf("%q is the primary. Restart it?", instance), yes) {
+		if !plugin.Confirm(primaryRestartPrompt(cluster, instance), yes) {
 			fmt.Println("aborted")
 			return nil
 		}
 	}
-	if err := env.Clientset.CoreV1().Pods(cluster.Namespace).Delete(ctx, instance, deleteNow()); err != nil {
+	if err := env.Clientset.CoreV1().Pods(cluster.Namespace).Delete(ctx, instance, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("deleting pod %q: %w", instance, err)
 	}
 	fmt.Printf("restarting %q (pod deleted, will be recreated)\n", instance)
 	return nil
+}
+
+// primaryRestartPrompt spells out what restarting the primary will do to the
+// cluster's writes.
+func primaryRestartPrompt(cluster *mysqlv1alpha1.Cluster, instance string) string {
+	switch {
+	case len(cluster.Status.InstanceNames) < 2:
+		return fmt.Sprintf("%q is the only instance: the cluster is unavailable until it is back. Restart it?", instance)
+	case cluster.IsSwitchoverOnDrainEnabled():
+		return fmt.Sprintf("%q is the primary: the operator switches over to a replica "+
+			"before it stops. Restart it?", instance)
+	default:
+		return fmt.Sprintf("%q is the primary and switchover on drain is disabled: "+
+			"stopping it triggers a failover. Restart it?", instance)
+	}
 }

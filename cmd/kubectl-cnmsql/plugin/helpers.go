@@ -79,11 +79,22 @@ func (e *Env) GetCluster(ctx context.Context, name string) (*mysqlv1alpha1.Clust
 	return cluster, nil
 }
 
-// ResolveCluster fetches the named Cluster, or — when name is empty — defaults
-// to the sole Cluster in the namespace. With several clusters present it picks
-// the first by name and warns on stderr; with none it returns an error asking
-// for an explicit name.
+// ResolveCluster returns the named cluster or, when name is empty, the sole
+// cluster in the namespace. With several clusters it warns and picks the first
+// by name, which is only acceptable for read-only commands: those that change
+// anything must use ResolveClusterToModify.
 func (e *Env) ResolveCluster(ctx context.Context, name string) (*mysqlv1alpha1.Cluster, error) {
+	return e.resolveCluster(ctx, name, false)
+}
+
+// ResolveClusterToModify is ResolveCluster for commands that change a
+// cluster: when name is empty and the namespace holds several clusters it
+// refuses to guess and asks for an explicit CLUSTER.
+func (e *Env) ResolveClusterToModify(ctx context.Context, name string) (*mysqlv1alpha1.Cluster, error) {
+	return e.resolveCluster(ctx, name, true)
+}
+
+func (e *Env) resolveCluster(ctx context.Context, name string, strict bool) (*mysqlv1alpha1.Cluster, error) {
 	if name != "" {
 		return e.GetCluster(ctx, name)
 	}
@@ -96,17 +107,20 @@ func (e *Env) ResolveCluster(ctx context.Context, name string) (*mysqlv1alpha1.C
 		return nil, fmt.Errorf("no clusters found in namespace %q; specify a CLUSTER name", e.Namespace)
 	case 1:
 		return &list.Items[0], nil
-	default:
-		sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
-		chosen := &list.Items[0]
-		names := make([]string, 0, len(list.Items))
-		for i := range list.Items {
-			names = append(names, list.Items[i].Name)
-		}
-		fmt.Fprintf(os.Stderr, "warning: %d clusters in namespace %q (%s); defaulting to %q\n",
-			len(list.Items), e.Namespace, strings.Join(names, ", "), chosen.Name)
-		return chosen, nil
 	}
+	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].Name)
+	}
+	if strict {
+		return nil, fmt.Errorf("%d clusters in namespace %q (%s); specify which CLUSTER to act on",
+			len(list.Items), e.Namespace, strings.Join(names, ", "))
+	}
+	chosen := &list.Items[0]
+	fmt.Fprintf(os.Stderr, "warning: %d clusters in namespace %q (%s); defaulting to %q\n",
+		len(list.Items), e.Namespace, strings.Join(names, ", "), chosen.Name)
+	return chosen, nil
 }
 
 // ListPods returns the instance Pods belonging to a cluster. It selects by the

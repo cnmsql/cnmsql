@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
 func defaultMySQLBenchOptions() mysqlBenchOptions {
@@ -219,12 +220,12 @@ func TestBuildFioPVCDefaultsStorageClass(t *testing.T) {
 func TestRootSecretName(t *testing.T) {
 	t.Parallel()
 	cluster := testCluster()
-	if got := rootSecretName(&cluster); got != "demo-root" {
-		t.Errorf("rootSecretName() = %q, want demo-root", got)
+	if got := plugin.RootSecretName(&cluster); got != "demo-root" {
+		t.Errorf("RootSecretName() = %q, want demo-root", got)
 	}
 	cluster.Spec.RootPasswordSecret = &mysqlv1alpha1.LocalObjectReference{Name: "custom"}
-	if got := rootSecretName(&cluster); got != "custom" {
-		t.Errorf("rootSecretName() = %q, want custom", got)
+	if got := plugin.RootSecretName(&cluster); got != "custom" {
+		t.Errorf("RootSecretName() = %q, want custom", got)
 	}
 }
 

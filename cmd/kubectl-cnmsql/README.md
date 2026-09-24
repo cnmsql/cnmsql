@@ -36,8 +36,9 @@ kubectl plugin list | grep cnmsql
 ## Commands
 
 Most commands take an optional `CLUSTER` argument. When omitted, the plugin
-defaults to the only cluster in the current namespace (and warns if there are
-several). Commands are grouped under `--help` headings:
+defaults to the only cluster in the current namespace. With several clusters,
+read-only commands warn and pick the first by name; commands that change
+anything refuse and ask for an explicit `CLUSTER`. Commands are grouped under `--help` headings:
 
 - **Cluster Administration:** `status`, `group`, `promote`, `fence`, `restart`,
   `restart-inplace`, `reinit`, `reload`, `backup`, `maintenance`, `destroy`
@@ -47,24 +48,24 @@ several). Commands are grouped under `--help` headings:
 
 | Command | Tier | Description |
 | --- | --- | --- |
-| `status [CLUSTER]` | API+control | Topology, phase, per-instance health, GTID/lag/uptime, archiving, backups, certs, services, PDBs |
+| `status [CLUSTER]` | API+control | CNPG-style summary: primary, health, size, GTID, continuous backup and archiving, replication streams, instances, backups, certs (`-v` adds services, PDBs) |
 | `group status [CLUSTER]` | API | Group Replication view: members, roles, quorum |
 | `group recover [CLUSTER]` | API | Request a guarded quorum recovery (last resort) |
 | `logs cluster [CLUSTER] [INSTANCE]` | API | Stream pod logs (merged with a prefix) |
 | `logs pretty` | — | Pretty-print structured JSON logs from stdin |
 | `promote CLUSTER INSTANCE` | API | Planned switchover |
-| `fence on\|off CLUSTER INSTANCE` | API | Isolate / restore an instance |
+| `fence on\|off CLUSTER INSTANCE` | API | Isolate / restore an instance (prompts for the primary or `'*'`) |
 | `restart [CLUSTER] [INSTANCE]` | API | Rolling restart, or one Pod |
 | `restart-inplace [CLUSTER] [INSTANCE]` | control | Re-exec the instance manager in place |
 | `reinit CLUSTER INSTANCE` | API | Re-init a replica from scratch (destroys data, re-clones) |
 | `reload [CLUSTER]` | API | Re-apply dynamic `my.cnf` params (no restart) |
 | `backup [CLUSTER]` | API | Create a `Backup` |
-| `maintenance set\|unset [CLUSTER]` | API | Toggle the node maintenance window |
+| `maintenance set\|unset [CLUSTER]` | API | Toggle the node maintenance window (`set` prompts) |
 | `destroy CLUSTER INSTANCE` | API | Delete a Pod and its PVC |
 | `user create\|alter\|drop\|list [CLUSTER]` | control | Manage MySQL users |
 | `database create\|drop\|list [CLUSTER]` | control | Manage MySQL schemas |
 | `databaseuser ...` | control | Manage installation-wide `DatabaseUser` resources |
-| `shell [CLUSTER]` | control | Open a database client shell on the primary |
+| `shell [CLUSTER] [INSTANCE] [-- ARGS]` | exec | Open a database client as root (primary by default; pipe SQL in, or pass client args after `--`) |
 | `metrics [CLUSTER] [INSTANCE]` | control | Scrape an instance's Prometheus metrics |
 | `report cluster CLUSTER` | API | Collect a diagnostic ZIP for a cluster (read-only; redacts by default) |
 | `report operator` | API | Collect a diagnostic ZIP for the operator (read-only; redacts by default) |
@@ -72,6 +73,10 @@ several). Commands are grouped under `--help` headings:
 | `version` | — | Print plugin version information |
 
 "control"-tier commands open an mTLS port-forward to the instance manager.
+"exec"-tier commands run through the API server's exec endpoint with the
+plugin's own connection flags (`--context`, `--kubeconfig`, ...); no local
+`kubectl` binary is needed, and the root password travels over the exec stream,
+never on a command line.
 
 `status` and `metrics` support `--watch`/`-w` (with `--watch-interval`, default
 2s) to refresh continuously until interrupted, like `watch(1)`:

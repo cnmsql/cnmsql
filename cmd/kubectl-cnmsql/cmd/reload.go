@@ -50,7 +50,7 @@ func runReload(ctx context.Context, clusterName string) error {
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}

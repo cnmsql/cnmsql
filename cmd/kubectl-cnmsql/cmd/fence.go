@@ -24,10 +24,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
 func newFenceCommand() *cobra.Command {
+	var yes bool
 	cmd := &cobra.Command{
 		Use:   "fence on|off CLUSTER INSTANCE",
 		Short: "Fence (isolate) or unfence an instance from routing",
@@ -45,7 +47,10 @@ func newFenceCommand() *cobra.Command {
   kubectl cnmsql fence off cluster-sample cluster-sample-2
 
   # Fence every instance in the cluster
-  kubectl cnmsql fence on cluster-sample '*'`,
+  kubectl cnmsql fence on cluster-sample '*'
+
+  # Fence the primary without the confirmation prompt
+  kubectl cnmsql fence on cluster-sample cluster-sample-1 --yes`,
 		Args: cobra.ExactArgs(3),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			switch len(args) {
@@ -64,13 +69,15 @@ func newFenceCommand() *cobra.Command {
 			if state != "on" && state != "off" {
 				return fmt.Errorf("first argument must be 'on' or 'off', got %q", state)
 			}
-			return runFence(cmd.Context(), state == "on", args[1], args[2])
+			return runFence(cmd.Context(), state == "on", args[1], args[2], yes)
 		},
 	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false,
+		"skip the confirmation prompt when fencing the primary or every instance")
 	return cmd
 }
 
-func runFence(ctx context.Context, fence bool, clusterName, instance string) error {
+func runFence(ctx context.Context, fence bool, clusterName, instance string, yes bool) error {
 	env, err := newEnv()
 	if err != nil {
 		return err
@@ -98,6 +105,14 @@ func runFence(ctx context.Context, fence bool, clusterName, instance string) err
 		}
 	}
 
+	if fence {
+		if prompt := fenceConsequence(cluster, instance, targets); prompt != "" &&
+			!plugin.Confirm(prompt, yes) {
+			fmt.Println("aborted")
+			return nil
+		}
+	}
+
 	for i := range targets {
 		pod := &targets[i]
 		before := pod.DeepCopy()
@@ -119,4 +134,18 @@ func runFence(ctx context.Context, fence bool, clusterName, instance string) err
 		fmt.Printf("%s %s\n", verb, pod.Name)
 	}
 	return nil
+}
+
+// fenceConsequence returns the confirmation prompt for fencing targets, or ""
+// when fencing them cannot take the cluster's writes offline.
+func fenceConsequence(cluster *mysqlv1alpha1.Cluster, instance string, targets []corev1.Pod) string {
+	if instance == "*" {
+		return fmt.Sprintf("Fence all %d instances of %q? The cluster will stop serving reads and writes.",
+			len(targets), cluster.Name)
+	}
+	if instance == plugin.PrimaryInstance(cluster) {
+		return fmt.Sprintf("%q is the primary of %q. Fencing it stops all writes to the cluster. Continue?",
+			instance, cluster.Name)
+	}
+	return ""
 }

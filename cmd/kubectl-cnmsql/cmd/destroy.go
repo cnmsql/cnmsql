@@ -19,10 +19,12 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
@@ -68,20 +70,55 @@ func runDestroy(ctx context.Context, clusterName, instance string, keepPVC, yes 
 		return err
 	}
 
-	action := "destroy instance and delete its PVC"
-	if keepPVC {
-		action = "destroy instance (keeping its PVC)"
+	// Establish that INSTANCE belongs to CLUSTER before touching anything: the
+	// PVC is looked up by name, and a name alone could match an unrelated
+	// claim in the namespace.
+	pod, err := env.Clientset.CoreV1().Pods(cluster.Namespace).Get(ctx, instance, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		pod = nil
+	case err != nil:
+		return fmt.Errorf("reading pod %q: %w", instance, err)
 	}
-	if !plugin.Confirm(fmt.Sprintf("%s %q?", action, instance), yes) {
+	pvc := &corev1.PersistentVolumeClaim{}
+	switch err := env.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: instance}, pvc); {
+	case apierrors.IsNotFound(err):
+		pvc = nil
+	case err != nil:
+		return fmt.Errorf("reading PVC %q: %w", instance, err)
+	}
+	if pod != nil && pod.Labels[plugin.ClusterLabel] != cluster.Name {
+		return fmt.Errorf("pod %q is not an instance of cluster %q", instance, cluster.Name)
+	}
+	if pvc != nil && pvc.Labels[plugin.ClusterLabel] != cluster.Name {
+		return fmt.Errorf("PVC %q does not belong to cluster %q; refusing to touch it", instance, cluster.Name)
+	}
+	if pod == nil && pvc == nil {
+		return fmt.Errorf("instance %q not found in cluster %q", instance, cluster.Name)
+	}
+
+	var parts []string
+	if pod != nil {
+		parts = append(parts, "Pod "+instance)
+	}
+	if pvc != nil && !keepPVC {
+		parts = append(parts, "PVC "+instance+" (its data is lost)")
+	}
+	prompt := fmt.Sprintf("Destroy instance %q of %q, deleting %s?", instance, cluster.Name, strings.Join(parts, " and "))
+	if pvc != nil && keepPVC {
+		prompt += " The PVC is kept and detached from the cluster."
+	}
+	if instance == plugin.PrimaryInstance(cluster) {
+		prompt = fmt.Sprintf("%q is the PRIMARY. %s", instance, prompt)
+	}
+	if !plugin.Confirm(prompt, yes) {
 		fmt.Println("aborted")
 		return nil
 	}
 
-	// The PVC shares the instance's name; handle it before deleting the Pod.
-	pvc := &corev1.PersistentVolumeClaim{}
-	pvcKey := client.ObjectKey{Namespace: cluster.Namespace, Name: instance}
-	switch err := env.Client.Get(ctx, pvcKey, pvc); {
-	case err == nil:
+	// Handle the PVC before deleting the Pod, so the operator cannot recreate
+	// the Pod on top of it in between.
+	if pvc != nil {
 		if keepPVC {
 			if len(pvc.OwnerReferences) > 0 {
 				before := pvc.DeepCopy()
@@ -97,15 +134,15 @@ func runDestroy(ctx context.Context, clusterName, instance string, keepPVC, yes 
 			}
 			fmt.Printf("deleted PVC %q\n", instance)
 		}
-	case apierrors.IsNotFound(err):
-		// No PVC; nothing to do.
-	default:
-		return fmt.Errorf("reading PVC %q: %w", instance, err)
 	}
 
-	err = env.Clientset.CoreV1().Pods(cluster.Namespace).Delete(ctx, instance, deleteNow())
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("deleting pod %q: %w", instance, err)
+	// A graceful delete lets the preStop hook hand a primary's role over
+	// before mysqld stops.
+	if pod != nil {
+		err = env.Clientset.CoreV1().Pods(cluster.Namespace).Delete(ctx, instance, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("deleting pod %q: %w", instance, err)
+		}
 	}
 	fmt.Printf("destroyed instance %q\n", instance)
 	return nil

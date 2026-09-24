@@ -18,8 +18,9 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
@@ -122,6 +123,12 @@ var newEnv = func() (*plugin.Env, error) {
 	return plugin.NewEnv(configFlags)
 }
 
+// rootClient runs the database client as root on an instance. It is a
+// variable so tests can capture the session instead of opening an exec stream.
+var rootClient = func(ctx context.Context, env *plugin.Env, opts plugin.RootClientOptions) error {
+	return env.RootClient(ctx, opts)
+}
+
 // firstArg returns the first positional argument, or "" if none was given. It
 // lets commands treat a leading CLUSTER argument as optional (defaulting to the
 // sole cluster in the namespace via plugin.ResolveCluster).
@@ -130,11 +137,4 @@ func firstArg(args []string) string {
 		return args[0]
 	}
 	return ""
-}
-
-// deleteNow returns DeleteOptions that delete a Pod immediately (zero grace
-// period) so a restart recreates it without waiting on the default grace.
-func deleteNow() metav1.DeleteOptions {
-	zero := int64(0)
-	return metav1.DeleteOptions{GracePeriodSeconds: &zero}
 }

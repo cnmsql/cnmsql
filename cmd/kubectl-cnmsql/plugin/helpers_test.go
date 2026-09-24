@@ -21,6 +21,7 @@ func TestResolveCluster(t *testing.T) {
 		name      string
 		clusters  []mysqlv1alpha1.Cluster
 		requested string
+		modify    bool
 		want      string
 		wantErr   string
 	}{
@@ -32,6 +33,12 @@ func TestResolveCluster(t *testing.T) {
 		},
 		{name: "none", wantErr: "no clusters found"},
 		{name: "missing named", requested: "missing", wantErr: "getting cluster"},
+		{
+			name:     "multiple refused when modifying",
+			clusters: []mysqlv1alpha1.Cluster{cluster("zeta"), cluster("alpha")}, modify: true,
+			wantErr: "specify which CLUSTER",
+		},
+		{name: "sole cluster when modifying", clusters: []mysqlv1alpha1.Cluster{cluster("only")}, modify: true, want: "only"},
 	}
 
 	for _, tt := range tests {
@@ -46,7 +53,11 @@ func TestResolveCluster(t *testing.T) {
 				Client:    clientfake.NewClientBuilder().WithScheme(Scheme).WithRuntimeObjects(objects...).Build(),
 			}
 
-			got, err := env.ResolveCluster(context.Background(), tt.requested)
+			resolve := env.ResolveCluster
+			if tt.modify {
+				resolve = env.ResolveClusterToModify
+			}
+			got, err := resolve(context.Background(), tt.requested)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("ResolveCluster() error = %v, want containing %q", err, tt.wantErr)

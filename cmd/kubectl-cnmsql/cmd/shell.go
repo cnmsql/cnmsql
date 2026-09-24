@@ -19,78 +19,75 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"golang.org/x/term"
 
 	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
 func newShellCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "shell [CLUSTER]",
-		Short: "Open a database client shell on the primary",
-		Long: "Open an interactive database client shell (mysql or mariadb) on the " +
-			"cluster's primary instance. The appropriate client binary is selected " +
-			"automatically from the cluster's flavor.\n\n" +
-			"The command delegates to kubectl exec and passes stdin/stdout/stderr " +
-			"through to the interactive session.",
-		Example: `  # Open a shell on the default cluster
+		Use:   "shell [CLUSTER] [INSTANCE] [-- CLIENT_ARGS...]",
+		Short: "Open a database client shell on an instance",
+		Long: "Open a database client (mysql or mariadb, matching the cluster's " +
+			"flavor) as root over the instance's local socket. INSTANCE defaults " +
+			"to the primary; pass it only together with CLUSTER.\n\n" +
+			"Arguments after -- are passed to the client. When stdin is not a " +
+			"terminal no TTY is allocated, so SQL can be piped in.\n\n" +
+			"The session runs through the API server with the plugin's own " +
+			"connection flags (--context, --kubeconfig, ...). The root password is " +
+			"sent over the exec stream and never appears on a command line.",
+		Example: `  # Open a shell on the primary of the default cluster
   kubectl cnmsql shell
 
-  # Open a shell on a named cluster
-  kubectl cnmsql shell my-cluster`,
-		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: completeClusterArg,
+  # Open a shell on a replica
+  kubectl cnmsql shell cluster-sample cluster-sample-2
+
+  # Run a single statement
+  kubectl cnmsql shell cluster-sample -- -e "SELECT @@hostname"
+
+  # Pipe a script in
+  kubectl cnmsql shell cluster-sample -- mydb < schema.sql`,
+		ValidArgsFunction: completeClusterInstanceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			positional, clientArgs := args, []string(nil)
+			if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+				positional, clientArgs = args[:dash], args[dash:]
+			}
+			if len(positional) > 2 {
+				return fmt.Errorf("accepts at most CLUSTER and INSTANCE before --, received %d arguments", len(positional))
+			}
+
 			ctx := cmd.Context()
 			env, err := newEnv()
 			if err != nil {
 				return err
 			}
-			cluster, err := env.ResolveCluster(ctx, firstArg(args))
+			cluster, err := env.ResolveClusterToModify(ctx, firstArg(positional))
 			if err != nil {
 				return err
 			}
-			primary := plugin.PrimaryInstance(cluster)
-			if primary == "" {
+			instance := plugin.PrimaryInstance(cluster)
+			if len(positional) == 2 {
+				instance = positional[1]
+				if !plugin.Contains(cluster.Status.InstanceNames, instance) {
+					return fmt.Errorf("instance %q is not part of cluster %q", instance, cluster.Name)
+				}
+			}
+			if instance == "" {
 				return fmt.Errorf("cluster %q has no primary yet", cluster.Name)
 			}
 
-			secretName := cluster.Name + "-root"
-			if cluster.Spec.RootPasswordSecret != nil && cluster.Spec.RootPasswordSecret.Name != "" {
-				secretName = cluster.Spec.RootPasswordSecret.Name
-			}
-
-			secret, err := env.Clientset.CoreV1().Secrets(cluster.Namespace).Get(ctx, secretName, metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf("getting root password secret %q: %w", secretName, err)
-			}
-
-			password := string(secret.Data["password"])
-			if password == "" {
-				return fmt.Errorf("root password secret %q has empty password", secretName)
-			}
-
-			shellCmd := fmt.Sprintf("MYSQL_PWD='%s' %s --socket=/var/run/mysqld/mysqld.sock --user=root",
-				strings.ReplaceAll(password, "'", "'\\''"), mysqlClientBinary(cluster))
-
-			kubectlArgs := []string{
-				"exec", "-it",
-				"-n", cluster.Namespace,
-				primary,
-				"-c", "mysql",
-				"--",
-				"sh", "-c", shellCmd,
-			}
-
-			kubectll := exec.CommandContext(ctx, "kubectl", kubectlArgs...)
-			kubectll.Stdin = os.Stdin
-			kubectll.Stdout = os.Stdout
-			kubectll.Stderr = os.Stderr
-			return kubectll.Run()
+			return rootClient(ctx, env, plugin.RootClientOptions{
+				Cluster:  cluster,
+				Instance: instance,
+				Args:     clientArgs,
+				Stdin:    os.Stdin,
+				Stdout:   os.Stdout,
+				Stderr:   os.Stderr,
+				TTY:      term.IsTerminal(int(os.Stdin.Fd())), //nolint:gosec // file descriptors always fit in int
+			})
 		},
 	}
 }

@@ -103,7 +103,7 @@ func newDBUserListCommand() *cobra.Command {
 					appliedString(du.Status.Applied), readyReason(du.Status.Conditions),
 				})
 			}
-			plugin.Table([]string{"NAME", "USER", "CLUSTER", "APPLIED", "REASON"}, rows)
+			plugin.Table([]string{"Name", "User", "Cluster", "Applied", "Reason"}, rows)
 			return nil
 		},
 	}

@@ -22,8 +22,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -179,7 +179,7 @@ func runBenchMySQL(ctx context.Context, clusterName string, o mysqlBenchOptions)
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -345,7 +345,7 @@ func runBenchFio(ctx context.Context, clusterName string, o fioBenchOptions) err
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -498,16 +498,6 @@ func benchLabels(cluster *mysqlv1alpha1.Cluster) map[string]string {
 	}
 }
 
-// rootSecretName resolves the Secret holding the cluster's root password,
-// honoring an explicit spec.rootPasswordSecret and otherwise defaulting to the
-// operator-generated <cluster>-root Secret (mirrors shell.go).
-func rootSecretName(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.Spec.RootPasswordSecret != nil && cluster.Spec.RootPasswordSecret.Name != "" {
-		return cluster.Spec.RootPasswordSecret.Name
-	}
-	return cluster.Name + "-root"
-}
-
 // buildBenchSecret holds the generated password for the ephemeral bench user.
 // It is created before the Job and deleted with it (unless --keep).
 func buildBenchSecret(cluster *mysqlv1alpha1.Cluster, name, password string) *corev1.Secret {
@@ -541,52 +531,26 @@ func benchTeardownSQL(user string) string {
 	return fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%';\n", user)
 }
 
-// execRootSQL runs SQL as root over the primary's local socket via `kubectl
-// exec` (the same transport shell.go uses). SQL is fed on stdin so no password
-// interpolated into it is ever exposed on a command line.
+// execRootSQL runs SQL as root over the primary's local socket. The SQL and
+// the root password both travel on the exec stream's stdin, so neither is ever
+// exposed on a command line.
 func execRootSQL(ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster, sql string) error {
 	primary := plugin.PrimaryInstance(cluster)
 	if primary == "" {
 		return fmt.Errorf("cluster %q has no primary yet", cluster.Name)
 	}
-	password, err := readRootPassword(ctx, env, cluster)
-	if err != nil {
-		return err
-	}
-	shellCmd := fmt.Sprintf("MYSQL_PWD='%s' %s --socket=/var/run/mysqld/mysqld.sock --user=root",
-		strings.ReplaceAll(password, "'", "'\\''"), mysqlClientBinary(cluster))
-	args := []string{"exec", "-i", "-n", cluster.Namespace, primary, "-c", "mysql", "--", "sh", "-c", shellCmd}
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdin = strings.NewReader(sql)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := rootClient(ctx, env, plugin.RootClientOptions{
+		Cluster:  cluster,
+		Instance: primary,
+		Stdin:    strings.NewReader(sql),
+		Stdout:   io.Discard,
+		Stderr:   &stderr,
+	})
+	if err != nil {
 		return fmt.Errorf("running SQL on %q: %w: %s", primary, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
-}
-
-// mysqlClientBinary returns the client binary name matching the cluster's
-// flavor (mysql or mariadb).
-func mysqlClientBinary(cluster *mysqlv1alpha1.Cluster) string {
-	if cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB {
-		return string(mysqlv1alpha1.FlavorMariaDB)
-	}
-	return string(mysqlv1alpha1.FlavorMySQL)
-}
-
-// readRootPassword loads the cluster root password from its Secret.
-func readRootPassword(ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster) (string, error) {
-	name := rootSecretName(cluster)
-	secret, err := env.Clientset.CoreV1().Secrets(cluster.Namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("getting root password secret %q: %w", name, err)
-	}
-	password := string(secret.Data[secretPasswordKey])
-	if password == "" {
-		return "", fmt.Errorf("root password secret %q has empty password", name)
-	}
-	return password, nil
 }
 
 // randHex returns a random hex string of 2*n characters, used for the bench
