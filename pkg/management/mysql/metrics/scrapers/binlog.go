@@ -120,7 +120,7 @@ func (ScrapeBinlogSize) Scrape(ctx context.Context, instance *instance, ch chan<
 				return nil
 			}
 		default:
-			return fmt.Errorf("invalid number of columns: %q", columnCount)
+			return fmt.Errorf("invalid number of columns: %v", columnCount)
 		}
 
 		size += filesize
