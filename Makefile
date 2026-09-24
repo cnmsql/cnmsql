@@ -144,7 +144,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Opt
 			$(KIND) create cluster --name $(KIND_CLUSTER) $(KIND_IMAGE_ARG) ;; \
 	esac
 
-GINKGO_VERSION ?= v2.27.2
+GINKGO_VERSION ?= v2.33.0
 # Empty GINKGO_PROCS lets hack/e2e.sh auto-size parallelism from CPU/RAM.
 GINKGO_PROCS ?=
 GINKGO_TIMEOUT ?= 120m
@@ -355,7 +355,7 @@ CRD_REF_DOCS ?= $(LOCALBIN)/crd-ref-docs
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
-CONTROLLER_TOOLS_VERSION ?= v0.20.1
+CONTROLLER_TOOLS_VERSION ?= v0.22.0
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -367,8 +367,8 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   [ -n "$$v" ] || { echo "Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag)" >&2; exit 1; }; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.11.4
-GOVULNCHECK_VERSION ?= v1.1.4
+GOLANGCI_LINT_VERSION ?= v2.14.0
+GOVULNCHECK_VERSION ?= v1.8.0
 CRD_REF_DOCS_VERSION ?= v0.3.0
 
 .PHONY: crd-ref-docs

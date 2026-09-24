@@ -11,7 +11,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: backups.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -1294,19 +1294,15 @@ spec:
                   Defaults to true.
                 type: boolean
               reclaimPolicy:
-                allOf:
-                - enum:
-                  - Retain
-                  - Delete
-                - enum:
-                  - Retain
-                  - Delete
                 default: Retain
                 description: |-
                   ReclaimPolicy controls what happens to this backup's object-store archive
                   (backup.xbstream + metadata.json) when the Backup object is deleted. With
                   "Delete" the operator adds the cleanup finalizer and removes the archive on
                   deletion; with "Retain" (the default) the archive is kept.
+                enum:
+                - Retain
+                - Delete
                 type: string
               target:
                 default: prefer-standby
@@ -1580,7 +1576,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: clusterimagecatalogs.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -1673,7 +1669,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: clusters.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -3997,13 +3993,6 @@ spec:
                     - credentials
                     type: object
                   reclaimPolicy:
-                    allOf:
-                    - enum:
-                      - Retain
-                      - Delete
-                    - enum:
-                      - Retain
-                      - Delete
                     default: Retain
                     description: |-
                       ReclaimPolicy controls what happens to the cluster's entire object-store
@@ -4011,6 +4000,9 @@ spec:
                       when the Cluster is deleted. With "Delete" the operator adds a cleanup
                       finalizer and wipes the archive on teardown; with "Retain" (the default)
                       the archive is kept so a deleted Cluster can still be recovered.
+                    enum:
+                    - Retain
+                    - Delete
                     type: string
                   retentionPolicy:
                     description: |-
@@ -4019,16 +4011,12 @@ spec:
                     pattern: ^[1-9][0-9]*[dwm]$
                     type: string
                   target:
-                    allOf:
-                    - enum:
-                      - primary
-                      - prefer-standby
-                    - enum:
-                      - primary
-                      - prefer-standby
                     default: prefer-standby
                     description: Target instance to take backups from, defaults to
                       a standby if available.
+                    enum:
+                    - primary
+                    - prefer-standby
                     type: string
                   xtrabackupOptions:
                     description: XtrabackupOptions are extra flags passed to xtrabackup.
@@ -5097,16 +5085,12 @@ spec:
                         primary instance.
                       properties:
                         ensure:
-                          allOf:
-                          - enum:
-                            - present
-                            - absent
-                          - enum:
-                            - present
-                            - absent
                           default: present
                           description: Ensure controls whether the user should exist
                             or be absent.
+                          enum:
+                          - present
+                          - absent
                           type: string
                         host:
                           default: '%'
@@ -5213,18 +5197,13 @@ spec:
                                 (<cluster>-rw, <cluster>-ro, <cluster>-r).
                               type: string
                             selectorType:
-                              allOf:
-                              - enum:
-                                - rw
-                                - ro
-                                - r
-                              - enum:
-                                - rw
-                                - r
-                                - ro
                               description: |-
                                 SelectorType specifies the type of selectors the service will have.
                                 Valid values are "rw", "r", and "ro".
+                              enum:
+                              - rw
+                              - ro
+                              - r
                               type: string
                             serviceTemplate:
                               description: |-
@@ -7112,7 +7091,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: databases.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -7373,7 +7352,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: databaseusers.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -7678,7 +7657,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: imagecatalogs.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -7769,7 +7748,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: scheduledbackups.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -8939,13 +8918,6 @@ spec:
                 description: Online, when true, performs non-blocking (hot) backups.
                 type: boolean
               reclaimPolicy:
-                allOf:
-                - enum:
-                  - Retain
-                  - Delete
-                - enum:
-                  - Retain
-                  - Delete
                 default: Retain
                 description: |-
                   ReclaimPolicy is propagated to every generated Backup as its
@@ -8953,6 +8925,9 @@ spec:
                   finalizer, so deleting it also removes its archive (backup.xbstream +
                   metadata.json) from the object store. Defaults to "Retain", the
                   non-destructive default.
+                enum:
+                - Retain
+                - Delete
                 type: string
               retentionPolicy:
                 description: |-
@@ -9801,11 +9776,11 @@ spec:
         - --metrics-bind-address=:8443
         - --leader-elect
         - --health-probe-bind-address=:8081
-        - --operator-image=ghcr.io/cnmsql/cnmsql:f030673-dirty
+        - --operator-image=ghcr.io/cnmsql/cnmsql:a8c5d2f-dirty
         - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         command:
         - /manager
-        image: ghcr.io/cnmsql/cnmsql:f030673-dirty
+        image: ghcr.io/cnmsql/cnmsql:a8c5d2f-dirty
         livenessProbe:
           httpGet:
             path: /healthz

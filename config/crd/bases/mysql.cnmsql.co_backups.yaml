@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: backups.mysql.cnmsql.co
 spec:
   group: mysql.cnmsql.co
@@ -1286,19 +1286,15 @@ spec:
                   Defaults to true.
                 type: boolean
               reclaimPolicy:
-                allOf:
-                - enum:
-                  - Retain
-                  - Delete
-                - enum:
-                  - Retain
-                  - Delete
                 default: Retain
                 description: |-
                   ReclaimPolicy controls what happens to this backup's object-store archive
                   (backup.xbstream + metadata.json) when the Backup object is deleted. With
                   "Delete" the operator adds the cleanup finalizer and removes the archive on
                   deletion; with "Retain" (the default) the archive is kept.
+                enum:
+                - Retain
+                - Delete
                 type: string
               target:
                 default: prefer-standby
