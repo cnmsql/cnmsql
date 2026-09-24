@@ -51,7 +51,7 @@ func runRestartInPlace(ctx context.Context, clusterName, instance string) error 
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}

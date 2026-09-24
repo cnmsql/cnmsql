@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
 func newMaintenanceCommand() *cobra.Command {
@@ -37,8 +38,8 @@ func newMaintenanceCommand() *cobra.Command {
 		Example: `  # Begin a maintenance window
   kubectl cnmsql maintenance set cluster-sample
 
-  # Begin a maintenance window and reuse existing PVCs across node restarts
-  kubectl cnmsql maintenance set cluster-sample --reuse-pvc
+  # Begin a maintenance window without reusing PVCs (PDBs stay in force)
+  kubectl cnmsql maintenance set cluster-sample --reuse-pvc=false
 
   # End the maintenance window
   kubectl cnmsql maintenance unset cluster-sample`,
@@ -48,22 +49,26 @@ func newMaintenanceCommand() *cobra.Command {
 }
 
 func newMaintenanceSetCommand() *cobra.Command {
-	var reusePVC bool
+	var reusePVC, yes bool
 	cmd := &cobra.Command{
 		Use:   "set [CLUSTER]",
 		Short: "Begin a node maintenance window",
-		Long: `Set spec.nodeMaintenanceWindow.inProgress to true. While the maintenance
-window is active, the operator tolerates node drains. Use --reuse-pvc to reattach
-existing PVCs to rescheduled Pods instead of re-cloning from backup.`,
+		Long: `Set spec.nodeMaintenanceWindow.inProgress to true. While the window is
+active and PVCs are reused (the default), the operator relaxes the cluster's
+PodDisruptionBudgets so its nodes can be drained, and rescheduled Pods reattach
+their existing PVCs. With --reuse-pvc=false the budgets stay in force, since
+draining a node would otherwise discard that instance's data.`,
 		Example: `  kubectl cnmsql maintenance set cluster-sample
-  kubectl cnmsql maintenance set cluster-sample --reuse-pvc`,
+  kubectl cnmsql maintenance set cluster-sample --reuse-pvc=false`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMaintenance(cmd.Context(), firstArg(args), true, reusePVC)
+			return runMaintenance(cmd.Context(), firstArg(args), true, reusePVC, yes)
 		},
 	}
-	cmd.Flags().BoolVar(&reusePVC, "reuse-pvc", false, "reattach existing PVCs to rescheduled Pods")
+	cmd.Flags().BoolVar(&reusePVC, "reuse-pvc", true,
+		"reattach existing PVCs to rescheduled Pods (relaxes the PodDisruptionBudgets)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return cmd
 }
 
@@ -76,29 +81,39 @@ func newMaintenanceUnsetCommand() *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeClusterArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMaintenance(cmd.Context(), firstArg(args), false, false)
+			return runMaintenance(cmd.Context(), firstArg(args), false, false, true)
 		},
 	}
 }
 
-func runMaintenance(ctx context.Context, clusterName string, inProgress, reusePVC bool) error {
+func runMaintenance(ctx context.Context, clusterName string, inProgress, reusePVC, yes bool) error {
 	env, err := newEnv()
 	if err != nil {
 		return err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return err
 	}
 
+	if inProgress {
+		consequence := "Its PodDisruptionBudgets stay in force, so draining its nodes remains blocked."
+		if reusePVC {
+			consequence = "Its PodDisruptionBudgets will be relaxed, so draining a node takes that instance down."
+		}
+		if !plugin.Confirm(fmt.Sprintf("Start a node maintenance window on %q? %s", cluster.Name, consequence), yes) {
+			fmt.Println("aborted")
+			return nil
+		}
+	}
+
 	before := cluster.DeepCopy()
 	if inProgress {
-		window := &mysqlv1alpha1.NodeMaintenanceWindow{InProgress: true}
-		if reusePVC {
-			reuse := true
-			window.ReusePVC = &reuse
+		// ReusePVC is always written: left unset, the API defaults it to true.
+		cluster.Spec.NodeMaintenanceWindow = &mysqlv1alpha1.NodeMaintenanceWindow{
+			InProgress: true,
+			ReusePVC:   &reusePVC,
 		}
-		cluster.Spec.NodeMaintenanceWindow = window
 	} else if cluster.Spec.NodeMaintenanceWindow != nil {
 		cluster.Spec.NodeMaintenanceWindow.InProgress = false
 	}

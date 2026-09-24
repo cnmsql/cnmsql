@@ -53,7 +53,7 @@ func newBackupCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cluster, err := env.ResolveCluster(ctx, firstArg(args))
+			cluster, err := env.ResolveClusterToModify(ctx, firstArg(args))
 			if err != nil {
 				return err
 			}

@@ -66,7 +66,7 @@ func userTarget(ctx context.Context, clusterName string) (*plugin.ControlClient,
 	if err != nil {
 		return nil, nil, err
 	}
-	cluster, err := env.ResolveCluster(ctx, clusterName)
+	cluster, err := env.ResolveClusterToModify(ctx, clusterName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -279,7 +279,7 @@ patterns, TLS requirements and grants.`,
 			for _, u := range resp.Users {
 				rows = append(rows, []string{u.Name, u.Host, u.RequireTLS, strings.Join(u.Grants, "; ")})
 			}
-			plugin.Table([]string{"NAME", "HOST", "TLS", "GRANTS"}, rows)
+			plugin.Table([]string{"Name", "Host", "TLS", "Grants"}, rows)
 			return nil
 		},
 	}

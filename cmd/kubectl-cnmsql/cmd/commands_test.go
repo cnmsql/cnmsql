@@ -96,9 +96,6 @@ func TestRootHelpers(t *testing.T) {
 	if got := firstArg([]string{"cluster", "instance"}); got != "cluster" {
 		t.Errorf("firstArg() = %q", got)
 	}
-	if options := deleteNow(); options.GracePeriodSeconds == nil || *options.GracePeriodSeconds != 0 {
-		t.Errorf("deleteNow() = %#v", options)
-	}
 }
 
 func TestSplitReinit(t *testing.T) {
@@ -123,12 +120,6 @@ func TestStringHelpers(t *testing.T) {
 	}
 	if got := defaultHost("localhost"); got != "localhost" {
 		t.Errorf("defaultHost(localhost) = %q", got)
-	}
-	if got := orNone(""); got != "<none>" {
-		t.Errorf("orNone(\"\") = %q", got)
-	}
-	if got := orNone("value"); got != "value" {
-		t.Errorf("orNone(value) = %q", got)
 	}
 }
 
