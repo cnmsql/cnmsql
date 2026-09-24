@@ -53,7 +53,7 @@ func TestGroupMemberRowsAreSortedAndFormatted(t *testing.T) {
 	if rows[0][3] != readyYes || rows[2-1][3] != readyNo {
 		t.Errorf("reachable not rendered as yes/no: %v", rows)
 	}
-	if rows[0][1] != "ONLINE" || rows[0][2] != "PRIMARY" {
+	if rows[0][1] != memberOnline || rows[0][2] != "PRIMARY" {
 		t.Errorf("state/role not preserved: %v", rows[0])
 	}
 }

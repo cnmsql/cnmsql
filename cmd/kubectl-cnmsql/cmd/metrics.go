@@ -92,12 +92,12 @@ func newMetricsCommand() *cobra.Command {
 
 func printMetrics(body, filter string) {
 	if filter == "" {
-		fmt.Print(body)
+		_, _ = fmt.Fprint(plugin.Out, body)
 		return
 	}
 	for line := range strings.SplitSeq(body, "\n") {
 		if strings.Contains(line, filter) {
-			fmt.Println(line)
+			_, _ = fmt.Fprintln(plugin.Out, line)
 		}
 	}
 }

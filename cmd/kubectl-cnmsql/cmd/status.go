@@ -24,9 +24,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/logrusorgru/aurora/v4"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -38,11 +40,12 @@ const (
 	readyYes = "yes"
 	readyNo  = "no"
 
-	none        = "<none>"
-	unreachable = "<unreachable>"
-	phaseReady  = "Ready"
+	phaseReady = "Ready"
 
 	defaultStatusTimeout = 10 * time.Second
+
+	// recentBackups is how many backups status lists without -v.
+	recentBackups = 5
 )
 
 // statusVerbose and statusTimeout carry the -v/--verbose and --timeout flag
@@ -61,9 +64,12 @@ var statusDialer plugin.ControlDialer
 func newStatusCommand() *cobra.Command {
 	cmd := newWatchingCommand("status [CLUSTER]",
 		"Show the status of a cluster and its instances",
-		`Display a human-readable summary of a cnmsql cluster: the current
-phase, primary, ready instance count, conditions, and a per-instance table with
-role, readiness, and flags.
+		`Display a summary of a cnmsql cluster: its health, primary, continuous
+backup and archiving state, replication streams, and a per-instance table.
+
+Live figures (replication threads, lag, uptime, storage) come from each
+instance manager; an instance that cannot be reached is shown as such rather
+than failing the command.
 
 CLUSTER defaults to the sole cluster in the current namespace.`,
 		`  # Show the status of the default cluster in the current namespace
@@ -78,10 +84,10 @@ CLUSTER defaults to the sole cluster in the current namespace.`,
   # Output the full enriched status as YAML
   kubectl cnmsql status -o yaml
 
-  # Verbose instance detail (container restarts, storage)
+  # Verbose: all conditions and backups, full GTID sets, services and PDBs
   kubectl cnmsql status -v`,
 		"status ", runStatus)
-	cmd.Flags().CountVarP(&statusVerbose, "verbose", "v", "increase instance detail (repeat for more)")
+	cmd.Flags().CountVarP(&statusVerbose, "verbose", "v", "increase detail (repeat for more)")
 	cmd.Flags().DurationVar(&statusTimeout, "timeout", defaultStatusTimeout,
 		"per-instance control API dial timeout")
 	return cmd
@@ -105,6 +111,23 @@ type clusterStatusReport struct {
 	PDBs      []policyv1.PodDisruptionBudget `json:"pdbs,omitempty"`
 }
 
+// statusView is everything the human-readable status renders, gathered once.
+type statusView struct {
+	cluster   *mysqlv1alpha1.Cluster
+	primary   string
+	pods      []corev1.Pod
+	live      map[string]*instanceStatus
+	backups   []mysqlv1alpha1.Backup
+	scheduled []mysqlv1alpha1.ScheduledBackup
+}
+
+func (v *statusView) liveStatus(instance string) *webserver.Status {
+	if l := v.live[instance]; l != nil {
+		return l.Status
+	}
+	return nil
+}
+
 func runStatus(ctx context.Context, clusterName, output string) error {
 	env, err := newEnv()
 	if err != nil {
@@ -120,7 +143,7 @@ func runStatus(ctx context.Context, clusterName, output string) error {
 		return err
 	}
 
-	live := fetchInstanceStatuses(ctx, cluster, pods)
+	live := fetchInstanceStatuses(ctx, env, cluster, pods)
 
 	if output != "" {
 		services, pdbs := listServicesAndPDBs(ctx, env, cluster)
@@ -132,14 +155,33 @@ func runStatus(ctx context.Context, clusterName, output string) error {
 		}, output)
 	}
 
-	printSummary(cluster)
+	v := &statusView{
+		cluster: cluster,
+		primary: plugin.PrimaryInstance(cluster),
+		pods:    pods,
+		live:    make(map[string]*instanceStatus, len(live)),
+	}
+	for i := range live {
+		v.live[live[i].Instance] = &live[i]
+	}
+	v.backups, v.scheduled = listBackups(ctx, env, cluster)
+	sortInstances(v.pods, v.primary)
+
+	printSummary(v)
 	printConditions(cluster)
-	printInstances(cluster, pods, live)
-	printContinuousArchiving(cluster, live)
-	printBackups(ctx, env, cluster)
+	printContinuousBackup(v)
+	if cluster.IsGroupReplication() {
+		printGroupReplication(cluster)
+	} else {
+		printStreamingReplication(v)
+	}
+	printInstances(v)
+	printBackups(v)
 	printManagedRoles(cluster)
 	printCertificates(cluster)
-	printServicesAndPDBs(ctx, env, cluster)
+	if statusVerbose > 0 {
+		printServicesAndPDBs(ctx, env, cluster)
+	}
 	return nil
 }
 
@@ -147,14 +189,16 @@ func runStatus(ctx context.Context, clusterName, output string) error {
 // /status payload. An unreachable instance yields a degraded entry carrying its
 // error; the function never fails because of a per-instance dial failure,
 // mirroring how --watch tolerates per-frame errors.
-func fetchInstanceStatuses(ctx context.Context, cluster *mysqlv1alpha1.Cluster, pods []corev1.Pod) []instanceStatus {
+func fetchInstanceStatuses(
+	ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster, pods []corev1.Pod,
+) []instanceStatus {
 	results := make([]instanceStatus, len(pods))
 	var wg sync.WaitGroup
 	for i := range pods {
 		wg.Add(1)
 		go func(idx int, pod corev1.Pod) {
 			defer wg.Done()
-			results[idx] = fetchOneInstance(ctx, cluster, pod.Name)
+			results[idx] = fetchOneInstance(ctx, env, cluster, pod.Name)
 		}(i, pods[i])
 	}
 	wg.Wait()
@@ -162,12 +206,17 @@ func fetchInstanceStatuses(ctx context.Context, cluster *mysqlv1alpha1.Cluster, 
 	return results
 }
 
-func fetchOneInstance(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instance string) instanceStatus {
+func fetchOneInstance(
+	ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster, instance string,
+) instanceStatus {
 	dial := statusDialer
 	if dial == nil {
-		dial = func(ctx context.Context, c *mysqlv1alpha1.Cluster, name string) (*plugin.ControlClient, error) {
-			return envDialControl(ctx, c, name)
-		}
+		dial = env.DialControl
+	}
+	if statusTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, statusTimeout)
+		defer cancel()
 	}
 	cc, err := dial(ctx, cluster, instance)
 	if err != nil {
@@ -181,148 +230,556 @@ func fetchOneInstance(ctx context.Context, cluster *mysqlv1alpha1.Cluster, insta
 	return instanceStatus{Instance: instance, Status: st}
 }
 
-// envDialControl resolves the environment and dials an instance's control API.
-// It is split out so the default dialer closure can be constructed lazily.
-func envDialControl(
-	ctx context.Context, cluster *mysqlv1alpha1.Cluster, instance string,
-) (*plugin.ControlClient, error) {
-	env, err := newEnv()
-	if err != nil {
-		return nil, err
-	}
-	dialCtx := ctx
-	if statusTimeout > 0 {
-		var cancel context.CancelFunc
-		dialCtx, cancel = context.WithTimeout(ctx, statusTimeout)
-		defer cancel()
-	}
-	return env.DialControl(dialCtx, cluster, instance)
+// sortInstances orders pods primary first, then by name, like kubectl cnpg.
+func sortInstances(pods []corev1.Pod, primary string) {
+	sort.SliceStable(pods, func(i, j int) bool {
+		if (pods[i].Name == primary) != (pods[j].Name == primary) {
+			return pods[i].Name == primary
+		}
+		return pods[i].Name < pods[j].Name
+	})
 }
 
-func printSummary(c *mysqlv1alpha1.Cluster) {
+func printSummary(v *statusView) {
+	c := v.cluster
 	plugin.Section("Cluster Summary")
-	plugin.KeyVal("Name", c.Name)
-	plugin.KeyVal("Namespace", c.Namespace)
-	plugin.KeyVal("Flavor", string(c.ResolvedFlavor()))
-	plugin.KeyVal("Phase", plugin.Badge(c.Status.Phase,
-		isHealthyPhase(c.Status.Phase), isFailedPhase(c.Status.Phase)).String())
-	if c.Status.PhaseReason != "" {
-		plugin.KeyVal("Phase Reason", c.Status.PhaseReason)
+	f := plugin.Fields{}
+	f.Add("Name", c.Namespace+"/"+c.Name)
+	f.Add("Server", serverDescription(c, v.liveStatus(v.primary)))
+	f.Add("Image", c.Status.Image)
+	f.Add("Replication", replicationDescription(c))
+
+	f.Add("Primary instance", plugin.Or(c.Status.CurrentPrimary))
+	if c.Status.CurrentPrimaryTimestamp != nil {
+		f.Add("Primary promotion time", plugin.Timestamp(c.Status.CurrentPrimaryTimestamp.Time))
 	}
-	ready := c.Status.ReadyInstances
-	total := c.Status.Instances
-	plugin.KeyValColor("Instances", plugin.Badge(
-		fmt.Sprintf("%d/%d ready", ready, total), ready == total && total > 0, ready == 0 && total > 0))
-	plugin.KeyVal("Primary", orNone(c.Status.CurrentPrimary))
 	if c.Status.TargetPrimary != "" && c.Status.TargetPrimary != c.Status.CurrentPrimary {
-		plugin.KeyVal("Target Primary", c.Status.TargetPrimary)
+		switchover := fmt.Sprintf("%s → %s", plugin.Or(c.Status.CurrentPrimary), c.Status.TargetPrimary)
+		if c.Status.TargetPrimaryTimestamp != nil {
+			switchover += fmt.Sprintf(" (requested %s ago)",
+				plugin.HumanDuration(time.Since(c.Status.TargetPrimaryTimestamp.Time)))
+		}
+		f.Add("Switchover in progress", plugin.Yellow(switchover))
 	}
-	plugin.KeyVal("Image", orNone(c.Status.Image))
-	if len(c.Status.FencedInstances) > 0 {
-		plugin.KeyVal("Fenced", fmt.Sprintf("%v", c.Status.FencedInstances))
+
+	status := phaseBadge(c.Status.Phase).String()
+	if c.Status.PhaseReason != "" {
+		status += " " + plugin.Faint("("+c.Status.PhaseReason+")").String()
 	}
-	if len(c.Status.DivergedInstances) > 0 {
-		plugin.KeyVal("Diverged", fmt.Sprintf("%v", c.Status.DivergedInstances))
+	f.Add("Status", status)
+	ready, total := c.Status.ReadyInstances, c.Status.Instances
+	f.Add("Instances", total)
+	f.Add("Ready instances", plugin.Badge(fmt.Sprintf("%d/%d", ready, total),
+		ready == total && total > 0, ready == 0 && total > 0))
+	if st := v.liveStatus(v.primary); st != nil && st.Storage != nil {
+		f.Add("Size", storageSummary(st.Storage))
+	}
+	if gtid := primaryGTID(v); gtid != "" {
+		f.Add("Current GTID executed", shortGTID(gtid))
+	}
+	if c.Status.LastFailoverTimestamp != nil {
+		f.Add("Last failover", plugin.Timestamp(c.Status.LastFailoverTimestamp.Time))
+	}
+
+	for _, l := range []struct {
+		label string
+		names []string
+		bad   bool
+	}{
+		{"Fenced instances", c.Status.FencedInstances, false},
+		{"Diverged instances", c.Status.DivergedInstances, true},
+		{"Failed instances", c.Status.FailedInstances, true},
+		{"Replication broken", c.Status.ReplicationBrokenInstances, true},
+		{"Resizing PVCs", c.Status.ResizingPVC, false},
+	} {
+		if len(l.names) > 0 {
+			f.Add(l.label, plugin.Badge(strings.Join(l.names, ", "), false, l.bad))
+		}
+	}
+	f.Print()
+}
+
+// serverDescription names the engine and, when an instance reported it, the
+// live server version: "MySQL 8.4.3".
+func serverDescription(c *mysqlv1alpha1.Cluster, primary *webserver.Status) string {
+	name := "MySQL"
+	if c.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB {
+		name = "MariaDB"
+	}
+	if primary != nil && primary.Version != "" {
+		return name + " " + primary.Version
+	}
+	return name
+}
+
+func replicationDescription(c *mysqlv1alpha1.Cluster) string {
+	switch {
+	case c.IsGroupReplication():
+		return "Group Replication"
+	case c.IsSemiSyncEnabled():
+		return "asynchronous, semi-synchronous acknowledgement"
+	default:
+		return "asynchronous"
 	}
 }
 
+func phaseBadge(phase string) aurora.Value {
+	return plugin.Badge(plugin.Or(phase), phase == phaseReady, phase == "Blocked" || phase == "FullOutage")
+}
+
+func primaryGTID(v *statusView) string {
+	if st := v.liveStatus(v.primary); st != nil && st.GTIDExecuted != "" {
+		return st.GTIDExecuted
+	}
+	return v.cluster.Status.GTIDExecutedByInstance[v.primary]
+}
+
+// storageSummary renders a data volume's usage, colored as it fills up.
+func storageSummary(st *webserver.StorageStatus) string {
+	if st == nil || st.CapacityBytes == 0 {
+		return plugin.NoValue
+	}
+	pct := float64(st.UsedBytes) / float64(st.CapacityBytes) * 100
+	label := fmt.Sprintf("%s of %s (%.0f%%)", plugin.HumanBytes(st.UsedBytes), plugin.HumanBytes(st.CapacityBytes), pct)
+	return plugin.Badge(label, pct < 80, pct >= 90).String()
+}
+
+// storageShort is storageSummary for a table cell: "45% of 10.0 GiB".
+func storageShort(st *webserver.StorageStatus) string {
+	if st == nil || st.CapacityBytes == 0 {
+		return plugin.NoValue
+	}
+	pct := float64(st.UsedBytes) / float64(st.CapacityBytes) * 100
+	label := fmt.Sprintf("%.0f%% of %s", pct, plugin.HumanBytes(st.CapacityBytes))
+	return plugin.Badge(label, pct < 80, pct >= 90).String()
+}
+
+// shortGTID collapses a GTID set to one line. Without -v a set spanning several
+// server UUIDs keeps only the first and counts the rest; the full value is in
+// `status -o json`.
+func shortGTID(gtid string) string {
+	oneLine := strings.Join(strings.Fields(gtid), "")
+	if oneLine == "" {
+		return plugin.NoValue
+	}
+	if statusVerbose > 0 {
+		return oneLine
+	}
+	parts := strings.Split(oneLine, ",")
+	if len(parts) == 1 {
+		return oneLine
+	}
+	return fmt.Sprintf("%s %s", parts[0], plugin.Faint(fmt.Sprintf("(+%d more)", len(parts)-1)))
+}
+
+// conditionHealthy reports whether a condition is in the state a healthy
+// cluster shows. Ready and ContinuousArchiving are healthy when true; the
+// others (Progressing, Degraded, StoragePressure) when false.
+func conditionHealthy(cond metav1.Condition) bool {
+	switch cond.Type {
+	case "Ready", "ContinuousArchiving":
+		return cond.Status == "True"
+	default:
+		return cond.Status != "True"
+	}
+}
+
+// printConditions lists the conditions that need attention, or all of them
+// with -v. A healthy cluster prints nothing here.
 func printConditions(c *mysqlv1alpha1.Cluster) {
-	if len(c.Status.Conditions) == 0 {
+	var rows [][]string
+	for _, cond := range c.Status.Conditions {
+		healthy := conditionHealthy(cond)
+		if healthy && statusVerbose == 0 {
+			continue
+		}
+		status := plugin.Badge(string(cond.Status), healthy, cond.Type != "Progressing").String()
+		since := plugin.HumanDuration(time.Since(cond.LastTransitionTime.Time))
+		rows = append(rows, []string{cond.Type, status, cond.Reason, since, cond.Message})
+	}
+	if len(rows) == 0 {
 		return
 	}
 	plugin.Section("Conditions")
-	rows := make([][]string, 0, len(c.Status.Conditions))
-	for _, cond := range c.Status.Conditions {
-		rows = append(rows, []string{cond.Type, string(cond.Status), cond.Reason, cond.Message})
-	}
-	plugin.Table([]string{"TYPE", "STATUS", "REASON", "MESSAGE"}, rows)
+	plugin.Table([]string{"Type", "Status", "Reason", "Since", "Message"}, rows)
 }
 
-func printInstances(c *mysqlv1alpha1.Cluster, pods []corev1.Pod, live []instanceStatus) {
-	plugin.Section("Instances")
-	sort.Slice(pods, func(i, j int) bool { return pods[i].Name < pods[j].Name })
-	primary := plugin.PrimaryInstance(c)
-	liveByInstance := make(map[string]*webserver.Status, len(live))
-	for i := range live {
-		liveByInstance[live[i].Instance] = live[i].Status
+func printContinuousBackup(v *statusView) {
+	c := v.cluster
+	ca := c.Status.ContinuousArchiving
+	if c.Spec.Backup == nil && ca == nil && len(v.backups) == 0 {
+		return
 	}
-	header := []string{"NAME", "ROLE", "READY", "PHASE", "NODE", "GTID", "LAG", "UPTIME"}
-	if statusVerbose > 0 {
-		header = append(header, "STORAGE", "RESTARTS")
+	plugin.Section("Continuous Backup status")
+	f := plugin.Fields{}
+	if c.Spec.Backup != nil && c.Spec.Backup.ObjectStore != nil {
+		f.Add("Object store", objectStoreURL(c.Spec.Backup.ObjectStore))
 	}
-	header = append(header, "FLAGS")
-	rows := make([][]string, 0, len(pods))
-	for i := range pods {
-		pod := &pods[i]
-		role := "replica"
-		if pod.Name == primary {
-			role = "primary"
-		}
-		ready := readyNo
-		if plugin.PodReady(pod) {
-			ready = readyYes
-		}
-		gtid := orNone(c.Status.GTIDExecutedByInstance[pod.Name])
-		lag := unreachable
-		uptime := unreachable
-		storage := unreachable
-		if st := liveByInstance[pod.Name]; st != nil {
-			lag = lagString(c, pod.Name, st)
-			uptime = uptimeString(st.UptimeSeconds)
-			if statusVerbose > 0 {
-				storage = storageString(st.Storage)
+
+	var firstRecoverable, lastSuccess *mysqlv1alpha1.Backup
+	var lastFailed *mysqlv1alpha1.Backup
+	for i := range v.backups {
+		b := &v.backups[i]
+		switch b.Status.Phase {
+		case mysqlv1alpha1.BackupPhaseCompleted:
+			if b.Status.StoppedAt == nil {
+				continue
 			}
-			if gtid == none && st.GTIDExecuted != "" {
+			if firstRecoverable == nil || b.Status.StoppedAt.Before(firstRecoverable.Status.StoppedAt) {
+				firstRecoverable = b
+			}
+			if lastSuccess == nil || lastSuccess.Status.StoppedAt.Before(b.Status.StoppedAt) {
+				lastSuccess = b
+			}
+		case mysqlv1alpha1.BackupPhaseFailed:
+			if lastFailed == nil || backupTime(lastFailed).Before(backupTime(b)) {
+				lastFailed = b
+			}
+		}
+	}
+	if firstRecoverable != nil {
+		f.Add("First point of recoverability", plugin.Timestamp(firstRecoverable.Status.StoppedAt.Time))
+	} else {
+		f.Add("First point of recoverability", plugin.Yellow("none (no completed backup)"))
+	}
+	if lastSuccess != nil {
+		f.Add("Last successful backup", fmt.Sprintf("%s  %s",
+			plugin.Timestamp(lastSuccess.Status.StoppedAt.Time), plugin.Faint(lastSuccess.Name)))
+	} else {
+		f.Add("Last successful backup", plugin.NoValue)
+	}
+	// A failure only matters until a later backup succeeds.
+	if lastFailed != nil && (lastSuccess == nil || lastSuccess.Status.StoppedAt.Before(ptrTime(backupTime(lastFailed)))) {
+		f.Add("Last failed backup", plugin.Red(fmt.Sprintf("%s  %s: %s",
+			backupTime(lastFailed).Local().Format(time.DateTime), lastFailed.Name, plugin.Or(lastFailed.Status.Error))))
+	} else {
+		f.Add("Last failed backup", plugin.NoValue)
+	}
+	if next := nextScheduledBackup(v.scheduled); next != nil {
+		f.Add("Next scheduled backup", plugin.Timestamp(*next))
+	}
+	if c.Status.LastRetentionRunTime != nil {
+		f.Add("Last retention run", plugin.Timestamp(c.Status.LastRetentionRunTime.Time))
+	}
+
+	if ca != nil && ca.Enabled {
+		f.Add("Working binlog archiving", archivingHealth(ca))
+		f.Add("Binlogs waiting to be archived", plugin.Badge(fmt.Sprint(ca.PendingFiles), ca.PendingFiles == 0, false))
+		last := plugin.Or(ca.LastArchivedBinlog)
+		if ca.LastArchivedTime != nil {
+			last += "  @  " + plugin.Timestamp(ca.LastArchivedTime.Time)
+		}
+		f.Add("Last archived binlog", last)
+		if ca.LastArchivedGTID != "" {
+			f.Add("Last archived GTID", shortGTID(ca.LastArchivedGTID))
+		}
+		if ca.LastFailureReason != "" {
+			failure := ca.LastFailureReason
+			if ca.LastFailureTime != nil {
+				failure += "  @  " + ca.LastFailureTime.Local().Format(time.DateTime)
+			}
+			if archivingFailing(ca) {
+				f.Add("Last failed archiving", plugin.Red(failure))
+			} else {
+				f.Add("Last failed archiving", failure)
+			}
+		}
+	} else {
+		f.Add("Working binlog archiving", plugin.Faint("disabled"))
+	}
+	f.Print()
+}
+
+// archivingFailing reports whether archiving is currently broken: its most
+// recent failure is newer than its most recent success.
+func archivingFailing(ca *mysqlv1alpha1.ContinuousArchivingStatus) bool {
+	return ca.LastFailureTime != nil &&
+		(ca.LastArchivedTime == nil || ca.LastArchivedTime.Before(ca.LastFailureTime))
+}
+
+func archivingHealth(ca *mysqlv1alpha1.ContinuousArchivingStatus) aurora.Value {
+	if archivingFailing(ca) {
+		return plugin.Red("Failing")
+	}
+	return plugin.Green("OK")
+}
+
+func objectStoreURL(store *mysqlv1alpha1.S3ObjectStore) string {
+	url := "s3://" + store.Bucket
+	if p := strings.Trim(store.Path, "/"); p != "" {
+		url += "/" + p
+	}
+	if store.Endpoint != "" {
+		url += " " + plugin.Faint("("+store.Endpoint+")").String()
+	}
+	return url
+}
+
+func backupTime(b *mysqlv1alpha1.Backup) time.Time {
+	switch {
+	case b.Status.StoppedAt != nil:
+		return b.Status.StoppedAt.Time
+	case b.Status.StartedAt != nil:
+		return b.Status.StartedAt.Time
+	default:
+		return b.CreationTimestamp.Time
+	}
+}
+
+func ptrTime(t time.Time) *metav1.Time {
+	return &metav1.Time{Time: t}
+}
+
+func nextScheduledBackup(scheduled []mysqlv1alpha1.ScheduledBackup) *time.Time {
+	var next *time.Time
+	for i := range scheduled {
+		s := &scheduled[i]
+		if s.Spec.Suspend != nil && *s.Spec.Suspend {
+			continue
+		}
+		if t := s.Status.NextScheduleTime; t != nil && (next == nil || t.Time.Before(*next)) {
+			next = &t.Time
+		}
+	}
+	return next
+}
+
+// printStreamingReplication shows each replica's stream: the state of its IO
+// and SQL threads, its lag and whether it acknowledges semi-synchronously.
+func printStreamingReplication(v *statusView) {
+	var rows [][]string
+	for i := range v.pods {
+		name := v.pods[i].Name
+		if name == v.primary {
+			continue
+		}
+		st := v.liveStatus(name)
+		if st == nil {
+			rows = append(rows, []string{name, plugin.NoValue, plugin.NoValue, plugin.NoValue,
+				lagCell(v.cluster, name, nil), plugin.NoValue, plugin.Red("instance unreachable").String()})
+			continue
+		}
+		source, ioThread, sqlThread, lastError := plugin.NoValue, plugin.NoValue, plugin.NoValue, ""
+		if r := st.Replication; r != nil {
+			source = plugin.Or(r.SourceHost)
+			ioThread = threadCell(r.IORunning)
+			sqlThread = threadCell(r.SQLRunning)
+			lastError = r.LastError
+		}
+		mode := "async"
+		if st.SemiSync.ReplicaEnabled {
+			mode = "semi-sync"
+		}
+		row := []string{name, source, ioThread, sqlThread, lagCell(v.cluster, name, st), mode,
+			plugin.Red(lastError).String()}
+		if lastError == "" {
+			row[6] = plugin.NoValue
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return
+	}
+	plugin.Section("Streaming Replication status")
+	plugin.Table([]string{"Name", "Source", "IO Thread", "SQL Thread", "Lag", "Mode", "Last Error"}, rows)
+}
+
+func threadCell(running bool) string {
+	if running {
+		return plugin.Green("Running").String()
+	}
+	return plugin.Red("Stopped").String()
+}
+
+// lagCell renders a replica's lag, preferring the live heartbeat reading, then
+// the operator's last persisted one, then Seconds_Behind_Source. An instance
+// with no reading shows "-": no reading is not the same as no lag.
+func lagCell(c *mysqlv1alpha1.Cluster, instance string, st *webserver.Status) string {
+	var lag time.Duration
+	switch {
+	case st != nil && st.ReplicationLag != nil && st.ReplicationLag.LagMillis != nil:
+		lag = time.Duration(*st.ReplicationLag.LagMillis) * time.Millisecond
+	case hasKey(c.Status.ReplicationLagByInstance, instance):
+		lag = time.Duration(c.Status.ReplicationLagByInstance[instance]) * time.Millisecond
+	case st != nil && st.Replication != nil && st.Replication.SecondsBehindSource != nil:
+		lag = time.Duration(*st.Replication.SecondsBehindSource) * time.Second
+	default:
+		return plugin.NoValue
+	}
+	label := plugin.HumanDuration(lag)
+	if limit := c.MaxReplicationLag(); limit != nil && lag > *limit {
+		return plugin.Red(label).String()
+	}
+	switch {
+	case lag >= time.Minute:
+		return plugin.Red(label).String()
+	case lag >= time.Second:
+		return plugin.Yellow(label).String()
+	default:
+		return label
+	}
+}
+
+func hasKey(m map[string]int64, k string) bool {
+	_, ok := m[k]
+	return ok
+}
+
+func printGroupReplication(c *mysqlv1alpha1.Cluster) {
+	gr := c.Status.GroupReplication
+	plugin.Section("Group Replication status")
+	if gr == nil {
+		_, _ = fmt.Fprintln(plugin.Out, plugin.Yellow("The operator has not reported a group view yet"))
+		return
+	}
+	f := plugin.Fields{}
+	f.Add("Group name", gr.GroupName)
+	f.Add("Quorum", quorumCell(gr))
+	f.Add("Online members", fmt.Sprintf("%d/%d", countOnline(gr), max(gr.ObservedViewMax, len(gr.Members))))
+	if gr.CommunicationProtocol != "" {
+		protocol := gr.CommunicationProtocol
+		if gr.CommunicationProtocolTarget != "" && gr.CommunicationProtocolTarget != protocol {
+			protocol += plugin.Yellow(" → " + gr.CommunicationProtocolTarget).String()
+		}
+		f.Add("Communication protocol", protocol)
+	}
+	f.Print()
+	if rows := groupMemberRows(gr); len(rows) > 0 {
+		_, _ = fmt.Fprintln(plugin.Out)
+		plugin.Table([]string{"Member", "State", "Role", "Reachable"}, rows)
+	}
+}
+
+func quorumCell(gr *mysqlv1alpha1.GroupReplicationStatus) aurora.Value {
+	switch {
+	case !gr.Bootstrapped:
+		return plugin.Yellow("not bootstrapped")
+	case gr.HasQuorum:
+		return plugin.Green("yes")
+	default:
+		return plugin.Red("LOST (writes are blocked)")
+	}
+}
+
+func printInstances(v *statusView) {
+	c := v.cluster
+	header := []string{"Name", "GTID Executed", "Role", "Status", "Uptime", "Storage", "QoS", "Manager", "Node"}
+	if statusVerbose > 0 {
+		header = append(header, "Version", "Restarts")
+	}
+	rows := make([][]string, 0, len(v.pods))
+	for i := range v.pods {
+		pod := &v.pods[i]
+		st := v.liveStatus(pod.Name)
+		gtid := c.Status.GTIDExecutedByInstance[pod.Name]
+		uptime, storage, version := plugin.NoValue, plugin.NoValue, plugin.NoValue
+		if st != nil {
+			if st.GTIDExecuted != "" {
 				gtid = st.GTIDExecuted
 			}
+			if st.UptimeSeconds > 0 {
+				uptime = plugin.HumanDuration(time.Duration(st.UptimeSeconds) * time.Second)
+			}
+			storage = storageShort(st.Storage)
+			version = plugin.Or(st.Version)
 		}
-		gtid = truncateGTID(gtid)
-		restarts := ""
+		row := []string{
+			pod.Name,
+			shortGTID(gtid),
+			instanceRole(c, pod.Name, v.primary, st),
+			instanceHealth(c, pod, v.live[pod.Name]),
+			uptime,
+			storage,
+			plugin.Or(string(pod.Status.QOSClass)),
+			managerCell(c, pod.Name),
+			plugin.Or(pod.Spec.NodeName),
+		}
 		if statusVerbose > 0 {
-			restarts = fmt.Sprintf("%d", containerRestarts(pod))
+			row = append(row, version, fmt.Sprint(containerRestarts(pod)))
 		}
-		flags := instanceFlags(c, pod.Name)
-		row := []string{pod.Name, role, ready, string(pod.Status.Phase), pod.Spec.NodeName, gtid, lag, uptime}
-		if statusVerbose > 0 {
-			row = append(row, storage, restarts)
-		}
-		row = append(row, flags)
 		rows = append(rows, row)
+	}
+	plugin.Section("Instances status")
+	if len(rows) == 0 {
+		_, _ = fmt.Fprintln(plugin.Out, plugin.Yellow("No instance Pods found"))
+		return
 	}
 	plugin.Table(header, rows)
 }
 
-func lagString(c *mysqlv1alpha1.Cluster, instance string, st *webserver.Status) string {
-	if lag, ok := c.Status.ReplicationLagByInstance[instance]; ok {
-		return fmt.Sprintf("%ds", lag)
+func instanceRole(c *mysqlv1alpha1.Cluster, name, primary string, st *webserver.Status) string {
+	if c.IsGroupReplication() {
+		for _, m := range memberList(c) {
+			if m.Instance == name && m.Role != "" {
+				return titleCase(m.Role)
+			}
+		}
 	}
-	if st.Replication != nil && st.Replication.SecondsBehindSource != nil {
-		return fmt.Sprintf("%ds", *st.Replication.SecondsBehindSource)
+	if name == primary {
+		return plugin.Bold("Primary").String()
 	}
-	return "0s"
+	switch {
+	case st == nil:
+		return "Replica"
+	case st.SemiSync.ReplicaEnabled:
+		return "Replica (semi-sync)"
+	default:
+		return "Replica (async)"
+	}
 }
 
-func uptimeString(seconds int64) string {
-	if seconds <= 0 {
-		return "0s"
+func memberList(c *mysqlv1alpha1.Cluster) []mysqlv1alpha1.GroupMember {
+	if c.Status.GroupReplication == nil {
+		return nil
 	}
-	d := time.Duration(seconds) * time.Second
-	days := int(d.Hours()) / 24
-	if days > 0 {
-		return fmt.Sprintf("%dd%dh", days, int(d.Hours())%24)
-	}
-	if d.Hours() >= 1 {
-		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-	}
-	return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	return c.Status.GroupReplication.Members
 }
 
-func storageString(st *webserver.StorageStatus) string {
-	if st == nil || st.CapacityBytes == 0 {
-		return "<none>"
+func titleCase(s string) string {
+	if s == "" {
+		return s
 	}
-	pct := float64(st.UsedBytes) / float64(st.CapacityBytes) * 100
-	return fmt.Sprintf("%.1f%%", pct)
+	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
+}
+
+// instanceHealth condenses an instance's state into one colored word, most
+// severe first: what the operator flagged, then reachability, then readiness.
+func instanceHealth(c *mysqlv1alpha1.Cluster, pod *corev1.Pod, live *instanceStatus) string {
+	name := pod.Name
+	switch {
+	case plugin.Contains(c.Status.DivergedInstances, name):
+		return plugin.Red("Diverged").String()
+	case plugin.Contains(c.Status.FailedInstances, name):
+		return plugin.Red("Failed").String()
+	case plugin.Contains(c.Status.ReplicationBrokenInstances, name):
+		return plugin.Red("Replication broken").String()
+	case plugin.Contains(c.Status.FencedInstances, name):
+		return plugin.Yellow("Fenced").String()
+	case pod.DeletionTimestamp != nil:
+		return plugin.Yellow("Terminating").String()
+	case live == nil || live.Status == nil:
+		return plugin.Red("Unreachable").String()
+	case live.Status.InPlaceUpgrading:
+		return plugin.Yellow("Upgrading").String()
+	case !plugin.PodReady(pod) || !live.Status.IsReady:
+		return plugin.Yellow("Not ready").String()
+	default:
+		return plugin.Green("OK").String()
+	}
+}
+
+// managerCell compares the instance manager an instance runs with the
+// operator's: an outdated one is awaiting its in-place or rolling upgrade.
+func managerCell(c *mysqlv1alpha1.Cluster, instance string) string {
+	hash := c.Status.ExecutableHashByInstance[instance]
+	switch {
+	case hash == "" || c.Status.OperatorExecutableHash == "":
+		return plugin.NoValue
+	case hash == c.Status.OperatorExecutableHash:
+		return "up to date"
+	default:
+		return plugin.Yellow("outdated").String()
+	}
 }
 
 func containerRestarts(pod *corev1.Pod) int {
@@ -333,128 +790,102 @@ func containerRestarts(pod *corev1.Pod) int {
 	return int(restarts)
 }
 
-func instanceFlags(c *mysqlv1alpha1.Cluster, name string) string {
-	var flags []string
-	if plugin.Contains(c.Status.FencedInstances, name) {
-		flags = append(flags, "fenced")
-	}
-	if plugin.Contains(c.Status.DivergedInstances, name) {
-		flags = append(flags, "diverged")
-	}
-	return strings.Join(flags, ",")
-}
-
-// truncateGTID collapses a multi-UUID GTID set to a single line and caps its
-// length so the Instances table stays one row per instance. With verbose mode
-// off it shows the first set and an ellipsis when more exist; the full value
-// is available via `status -o json`.
-func truncateGTID(gtid string) string {
-	if gtid == none || gtid == "" {
-		return none
-	}
-	oneLine := strings.ReplaceAll(gtid, "\n", "")
-	if statusVerbose > 0 {
-		return oneLine
-	}
-	const max = 20
-	if len(oneLine) <= max {
-		return oneLine
-	}
-	if i := strings.Index(oneLine, ","); i >= 0 && i < max {
-		return oneLine[:i] + ",…"
-	}
-	return oneLine[:max-1] + "…"
-}
-
-func printContinuousArchiving(c *mysqlv1alpha1.Cluster, live []instanceStatus) {
-	ca := c.Status.ContinuousArchiving
-	if ca == nil && !hasArchiving(live) {
+// printBackups lists the most recent backups, all of them with -v.
+func printBackups(v *statusView) {
+	if len(v.backups) == 0 {
 		return
 	}
-	plugin.Section("Continuous Archiving")
-	if ca != nil {
-		plugin.KeyVal("Enabled", boolStr(ca.Enabled))
-		plugin.KeyVal("Last Binlog", orNone(ca.LastArchivedBinlog))
-		plugin.KeyVal("Last GTID", orNone(ca.LastArchivedGTID))
-		if ca.LastArchivedTime != nil {
-			plugin.KeyVal("Last Archived", ca.LastArchivedTime.Format(time.RFC3339))
-		}
-		pending := plugin.Badge(fmt.Sprintf("%d", ca.PendingFiles),
-			ca.PendingFiles == 0, false)
-		plugin.KeyValColor("Pending Files", pending)
-		if ca.LastFailureReason != "" {
-			plugin.KeyValColor("Last Failure", plugin.Red(ca.LastFailureReason))
-		}
-		if ca.LastFailureTime != nil {
-			plugin.KeyVal("Last Failure Time", ca.LastFailureTime.Format(time.RFC3339))
-		}
+	backups := append([]mysqlv1alpha1.Backup(nil), v.backups...)
+	sort.Slice(backups, func(i, j int) bool { return backupTime(&backups[j]).Before(backupTime(&backups[i])) })
+	title := "Backups"
+	if statusVerbose == 0 && len(backups) > recentBackups {
+		title = fmt.Sprintf("Backups (latest %d of %d, -v for all)", recentBackups, len(backups))
+		backups = backups[:recentBackups]
 	}
-}
-
-func hasArchiving(live []instanceStatus) bool {
-	for i := range live {
-		if live[i].Status != nil && live[i].Status.Archiving != nil && live[i].Status.Archiving.Active {
-			return true
-		}
-	}
-	return false
-}
-
-func printBackups(ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster) {
-	list := &mysqlv1alpha1.BackupList{}
-	if err := env.Client.List(ctx, list, client.InNamespace(cluster.Namespace)); err != nil {
-		return
-	}
-	var rows [][]string
-	for i := range list.Items {
-		b := &list.Items[i]
-		if b.Spec.Cluster.Name != cluster.Name {
-			continue
-		}
-		completed := none
-		if b.Status.StoppedAt != nil {
-			completed = b.Status.StoppedAt.Format(time.RFC3339)
+	rows := make([][]string, 0, len(backups))
+	for i := range backups {
+		b := &backups[i]
+		started, duration := plugin.NoValue, plugin.NoValue
+		if b.Status.StartedAt != nil {
+			started = b.Status.StartedAt.Local().Format(time.DateTime)
+			end := time.Now()
+			if b.Status.StoppedAt != nil {
+				end = b.Status.StoppedAt.Time
+			}
+			duration = plugin.HumanDuration(end.Sub(b.Status.StartedAt.Time))
 		}
 		rows = append(rows, []string{
-			b.Name,
-			string(b.Status.Phase),
-			orNone(b.Status.BackupID),
-			completed,
+			b.Name, backupPhase(b.Status.Phase), plugin.Or(string(b.Status.Method)),
+			plugin.Or(b.Status.InstanceName), started, duration,
 		})
 	}
-	if cluster.Status.LastRetentionRunTime != nil {
-		plugin.Section("Backups")
-		plugin.KeyVal("Last Retention Run", cluster.Status.LastRetentionRunTime.Format(time.RFC3339))
+	plugin.Section(title)
+	plugin.Table([]string{"Name", "Phase", "Method", "Instance", "Started", "Duration"}, rows)
+}
+
+func backupPhase(phase mysqlv1alpha1.BackupPhase) string {
+	switch phase {
+	case mysqlv1alpha1.BackupPhaseCompleted:
+		return plugin.Green(phase).String()
+	case mysqlv1alpha1.BackupPhaseFailed:
+		return plugin.Red(phase).String()
+	case "":
+		return plugin.Yellow("new").String()
+	default:
+		return plugin.Yellow(phase).String()
 	}
-	if len(rows) == 0 {
-		return
+}
+
+func listBackups(
+	ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster,
+) ([]mysqlv1alpha1.Backup, []mysqlv1alpha1.ScheduledBackup) {
+	var backups []mysqlv1alpha1.Backup
+	list := &mysqlv1alpha1.BackupList{}
+	if err := env.Client.List(ctx, list, client.InNamespace(cluster.Namespace)); err == nil {
+		for i := range list.Items {
+			if list.Items[i].Spec.Cluster.Name == cluster.Name {
+				backups = append(backups, list.Items[i])
+			}
+		}
 	}
-	if cluster.Status.LastRetentionRunTime == nil {
-		plugin.Section("Backups")
+	var scheduled []mysqlv1alpha1.ScheduledBackup
+	slist := &mysqlv1alpha1.ScheduledBackupList{}
+	if err := env.Client.List(ctx, slist, client.InNamespace(cluster.Namespace)); err == nil {
+		for i := range slist.Items {
+			if slist.Items[i].Spec.Cluster.Name == cluster.Name {
+				scheduled = append(scheduled, slist.Items[i])
+			}
+		}
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i][3] > rows[j][3] })
-	plugin.Table([]string{"NAME", "PHASE", "BACKUP ID", "COMPLETED"}, rows)
+	return backups, scheduled
 }
 
 func printManagedRoles(c *mysqlv1alpha1.Cluster) {
 	mrs := c.Status.ManagedRolesStatus
-	if mrs == nil {
-		return
-	}
-	if len(mrs.ByStatus) == 0 && len(mrs.CannotReconcile) == 0 {
+	if mrs == nil || (len(mrs.ByStatus) == 0 && len(mrs.CannotReconcile) == 0) {
 		return
 	}
 	plugin.Section("Managed Roles")
-	for status, names := range mrs.ByStatus {
+	f := plugin.Fields{}
+	statuses := make([]string, 0, len(mrs.ByStatus))
+	for status := range mrs.ByStatus {
+		statuses = append(statuses, string(status))
+	}
+	sort.Strings(statuses)
+	for _, status := range statuses {
+		names := append([]string(nil), mrs.ByStatus[mysqlv1alpha1.ManagedRoleStatus(status)]...)
 		sort.Strings(names)
-		plugin.KeyVal(string(status), strings.Join(names, ", "))
+		f.Add(status, strings.Join(names, ", "))
 	}
-	if len(mrs.CannotReconcile) > 0 {
-		for reason, names := range mrs.CannotReconcile {
-			sort.Strings(names)
-			plugin.KeyValColor("Cannot Reconcile ("+reason+")", plugin.Yellow(strings.Join(names, ", ")))
-		}
+	roles := make([]string, 0, len(mrs.CannotReconcile))
+	for role := range mrs.CannotReconcile {
+		roles = append(roles, role)
 	}
+	sort.Strings(roles)
+	for _, role := range roles {
+		f.Add("Cannot reconcile "+role, plugin.Red(strings.Join(mrs.CannotReconcile[role], "; ")))
+	}
+	f.Print()
 }
 
 func printCertificates(c *mysqlv1alpha1.Cluster) {
@@ -462,37 +893,34 @@ func printCertificates(c *mysqlv1alpha1.Cluster) {
 	if certs == nil || len(certs.Expirations) == 0 {
 		return
 	}
+	names := make([]string, 0, len(certs.Expirations))
+	for name := range certs.Expirations {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return certs.Expirations[names[i]] < certs.Expirations[names[j]]
+	})
+	rows := make([][]string, 0, len(names))
+	for _, name := range names {
+		exp := certs.Expirations[name]
+		t, err := time.Parse(time.RFC3339, exp)
+		if err != nil {
+			rows = append(rows, []string{name, exp, plugin.NoValue})
+			continue
+		}
+		left := time.Until(t)
+		remaining := plugin.HumanDuration(left)
+		if left < 0 {
+			remaining = "expired " + remaining + " ago"
+		}
+		days := left.Hours() / 24
+		rows = append(rows, []string{
+			name, t.Local().Format(time.DateTime),
+			plugin.Badge(remaining, days >= 30, days < 7).String(),
+		})
+	}
 	plugin.Section("Certificates")
-	type certRow struct {
-		name string
-		exp  string
-	}
-	rows := make([]certRow, 0, len(certs.Expirations))
-	for name, exp := range certs.Expirations {
-		rows = append(rows, certRow{name: name, exp: exp})
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].exp < rows[j].exp })
-	for _, r := range rows {
-		plugin.KeyValColor(r.name, certExpiryColor(r.exp))
-	}
-}
-
-func certExpiryColor(exp string) any {
-	t, err := time.Parse(time.RFC3339, exp)
-	if err != nil {
-		return exp
-	}
-	days := time.Until(t).Hours() / 24
-	switch {
-	case days < 0:
-		return plugin.Red(exp + " (expired)")
-	case days < 7:
-		return plugin.Red(exp)
-	case days < 30:
-		return plugin.Yellow(exp)
-	default:
-		return plugin.Green(exp)
-	}
+	plugin.Table([]string{"Name", "Expires", "Remaining"}, rows)
 }
 
 func printServicesAndPDBs(ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster) {
@@ -503,10 +931,10 @@ func printServicesAndPDBs(ctx context.Context, env *plugin.Env, cluster *mysqlv1
 		rows := make([][]string, 0, len(services))
 		for i := range services {
 			svc := &services[i]
-			role := svc.Labels[plugin.RoleLabel]
-			rows = append(rows, []string{svc.Name, role, string(svc.Spec.Type), primaryIP(svc)})
+			rows = append(rows, []string{svc.Name, plugin.Or(svc.Labels[plugin.RoleLabel]),
+				string(svc.Spec.Type), primaryIP(svc)})
 		}
-		plugin.Table([]string{"NAME", "ROLE", "TYPE", "CLUSTER IP"}, rows)
+		plugin.Table([]string{"Name", "Role", "Type", "Cluster IP"}, rows)
 	}
 	if len(pdbs) > 0 {
 		plugin.Section("Pod Disruption Budgets")
@@ -514,10 +942,11 @@ func printServicesAndPDBs(ctx context.Context, env *plugin.Env, cluster *mysqlv1
 		rows := make([][]string, 0, len(pdbs))
 		for i := range pdbs {
 			pdb := &pdbs[i]
-			budget := pdbBudget(pdb)
-			rows = append(rows, []string{pdb.Name, budget})
+			allowed := fmt.Sprint(pdb.Status.DisruptionsAllowed)
+			rows = append(rows, []string{pdb.Name, pdbBudget(pdb),
+				plugin.Badge(allowed, pdb.Status.DisruptionsAllowed > 0, false).String()})
 		}
-		plugin.Table([]string{"NAME", "BUDGET"}, rows)
+		plugin.Table([]string{"Name", "Budget", "Disruptions Allowed"}, rows)
 	}
 }
 
@@ -541,7 +970,7 @@ func primaryIP(svc *corev1.Service) string {
 	if len(svc.Spec.ClusterIPs) > 0 && svc.Spec.ClusterIPs[0] != "" {
 		return svc.Spec.ClusterIPs[0]
 	}
-	return orNone(svc.Spec.ClusterIP)
+	return plugin.Or(svc.Spec.ClusterIP)
 }
 
 func pdbBudget(pdb *policyv1.PodDisruptionBudget) string {
@@ -551,33 +980,5 @@ func pdbBudget(pdb *policyv1.PodDisruptionBudget) string {
 	if pdb.Spec.MinAvailable != nil {
 		return "minAvailable=" + pdb.Spec.MinAvailable.String()
 	}
-	return none
-}
-
-func boolStr(b bool) string {
-	if b {
-		return readyYes
-	}
-	return readyNo
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return none
-	}
-	return s
-}
-
-// isHealthyPhase reports whether a cluster phase string indicates a healthy
-// state (Ready). The operator writes these phase strings from
-// internal/controller/topology; the CLI compares them as plain strings to avoid
-// importing the controller internals.
-func isHealthyPhase(phase string) bool {
-	return phase == phaseReady
-}
-
-// isFailedPhase reports whether a cluster phase string indicates a critical
-// state (Blocked or FullOutage).
-func isFailedPhase(phase string) bool {
-	return phase == "Blocked" || phase == "FullOutage"
+	return plugin.NoValue
 }

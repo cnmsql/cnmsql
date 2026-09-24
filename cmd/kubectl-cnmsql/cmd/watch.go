@@ -17,12 +17,15 @@ limitations under the License.
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
 // defaultWatchInterval is the refresh period used by --watch when no
@@ -68,10 +71,12 @@ func newWatchingCommand(
 	return cmd
 }
 
-// runWatch repeatedly invokes render, clearing the screen between frames, until
-// the context is cancelled (Ctrl-C). A per-frame error is printed but does not
-// stop the loop, so a transient API blip doesn't end the watch. The header
-// shows the cluster and refresh cadence, mirroring watch(1).
+// runWatch repeatedly invokes render until the context is cancelled (Ctrl-C).
+// Each frame is rendered off-screen and only then swapped in, so the screen
+// never sits blank while a frame gathers live data from the instances. A
+// per-frame error is printed but does not stop the loop, so a transient API
+// blip doesn't end the watch. The header shows the cluster and refresh
+// cadence, mirroring watch(1).
 func runWatch(ctx context.Context, label string, interval time.Duration, render func(context.Context) error) error {
 	if interval <= 0 {
 		interval = defaultWatchInterval
@@ -79,12 +84,20 @@ func runWatch(ctx context.Context, label string, interval time.Duration, render 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	screen := plugin.Out
+	defer func() { plugin.Out = screen }()
 	for {
+		var frame bytes.Buffer
+		plugin.Out = &frame
+		err := render(ctx)
+		plugin.Out = screen
+
 		clearScreen()
-		fmt.Printf("Every %s — %s — %s    (Ctrl-C to stop)\n",
-			interval, label, time.Now().Format("15:04:05"))
-		if err := render(ctx); err != nil {
-			fmt.Printf("\nrender error: %v\n", err)
+		_, _ = fmt.Fprintf(screen, "%s\n", plugin.Faint(fmt.Sprintf("Every %s — %s — %s    (Ctrl-C to stop)",
+			interval, label, time.Now().Format("15:04:05"))))
+		_, _ = frame.WriteTo(screen)
+		if err != nil {
+			_, _ = fmt.Fprintf(screen, "\n%s\n", plugin.Red("render error: "+err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -96,7 +109,7 @@ func runWatch(ctx context.Context, label string, interval time.Duration, render 
 
 // clearScreen issues the ANSI clear + cursor-home sequence.
 func clearScreen() {
-	fmt.Print("\033[2J\033[H")
+	_, _ = fmt.Fprint(plugin.Out, "\033[2J\033[H")
 }
 
 // watchOrOnce runs render once, or on a --watch loop when watch is true.

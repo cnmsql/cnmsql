@@ -17,8 +17,10 @@ The script downloads the latest release, verifies its checksum, and installs the
 plugin along with a `kubectl_complete-cnmsql` shim for shell tab completion.
 
 Most commands accept an optional `CLUSTER` argument. When you omit it, the
-plugin picks the only cluster in the current namespace and warns if there are
-several.
+plugin picks the only cluster in the current namespace. If the namespace holds
+several clusters, read-only commands (`status`, `logs`, `metrics`) warn and pick
+the first by name, while commands that change anything refuse to guess and ask
+for an explicit `CLUSTER`.
 
 Commands in this guide use `cluster-sample` as the Cluster name.
 
@@ -36,8 +38,15 @@ kubectl cnmsql status -w
 kubectl cnmsql status -w --watch-interval=5s
 ```
 
-The status command shows instance topology, phase, conditions, and health. For
-raw Kubernetes output, `kubectl describe cluster` and `kubectl get events` still
+The status command follows the layout of `kubectl cnpg status`: a cluster
+summary (primary and when it was promoted, health, data size, current GTID),
+any conditions that need attention, the continuous backup and binlog archiving
+state (first point of recoverability, last successful and failed backups,
+archiving health), each replica's replication stream (IO/SQL threads, lag,
+semi-sync), a per-instance table, recent backups and certificate expiry. Add
+`-v` for every condition and backup, full GTID sets, and the Services and
+PodDisruptionBudgets. An instance whose manager cannot be reached is shown as
+`Unreachable` rather than failing the command. For raw Kubernetes output, `kubectl describe cluster` and `kubectl get events` still
 work and give you more detail when you need it.
 
 Key status fields on the Cluster resource:
@@ -121,6 +130,9 @@ and mysqld is stopped:
 ```bash
 kubectl cnmsql fence on cluster-sample cluster-sample-2
 ```
+
+Fencing the primary, or every instance with `'*'`, takes the cluster's writes
+offline, so the command asks for confirmation first (`--yes` skips it).
 
 Unfence it to restart mysqld and restore normal routing and role
 reconciliation:
@@ -216,6 +228,11 @@ kubectl cnmsql restart cluster-sample cluster-sample-2  # single instance
 
 The command prompts for confirmation. Skip the prompt with `--yes` or `-y`.
 
+A single instance is restarted by deleting its Pod gracefully. For the primary,
+the Pod's preStop hook holds mysqld up until the operator has switched the role
+over to a replica (unless `spec.enableSwitchoverOnDrain` is `false`, in which
+case stopping it triggers a failover), then mysqld shuts down cleanly.
+
 Every instance boots read only. The in-pod role reconciler observes Cluster
 status and only clears read-only mode when the instance is the confirmed
 primary.
@@ -228,7 +245,9 @@ Delete a single instance Pod and its PVC:
 kubectl cnmsql destroy cluster-sample cluster-sample-3
 ```
 
-This command also prompts for confirmation. Use it to clean up a failed or
+This command also prompts for confirmation, listing what it will delete. It
+refuses when the Pod or PVC does not carry the cluster's label, so a mistyped
+instance name cannot delete an unrelated claim. Use it to clean up a failed or
 diverged instance you have decided to discard. The remaining instances keep
 running unaffected.
 
@@ -349,8 +368,11 @@ kubectl cnmsql maintenance set cluster-sample
 kubectl cnmsql maintenance unset cluster-sample
 ```
 
-Use `--reuse-pvc` to retain the existing PVC across node restarts. This is
-useful when the underlying storage is durable and you want to avoid a full clone.
+`set` prompts for confirmation (`--yes` skips it). By default the window reuses
+PVCs: the operator relaxes the cluster's PodDisruptionBudgets so its nodes can
+be drained, and rescheduled Pods reattach their existing volumes. Pass
+`--reuse-pvc=false` to keep the budgets in force, since draining a node would
+otherwise discard that instance's data.
 
 ## Scrape Prometheus metrics
 

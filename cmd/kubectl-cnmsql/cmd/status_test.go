@@ -127,13 +127,16 @@ func TestRunStatusEnrichedSectionsAndDegradedRow(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"Cluster Summary",
-		"Instances",
+		"Instances status",
 		firstInstance,
 		"demo-2",
-		"Continuous Archiving",
+		"Continuous Backup status",
+		"Working binlog archiving:        OK",
+		"Streaming Replication status",
 		"Managed Roles",
 		"Certificates",
-		"<unreachable>", // degraded row for demo-2 lag/uptime
+		"Unreachable", // degraded row for demo-2
+		"Size:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status output missing %q\noutput:\n%s", want, out)
