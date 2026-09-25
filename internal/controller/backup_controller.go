@@ -39,6 +39,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -116,11 +117,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	cluster.SetDefaults()
 
 	method := backup.Spec.Method
-	if method == "" {
-		method = mysqlv1alpha1.BackupMethodXtrabackup
-	}
-	if method != mysqlv1alpha1.BackupMethodXtrabackup {
-		return ctrl.Result{}, r.failBackup(ctx, backup, "UnsupportedMethod", fmt.Sprintf("Backup method %q is not supported in M6", method))
+	buildKeys, reason, message := backupKeysForMethod(backup)
+	if reason != "" {
+		return ctrl.Result{}, r.failBackup(ctx, backup, reason, message)
 	}
 
 	store, err := backupObjectStore(backup, cluster)
@@ -131,9 +130,18 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if backupID == "" {
 		backupID = defaultBackupID(backup)
 	}
-	keys, err := objectstore.BuildBackupKeys(*store, cluster.Name, backup.Name, backupID)
+	keys, err := buildKeys(*store, cluster.Name, backup.Name, backupID)
 	if err != nil {
 		return ctrl.Result{}, r.failBackup(ctx, backup, "InvalidObjectStore", err.Error())
+	}
+
+	// A logical backup runs as cnmsql_dump, which the Cluster reconciler creates
+	// (or migrates onto an older cluster). Wait for it rather than fail, until
+	// the worker Job exists.
+	if method == mysqlv1alpha1.BackupMethodLogical && backup.Status.JobName == "" &&
+		!apimeta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlv1alpha1.ConditionDumpAccountReady) {
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markBackupPending(ctx, backup, "DumpAccountNotReady",
+			fmt.Sprintf("Waiting for the %s condition on Cluster %q", mysqlv1alpha1.ConditionDumpAccountReady, cluster.Name))
 	}
 
 	sourceInstance, err := r.selectBackupSource(ctx, backup, cluster)
@@ -186,12 +194,24 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	switch {
 	case latestJob.Status.Succeeded > 0:
+		// A logical backup's results live in its manifest; read them before
+		// declaring the Backup complete, so a completed Backup always shows what
+		// it holds.
+		var manifest *objectstore.LogicalBackupMetadata
+		if method == mysqlv1alpha1.BackupMethodLogical {
+			if manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys); err != nil {
+				return ctrl.Result{}, fmt.Errorf("reading logical backup manifest: %w", err)
+			}
+		}
 		log.Info("Backup completed", "backup", backup.Name, "job", jobName)
 		return ctrl.Result{}, r.patchBackupStatus(ctx, backup, func(status *mysqlv1alpha1.BackupStatus) {
 			now := metav1.Now()
 			status.Phase = mysqlv1alpha1.BackupPhaseCompleted
 			status.StoppedAt = &now
 			status.Error = ""
+			if manifest != nil {
+				applyLogicalManifest(status, manifest)
+			}
 			setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, backupPhaseCompleted, "Backup completed", backup.Generation)
 			setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, backupPhaseCompleted, "Backup completed", backup.Generation)
 		})
@@ -199,6 +219,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// Not gated on Status.Failed: a Job killed at its active deadline can be
 		// marked Failed before any pod is counted as failed.
 		reason, message := jobFailure(latestJob)
+		// The worker states a precise reason (LogicalToolUnavailable, ...) in
+		// its termination message when it knows one.
+		if workerReason, workerMessage, ok := r.workerFailure(ctx, latestJob); ok {
+			reason, message = workerReason, workerMessage
+		}
 		return ctrl.Result{}, r.failBackup(ctx, backup, reason, message)
 	default:
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
@@ -401,6 +426,32 @@ func backupJob(
 	ttl := backupJobTTLSeconds(tpl)
 	sourceHost := sourceInstance + "." + backup.Namespace + ".svc"
 	env := backupObjectStoreEnv(store)
+	streamPath := "/cluster/backup"
+	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical {
+		streamPath = "/cluster/dump"
+	}
+	args := []string{
+		managerInstanceCmd, "backup", "upload",
+		"--source-manager-url=https://" + sourceHost + ":8080" + streamPath,
+		"--source-manager-server-name=" + sourceHost,
+		"--bucket=" + store.Bucket,
+		"--archive-key=" + keys.ArchiveKey,
+		"--metadata-key=" + keys.MetadataKey,
+		"--backup-id=" + backupID,
+		"--backup-name=" + backup.Name,
+		"--cluster-name=" + cluster.Name,
+		"--instance-name=" + sourceInstance,
+		"--sha256",
+		"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
+		"--tls-key=" + topology.ServerTLSPath + "/tls.key",
+		"--tls-ca=" + topology.ClientCAPath + "/ca.crt",
+	}
+	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical {
+		args = append(args, logicalWorkerArgs(backup, cluster)...)
+		// The dump account's password travels with the Job, not the instance
+		// Pod, so creating the account never changes (and restarts) the Pods.
+		env = append(env, secretEnv(backupworker.EnvDumpPassword, dumpAccountSecretName(cluster)))
+	}
 
 	// Operator-owned labels take precedence over the template's, so a user can
 	// add labels but not clobber the ones the operator selects on.
@@ -447,25 +498,10 @@ func backupJob(
 						VolumeMounts: backupWorkerVolumeMounts(),
 					}},
 					Containers: []corev1.Container{{
-						Name:    "backup",
-						Image:   image,
-						Command: []string{managerBinary},
-						Args: []string{
-							managerInstanceCmd, "backup", "upload",
-							"--source-manager-url=https://" + sourceHost + ":8080/cluster/backup",
-							"--source-manager-server-name=" + sourceHost,
-							"--bucket=" + store.Bucket,
-							"--archive-key=" + keys.ArchiveKey,
-							"--metadata-key=" + keys.MetadataKey,
-							"--backup-id=" + backupID,
-							"--backup-name=" + backup.Name,
-							"--cluster-name=" + cluster.Name,
-							"--instance-name=" + sourceInstance,
-							"--sha256",
-							"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
-							"--tls-key=" + topology.ServerTLSPath + "/tls.key",
-							"--tls-ca=" + topology.ClientCAPath + "/ca.crt",
-						},
+						Name:         backupWorkerContainer,
+						Image:        image,
+						Command:      []string{managerBinary},
+						Args:         args,
 						Env:          env,
 						VolumeMounts: backupWorkerVolumeMounts(),
 						Resources:    tpl.Resources,

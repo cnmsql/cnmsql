@@ -504,6 +504,33 @@ func TestRecoveryBootstrapWaitsForCompletedBackup(t *testing.T) {
 	}
 }
 
+func TestRecoveryBootstrapRejectsLogicalBackup(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{
+		Recovery: &mysqlv1alpha1.BootstrapRecovery{
+			Backup: &mysqlv1alpha1.LocalObjectReference{Name: "backup-sample"},
+		},
+	}
+	backup := baseBackup()
+	backup.Spec.Method = mysqlv1alpha1.BackupMethodLogical
+	backup.Status.Phase = mysqlv1alpha1.BackupPhaseCompleted
+	backup.Status.Method = mysqlv1alpha1.BackupMethodLogical
+	backup.Status.BackupID = testBackupID
+
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, backup).Build(),
+		Scheme: scheme,
+	}
+	_, err := reconciler.buildPlan(context.Background(), cluster)
+	if err == nil || !strings.Contains(err.Error(), "LogicalBackupNotRecoverable") ||
+		!strings.Contains(err.Error(), "initdb.import") {
+		t.Fatalf("err = %v, want LogicalBackupNotRecoverable pointing at initdb.import", err)
+	}
+}
+
 func TestBackupFailsWithoutObjectStore(t *testing.T) {
 	t.Parallel()
 

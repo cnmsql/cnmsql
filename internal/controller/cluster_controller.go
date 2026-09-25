@@ -446,6 +446,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return result, err
 	}
 	r.reconcileAvailability(ctx, cluster, observed)
+	// Create (or, on clusters older than logical backups, migrate) the dump
+	// account as soon as the primary is up. Best effort: only logical Backups
+	// wait on it.
+	r.reconcileDumpAccountBestEffort(ctx, cluster, observed)
 	if !observed.Ready {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}

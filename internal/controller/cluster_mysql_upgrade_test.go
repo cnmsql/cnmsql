@@ -272,6 +272,9 @@ func TestUpgradeBackupGateCreatesThenProceeds(t *testing.T) {
 	if backup.Spec.Cluster.Name != cluster.Name {
 		t.Errorf("backup cluster ref = %q, want %q", backup.Spec.Cluster.Name, cluster.Name)
 	}
+	if backup.Spec.Method != mysqlv1alpha1.BackupMethodXtrabackup {
+		t.Errorf("pre-upgrade backup method = %q, want an explicit xtrabackup", backup.Spec.Method)
+	}
 
 	// Mark it completed and re-run: the gate should proceed.
 	backup.Status.Phase = mysqlv1alpha1.BackupPhaseCompleted

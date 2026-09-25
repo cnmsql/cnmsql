@@ -77,6 +77,12 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{corev1.BasicAuthUsernameKey: backupUser}); err != nil {
 		return err
 	}
+	// The logical-backup account's password. It is not mounted in the instance
+	// Pods (adding it would change their spec and restart them on an operator
+	// upgrade); logical backup worker Jobs carry it instead.
+	if err := r.ensurePasswordSecret(ctx, cluster, dumpAccountSecretName(cluster), map[string]string{corev1.BasicAuthUsernameKey: engine.DumpAccountName}); err != nil {
+		return err
+	}
 	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{corev1.BasicAuthUsernameKey: controlUser})
 }
 
