@@ -183,11 +183,12 @@ Logical *LogicalBackupOptions `json:"logical,omitempty"`
 `Cluster.spec.backup` gets `logicalOptions []string` next to `xtrabackupOptions`,
 used as the cluster-wide default for `extraArgs`.
 
-`BackupStatus` needs no new fields. For logical backups:
-`destinationPath` points at `dump.sql.zst`, `sha256` is the compressed object's
-checksum, `beginGTID`/`endGTID` both hold the snapshot GTID, and a new optional
-`databases []string` records what was dumped (so a user can see what a restore
-can select).
+`BackupStatus` reuses its fields for logical backups: `destinationPath` points
+at `dump.sql.zst`, `sha256` is the compressed object's checksum,
+`beginBinlog`/`endBinlog` both hold the snapshot position (`file:position`), and
+`beginGTID`/`endGTID` both hold the snapshot GTID on MariaDB. MySQL has no
+snapshot GTID (see §5.2). A new optional `databases []string` records what was
+dumped (so a user can see what a restore can select).
 
 `ClusterStatus` gains `dumpAccountSecretVersion string` and a
 `DumpAccountReady` condition, both written only by the operator (§5.10).
@@ -224,12 +225,18 @@ type BootstrapImport struct {
 }
 ```
 
-Admission (Cluster webhook):
+Admission:
 
 - `initdb.import` and `bootstrap.recovery` are mutually exclusive (already true
-  for `initdb` vs `recovery`).
-- Exactly one of `import.backup` / `import.source`.
-- `Backup.spec.logical` set with a non-`logical` method is rejected.
+  for `initdb` vs `recovery`). Cluster webhook, phase 2.
+- Exactly one of `import.backup` / `import.source`. Cluster webhook, phase 2.
+- `Backup.spec.logical` set with a non-`logical` method, `online: false` on a
+  logical Backup, and system schemas in `logical.databases` are rejected. There
+  is no Backup webhook, so these are CEL rules on the Backup and ScheduledBackup
+  CRDs (`x-kubernetes-validations`). `logical.databases` has `maxItems: 256`:
+  without a bound the rule's estimated cost exceeds the API server's budget and
+  the CRD itself is rejected. The Backup reconciler repeats the first two checks
+  for objects admitted before the rules existed.
 - `bootstrap.recovery.backup` pointing at a logical Backup is rejected at
   reconcile time with reason `LogicalBackupNotRecoverable` and a message pointing
   at `initdb.import`. The webhook cannot see the referenced Backup's method
@@ -244,11 +251,15 @@ type LogicalTool interface {
     DumpBinary() string               // mysqldump | mariadb-dump
     LoadBinary() string               // mysql | mariadb (== SQLClientBinary)
     DumpArgs(opts DumpOpts) ([]string, error)
-    LoadArgs(opts LoadOpts) ([]string, error)
-    // SnapshotGTID extracts the snapshot position from the dump header.
-    ParseSnapshotPosition(header string) (BinlogInfo, error)
+    // ParseSnapshotPosition reads the snapshot position from the dump's
+    // comment lines.
+    ParseSnapshotPosition(comments string) (BinlogInfo, error)
+    DumpAccountGrants(v version.Version) []AccountGrant
+    DumpAccountRevokes(v version.Version) []AccountGrant
 }
 ```
+
+`LoadArgs` joins it in phase 2, when something loads a dump.
 
 Base arguments (MySQL; MariaDB swaps the ones it names differently):
 
@@ -272,7 +283,21 @@ Base arguments (MySQL; MariaDB swaps the ones it names differently):
   resolves the list from `information_schema.SCHEMATA` minus system and
   operator-owned schemas, so
   the output always has `CREATE DATABASE` / `USE` statements and the section
-  markers LB6 relies on.
+  markers LB6 relies on. A database's marker can appear twice: both clients
+  write views in a second pass at the end, under a repeated
+  `-- Current Database:` line. The phase 2 filter keys on every marker, not on
+  the first one.
+- The snapshot position comes from the `--source-data=2` / `--master-data=2`
+  comment near the top: `-- CHANGE MASTER TO MASTER_LOG_FILE=…` on Percona 8.0
+  (even with `--source-data`), `-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE=…`
+  on 8.4 and later. `mariadb-dump` also writes the matching GTID as a comment
+  near the end (`-- SET GLOBAL gtid_slave_pos='…';`), so the instance manager
+  keeps the first and last comment lines of the stream, not only the header.
+- MySQL has no GTID-neutral way to record the snapshot GTID.
+  `--set-gtid-purged=COMMENTED` comments out the `GTID_PURGED` line but still
+  writes an uncommented `SET @@SESSION.SQL_LOG_BIN=0`, which would keep a load
+  out of the binlog (against LB17). So MySQL dumps record the binlog position
+  only.
 
 ### 5.3 Object-store layout
 
@@ -303,12 +328,14 @@ Same directory as a physical backup, different files:
   "uncompressedBytes": 987654321,
   "sha256": "…",
   "databases": ["shop", "billing"],
-  "snapshotGTID": "3e11fa47-…:1-12345",
   "snapshotBinlog": "mysql-bin.000042:1234",
   "startedAt": "…",
   "completedAt": "…"
 }
 ```
+
+`snapshotGTID` is only set on MariaDB (§5.2); a MySQL manifest has
+`snapshotBinlog` only.
 
 `formatVersion` lets a future dump format (e.g. per-table mydumper files) live
 under the same manifest name. `serverVersion` and `flavor` let the import path
@@ -344,12 +371,25 @@ Backup (method: logical)
   afterwards. It never appears on the command line.
 - Returns `503` with reason `DumpAccountMissing` if `cnmsql_dump@localhost` does
   not exist yet on this instance (a replica that hasn't applied the account
-  yet). The worker retries this for a short while before failing.
+  yet). The worker retries this (and `409`) every 5 seconds for 2 minutes
+  before failing.
+- Returns `422` with reason `InvalidDumpRequest` when a requested database does
+  not exist or is a system or operator schema, or when "all" resolves to no
+  database.
+- Starts the dump client and waits for its first byte of output before it sends
+  the status. A client that exits before writing anything (a wrong password, an
+  unknown `extraArgs` flag) is a `500` carrying the client's stderr, not a `200`
+  with an error trailer. The client has read its credentials file by then, so
+  the file is removed at that point.
 - Streams stdout as the response body. stderr is wrapped into structured log
   entries (D13).
-- Reads the header lines as they pass to extract the snapshot position (§5.2)
-  and sends it as a trailer (`X-Cnmsql-Dump-Snapshot-GTID`,
-  `X-Cnmsql-Dump-Snapshot-Binlog`), plus `X-Cnmsql-Dump-Databases`.
+- Sends the tool, flavor, server version and resolved databases as headers
+  (`X-Cnmsql-Dump-Tool`, `-Flavor`, `-Server-Version`, `-Databases`), since they
+  are known before the stream starts. Database names are path-escaped and
+  comma-separated: names may contain commas and non-ASCII characters.
+- Reads the comment lines as they pass to extract the snapshot position (§5.2)
+  and sends it as trailers (`X-Cnmsql-Dump-Snapshot-GTID`,
+  `X-Cnmsql-Dump-Snapshot-Binlog`).
 - If the dump process exits non-zero after the 200 was committed, sends
   `X-Cnmsql-Dump-Error` so the worker fails the Backup (same pattern as
   `BackupAnchorErrorTrailer`).
@@ -366,6 +406,18 @@ password from the `<cluster>-dump` Secret (mounted in the Job as an env var),
 switches the source path, adds the zstd stage, verifies the trailers and the
 `-- Dump completed on` footer, and writes `logical.json` instead of
 `metadata.json`. A dump without the footer is treated as truncated and fails.
+A failed dump removes the partial `dump.sql.zst`, so only complete dumps (with
+a manifest) stay in the store. Databases and extra arguments are repeatable
+flags (`--database`, `--dump-arg`), again because names may contain commas.
+
+A worker that fails for a known reason writes
+`{"reason": …, "message": …}` to its container's termination message. When the
+Job fails, the Backup reconciler reads it from the newest worker Pod and fails
+the Backup with that reason (`LogicalToolUnavailable`,
+`InstanceManagerOutdated`, `DumpAccountMissing`, `DumpInProgress`,
+`InvalidDumpRequest`, `DumpFailed`) instead of the Job's generic
+`BackoffLimitExceeded`. The contract (the env var name, the message type) lives
+in `pkg/management/mysql/backupworker`, shared by the worker and the operator.
 
 **Controller** changes are small: branch on method for the worker args, key
 builder and status. A logical Backup stays `Pending` with reason
@@ -554,19 +606,29 @@ Grants come from the engine facet (`LogicalTool.DumpAccountGrants(version)`):
 | Flavor | Grants on `*.*` | Why |
 |---|---|---|
 | MySQL 8.0 / 8.4 / 9.x | `SELECT, SHOW VIEW, TRIGGER, EVENT, RELOAD, REPLICATION CLIENT` | read data and definitions; `RELOAD` for the read lock `--source-data` takes; `REPLICATION CLIENT` for the binlog position |
-| MariaDB 10.11 / 11.4 | `SELECT, SHOW VIEW, TRIGGER, EVENT, RELOAD, BINLOG MONITOR` | `BINLOG MONITOR` replaced `REPLICATION CLIENT` in 10.5 |
-| MariaDB 11.8 / 12.3 | the above plus `SHOW CREATE ROUTINE` | added in 11.3 to read routine bodies without `SELECT` on `mysql.proc` |
+| MariaDB 10.11 | `SELECT, SHOW VIEW, TRIGGER, EVENT, RELOAD, BINLOG MONITOR` | `BINLOG MONITOR` replaced `REPLICATION CLIENT` in 10.5 |
+| MariaDB 11.4 / 11.8 / 12.3 | the above plus `SHOW CREATE ROUTINE` | added in 11.3 to read routine bodies without `SELECT` on `mysql.proc` |
 
 `PROCESS` isn't needed because of `--no-tablespaces`, and `LOCK TABLES` isn't
-needed because of `--single-transaction`. The exact list is confirmed per series
-by the integration round trip: dump as `cnmsql_dump`, expect no privilege
-warning in stderr.
+needed because of `--single-transaction`. The list is confirmed per series by
+the integration round trip (`test/integration/logical_integration_test.go`),
+which dumps tables, views, routines, triggers and events as `cnmsql_dump` on
+every published image and fails on any privilege error or
+`insufficient privileges` comment.
 
 Global `SELECT` also covers the `mysql` schema, including password hashes.
 Where `partial_revokes` is on (MySQL), the account also gets
 `REVOKE SELECT ON mysql.*`, using the same `Revokes` mechanism managed roles use.
-The dump never reads `mysql.*` (LB8). Where partial revokes aren't available,
-the `localhost` host limit is what contains the account.
+The dump never reads `mysql.*` (LB8), and routines still dump with the revoke
+in place. Where `partial_revokes` is off, `REVOKE IF EXISTS` only warns, so the
+same statements work on every MySQL cluster. MariaDB has no partial revokes, so
+there the `localhost` host limit is what contains the account.
+
+The instance manager's user API refuses to touch its reserved accounts
+(`cnmsql_control`, `cnmsql_repl`, …). `cnmsql_dump` is deliberately not on that
+list: the operator creates it through that API, including on instance managers
+that predate logical backups. Users still cannot declare it, because the Cluster
+and DatabaseUser webhooks reserve every `cnmsql_` name.
 
 **Who creates it.** Not `initdb`. The `ClusterReconciler` ensures the account in
 its normal loop, next to `reconcileManagedRoles`, which already creates users on
