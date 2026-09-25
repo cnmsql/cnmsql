@@ -24,6 +24,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | D12 | Integration tests run a **version matrix** (8.0, 8.4, 9.x) | Every supported version exercised end-to-end |
 | D13 | Structured logs project-wide (operator, instance manager, child processes) | controller-runtime `logr`, K8s logging style; child-process output wrapped into structured log entries |
 | D14 | Per-instance ServiceAccount identity + validating status webhook | Prevents a rogue instance from patching `Cluster` status fields it does not own; see `design/020-status-instance-webhook.md` |
+| D15 | Logical backups are `Backup.spec.method: logical`: the engine's own dump client (`mysqldump`/`mariadb-dump`) runs inside the source instance manager as the read-only, socket-only `cnmsql_dump@localhost` account and streams over mTLS to the backup worker; the operator creates that account on new and existing clusters from its reconcile loop, and the worker Job (not the instance Pod) carries its password; application schemas only, definers kept, no users/grants; separate `logical.json` manifest; never a PITR anchor; restore via `bootstrap.initdb.import` | Least privilege for the dump, no instance Pod restart on operator upgrade (the Pod spec doesn't change), S3 creds stay out of the instance Pod, and dumps can never be mistaken for base backups. Requires the instance images in `cnmsql/containers` to stop stripping `mysqldump`/`mariadb-dump`, plus a required-tools CI check there; see `design/028-logical-backups.md` §5.9 |
 
 ## Features
 
@@ -268,6 +269,7 @@ The decoupling (see `design/019-operator-upgrade.md`) redesigned the supervisor:
 - [x] **M16** — `kubectl cnmsql` CLI Plugin. → `design/016-kubectl-plugin.md`
 - [x] **M18** — Manager binary injection at pod startup. → `design/018-bootstrap-dbs.md`
 - [x] **Operator upgrades** — Rolling + in-place instance-manager upgrades. → `design/019-operator-upgrade.md`
+- [ ] **M-LB** — Logical backups (#47), on branch `feat/logical-backups`; phase PRs target that branch. → `design/028-logical-backups.md`
 
 ## CNPG-Parity Follow-Ups (from NOTES.md)
 
