@@ -186,6 +186,10 @@ type Engine interface {
 	// for physical backup, restore and point-in-time replay.
 	Backup() BackupTool
 
+	// Logical returns the LogicalTool facet: the dump client, its arguments,
+	// and the privileges of the account logical backups run as.
+	Logical() LogicalTool
+
 	// --- lifecycle commands ---
 
 	// InitBinary returns the name of the binary used to initialize a fresh
@@ -337,6 +341,10 @@ func (mysqlEngine) DefaultAuthenticationPlugin() string {
 
 func (mysqlEngine) Backup() BackupTool {
 	return mysqlBackupTool{}
+}
+
+func (mysqlEngine) Logical() LogicalTool {
+	return mysqlLogicalTool{}
 }
 
 func (mysqlEngine) InitBinary() string {
@@ -500,6 +508,10 @@ func (mariadbEngine) DefaultAuthenticationPlugin() string {
 
 func (mariadbEngine) Backup() BackupTool {
 	return mariadbBackupTool{}
+}
+
+func (mariadbEngine) Logical() LogicalTool {
+	return mariadbLogicalTool{}
 }
 
 func (mariadbEngine) InitBinary() string {
