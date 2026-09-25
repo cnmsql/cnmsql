@@ -416,27 +416,7 @@ func printContinuousBackup(v *statusView) {
 		f.Add("Object store", objectStoreURL(c.Spec.Backup.ObjectStore))
 	}
 
-	var firstRecoverable, lastSuccess *mysqlv1alpha1.Backup
-	var lastFailed *mysqlv1alpha1.Backup
-	for i := range v.backups {
-		b := &v.backups[i]
-		switch b.Status.Phase {
-		case mysqlv1alpha1.BackupPhaseCompleted:
-			if b.Status.StoppedAt == nil {
-				continue
-			}
-			if firstRecoverable == nil || b.Status.StoppedAt.Before(firstRecoverable.Status.StoppedAt) {
-				firstRecoverable = b
-			}
-			if lastSuccess == nil || lastSuccess.Status.StoppedAt.Before(b.Status.StoppedAt) {
-				lastSuccess = b
-			}
-		case mysqlv1alpha1.BackupPhaseFailed:
-			if lastFailed == nil || backupTime(lastFailed).Before(backupTime(b)) {
-				lastFailed = b
-			}
-		}
-	}
+	firstRecoverable, lastSuccess, lastFailed := summarizeBackups(v.backups)
 	if firstRecoverable != nil {
 		f.Add("First point of recoverability", plugin.Timestamp(firstRecoverable.Status.StoppedAt.Time))
 	} else {
@@ -488,6 +468,36 @@ func printContinuousBackup(v *statusView) {
 		f.Add("Working binlog archiving", plugin.Faint("disabled"))
 	}
 	f.Print()
+}
+
+// summarizeBackups picks the oldest completed physical backup (the first point
+// of recoverability), the newest completed backup of any method, and the newest
+// failed one. A logical backup is never a recovery base, so it does not move
+// the first point of recoverability.
+func summarizeBackups(
+	backups []mysqlv1alpha1.Backup,
+) (firstRecoverable, lastSuccess, lastFailed *mysqlv1alpha1.Backup) {
+	for i := range backups {
+		b := &backups[i]
+		switch b.Status.Phase {
+		case mysqlv1alpha1.BackupPhaseCompleted:
+			if b.Status.StoppedAt == nil {
+				continue
+			}
+			if b.Status.Method != mysqlv1alpha1.BackupMethodLogical &&
+				(firstRecoverable == nil || b.Status.StoppedAt.Before(firstRecoverable.Status.StoppedAt)) {
+				firstRecoverable = b
+			}
+			if lastSuccess == nil || lastSuccess.Status.StoppedAt.Before(b.Status.StoppedAt) {
+				lastSuccess = b
+			}
+		case mysqlv1alpha1.BackupPhaseFailed:
+			if lastFailed == nil || backupTime(lastFailed).Before(backupTime(b)) {
+				lastFailed = b
+			}
+		}
+	}
+	return firstRecoverable, lastSuccess, lastFailed
 }
 
 // archivingFailing reports whether archiving is currently broken: its most
