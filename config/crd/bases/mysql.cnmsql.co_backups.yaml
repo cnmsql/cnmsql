@@ -1318,9 +1318,9 @@ spec:
                 default: Retain
                 description: |-
                   ReclaimPolicy controls what happens to this backup's object-store archive
-                  (backup.xbstream + metadata.json) when the Backup object is deleted. With
-                  "Delete" the operator adds the cleanup finalizer and removes the archive on
-                  deletion; with "Retain" (the default) the archive is kept.
+                  (the backup payload and its manifest) when the Backup object is deleted.
+                  With "Delete" the operator adds the cleanup finalizer and removes the
+                  archive on deletion; with "Retain" (the default) the archive is kept.
                 enum:
                 - Retain
                 - Delete

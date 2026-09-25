@@ -41,7 +41,7 @@ flowchart LR
 
     BackupCR --> Operator
     Operator --> Job
-    Job -->|"mTLS GET /cluster/dump"| Source
+    Job -->|"mTLS POST /cluster/dump"| Source
     Source -->|"SQL stream"| Job
     Job -->|"dump.sql.zst + logical.json"| Store
     Store --> Import
@@ -120,6 +120,10 @@ With the plugin:
 kubectl cnmsql backup shop --method logical --databases billing,catalog
 ```
 
+`--databases` splits on commas: whitespace around each name is trimmed and
+duplicates are dropped. Database names that contain a comma, or anything else
+needing exact control, should go through a Backup manifest instead.
+
 `target`, `objectStore`, `reclaimPolicy` and `jobTemplate` work the same as for
 physical backups (see [Physical Backup and Recovery](backup-recovery.md)). The
 dump always runs online: `online: false` is rejected, and so is a `logical`
@@ -192,6 +196,7 @@ The Backup's `Degraded` condition carries the reason:
 | `InvalidDumpRequest` | A database in `logical.databases` does not exist, or the cluster has no application database. |
 | `DumpInProgress` | Another dump was still running on the source instance. |
 | `DumpFailed` | The dump tool failed, or the stream ended without its completion footer. No manifest is written and the partial dump is removed. |
+| `ManifestMissing` | The worker Job succeeded, but `logical.json` is missing from the object store or is not a valid manifest. Other errors reading it, such as the store being unreachable, are retried and leave the Backup running. |
 
 ## Object-store layout
 
