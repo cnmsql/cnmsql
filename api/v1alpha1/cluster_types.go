@@ -1368,7 +1368,7 @@ type ClusterStatus struct {
 	// +optional
 	LastRetentionRunTime *metav1.Time `json:"lastRetentionRunTime,omitempty"`
 
-	// DumpAccountSecretVersion is the resourceVersion of the <cluster>-dump
+	// DumpAccountSecretVersion is the resourceVersion of the `<cluster>-dump`
 	// Secret last applied to the cnmsql_dump account on the primary. The
 	// operator re-applies the account when the Secret changes. Written only by
 	// the operator.

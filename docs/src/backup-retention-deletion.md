@@ -23,6 +23,10 @@ The remote objects remain under:
 <path>/<cluster>/<backup-name>/<backup-id>/metadata.json
 ```
 
+A [logical backup](logical-backups.md) uses the same directory, with
+`dump.sql.zst` and `logical.json` inside it. Everything below applies to it the
+same way.
+
 The Kubernetes Job is owned by the Backup, so Kubernetes garbage collection may
 remove the Job. Object-store artifacts are not owned by Kubernetes and are not
 removed unless you opt the Backup into remote cleanup with `reclaimPolicy: Delete`,
@@ -171,6 +175,9 @@ and an established primary. Each pass:
    *retained* base backup's start time. Binlog segments whose last event predates
    that horizon can no longer be replayed onto any retained base, so they are
    deleted and `_index.json` is rewritten to match.
+4. **Expires old logical backups** on the same window, keeping the newest one.
+   Dumps are counted on their own: they never keep a base backup or a binlog
+   alive, and they never count as the newest base backup.
 
 Binlog GC is conservative: a segment with an unknown (zero) last-event time is
 kept rather than risk shortening the PITR window. The index is rewritten **last**,

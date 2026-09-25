@@ -8,11 +8,12 @@ sidebar_position: 4
 
 cnmsql runs Percona Server for MySQL, not Oracle MySQL. The database Pods use a
 custom cnmsql instance image that contains Percona Server, Percona XtraBackup,
-the cnmsql manager binary, and only the runtime tools needed by the operator.
+and only the runtime tools needed by the operator. The cnmsql instance manager
+is copied into each Pod from the operator image when the Pod starts.
 
-This mirrors the CloudNativePG model: the operator controls a database image
-with the instance manager built in instead of relying directly on upstream
-database images.
+This mirrors the CloudNativePG model: the operator controls the database image
+and runs its own instance manager in it, instead of relying directly on
+upstream database images.
 
 :::note MariaDB
 This page describes the MySQL images. To run MariaDB instead, set
@@ -100,8 +101,22 @@ The image keeps:
 
 - `mysqld` and version-specific initialization tools;
 - `mysql`, `mysqladmin`, and `mysqlbinlog`;
-- XtraBackup and `xbstream`;
-- the cnmsql `manager` binary.
+- `mysqldump`, for [logical backups](logical-backups.md);
+- XtraBackup and `xbstream`.
+
+The cnmsql `manager` binary is not in the image: the operator copies it into
+each Pod at startup.
+
+Images published before logical backup support strip `mysqldump` (and
+`mariadb-dump` on MariaDB). Logical backups fail on them with
+`LogicalToolUnavailable`. The first tags that ship the dump tool are:
+
+| Image | First tag with the dump tool |
+|---|---|
+| `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, `9.x-5` |
+| `ghcr.io/cnmsql/cnmsql-mariadb-instance` | `10.11-4`, `11.4-4`, `11.8-4`, `12.3-4` |
+
+The moving series tags (`8.4`, `11.4`, …) already point at them.
 
 The image trims documentation, debug binaries, test fixtures, unused client
 utilities, static libraries, and similar non-runtime payloads.
