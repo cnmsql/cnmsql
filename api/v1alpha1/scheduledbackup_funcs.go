@@ -98,7 +98,8 @@ func (s *ScheduledBackup) BackupName(t time.Time) string {
 }
 
 // CreateBackup builds a Backup for this ScheduledBackup with the given name.
-// The backup inherits the cluster reference, method, target and online setting;
+// The backup inherits the cluster reference, method, target, online setting and
+// logical options;
 // the object store is resolved from the Cluster by the BackupReconciler, as for
 // one-shot backups. The schedule's reclaimPolicy is propagated so the generated
 // Backup opts into (or out of) object-store cleanup on its own; the reconciler
@@ -120,6 +121,7 @@ func (s *ScheduledBackup) CreateBackup(name string) *Backup {
 			Online:        s.Spec.Online,
 			ReclaimPolicy: reclaimPolicy,
 			JobTemplate:   s.Spec.JobTemplate,
+			Logical:       s.Spec.Logical,
 		},
 	}
 }

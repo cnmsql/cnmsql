@@ -777,6 +777,13 @@ type BackupConfiguration struct {
 	// +optional
 	XtrabackupOptions []string `json:"xtrabackupOptions,omitempty"`
 
+	// LogicalOptions are extra flags passed to the dump client (mysqldump /
+	// mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs
+	// replaces them. The operator does not validate them: flags that change the
+	// output format or GTID handling break restore.
+	// +optional
+	LogicalOptions []string `json:"logicalOptions,omitempty"`
+
 	// JobTemplate is the default shaping applied to backup worker Jobs created for
 	// this cluster: resources, scheduling (nodeSelector/tolerations/affinity/
 	// priorityClassName), extra labels/annotations, and the finished-Job TTL. A
@@ -1360,6 +1367,13 @@ type ClusterStatus struct {
 	// pass against the object store. It throttles the periodic pass.
 	// +optional
 	LastRetentionRunTime *metav1.Time `json:"lastRetentionRunTime,omitempty"`
+
+	// DumpAccountSecretVersion is the resourceVersion of the <cluster>-dump
+	// Secret last applied to the cnmsql_dump account on the primary. The
+	// operator re-applies the account when the Secret changes. Written only by
+	// the operator.
+	// +optional
+	DumpAccountSecretVersion string `json:"dumpAccountSecretVersion,omitempty"`
 
 	// ObservedGeneration is the generation observed by the controller.
 	// +optional

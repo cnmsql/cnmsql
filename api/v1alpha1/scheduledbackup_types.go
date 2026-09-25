@@ -21,6 +21,8 @@ import (
 )
 
 // ScheduledBackupSpec defines the desired state of ScheduledBackup.
+// +kubebuilder:validation:XValidation:rule="!has(self.logical) || (has(self.method) && self.method == 'logical')",message="logical is only valid with method: logical"
+// +kubebuilder:validation:XValidation:rule="!has(self.method) || self.method != 'logical' || !has(self.online) || self.online",message="a logical backup is always online"
 type ScheduledBackupSpec struct {
 	// Schedule is a cron expression (6 fields, including seconds) defining when
 	// backups are taken.
@@ -80,6 +82,11 @@ type ScheduledBackupSpec struct {
 	// cluster-wide spec.backup.jobTemplate.
 	// +optional
 	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
+
+	// Logical is propagated to every generated Backup as its spec.logical when
+	// method is "logical".
+	// +optional
+	Logical *LogicalBackupOptions `json:"logical,omitempty"`
 
 	// SuccessfulBackupsHistoryLimit caps how many completed Backup objects this
 	// schedule keeps. The newest that many are retained and older completed Backups

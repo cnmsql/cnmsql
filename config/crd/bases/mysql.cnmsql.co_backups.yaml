@@ -1137,12 +1137,41 @@ spec:
                       deletes the Job as soon as it finishes.
                     type: string
                 type: object
+              logical:
+                description: Logical configures the dump when method is "logical".
+                properties:
+                  databases:
+                    description: |-
+                      Databases limits the dump to these schemas. Empty means every application
+                      schema. The system schemas (mysql, sys, performance_schema,
+                      information_schema) and operator-owned schemas are always excluded.
+                    items:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-type: set
+                    x-kubernetes-validations:
+                    - message: system schemas cannot be dumped
+                      rule: self.all(d, !(d.lowerAscii() in ['mysql', 'sys', 'performance_schema',
+                        'information_schema']))
+                  extraArgs:
+                    description: |-
+                      ExtraArgs are appended to the dump command. They replace the cluster's
+                      spec.backup.logicalOptions. The operator does not validate them: flags
+                      that change the output format or GTID handling break restore.
+                    items:
+                      type: string
+                    type: array
+                type: object
               method:
                 default: xtrabackup
                 description: Method is the backup method to use.
                 enum:
                 - xtrabackup
                 - volumeSnapshot
+                - logical
                 type: string
               objectStore:
                 description: |-
@@ -1306,6 +1335,12 @@ spec:
             required:
             - cluster
             type: object
+            x-kubernetes-validations:
+            - message: 'logical is only valid with method: logical'
+              rule: '!has(self.logical) || (has(self.method) && self.method == ''logical'')'
+            - message: a logical backup is always online
+              rule: '!has(self.method) || self.method != ''logical'' || !has(self.online)
+                || self.online'
           status:
             description: status defines the observed state of Backup
             properties:
@@ -1314,11 +1349,16 @@ spec:
                   object store.
                 type: string
               beginBinlog:
-                description: BeginBinlog/EndBinlog record the binary log coordinates.
+                description: |-
+                  BeginBinlog/EndBinlog record the binary log coordinates. For a logical
+                  backup both hold the dump's snapshot position (file:position), for
+                  reference.
                 type: string
               beginGTID:
-                description: BeginGTID/EndGTID record the GTID range covered by the
-                  backup.
+                description: |-
+                  BeginGTID/EndGTID record the GTID range covered by the backup. For a
+                  logical backup both hold the dump's snapshot GTID (MariaDB only), for
+                  reference.
                 type: string
               conditions:
                 description: Conditions represent the latest observations of the backup
@@ -1381,6 +1421,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              databases:
+                description: |-
+                  Databases lists the schemas in a logical backup, which are the ones an
+                  import can select.
+                items:
+                  type: string
+                type: array
               destinationPath:
                 description: DestinationPath is the full path of the backup in the
                   object store.
@@ -1403,6 +1450,7 @@ spec:
                 enum:
                 - xtrabackup
                 - volumeSnapshot
+                - logical
                 type: string
               objectStore:
                 description: |-
