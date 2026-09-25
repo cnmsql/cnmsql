@@ -137,6 +137,19 @@ func TestClusterStatusValidator(t *testing.T) {
 			allowed: false,
 		},
 		{
+			// The operator owns the dump account; an instance must not mark it applied.
+			name:   "instance may not set the dump account secret version",
+			user:   "system:serviceaccount:default:demo-1-instance",
+			subRes: "status",
+			old:    mkCluster("demo-1", "then", "demo-1"),
+			new: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-1", "then", "demo-1")
+				c.Status.DumpAccountSecretVersion = "12345"
+				return c
+			}(),
+			allowed: false,
+		},
+		{
 			name:   "non-instance service account in cluster namespace is allowed",
 			user:   "system:serviceaccount:default:some-random-sa",
 			subRes: "status",
