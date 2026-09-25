@@ -122,20 +122,32 @@ func ListLogicalBackups(
 
 // PlanLogicalRetention returns the directory prefixes of the logical backups
 // that expired: those completed before cutoff, except the newest one, which is
-// always kept. It is pure, and it is separate from PlanRetention on purpose:
-// dumps never anchor recovery, so they never move the recovery horizon or keep
-// a binlog alive.
+// always kept. A manifest without a completion time cannot be dated, so it is
+// kept no matter the cutoff. It is pure, and it is separate from PlanRetention
+// on purpose: dumps never anchor recovery, so they never move the recovery
+// horizon or keep a binlog alive.
 func PlanLogicalRetention(entries []LogicalBackupEntry, cutoff time.Time) []string {
 	if len(entries) == 0 {
 		return nil
 	}
 	sorted := make([]LogicalBackupEntry, len(entries))
 	copy(sorted, entries)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Meta.CompletedAt.Before(sorted[j].Meta.CompletedAt)
+	// Oldest first, with the prefix breaking ties so equal completion times
+	// always keep the same backup.
+	sort.SliceStable(sorted, func(i, j int) bool {
+		ti, tj := sorted[i].Meta.CompletedAt, sorted[j].Meta.CompletedAt
+		if !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return sorted[i].Prefix < sorted[j].Prefix
 	})
 	var expired []string
 	for _, entry := range sorted[:len(sorted)-1] {
+		// Malformed (undated) manifests are never expired: they cannot be
+		// compared to the cutoff, so retention fails open.
+		if entry.Meta.CompletedAt.IsZero() {
+			continue
+		}
 		if entry.Meta.CompletedAt.Before(cutoff) {
 			expired = append(expired, entry.Prefix)
 		}

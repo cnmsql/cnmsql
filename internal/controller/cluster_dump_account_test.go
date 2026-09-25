@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -240,6 +241,61 @@ func TestReconcileDumpAccountReportsApplyFailure(t *testing.T) {
 	cond, version := dumpCondition(t, r, cluster)
 	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != dumpAccountReasonApplyFailed || version != "" {
 		t.Fatalf("condition = %+v, version = %q", cond, version)
+	}
+}
+
+func TestReconcileDumpAccountEmptyPasswordFailsTheCondition(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	cluster := baseCluster()
+	r := dumpAccountReconciler(t, control, cluster, dumpSecret(cluster, ""))
+	if err := r.reconcileDumpAccount(context.Background(), cluster, observedWithPrimary(true, "8.4.11-11")); err == nil {
+		t.Fatal("expected the empty password to be an error")
+	}
+	if len(control.created)+len(control.altered) != 0 {
+		t.Fatal("no SQL may run without a password")
+	}
+	cond, version := dumpCondition(t, r, cluster)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != dumpAccountReasonInvalidSecret || version != "" {
+		t.Fatalf("condition = %+v, version = %q", cond, version)
+	}
+	if !strings.Contains(cond.Message, "no password") {
+		t.Fatalf("message = %q, want it to name the missing password", cond.Message)
+	}
+}
+
+func TestReconcileDumpAccountEmptiedPasswordDemotesReadyCondition(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{}
+	cluster := baseCluster()
+	r := dumpAccountReconciler(t, control, cluster, dumpSecret(cluster, "pw"))
+	ctx := context.Background()
+	if err := r.reconcileDumpAccount(ctx, cluster, observedWithPrimary(true, "8.4.11-11")); err != nil {
+		t.Fatal(err)
+	}
+	if cond, _ := dumpCondition(t, r, cluster); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %+v, want True after the first apply", cond)
+	}
+
+	// Emptying the password rotates the Secret's resourceVersion, so the next
+	// pass re-applies it — and must demote the stale True condition.
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name + "-dump"}, secret); err != nil {
+		t.Fatal(err)
+	}
+	secret.Data["password"] = nil
+	if err := r.Update(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileDumpAccount(ctx, cluster, observedWithPrimary(true, "8.4.11-11")); err == nil {
+		t.Fatal("expected the emptied password to be an error")
+	}
+	if len(control.created) != 1 || len(control.altered) != 1 {
+		t.Fatalf("the emptied password must not re-apply the account: created=%d altered=%d", len(control.created), len(control.altered))
+	}
+	cond, _ := dumpCondition(t, r, cluster)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != dumpAccountReasonInvalidSecret {
+		t.Fatalf("condition = %+v, want False with %s", cond, dumpAccountReasonInvalidSecret)
 	}
 }
 

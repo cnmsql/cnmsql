@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -719,6 +720,110 @@ func TestBackupFailsWithJobFailureReason(t *testing.T) {
 	if cond == nil || cond.Reason != "DeadlineExceeded" {
 		t.Fatalf("degraded condition = %#v, want reason DeadlineExceeded", cond)
 	}
+}
+
+// A worker Job that succeeded but left no readable manifest fails the Backup
+// when the manifest is missing or malformed, since no retry fixes that. Any
+// other store error (here an access denial) is retried with the Backup still
+// Running.
+func TestBackupLogicalManifestReadFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		wantFailed bool
+	}{
+		{name: "missing", status: http.StatusNotFound, wantFailed: true},
+		{name: "malformed", status: http.StatusOK, body: "not json", wantFailed: true},
+		{name: "store error", status: http.StatusForbidden,
+			body: `<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			reconciler, backup := logicalManifestFixture(t, server.URL)
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: backup.Namespace, Name: backup.Name}}
+			_, err := reconciler.Reconcile(context.Background(), req)
+
+			updated := &mysqlv1alpha1.Backup{}
+			if getErr := reconciler.Get(context.Background(), req.NamespacedName, updated); getErr != nil {
+				t.Fatal(getErr)
+			}
+			if !tc.wantFailed {
+				if err == nil {
+					t.Fatal("expected the store error to be returned for a retry")
+				}
+				if updated.Status.Phase != mysqlv1alpha1.BackupPhaseRunning {
+					t.Fatalf("phase = %q, want %q", updated.Status.Phase, mysqlv1alpha1.BackupPhaseRunning)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Status.Phase != mysqlv1alpha1.BackupPhaseFailed {
+				t.Fatalf("phase = %q, want %q", updated.Status.Phase, mysqlv1alpha1.BackupPhaseFailed)
+			}
+			cond := apimeta.FindStatusCondition(updated.Status.Conditions, mysqlv1alpha1.ConditionDegraded)
+			if cond == nil || cond.Reason != "ManifestMissing" {
+				t.Fatalf("degraded condition = %#v, want reason ManifestMissing", cond)
+			}
+			if !strings.Contains(updated.Status.Error, "logical.json") {
+				t.Fatalf("error = %q, want it to name logical.json", updated.Status.Error)
+			}
+		})
+	}
+}
+
+// logicalManifestFixture is a Running logical Backup whose worker Job
+// succeeded, with its object store at endpoint.
+func logicalManifestFixture(t *testing.T, endpoint string) (*BackupReconciler, *mysqlv1alpha1.Backup) {
+	t.Helper()
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	backup := baseBackup()
+	backup.Spec.Method = mysqlv1alpha1.BackupMethodLogical
+	forcePath := true
+	backup.Spec.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket:         "override-backups",
+		Path:           "manual",
+		Endpoint:       endpoint,
+		ForcePathStyle: &forcePath,
+		Credentials: mysqlv1alpha1.S3Credentials{
+			AccessKeyID:     &mysqlv1alpha1.SecretKeySelector{Name: "override-s3", Key: "access"},
+			SecretAccessKey: &mysqlv1alpha1.SecretKeySelector{Name: "override-s3", Key: "secret"},
+		},
+	}
+	backup.Status = mysqlv1alpha1.BackupStatus{
+		Phase:    mysqlv1alpha1.BackupPhaseRunning,
+		BackupID: testBackupID,
+		JobName:  "backup-sample-backup",
+	}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "backup-sample-backup", Namespace: "default"},
+		Status:     batchv1.JobStatus{Succeeded: 1},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default"},
+		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
+	}
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod(), job, secret).
+			Build(),
+		Scheme: scheme,
+	}
+	return reconciler, backup
 }
 
 func TestResolveBackupJobTemplate(t *testing.T) {

@@ -101,6 +101,22 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	cutoff := time.Now().Add(-window)
 	plan := objectstore.PlanRetention(backups, binlogs, index, cutoff)
 
+	// Base backups and binlogs anchor recovery, so their expiry is applied
+	// before the logical pass below: a failure on the logical side must not
+	// keep expired recovery points alive.
+	if !plan.Empty() {
+		if err := objectstore.ApplyRetention(ctx, client, *store, cluster.Name, plan); err != nil {
+			return err
+		}
+		msg := fmt.Sprintf(
+			"Retention (%s) removed %d base backup(s) and %d archived binlog(s); horizon %s",
+			backup.RetentionPolicy, len(plan.DeleteBackupPrefixes),
+			len(plan.DeleteBinlogKeys)/2, plan.Horizon.UTC().Format(time.RFC3339))
+		log.Info("Applied backup retention", "deletedBackups", len(plan.DeleteBackupPrefixes),
+			"deletedBinlogs", len(plan.DeleteBinlogKeys)/2)
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", msg)
+	}
+
 	// Logical backups expire on the same window but on their own: they never
 	// anchor recovery, so they neither move the horizon nor keep binlogs.
 	logical, err := objectstore.ListLogicalBackups(ctx, client, *store, cluster.Name)
@@ -117,19 +133,6 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		log.Info("Applied logical backup retention", "deletedLogicalBackups", len(expiredDumps))
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", fmt.Sprintf(
 			"Retention (%s) removed %d logical backup(s)", backup.RetentionPolicy, len(expiredDumps)))
-	}
-
-	if !plan.Empty() {
-		if err := objectstore.ApplyRetention(ctx, client, *store, cluster.Name, plan); err != nil {
-			return err
-		}
-		msg := fmt.Sprintf(
-			"Retention (%s) removed %d base backup(s) and %d archived binlog(s); horizon %s",
-			backup.RetentionPolicy, len(plan.DeleteBackupPrefixes),
-			len(plan.DeleteBinlogKeys)/2, plan.Horizon.UTC().Format(time.RFC3339))
-		log.Info("Applied backup retention", "deletedBackups", len(plan.DeleteBackupPrefixes),
-			"deletedBinlogs", len(plan.DeleteBinlogKeys)/2)
-		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", msg)
 	}
 
 	// Stamp the run time even on a no-op pass so the throttle holds.
