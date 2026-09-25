@@ -108,10 +108,10 @@ func dumpBackupDiagnostics(backup string) {
 		{name: "backup", args: []string{"get", "backup", backup, "-n", testNamespace, "-o", "yaml"}},
 		{name: "backup worker job", args: []string{"describe", "job", job, "-n", testNamespace}},
 		{name: "backup worker pods", args: []string{"describe", "pods", "-n", testNamespace, "-l", "job-name=" + job}},
-		{name: "object store pods", args: []string{"get", "pods", "-n", objectStoreNamespace, "-o", "wide"}},
-		{name: "object store logs", args: []string{"logs", store, "-n", objectStoreNamespace, "--tail=200"}},
+		{name: "object store pods", args: []string{"get", "pods", "-n", currentObjectStoreNamespace, "-o", "wide"}},
+		{name: "object store logs", args: []string{"logs", store, "-n", currentObjectStoreNamespace, "--tail=200"}},
 		{name: "object store previous logs",
-			args: []string{"logs", store, "-n", objectStoreNamespace, "--previous", "--tail=100"}},
+			args: []string{"logs", store, "-n", currentObjectStoreNamespace, "--previous", "--tail=100"}},
 	}
 	for _, dump := range dumps {
 		out, err := kubectl(dump.args...)
