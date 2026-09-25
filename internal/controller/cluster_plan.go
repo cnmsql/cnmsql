@@ -82,6 +82,9 @@ type clusterPlan struct {
 	// Recovery, when set, makes the bootstrap primary restore from an object
 	// store instead of running initdb. Replicas always clone from the primary.
 	Recovery *recoveryPlan
+	// Import, when set, makes the bootstrap primary load a logical backup after
+	// initdb. It is only set until the cluster is established.
+	Import *importPlan
 }
 
 // instanceServiceAccountName returns the per-instance ServiceAccount name.
@@ -288,6 +291,12 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		return clusterPlan{}, err
 	}
 	plan.Recovery = recovery
+
+	imp, err := r.resolveImport(ctx, cluster, serverVersion)
+	if err != nil {
+		return clusterPlan{}, err
+	}
+	plan.Import = imp
 	return plan, nil
 }
 

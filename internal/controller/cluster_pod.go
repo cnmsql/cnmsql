@@ -179,6 +179,11 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 			podSpec.InitContainers[1].Resources = res
 		}
 	}
+	// A cluster bootstrapped from a logical backup loads it on the primary,
+	// after initdb and before mysqld runs.
+	if inst.IsPrimary && plan.Import != nil {
+		podSpec.InitContainers = append(podSpec.InitContainers, importContainer(cluster, plan))
+	}
 	for _, pullSecret := range cluster.Spec.ImagePullSecrets {
 		podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, corev1.LocalObjectReference{Name: pullSecret.Name})
 	}
