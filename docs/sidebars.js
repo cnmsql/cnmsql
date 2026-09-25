@@ -95,6 +95,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'logical-backups',
+      label: 'Logical Backups',
+    },
+    {
+      type: 'doc',
       id: 'scheduled-backups',
       label: 'Scheduled Backups',
     },

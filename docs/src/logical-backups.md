@@ -2,17 +2,9 @@
 title: "Logical Backups"
 description: "SQL dumps of application schemas in the object store, and importing them into a new cluster for partial restores, cross-version moves and schema exports."
 sidebar_position: 12
-draft: true
 ---
 
 # Logical backups
-
-:::caution Not implemented yet
-This page describes the design in
-[`design/028-logical-backups.md`](https://github.com/cnmsql/cnmsql/blob/main/design/028-logical-backups.md)
-([#47](https://github.com/cnmsql/cnmsql/issues/47)). It is a draft and is left
-out of production builds until the feature ships.
-:::
 
 A logical backup is a SQL dump of your application schemas, stored in the same
 object store as your physical backups. Use it when a physical backup can't help:
@@ -67,8 +59,15 @@ every cluster. It can only connect over the instance's local socket. Its
 password is in the `<cluster>-dump` Secret, which the backup worker Job sends
 along with the dump request. Clusters created before logical backup support get
 the account on the first reconcile after the operator upgrade, with no Pod
-restart. Logical Backups wait in `Pending` (reason `DumpAccountNotReady`) until
-the Cluster's `DumpAccountReady` condition is true.
+restart. Logical Backups wait in `pending` (reason `DumpAccountNotReady`) until
+the Cluster's `DumpAccountReady` condition is true:
+
+```bash
+kubectl get cluster shop -o jsonpath='{.status.conditions[?(@.type=="DumpAccountReady")]}'
+```
+
+To rotate the password, change `password` in the `<cluster>-dump` Secret. The
+operator applies the new one to the account on its next reconcile.
 
 Taking a logical backup needs an instance image that includes the dump tool.
 Images published before logical backup support strip it. On such an image the
@@ -123,7 +122,21 @@ kubectl cnmsql backup shop --method logical --databases billing,catalog
 
 `target`, `objectStore`, `reclaimPolicy` and `jobTemplate` work the same as for
 physical backups (see [Physical Backup and Recovery](backup-recovery.md)). The
-dump always runs online: `online: false` is rejected.
+dump always runs online: `online: false` is rejected, and so is a `logical`
+block on a Backup whose method is not `logical`.
+
+To pass extra flags to the dump tool, set `spec.backup.logicalOptions` on the
+Cluster, or `logical.extraArgs` on one Backup (which replaces the cluster's
+list). cnmsql does not check them: a flag that changes the output format or the
+GTID handling can make the dump impossible to import.
+
+```yaml
+spec:
+  method: logical
+  logical:
+    extraArgs:
+      - --max-allowed-packet=1G
+```
 
 Taking the backup from a replica (`prefer-standby`, the default) is recommended.
 The dump takes a brief global read lock at the start to record a consistent
@@ -157,8 +170,28 @@ A completed logical Backup records:
 - `status.destinationPath`: the `s3://` URI of `dump.sql.zst`
 - `status.sha256`: checksum of the compressed object
 - `status.databases`: the databases in the dump
-- `status.beginGTID` / `status.endGTID`: the GTID set at the snapshot, for
-  reference only
+- `status.beginBinlog` / `status.endBinlog`: the binlog position of the
+  snapshot (`file:position`), for reference only
+- `status.beginGTID` / `status.endGTID`: the GTID position of the snapshot, on
+  MariaDB only. MySQL dumps are taken with `--set-gtid-purged=OFF` and do not
+  report one.
+
+`kubectl cnmsql status` lists logical backups with their method. They count as
+the last successful backup, but never as a point of recoverability.
+
+### When a logical backup fails
+
+The Backup's `Degraded` condition carries the reason:
+
+| Reason | Meaning |
+|---|---|
+| `DumpAccountNotReady` | Not a failure: the Backup waits in `pending` until the cluster's dump account exists. |
+| `LogicalToolUnavailable` | The instance image has no dump tool. Move to a newer image tag (see above). |
+| `InstanceManagerOutdated` | The source instance still runs an instance manager from before logical backups. Retry once the operator upgrade has reached it. |
+| `DumpAccountMissing` | The source replica had not received the dump account yet after two minutes of retries. |
+| `InvalidDumpRequest` | A database in `logical.databases` does not exist, or the cluster has no application database. |
+| `DumpInProgress` | Another dump was still running on the source instance. |
+| `DumpFailed` | The dump tool failed, or the stream ended without its completion footer. No manifest is written and the partial dump is removed. |
 
 ## Object-store layout
 
@@ -180,6 +213,13 @@ aws s3 cp s3://cnmsql-backups/production/shop/shop-dump/<id>/dump.sql.zst - | zs
 ```
 
 ## Importing into a new cluster
+
+:::caution Not available yet
+Importing (`bootstrap.initdb.import`) is the next phase of
+[#47](https://github.com/cnmsql/cnmsql/issues/47) and is not accepted by the
+API yet. Until then, load a dump by hand: download `dump.sql.zst`, decompress
+it and pipe it into the `mysql` / `mariadb` client of the target cluster.
+:::
 
 To load a dump into a fresh cluster, use `bootstrap.initdb.import`. The cluster
 is initialised on its own server version, then the dump is loaded, so the target
@@ -250,7 +290,8 @@ a physical data directory; use `initdb.import` for dumps.
 - `ScheduledBackup` history limits apply per schedule.
 - The cluster `spec.backup.retentionPolicy` also expires logical backups older
   than the window. It always keeps the newest one. Logical backups never affect
-  which physical backups or binlogs are kept.
+  which physical backups or binlogs are kept, and the newest physical backup is
+  kept as the recovery floor even when newer dumps exist.
 
 See [Backup Retention and Deletion](backup-retention-deletion.md).
 
