@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -82,6 +83,21 @@ func newBackupCommand() *cobra.Command {
 		"backup target: primary|prefer-standby")
 	cmd.Flags().StringSliceVar(&databases, "databases", nil,
 		"logical backup only: comma-separated databases to dump (default: every application database)")
+	_ = cmd.RegisterFlagCompletionFunc("method",
+		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return []string{
+				string(mysqlv1alpha1.BackupMethodXtrabackup),
+				string(mysqlv1alpha1.BackupMethodVolumeSnapshot),
+				string(mysqlv1alpha1.BackupMethodLogical),
+			}, cobra.ShellCompDirectiveNoFileComp
+		})
+	_ = cmd.RegisterFlagCompletionFunc("target",
+		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return []string{
+				string(mysqlv1alpha1.BackupTargetPrimary),
+				string(mysqlv1alpha1.BackupTargetPreferStandby),
+			}, cobra.ShellCompDirectiveNoFileComp
+		})
 	return cmd
 }
 
@@ -97,6 +113,7 @@ func buildBackup(
 			Target:  mysqlv1alpha1.BackupTarget(target),
 		},
 	}
+	databases = cleanDatabases(databases)
 	if len(databases) > 0 {
 		if backup.Spec.Method != mysqlv1alpha1.BackupMethodLogical {
 			return nil, fmt.Errorf("--databases needs --method=%s", mysqlv1alpha1.BackupMethodLogical)
@@ -104,4 +121,23 @@ func buildBackup(
 		backup.Spec.Logical = &mysqlv1alpha1.LogicalBackupOptions{Databases: databases}
 	}
 	return backup, nil
+}
+
+// cleanDatabases trims whitespace from each --databases entry, drops empty
+// entries and removes duplicates, preserving order.
+func cleanDatabases(databases []string) []string {
+	cleaned := make([]string, 0, len(databases))
+	seen := make(map[string]struct{}, len(databases))
+	for _, database := range databases {
+		database = strings.TrimSpace(database)
+		if database == "" {
+			continue
+		}
+		if _, ok := seen[database]; ok {
+			continue
+		}
+		seen[database] = struct{}{}
+		cleaned = append(cleaned, database)
+	}
+	return cleaned
 }
