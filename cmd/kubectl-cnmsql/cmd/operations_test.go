@@ -39,6 +39,34 @@ func TestBackupCommandCreatesBackup(t *testing.T) {
 	}
 }
 
+func TestBackupCommandCreatesLogicalBackup(t *testing.T) {
+	env := installFakeEnv(t, testCluster(), nil)
+	command := newBackupCommand()
+	command.SetArgs([]string{"demo", "--name=dump", "--method=logical", "--databases=billing,catalog"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	backup := &mysqlv1alpha1.Backup{}
+	key := types.NamespacedName{Namespace: "test", Name: "dump"}
+	if err := env.Client.Get(context.Background(), key, backup); err != nil {
+		t.Fatalf("getting created Backup: %v", err)
+	}
+	if backup.Spec.Method != mysqlv1alpha1.BackupMethodLogical || backup.Spec.Logical == nil ||
+		strings.Join(backup.Spec.Logical.Databases, ",") != "billing,catalog" {
+		t.Errorf("created Backup spec = %#v", backup.Spec)
+	}
+}
+
+func TestBackupCommandRejectsDatabasesWithoutLogical(t *testing.T) {
+	installFakeEnv(t, testCluster(), nil)
+	command := newBackupCommand()
+	command.SetArgs([]string{"demo", "--name=dump", "--databases=billing"})
+	command.SilenceUsage, command.SilenceErrors = true, true
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "--method=logical") {
+		t.Fatalf("Execute() error = %v, want a pointer to --method=logical", err)
+	}
+}
+
 func TestRunMaintenance(t *testing.T) {
 	env := installFakeEnv(t, testCluster(), nil)
 	if err := runMaintenance(context.Background(), "demo", true, true, true); err != nil {
