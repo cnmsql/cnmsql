@@ -98,6 +98,7 @@ func newBackupCommand() *cobra.Command {
 				string(mysqlv1alpha1.BackupTargetPreferStandby),
 			}, cobra.ShellCompDirectiveNoFileComp
 		})
+	cmd.AddCommand(newBackupDownloadCommand())
 	return cmd
 }
 

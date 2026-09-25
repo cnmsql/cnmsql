@@ -653,7 +653,7 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 	if err != nil {
 		return err
 	}
-	cfg, err := resolveObjectStoreConfig(ctx, r.Client, backup.Namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, backup.Namespace, store)
 	if err != nil {
 		return err
 	}

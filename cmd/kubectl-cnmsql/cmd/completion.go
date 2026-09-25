@@ -91,3 +91,31 @@ func completeClusterInstanceArgs(
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 }
+
+// completeLogicalBackupArg completes a single BACKUP argument with the
+// completed logical Backups in the resolved namespace.
+func completeLogicalBackupArg(
+	cmd *cobra.Command, args []string, toComplete string,
+) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	env, err := newEnv()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	list := &mysqlv1alpha1.BackupList{}
+	if err := env.Client.List(cmd.Context(), list, client.InNamespace(env.Namespace)); err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var names []string
+	for i := range list.Items {
+		b := &list.Items[i]
+		if b.Spec.Method == mysqlv1alpha1.BackupMethodLogical &&
+			b.Status.Phase == mysqlv1alpha1.BackupPhaseCompleted &&
+			strings.HasPrefix(b.Name, toComplete) {
+			names = append(names, b.Name)
+		}
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}

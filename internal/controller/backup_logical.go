@@ -115,7 +115,7 @@ func (r *BackupReconciler) readLogicalManifest(
 	store *mysqlv1alpha1.S3ObjectStore,
 	keys objectstore.BackupKeys,
 ) (*objectstore.LogicalBackupMetadata, error) {
-	cfg, err := resolveObjectStoreConfig(ctx, r.Client, namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store)
 	if err != nil {
 		return nil, err
 	}
