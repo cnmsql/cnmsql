@@ -805,6 +805,9 @@ controller, Job, docs.
 - Migration: create a cluster with the previous operator release, upgrade the
   operator, check that no instance Pod restarts, that `DumpAccountReady`
   becomes true, and that a logical Backup from a replica completes.
+- The same specs also run in the MariaDB `flavor` lanes, so each MariaDB series
+  checks its own dump grants, `mariadb-dump`, and the recorded snapshot GTID.
+  Schedules and retention are operator logic, so they only run on MySQL.
 
 ## 9. Documentation
 
