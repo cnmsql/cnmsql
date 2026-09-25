@@ -82,15 +82,15 @@ type BackupJobTemplate struct {
 }
 
 // BackupCleanupFinalizer, when present on a Backup, makes the operator delete
-// the backup's object-store artifacts (backup.xbstream + metadata.json) when the
-// Backup object is deleted. It is opt-in: the operator only adds it when the
+// the backup's object-store artifacts (the backup payload and its manifest) when
+// the Backup object is deleted. It is opt-in: the operator only adds it when the
 // Backup (or the ScheduledBackup that generated it) sets reclaimPolicy: Delete,
 // so default deletes leave remote archives untouched.
 const BackupCleanupFinalizer = "mysql.cnmsql.co/cleanup-backup-files"
 
 // ClusterBackupCleanupFinalizer, when present on a Cluster, makes the operator
-// delete the cluster's entire object-store archive (every base backup, the
-// archived binlogs, and the archive index) when the Cluster is deleted. It is
+// delete the cluster's entire object-store archive (every backup, the archived
+// binlogs, and the archive index) when the Cluster is deleted. It is
 // opt-in via spec.backup.reclaimPolicy: Delete; the default keeps the archive so
 // a deleted Cluster can still be recovered.
 const ClusterBackupCleanupFinalizer = "mysql.cnmsql.co/cleanup-object-store"
@@ -193,9 +193,9 @@ type BackupSpec struct {
 	Online *bool `json:"online,omitempty"`
 
 	// ReclaimPolicy controls what happens to this backup's object-store archive
-	// (backup.xbstream + metadata.json) when the Backup object is deleted. With
-	// "Delete" the operator adds the cleanup finalizer and removes the archive on
-	// deletion; with "Retain" (the default) the archive is kept.
+	// (the backup payload and its manifest) when the Backup object is deleted.
+	// With "Delete" the operator adds the cleanup finalizer and removes the
+	// archive on deletion; with "Retain" (the default) the archive is kept.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default:=Retain
 	// +optional

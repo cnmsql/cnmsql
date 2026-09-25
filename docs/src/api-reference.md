@@ -87,7 +87,7 @@ spec:
   online: true
 ```
 
-By default, deleting a `Backup` object does not delete remote object-store data. To opt a Backup into remote cleanup, add the `mysql.cnmsql.co/cleanup-backup-files` finalizer: the operator then deletes the backup's archive (`backup.xbstream` + `metadata.json`) from the object store when the Backup is deleted, and releases the finalizer only after cleanup succeeds. The operator never adds this finalizer on its own.
+By default, deleting a `Backup` object does not delete remote object-store data. To opt a Backup into remote cleanup, add the `mysql.cnmsql.co/cleanup-backup-files` finalizer: the operator then deletes the backup's archive (its payload and manifest, such as `backup.xbstream` + `metadata.json` or `dump.sql.zst` + `logical.json`) from the object store when the Backup is deleted, and releases the finalizer only after cleanup succeeds. The operator never adds this finalizer on its own.
 
 Backup is the Schema for the backups API.
 
@@ -265,7 +265,7 @@ _Appears in:_
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method to use. | xtrabackup | Enum: [xtrabackup volumeSnapshot logical] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the backup from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs a non-blocking (hot) backup. Defaults to true. | true | Optional: \{\} <br /> |
-| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(backup.xbstream + metadata.json) when the Backup object is deleted. With<br />"Delete" the operator adds the cleanup finalizer and removes the archive on<br />deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(the backup payload and its manifest) when the Backup object is deleted.<br />With "Delete" the operator adds the cleanup finalizer and removes the<br />archive on deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate shapes the backup worker Job for this backup: resources,<br />scheduling (nodeSelector/tolerations/affinity/priorityClassName), extra<br />labels/annotations, and the finished-Job TTL. It overrides the cluster-wide<br />spec.backup.jobTemplate field by field. |  | Optional: \{\} <br /> |
 | `logical` _[LogicalBackupOptions](#logicalbackupoptions)_ | Logical configures the dump when method is "logical". |  | Optional: \{\} <br /> |
 
@@ -2118,7 +2118,7 @@ _Appears in:_
 | `suspend` _boolean_ | Suspend, when true, pauses the schedule. | false | Optional: \{\} <br /> |
 | `immediate` _boolean_ | Immediate, when true, takes a backup as soon as the ScheduledBackup is<br />created, in addition to the schedule. | false | Optional: \{\} <br /> |
 | `backupOwnerReference` _string_ | BackupOwnerReference controls the owner reference set on the generated<br />Backup objects. | self | Enum: [none self cluster] <br />Optional: \{\} <br /> |
-| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy is propagated to every generated Backup as its<br />spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup<br />finalizer, so deleting it also removes its archive (backup.xbstream +<br />metadata.json) from the object store. Defaults to "Retain", the<br />non-destructive default. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy is propagated to every generated Backup as its<br />spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup<br />finalizer, so deleting it also removes its archive (the backup payload<br />and its manifest) from the object store. Defaults to "Retain", the<br />non-destructive default. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method used for the generated backups. | xtrabackup | Enum: [xtrabackup volumeSnapshot logical] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the generated backups from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs non-blocking (hot) backups. | true | Optional: \{\} <br /> |

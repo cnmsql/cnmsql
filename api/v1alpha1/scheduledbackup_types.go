@@ -53,8 +53,8 @@ type ScheduledBackupSpec struct {
 
 	// ReclaimPolicy is propagated to every generated Backup as its
 	// spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup
-	// finalizer, so deleting it also removes its archive (backup.xbstream +
-	// metadata.json) from the object store. Defaults to "Retain", the
+	// finalizer, so deleting it also removes its archive (the backup payload
+	// and its manifest) from the object store. Defaults to "Retain", the
 	// non-destructive default.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default:=Retain
