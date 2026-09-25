@@ -34,26 +34,72 @@ import (
 
 // Logical backups (design 028, phase 1): a SQL dump taken on a replica through
 // the instance manager as cnmsql_dump, stored next to the physical backups
-// without ever being mistaken for one.
+// without ever being mistaken for one. The same specs run on both flavors, since
+// the dump tool, the account's grants and the snapshot position differ.
 var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() {
-	const (
-		cluster      = "lb-src"
-		physical     = "lb-physical"
-		fullDump     = "lb-full"
-		partialDump  = "lb-billing"
-		missingDB    = "lb-missing"
-		recovered    = "lb-recovered"
-		schedule     = "lb-nightly"
-		stalePrefix  = "lb-src/stale-dump/stale-id"
+	logicalBackupSpecs(logicalFlavor{
+		prefix:        "lb",
+		image:         instanceImage,
+		tool:          "mysqldump",
+		flavor:        "mysql",
+		exec:          mysqlExec,
+		operatorSpecs: true,
+	})
+})
+
+var _ = Describe("MariaDB logical backups", Ordered, Label("flavor", "mariadb"), func() {
+	logicalBackupSpecs(logicalFlavor{
+		prefix:      "mlb",
+		image:       mariadbImage,
+		tool:        "mariadb-dump",
+		flavor:      "mariadb",
+		flavorYAML:  "  flavor: mariadb\n",
+		exec:        mariadbExec,
+		recordsGTID: true,
+	})
+})
+
+// logicalFlavor is what the logical backup specs need to know about a flavor.
+type logicalFlavor struct {
+	// prefix names the flavor's namespace and resources.
+	prefix string
+	image  string
+	// tool and flavor are what the dump's manifest must record.
+	tool   string
+	flavor string
+	// flavorYAML is the Cluster's spec.flavor line, empty for the default.
+	flavorYAML string
+	// exec runs SQL through the image's client.
+	exec func(pod, user, password, database, sql string) (string, error)
+	// recordsGTID is whether the dump records its snapshot GTID: MariaDB
+	// writes it in the dump, MySQL dumps run with --set-gtid-purged=OFF.
+	recordsGTID bool
+	// operatorSpecs runs the specs that exercise only operator logic
+	// (schedules, retention), which one flavor is enough to cover.
+	operatorSpecs bool
+}
+
+func logicalBackupSpecs(f logicalFlavor) {
+	var (
+		cluster      = f.prefix + "-src"
+		physical     = f.prefix + "-physical"
+		fullDump     = f.prefix + "-full"
+		partialDump  = f.prefix + "-billing"
+		missingDB    = f.prefix + "-missing"
+		recovered    = f.prefix + "-recovered"
+		schedule     = f.prefix + "-nightly"
+		again        = f.prefix + "-after-migration"
+		stalePrefix  = cluster + "/stale-dump/stale-id"
 		dumpSecret   = cluster + "-dump"
 		dumpReadyJSP = `{.status.conditions[?(@.type=="DumpAccountReady")].status}`
 	)
+	systemSchemas := []string{"mysql", "sys", "performance_schema", "information_schema", "heartbeat"}
 
 	var ns, prevNS string
 
 	BeforeAll(func() {
 		prevNS = testNamespace
-		ns = createTestNamespace("logical")
+		ns = createTestNamespace(f.prefix + "-logical")
 
 		setupObjectStore()
 		DeferCleanup(teardownObjectStore)
@@ -61,12 +107,12 @@ var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() 
 		DeferCleanup(teardownS3Client)
 
 		By("creating a two-instance archiving cluster")
-		applyManifest(cluster, logicalClusterManifest(cluster, 2))
-		DeferCleanup(func() { deleteManifest(cluster, logicalClusterManifest(cluster, 2)) })
+		applyManifest(cluster, logicalClusterManifest(f, cluster, 2))
+		DeferCleanup(func() { deleteManifest(cluster, logicalClusterManifest(f, cluster, 2)) })
 		expectClusterReady(cluster, 2, 20*time.Minute)
 
 		By("seeding two application schemas")
-		_, err := mysqlExec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
+		_, err := f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
 			"CREATE DATABASE IF NOT EXISTS shop; "+
 				"CREATE TABLE IF NOT EXISTS shop.items (id INT PRIMARY KEY, name VARCHAR(32)); "+
 				"REPLACE INTO shop.items VALUES (1, 'widget'); "+
@@ -102,9 +148,15 @@ var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() 
 		Expect(status.Method).To(Equal("logical"))
 		Expect(status.InstanceName).NotTo(Equal(clusterPrimary(cluster)), "prefer-standby should dump a replica")
 		Expect(status.Databases).To(ContainElements("app", "billing", "shop"))
-		Expect(status.Databases).NotTo(ContainElements("mysql", "sys", "heartbeat"))
+		Expect(status.Databases).NotTo(ContainElement(BeElementOf(systemSchemas)),
+			"system and operator schemas must never be dumped")
 		Expect(status.SHA256).NotTo(BeEmpty())
 		Expect(status.BeginBinlog).To(ContainSubstring(":"), "the snapshot binlog position should be recorded")
+		if f.recordsGTID {
+			Expect(status.BeginGTID).NotTo(BeEmpty(), "the snapshot GTID should be recorded")
+		} else {
+			Expect(status.BeginGTID).To(BeEmpty(), "this flavor's dumps carry no snapshot GTID")
+		}
 		Expect(status.DestinationPath).To(HaveSuffix("/dump.sql.zst"))
 
 		By("checking the objects and the manifest in the store")
@@ -121,12 +173,12 @@ var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() 
 		Expect(meta.SHA256).To(Equal(status.SHA256))
 		Expect(meta.UncompressedBytes).To(BeNumerically(">", meta.SizeBytes))
 		// The manifest must describe the dump well enough to load it from the
-		// store alone. This spec's clusters run the MySQL instance image
-		// (logicalClusterManifest), so the dump tool and flavor are fixed.
+		// store alone.
 		Expect(meta.Databases).To(Equal(status.Databases), "the manifest must record the dumped databases")
-		Expect(meta.Tool).To(Equal("mysqldump"))
-		Expect(meta.Flavor).To(Equal("mysql"))
+		Expect(meta.Tool).To(Equal(f.tool))
+		Expect(meta.Flavor).To(Equal(f.flavor))
 		Expect(meta.ServerVersion).NotTo(BeEmpty())
+		Expect(meta.SnapshotGTID).To(Equal(status.BeginGTID))
 		Expect(meta.ArchiveKey).To(Equal(fmt.Sprintf("%s/dump.sql.zst", prefix)))
 		Expect(meta.FormatVersion).To(Equal(objectstore.LogicalFormatVersion))
 
@@ -150,83 +202,83 @@ var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() 
 			g.Expect(reason).To(Equal("InvalidDumpRequest"))
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
-		// A failed dump must not leave a partial archive behind (design 028
-		// §5.4): the worker removes it once the dump is known bad.
+		// The instance refuses the request before streaming, so the worker
+		// never starts an upload and nothing lands under the Backup's prefix.
 		status := backupStatus(missingDB)
 		Expect(status.BackupID).NotTo(BeEmpty(), "a failed backup still records its backupId")
 		prefix := fmt.Sprintf("%s/%s/%s", cluster, missingDB, status.BackupID)
-		Eventually(func(g Gomega) {
-			g.Expect(s3ObjectExists(objectKey("%s/dump.sql.zst", prefix))).To(BeFalse(),
-				"a failed dump must not leave a partial archive behind")
-		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
+		Expect(s3ObjectExists(objectKey("%s/dump.sql.zst", prefix))).To(BeFalse())
+		Expect(s3ObjectExists(objectKey("%s/logical.json", prefix))).To(BeFalse())
 	})
 
 	It("still recovers from the physical backup when newer dumps share the prefix", func() {
-		applyManifest(recovered, rawRecoveryClusterManifest(recovered, cluster))
-		DeferCleanup(func() { deleteManifest(recovered, rawRecoveryClusterManifest(recovered, cluster)) })
+		applyManifest(recovered, rawRecoveryClusterManifest(f, recovered, cluster))
+		DeferCleanup(func() { deleteManifest(recovered, rawRecoveryClusterManifest(f, recovered, cluster)) })
 		expectClusterReady(recovered, 1, 20*time.Minute)
 		Eventually(func(g Gomega) {
 			// Recovery resets root to the recovered cluster's own Secret.
-			out, err := mysqlExec(clusterPrimary(recovered), "root", rootPassword(recovered), "",
+			out, err := f.exec(clusterPrimary(recovered), "root", rootPassword(recovered), "",
 				"SELECT name FROM shop.items WHERE id = 1")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("widget"))
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
-	It("runs logical ScheduledBackups", func() {
-		applyManifest(schedule, logicalScheduledBackupManifest(schedule, cluster))
-		DeferCleanup(func() { deleteManifest(schedule, logicalScheduledBackupManifest(schedule, cluster)) })
-		var generated string
-		Eventually(func(g Gomega) {
-			out, err := kubectl("get", "backups", "-n", testNamespace, "-o",
-				`jsonpath={range .items[?(@.metadata.ownerReferences[0].name=="`+schedule+`")]}{.metadata.name}{"\n"}{end}`)
-			g.Expect(err).NotTo(HaveOccurred())
-			generated = strings.TrimSpace(strings.Split(out, "\n")[0])
-			g.Expect(generated).NotTo(BeEmpty(), "the schedule has not created a Backup yet")
-		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
-		expectBackupCompleted(generated, 8*time.Minute)
-		Expect(backupStatus(generated).Method).To(Equal("logical"))
-	})
+	if f.operatorSpecs {
+		It("runs logical ScheduledBackups", func() {
+			applyManifest(schedule, logicalScheduledBackupManifest(schedule, cluster))
+			DeferCleanup(func() { deleteManifest(schedule, logicalScheduledBackupManifest(schedule, cluster)) })
+			var generated string
+			Eventually(func(g Gomega) {
+				out, err := kubectl("get", "backups", "-n", testNamespace, "-o",
+					`jsonpath={range .items[?(@.metadata.ownerReferences[0].name=="`+schedule+`")]}{.metadata.name}{"\n"}{end}`)
+				g.Expect(err).NotTo(HaveOccurred())
+				generated = strings.TrimSpace(strings.Split(out, "\n")[0])
+				g.Expect(generated).NotTo(BeEmpty(), "the schedule has not created a Backup yet")
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+			expectBackupCompleted(generated, 8*time.Minute)
+			Expect(backupStatus(generated).Method).To(Equal("logical"))
+		})
 
-	It("expires old dumps and leaves the base backups alone", func() {
-		old := time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
-		s3Pipe(fmt.Sprintf(`{"formatVersion":1,"backupID":"stale-id","clusterName":"%s","backupName":"stale-dump",`+
-			`"method":"logical","compression":"zstd","archiveKey":"%s/dump.sql.zst","databases":["shop"],`+
-			`"startedAt":"%s","completedAt":"%s"}`, cluster, stalePrefix, old, old),
-			objectKey("%s/logical.json", stalePrefix))
-		s3Pipe("stale", objectKey("%s/dump.sql.zst", stalePrefix))
-		// The throttle still holds from the pass the cluster ran when it went
-		// ready, so nothing can reap the seeded dump before the patch below.
-		Expect(s3ObjectExists(objectKey("%s/logical.json", stalePrefix))).To(BeTrue(),
-			"the stale dump should exist before the retention pass")
+		It("expires old dumps and leaves the base backups alone", func() {
+			old := time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+			s3Pipe(fmt.Sprintf(`{"formatVersion":1,"backupID":"stale-id","clusterName":"%s","backupName":"stale-dump",`+
+				`"method":"logical","compression":"zstd","archiveKey":"%s/dump.sql.zst","databases":["shop"],`+
+				`"startedAt":"%s","completedAt":"%s"}`, cluster, stalePrefix, old, old),
+				objectKey("%s/logical.json", stalePrefix))
+			s3Pipe("stale", objectKey("%s/dump.sql.zst", stalePrefix))
+			// The throttle still holds from the pass the cluster ran when it went
+			// ready, so nothing can reap the seeded dump before the patch below.
+			Expect(s3ObjectExists(objectKey("%s/logical.json", stalePrefix))).To(BeTrue(),
+				"the stale dump should exist before the retention pass")
 
-		_, err := kubectl("patch", "cluster", cluster, "-n", testNamespace, "--subresource=status",
-			"--type=merge", "-p", `{"status":{"lastRetentionRunTime":null}}`)
-		Expect(err).NotTo(HaveOccurred())
-		clusterAnnotate(cluster, "cnmsql.co/retention-nudge="+fmt.Sprint(time.Now().Unix()))
+			_, err := kubectl("patch", "cluster", cluster, "-n", testNamespace, "--subresource=status",
+				"--type=merge", "-p", `{"status":{"lastRetentionRunTime":null}}`)
+			Expect(err).NotTo(HaveOccurred())
+			clusterAnnotate(cluster, "cnmsql.co/retention-nudge="+fmt.Sprint(time.Now().Unix()))
 
-		Eventually(func(g Gomega) {
-			g.Expect(s3ObjectExists(objectKey("%s/logical.json", stalePrefix))).To(BeFalse())
-		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(s3ObjectExists(objectKey("%s/logical.json", stalePrefix))).To(BeFalse())
+			}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 
-		out, err := rcloneExec("lsf", "-R", "--files-only", objectKey("%s/", cluster))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(out).To(ContainSubstring(physical+"/"), "the base backup must survive")
-		Expect(out).To(ContainSubstring(fullDump+"/"), "recent dumps must survive")
-	})
+			out, err := rcloneExec("lsf", "-R", "--files-only", objectKey("%s/", cluster))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring(physical+"/"), "the base backup must survive")
+			Expect(out).To(ContainSubstring(fullDump+"/"), "recent dumps must survive")
+		})
+	}
 
 	It("recreates a lost dump account without restarting instances", func() {
 		restartsBefore := instanceRestarts(cluster)
+		accountCount := "SELECT COUNT(*) FROM mysql.user WHERE User = 'cnmsql_dump' AND Host = 'localhost'"
 
 		By("dropping the account and its Secret, as on a cluster older than logical backups")
-		_, err := mysqlExec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
+		_, err := f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
 			"DROP USER IF EXISTS 'cnmsql_dump'@'localhost'")
 		Expect(err).NotTo(HaveOccurred())
 		// The operator only re-applies the account when its Secret changes, so the
 		// account stays gone until the Secret is deleted below.
-		out, err := mysqlExec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
-			"SELECT COUNT(*) FROM mysql.user WHERE User = 'cnmsql_dump' AND Host = 'localhost'")
+		out, err := f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "", accountCount)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("0"), "the account should be gone before the Secret is deleted")
 		_, err = kubectl("delete", "secret", dumpSecret, "-n", testNamespace)
@@ -234,14 +286,12 @@ var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() 
 
 		By("waiting for the operator to recreate both")
 		Eventually(func(g Gomega) {
-			out, err := mysqlExec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
-				"SELECT COUNT(*) FROM mysql.user WHERE User = 'cnmsql_dump' AND Host = 'localhost'")
+			out, err := f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "", accountCount)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("1"))
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("taking a logical backup with the new password")
-		const again = "lb-after-migration"
 		applyManifest(again, logicalBackupManifest(again, cluster, nil))
 		expectBackupCompleted(again, 8*time.Minute)
 
@@ -253,7 +303,7 @@ var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() 
 	AfterAll(func() {
 		deleteTestNamespace(ns, prevNS)
 	})
-})
+}
 
 type e2eBackupStatus struct {
 	Method          string   `json:"method"`
@@ -262,6 +312,7 @@ type e2eBackupStatus struct {
 	DestinationPath string   `json:"destinationPath"`
 	SHA256          string   `json:"sha256"`
 	BeginBinlog     string   `json:"beginBinlog"`
+	BeginGTID       string   `json:"beginGTID"`
 	Databases       []string `json:"databases"`
 }
 
@@ -304,14 +355,14 @@ func instanceRestarts(cluster string) string {
 	return out
 }
 
-func logicalClusterManifest(name string, instances int) string {
+func logicalClusterManifest(f logicalFlavor, name string, instances int) string {
 	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s
   namespace: %s
 spec:
-  instances: %d
+%s  instances: %d
   imageName: %s
   storage:
     size: 2Gi
@@ -326,7 +377,8 @@ spec:
   backup:
     retentionPolicy: 7d
 %s
-`, name, testNamespace, instances, instanceImage, e2eInstanceResources, e2eMySQLParameters, objectStoreYAML("    "))
+`, name, testNamespace, f.flavorYAML, instances, f.image, e2eInstanceResources, e2eMySQLParameters,
+		objectStoreYAML("    "))
 }
 
 func logicalBackupManifest(name, cluster string, databases []string) string {
@@ -369,14 +421,14 @@ spec:
 
 // rawRecoveryClusterManifest recovers from the source cluster's object-store
 // prefix without a Backup object, which is the path that lists base backups.
-func rawRecoveryClusterManifest(name, source string) string {
+func rawRecoveryClusterManifest(f logicalFlavor, name, source string) string {
 	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
   name: %s
   namespace: %s
 spec:
-  instances: 1
+%s  instances: 1
   imageName: %s
   storage:
     size: 2Gi
@@ -390,6 +442,6 @@ spec:
   externalClusters:
     - name: %s
 %s
-`, name, testNamespace, instanceImage, e2eInstanceResources, e2eMySQLParameters, source, source,
+`, name, testNamespace, f.flavorYAML, f.image, e2eInstanceResources, e2eMySQLParameters, source, source,
 		objectStoreYAML("      "))
 }
