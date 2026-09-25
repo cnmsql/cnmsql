@@ -87,6 +87,8 @@ func logicalBackupSpecs(f logicalFlavor) {
 		partialDump  = f.prefix + "-billing"
 		missingDB    = f.prefix + "-missing"
 		recovered    = f.prefix + "-recovered"
+		imported     = f.prefix + "-imported"
+		billingOnly  = f.prefix + "-billing-only"
 		schedule     = f.prefix + "-nightly"
 		again        = f.prefix + "-after-migration"
 		stalePrefix  = cluster + "/stale-dump/stale-id"
@@ -221,6 +223,68 @@ func logicalBackupSpecs(f logicalFlavor) {
 				"SELECT name FROM shop.items WHERE id = 1")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("widget"))
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
+	It("imports the dump into a new cluster whose replicas clone it", func() {
+		manifest := importClusterManifest(f, imported, 2, fmt.Sprintf(`      import:
+        backup:
+          name: %s
+`, fullDump), "")
+		applyManifest(imported, manifest)
+		DeferCleanup(func() { deleteManifest(imported, manifest) })
+		expectClusterReady(imported, 2, 20*time.Minute)
+
+		primary := clusterPrimary(imported)
+		replica := imported + "-1"
+		if replica == primary {
+			replica = imported + "-2"
+		}
+		By("checking the data on the primary and on the replica that cloned it")
+		for _, pod := range []string{primary, replica} {
+			Eventually(func(g Gomega) {
+				out, err := f.exec(pod, "root", rootPassword(imported), "",
+					"SELECT CONCAT((SELECT name FROM shop.items WHERE id = 1), '/', (SELECT SUM(total) FROM billing.invoices))")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal("widget/100"), "on %s", pod)
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+		}
+
+		By("checking only the bootstrap primary ran the import")
+		exitCode, err := kubectl("get", "pod", imported+"-1", "-n", testNamespace, "-o",
+			`jsonpath={.status.initContainerStatuses[?(@.name=="import")].state.terminated.exitCode}`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exitCode).To(Equal("0"), "the import init container should have succeeded")
+		containers, err := kubectl("get", "pod", imported+"-2", "-n", testNamespace, "-o",
+			"jsonpath={.spec.initContainers[*].name}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Fields(containers)).NotTo(ContainElement("import"), "a replica clones, it does not import")
+	})
+
+	It("imports only the selected databases from a raw object-store source", func() {
+		manifest := importClusterManifest(f, billingOnly, 1, fmt.Sprintf(`      import:
+        source: %[1]s
+        backupID: %[2]s
+        databases:
+          - billing
+        postImportSQL:
+          - CREATE TABLE billing.imported (id INT PRIMARY KEY)
+          - INSERT INTO billing.imported VALUES (7)
+`, cluster, backupStatus(fullDump).BackupID), fmt.Sprintf(`  externalClusters:
+    - name: %s
+%s
+`, cluster, objectStoreYAML("      ")))
+		applyManifest(billingOnly, manifest)
+		DeferCleanup(func() { deleteManifest(billingOnly, manifest) })
+		expectClusterReady(billingOnly, 1, 20*time.Minute)
+
+		Eventually(func(g Gomega) {
+			out, err := f.exec(clusterPrimary(billingOnly), "root", rootPassword(billingOnly), "",
+				"SELECT CONCAT((SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'shop'), '/', "+
+					"(SELECT SUM(total) FROM billing.invoices), '/', (SELECT id FROM billing.imported))")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(Equal("0/100/7"),
+				"shop must be left out, billing and the post-import SQL must be there")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
@@ -444,4 +508,30 @@ spec:
 %s
 `, name, testNamespace, f.flavorYAML, f.image, e2eInstanceResources, e2eMySQLParameters, source, source,
 		objectStoreYAML("      "))
+}
+
+// importClusterManifest bootstraps a cluster from a logical backup. importYAML
+// is the initdb.import block, extraYAML is appended to the spec. The cluster
+// has no backup store of its own: the dump is read from the source's.
+func importClusterManifest(f logicalFlavor, name string, instances int, importYAML, extraYAML string) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+%s  instances: %d
+  imageName: %s
+  storage:
+    size: 2Gi
+%s
+  mysql:
+    binlogFormat: ROW
+%s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+%s%s`, name, testNamespace, f.flavorYAML, instances, f.image, e2eInstanceResources, e2eMySQLParameters,
+		importYAML, extraYAML)
 }
