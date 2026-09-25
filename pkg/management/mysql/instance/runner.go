@@ -522,6 +522,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Backup != nil {
 		controller.SetBackupConfig(*opts.Backup)
 	}
+	// Logical dumps need nothing beyond the socket, so every instance serves
+	// them; the dump account's password arrives with each request.
+	controller.SetDumpConfig(DumpConfig{Engine: eng, Socket: opts.Socket})
 
 	// Continuous binlog archiver: runs in every Pod but only ships from the
 	// writable primary. Its terminal error is fatal to the run loop like the
