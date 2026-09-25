@@ -27,25 +27,26 @@ import (
 //
 // Each Percona version is declared as a separate Describe container so that
 // Ginkgo's --procs can run them in parallel across different processes. Each
-// version gets its own namespace and shares the in-cluster S3 store so there is no
-// resource contention.
+// version gets its own namespace and its own private S3 store: the outage spec
+// scales the store to zero, which must not take down the shared store that the
+// backup and PITR specs on other processes are writing to.
 
 func init() {
 	for _, version := range archiveVersions() {
 		v := version
 		Describe(fmt.Sprintf("Continuous binlog archiving - %s", v), Ordered, Label("flavor"), func() {
-			var ns, prevNS string
+			var ns, prevNS, prevStoreNS string
 
 			BeforeAll(func() {
 				prevNS = testNamespace
 				ns = createTestNamespace("arch-" + sanitize(v))
-				setupObjectStore()
+				prevStoreNS = setupPrivateObjectStore()
 				setupS3Client()
 			})
 
 			AfterAll(func() {
 				teardownS3Client()
-				teardownObjectStore()
+				teardownPrivateObjectStore(prevStoreNS)
 				deleteTestNamespace(ns, prevNS)
 			})
 
@@ -144,16 +145,16 @@ func archivingVersionSpecs(version string) {
 			primary := clusterPrimary(cluster)
 
 			By("scaling the object store down to simulate an outage")
-			_, err := kubectl("scale", "deployment/"+objectStoreName, "-n", objectStoreNamespace, "--replicas=0")
+			_, err := kubectl("scale", "deployment/"+objectStoreName, "-n", currentObjectStoreNamespace, "--replicas=0")
 			Expect(err).NotTo(HaveOccurred(), "Failed to scale the object store down")
 			DeferCleanup(func() {
-				_, _ = kubectl("scale", "deployment/"+objectStoreName, "-n", objectStoreNamespace, "--replicas=1")
-				_, _ = kubectl("wait", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
+				_, _ = kubectl("scale", "deployment/"+objectStoreName, "-n", currentObjectStoreNamespace, "--replicas=1")
+				_, _ = kubectl("wait", "deployment/"+objectStoreName, "-n", currentObjectStoreNamespace,
 					"--for=condition=Available", "--timeout=3m")
 			})
 			By("waiting for the object store to have no available replicas")
 			Eventually(func(g Gomega) {
-				ready, err := kubectl("get", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
+				ready, err := kubectl("get", "deployment/"+objectStoreName, "-n", currentObjectStoreNamespace,
 					"-o", "jsonpath={.status.availableReplicas}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(ready).To(BeEmpty(), "The object store still has available replicas")
@@ -180,9 +181,9 @@ func archivingVersionSpecs(version string) {
 			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 			By("restoring the object store and waiting for it to come back")
-			_, err = kubectl("scale", "deployment/"+objectStoreName, "-n", objectStoreNamespace, "--replicas=1")
+			_, err = kubectl("scale", "deployment/"+objectStoreName, "-n", currentObjectStoreNamespace, "--replicas=1")
 			Expect(err).NotTo(HaveOccurred(), "Failed to scale the object store back up")
-			_, err = kubectl("wait", "deployment/"+objectStoreName, "-n", objectStoreNamespace,
+			_, err = kubectl("wait", "deployment/"+objectStoreName, "-n", currentObjectStoreNamespace,
 				"--for=condition=Available", "--timeout=3m")
 			Expect(err).NotTo(HaveOccurred(), "The object store did not come back")
 

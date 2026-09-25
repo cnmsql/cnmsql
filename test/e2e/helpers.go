@@ -52,8 +52,16 @@ var testNamespace = defaultTestNamespace
 // once for the whole suite, avoiding per-Describe deploy/teardown cycles.
 const objectStoreNamespace = "e2e-objectstore"
 
+// currentObjectStoreNamespace is the namespace of the S3 store the helpers
+// currently target: the shared store by default, or a Describe's private store
+// between setupPrivateObjectStore and teardownPrivateObjectStore. Like
+// testNamespace it is process-local, so a private store never leaks into specs
+// running on other parallel processes.
+var currentObjectStoreNamespace = objectStoreNamespace
+
 // objectStoreName is the Deployment/Service name of the in-cluster S3 store. The
-// specs that simulate an object-store outage scale this Deployment.
+// specs that simulate an object-store outage scale this Deployment, which must
+// be a private store (see setupPrivateObjectStore).
 const objectStoreName = "seaweedfs"
 
 // objectStorePort is the port the in-cluster S3 store serves the S3 API on.
@@ -601,11 +609,11 @@ spec:
 	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
 }
 
-// objectStoreEndpoint returns the HTTP endpoint for the shared in-cluster S3
-// store, which runs once in objectStoreNamespace and is reachable from every
-// test namespace.
+// objectStoreEndpoint returns the HTTP endpoint for the current in-cluster S3
+// store: the shared one in objectStoreNamespace, reachable from every test
+// namespace, unless a private store is active.
 func objectStoreEndpoint() string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", objectStoreName, objectStoreNamespace, objectStorePort)
+	return fmt.Sprintf("http://%s.%s.svc:%d", objectStoreName, currentObjectStoreNamespace, objectStorePort)
 }
 
 // deploySharedObjectStore creates the shared object-store namespace and deploys a
@@ -660,6 +668,37 @@ func setupObjectStore() {
 		"--for=condition=Available", "--timeout=2m")
 	Expect(err).NotTo(HaveOccurred(), "shared object store not available at setup")
 	ensureObjectStoreCreds()
+}
+
+// setupPrivateObjectStore deploys a dedicated S3 store into the current test
+// namespace and points every object-store helper at it until
+// teardownPrivateObjectStore. A Describe that takes the store down (outage
+// simulation) must use one: scaling the shared store to zero fails the backups
+// and binlog archivers of every spec running on the other parallel processes,
+// and the restarted store serves errors until its volume server re-registers.
+// It returns the previous store namespace to hand to teardownPrivateObjectStore.
+func setupPrivateObjectStore() string {
+	By("deploying a private object store into " + testNamespace)
+	// The manifest also carries the credentials Secret, so no
+	// ensureObjectStoreCreds is needed.
+	applyManifest("objectstore-private", objectStoreManifest(testNamespace))
+
+	_, err := kubectl("wait", "deployment/"+objectStoreName, "-n", testNamespace,
+		"--for=condition=Available", "--timeout=3m")
+	Expect(err).NotTo(HaveOccurred(), "Private object store did not become available")
+	_, err = kubectl("wait", "job/"+objectStoreName+"-mkbucket", "-n", testNamespace,
+		"--for=condition=Complete", "--timeout=3m")
+	Expect(err).NotTo(HaveOccurred(), "Private bucket-creation Job did not complete")
+
+	prev := currentObjectStoreNamespace
+	currentObjectStoreNamespace = testNamespace
+	return prev
+}
+
+// teardownPrivateObjectStore points the helpers back at the previous store. The
+// private store's resources live in the test namespace and go with it.
+func teardownPrivateObjectStore(prev string) {
+	currentObjectStoreNamespace = prev
 }
 
 // teardownObjectStore removes the per-namespace credentials Secret. The shared
