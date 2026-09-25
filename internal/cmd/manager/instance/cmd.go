@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/backup"
+	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/importdump"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/initdb"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/join"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/prestop"
@@ -43,6 +44,7 @@ func NewCommand() *cobra.Command {
 		initdb.NewCommand(),
 		join.NewCommand(),
 		restore.NewCommand(),
+		importdump.NewCommand(),
 		status.NewCommand(),
 		signal.NewCommand(),
 		prestop.NewCommand(),

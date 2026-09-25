@@ -20,93 +20,33 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore/objectstoretest"
 )
-
-// fakeS3 serves the two calls manifest listing needs: ListObjectsV2 and
-// GetObject, path-style, for one bucket.
-type fakeS3 struct {
-	bucket  string
-	objects map[string][]byte
-}
-
-func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	if strings.TrimSuffix(path, "/") == f.bucket && r.URL.Query().Get("list-type") == "2" {
-		type content struct {
-			Key          string
-			Size         int
-			LastModified string
-			ETag         string
-		}
-		type result struct {
-			XMLName  xml.Name `xml:"ListBucketResult"`
-			Name     string
-			Prefix   string
-			KeyCount int
-			MaxKeys  int
-			Contents []content
-		}
-		prefix := r.URL.Query().Get("prefix")
-		out := result{Name: f.bucket, Prefix: prefix, MaxKeys: 1000}
-		keys := make([]string, 0, len(f.objects))
-		for k := range f.objects {
-			if strings.HasPrefix(k, prefix) {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			out.Contents = append(out.Contents, content{
-				Key: k, Size: len(f.objects[k]), ETag: `"x"`,
-				LastModified: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
-			})
-		}
-		out.KeyCount = len(out.Contents)
-		w.Header().Set("Content-Type", "application/xml")
-		_ = xml.NewEncoder(w).Encode(out)
-		return
-	}
-	key := strings.TrimPrefix(path, f.bucket+"/")
-	body, ok := f.objects[key]
-	if !ok || r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.Header().Set("Last-Modified", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Format(http.TimeFormat))
-	w.Header().Set("ETag", `"x"`)
-	_, _ = w.Write(body)
-}
 
 func newFakeStore(t *testing.T, objects map[string]any) (*Client, mysqlv1alpha1.S3ObjectStore) {
 	t.Helper()
-	fake := &fakeS3{bucket: "backups", objects: map[string][]byte{}}
+	raw := map[string][]byte{}
 	for k, v := range objects {
 		switch b := v.(type) {
 		case []byte:
-			fake.objects[k] = b
+			raw[k] = b
 		default:
 			payload, err := json.Marshal(v)
 			if err != nil {
 				t.Fatal(err)
 			}
-			fake.objects[k] = payload
+			raw[k] = payload
 		}
 	}
-	srv := httptest.NewServer(fake)
-	t.Cleanup(srv.Close)
+	srv, _ := objectstoretest.NewServer(t, "backups", raw)
 	client, err := NewClient(Config{
 		Endpoint: srv.URL, Region: "us-east-1", ForcePathStyle: true,
 		AccessKeyID: "k", SecretAccessKey: "s",
@@ -281,5 +221,69 @@ func TestZstdRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatal("round trip changed the payload")
+	}
+}
+
+func TestLogicalBackupMetadataCheckImportable(t *testing.T) {
+	meta := LogicalBackupMetadata{
+		FormatVersion: LogicalFormatVersion,
+		Compression:   LogicalCompressionZstd,
+		Flavor:        "mysql",
+		Databases:     []string{"billing", "shop"},
+	}
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*LogicalBackupMetadata)
+		flavor   string
+		selected []string
+		wantErr  string
+	}{
+		{name: "whole dump", flavor: "mysql"},
+		{name: "a subset", flavor: "mysql", selected: []string{"shop"}},
+		{name: "no recorded flavor", flavor: "mariadb",
+			mutate: func(m *LogicalBackupMetadata) { m.Flavor = "" }},
+		{name: "another flavor", flavor: "mariadb", wantErr: "taken on a mysql server"},
+		{name: "a missing database", flavor: "mysql", selected: []string{"shop", "crm", "hr"},
+			wantErr: "databases crm, hr are not in the dump, which holds billing, shop"},
+		{name: "a newer format", flavor: "mysql", wantErr: "format version 2",
+			mutate: func(m *LogicalBackupMetadata) { m.FormatVersion = 2 }},
+		{name: "another compression", flavor: "mysql", wantErr: `compression "gzip"`,
+			mutate: func(m *LogicalBackupMetadata) { m.Compression = "gzip" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := meta
+			m.Databases = slices.Clone(meta.Databases)
+			if tc.mutate != nil {
+				tc.mutate(&m)
+			}
+			err := m.CheckImportable(tc.flavor, tc.selected)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestSelectAndFindLogicalBackups(t *testing.T) {
+	if _, err := SelectLatestLogicalBackup(nil); err == nil {
+		t.Error("an empty listing has no latest backup")
+	}
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	entries := []LogicalBackupEntry{
+		{Prefix: "a/", Meta: LogicalBackupMetadata{BackupID: "a", CompletedAt: now.Add(-2 * time.Hour)}},
+		{Prefix: "b/", Meta: LogicalBackupMetadata{BackupID: "b", CompletedAt: now}},
+		{Prefix: "c/", Meta: LogicalBackupMetadata{BackupID: "c", CompletedAt: now.Add(-time.Hour)}},
+	}
+	if latest, err := SelectLatestLogicalBackup(entries); err != nil || latest.Prefix != "b/" {
+		t.Errorf("latest = %v, %v; want b/", latest.Prefix, err)
+	}
+	if found, err := FindLogicalBackupByID(entries, "c"); err != nil || found.Prefix != "c/" {
+		t.Errorf("find c = %v, %v", found.Prefix, err)
+	}
+	if _, err := FindLogicalBackupByID(entries, "zz"); err == nil {
+		t.Error("an unknown backupID must not be found")
 	}
 }

@@ -148,7 +148,8 @@ func (c *Controller) StartDump(ctx context.Context, req webserver.DumpRequest) (
 		return nil, fmt.Errorf("dump: creating work directory: %w", err)
 	}
 	defaults := filepath.Join(session.dir, "client.cnf")
-	if err := os.WriteFile(defaults, dumpDefaultsFile(req.Password, cfg.Socket), 0o600); err != nil {
+	credentials := clientDefaultsFile(engine.DumpAccountName, req.Password, cfg.Socket)
+	if err := os.WriteFile(defaults, credentials, 0o600); err != nil {
 		return nil, fmt.Errorf("dump: writing credentials file: %w", err)
 	}
 
@@ -266,16 +267,16 @@ func (c *Controller) resolveDumpDatabases(ctx context.Context, requested []strin
 	return out, nil
 }
 
-// dumpDefaultsFile renders the option file the dump client reads its
-// credentials from. Values are double-quoted, where the option-file parser
-// honours backslash escapes.
-func dumpDefaultsFile(password, socket string) []byte {
+// clientDefaultsFile renders the option file a dump or load client reads its
+// credentials from, so the password never appears in argv. Values are
+// double-quoted, where the option-file parser honours backslash escapes.
+func clientDefaultsFile(user, password, socket string) []byte {
 	quote := func(v string) string {
 		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`
 	}
 	var b bytes.Buffer
 	b.WriteString("[client]\n")
-	b.WriteString("user=" + quote(engine.DumpAccountName) + "\n")
+	b.WriteString("user=" + quote(user) + "\n")
 	b.WriteString("password=" + quote(password) + "\n")
 	if socket != "" {
 		b.WriteString("socket=" + quote(socket) + "\n")

@@ -18,7 +18,9 @@ package objectstore
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -79,6 +81,39 @@ type LogicalBackupMetadata struct {
 	CompletedAt time.Time `json:"completedAt"`
 }
 
+// CheckImportable reports why a cluster of the given flavor cannot load this
+// dump, or loading only the selected databases from it: a layout or
+// compression this operator does not read, another flavor, or a selected
+// database that is not in the dump. It returns nil when the import can go
+// ahead.
+func (m LogicalBackupMetadata) CheckImportable(flavor string, selected []string) error {
+	if m.FormatVersion != LogicalFormatVersion {
+		return fmt.Errorf("the dump uses format version %d and this operator reads version %d",
+			m.FormatVersion, LogicalFormatVersion)
+	}
+	if m.Compression != LogicalCompressionZstd {
+		return fmt.Errorf("the dump uses compression %q and this operator reads %q",
+			m.Compression, LogicalCompressionZstd)
+	}
+	// The worker always records the flavor. An empty one leaves nothing to
+	// compare, so it is not refused.
+	if m.Flavor != "" && m.Flavor != flavor {
+		return fmt.Errorf("the dump was taken on a %s server and this cluster runs %s; "+
+			"a dump only loads into the flavor it was taken on", m.Flavor, flavor)
+	}
+	var missing []string
+	for _, db := range selected {
+		if !slices.Contains(m.Databases, db) {
+			missing = append(missing, db)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("databases %s are not in the dump, which holds %s",
+			strings.Join(missing, ", "), strings.Join(m.Databases, ", "))
+	}
+	return nil
+}
+
 // LogicalBackupEntry pairs a logical backup's directory prefix with its
 // manifest.
 type LogicalBackupEntry struct {
@@ -118,6 +153,31 @@ func ListLogicalBackups(
 		})
 	}
 	return entries, nil
+}
+
+// SelectLatestLogicalBackup returns the logical backup that completed last.
+func SelectLatestLogicalBackup(entries []LogicalBackupEntry) (LogicalBackupEntry, error) {
+	if len(entries) == 0 {
+		return LogicalBackupEntry{}, fmt.Errorf("no logical backups found in object store")
+	}
+	latest := entries[0]
+	for _, entry := range entries[1:] {
+		if entry.Meta.CompletedAt.After(latest.Meta.CompletedAt) {
+			latest = entry
+		}
+	}
+	return latest, nil
+}
+
+// FindLogicalBackupByID returns the logical backup whose manifest BackupID is
+// id.
+func FindLogicalBackupByID(entries []LogicalBackupEntry, id string) (LogicalBackupEntry, error) {
+	for _, entry := range entries {
+		if entry.Meta.BackupID == id {
+			return entry, nil
+		}
+	}
+	return LogicalBackupEntry{}, fmt.Errorf("no logical backup with backupID %q found in object store", id)
 }
 
 // PlanLogicalRetention returns the directory prefixes of the logical backups
