@@ -40,10 +40,12 @@ import (
 )
 
 type memStore struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	json    map[string]any
-	removed []string
+	mu         sync.Mutex
+	objects    map[string][]byte
+	json       map[string]any
+	removed    []string
+	uploadErr  error
+	putJSONErr error
 }
 
 func newMemStore() *memStore {
@@ -51,6 +53,9 @@ func newMemStore() *memStore {
 }
 
 func (m *memStore) Upload(_ context.Context, _, key string, r io.Reader, _ int64, _ string) error {
+	if m.uploadErr != nil {
+		return m.uploadErr
+	}
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return err
@@ -62,6 +67,9 @@ func (m *memStore) Upload(_ context.Context, _, key string, r io.Reader, _ int64
 }
 
 func (m *memStore) PutJSON(_ context.Context, _, key string, v any) error {
+	if m.putJSONErr != nil {
+		return m.putJSONErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.json[key] = v
@@ -83,6 +91,8 @@ const sampleDump = "-- MySQL dump 10.13\n-- CHANGE MASTER TO MASTER_LOG_FILE='my
 type sourceServer struct {
 	// refusals are served, in order, before the dump succeeds.
 	refusals []int
+	// abort cuts the stream short right after the response head.
+	abort    bool
 	body     string
 	trailer  map[string]string
 	requests []webserver.DumpRequest
@@ -115,6 +125,15 @@ func (s *sourceServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(webserver.DumpDatabasesHeader, webserver.EncodeDumpDatabases([]string{"billing", "shop"}))
 	w.Header().Set("Trailer", webserver.DumpSnapshotGTIDTrailer+", "+webserver.DumpSnapshotBinlogTrailer+", "+webserver.DumpErrorTrailer)
 	w.WriteHeader(http.StatusOK)
+	if s.abort {
+		// Flush the head and a first chunk so the client gets the 200 and then
+		// finds the stream cut short, instead of failing the request itself.
+		_, _ = io.WriteString(w, "-- MySQL dump 10.13\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		panic(http.ErrAbortHandler)
+	}
 	_, _ = io.WriteString(w, s.body)
 	for k, v := range s.trailer {
 		w.Header().Set(k, v)
@@ -144,13 +163,17 @@ func fastRetries(t *testing.T, timeout time.Duration) {
 	t.Cleanup(func() { dumpRetryInterval, dumpRetryTimeout = interval, total })
 }
 
-func runAgainst(t *testing.T, src *sourceServer) (*memStore, error) {
+func runWithStore(t *testing.T, store *memStore, src *sourceServer) error {
 	t.Helper()
 	srv := httptest.NewServer(src)
 	t.Cleanup(srv.Close)
+	return runLogicalUpload(context.Background(), logicalOpts(srv.URL), store, srv.Client(), "s3cret")
+}
+
+func runAgainst(t *testing.T, src *sourceServer) (*memStore, error) {
+	t.Helper()
 	store := newMemStore()
-	err := runLogicalUpload(context.Background(), logicalOpts(srv.URL), store, srv.Client(), "s3cret")
-	return store, err
+	return store, runWithStore(t, store, src)
 }
 
 func decompress(t *testing.T, b []byte) string {
@@ -275,6 +298,71 @@ func TestLogicalUploadRejectsIncompleteDumps(t *testing.T) {
 				t.Fatalf("manifest written for an incomplete dump: %v", store.json)
 			}
 		})
+	}
+}
+
+func TestLogicalUploadStoreFailureIsNotADumpFailure(t *testing.T) {
+	store := newMemStore()
+	store.uploadErr = errors.New("s3 is down")
+	err := runWithStore(t, store, &sourceServer{body: sampleDump})
+	var f *failure
+	if !errors.As(err, &f) || f.reason != "" {
+		t.Fatalf("err = %v, want an upload failure without a reason", err)
+	}
+	if strings.Contains(err.Error(), "upload finished") {
+		t.Fatalf("upload failure message leaked the copy teardown: %v", err)
+	}
+	if !strings.Contains(err.Error(), "s3 is down") {
+		t.Fatalf("error does not name the store failure: %v", err)
+	}
+	if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
+		t.Fatalf("archive left behind: objects=%v removed=%v", store.objects, store.removed)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written after a failed upload: %v", store.json)
+	}
+}
+
+func TestLogicalUploadManifestFailureRemovesArchive(t *testing.T) {
+	store := newMemStore()
+	store.putJSONErr = errors.New("manifest upload failed")
+	err := runWithStore(t, store, &sourceServer{body: sampleDump})
+	var f *failure
+	if !errors.As(err, &f) || f.reason != "" {
+		t.Fatalf("err = %v, want a manifest failure without a reason", err)
+	}
+	if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
+		t.Fatalf("archive left behind: objects=%v removed=%v", store.objects, store.removed)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written for a failed upload: %v", store.json)
+	}
+}
+
+func TestLogicalUploadLargeDumpKeepsFooter(t *testing.T) {
+	body := strings.Repeat("INSERT INTO t VALUES (1,'x');\n", 100) + "-- Dump completed on 2026-09-25 16:29:19\n"
+	store, err := runAgainst(t, &sourceServer{body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := store.objects["prod/shop/nightly/id/dump.sql.zst"]
+	if got := decompress(t, archive); got != body {
+		t.Fatalf("archive = %q", got)
+	}
+	meta, ok := store.json["prod/shop/nightly/id/logical.json"].(objectstore.LogicalBackupMetadata)
+	if !ok || meta.UncompressedBytes != int64(len(body)) {
+		t.Fatalf("manifest = %#v", store.json)
+	}
+}
+
+func TestLogicalUploadCutStreamIsDumpFailed(t *testing.T) {
+	store, err := runAgainst(t, &sourceServer{body: sampleDump, abort: true})
+	var f *failure
+	if !errors.As(err, &f) || f.reason != backupworker.ReasonDumpFailed {
+		t.Fatalf("err = %v, want DumpFailed", err)
+	}
+	if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
+		t.Fatalf("archive left behind: objects=%v removed=%v", store.objects, store.removed)
 	}
 }
 

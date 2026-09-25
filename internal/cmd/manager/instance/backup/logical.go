@@ -40,6 +40,13 @@ var dumpFooter = []byte("-- Dump completed on")
 // dumpFooterWindow is how much of the stream's end is kept to find the footer.
 const dumpFooterWindow = 512
 
+// errUploadClosed is the error the copy sees when the upload has ended the
+// pipe. It is a routing marker, never a reported failure. It relies on the
+// store contract that Upload returns nil only after draining its reader to
+// EOF: if a store ever returned early, the manifest would describe a prefix
+// of the stream while the footer check still validates the source's tail.
+var errUploadClosed = errors.New("upload finished")
+
 var (
 	// dumpRetryInterval and dumpRetryTimeout bound the retries of refusals that
 	// clear on their own: a replica that has not applied the dump account yet,
@@ -112,7 +119,7 @@ func runLogicalUpload(
 	archive := objectstore.NewSHA256Reader(pr)
 	uploadErr := store.Upload(ctx, opts.Bucket, opts.ArchiveKey, archive, -1, "application/zstd")
 	// Unblock the copy if the upload gave up first.
-	pr.CloseWithError(errors.Join(uploadErr, errors.New("upload finished")))
+	pr.CloseWithError(errUploadClosed)
 	copyErr := <-copyDone
 	completedAt := time.Now().UTC()
 
@@ -125,7 +132,7 @@ func runLogicalUpload(
 		return &failure{reason: reason, err: err}
 	}
 	switch {
-	case copyErr != nil:
+	case copyErr != nil && !errors.Is(copyErr, errUploadClosed):
 		return fail(backupworker.ReasonDumpFailed, fmt.Errorf("backup: %w", copyErr))
 	case uploadErr != nil:
 		return fail("", uploadErr)
@@ -162,7 +169,7 @@ func runLogicalUpload(
 	log.Info("Logical dump uploaded", "bytes", metadata.SizeBytes, "uncompressedBytes", uncompressed,
 		"sha256", metadata.SHA256, "snapshotBinlog", metadata.SnapshotBinlog)
 	if err := store.PutJSON(ctx, opts.Bucket, opts.MetadataKey, metadata); err != nil {
-		return err
+		return fail("", err)
 	}
 	log.Info("Backup upload complete")
 	return nil
