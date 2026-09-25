@@ -337,4 +337,9 @@ const (
 	// ConditionDegraded indicates that the resource failed to reach or maintain
 	// its desired state.
 	ConditionDegraded = "Degraded"
+
+	// ConditionDumpAccountReady indicates that the cluster's cnmsql_dump account
+	// exists on the primary with the password in the <cluster>-dump Secret, so
+	// logical backups can run.
+	ConditionDumpAccountReady = "DumpAccountReady"
 )

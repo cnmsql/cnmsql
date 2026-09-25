@@ -2190,6 +2190,15 @@ spec:
                           deletes the Job as soon as it finishes.
                         type: string
                     type: object
+                  logicalOptions:
+                    description: |-
+                      LogicalOptions are extra flags passed to the dump client (mysqldump /
+                      mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs
+                      replaces them. The operator does not validate them: flags that change the
+                      output format or GTID handling break restore.
+                    items:
+                      type: string
+                    type: array
                   objectStore:
                     description: |-
                       ObjectStore is the S3-compatible destination for backups and binlog
@@ -5083,6 +5092,13 @@ spec:
                 items:
                   type: string
                 type: array
+              dumpAccountSecretVersion:
+                description: |-
+                  DumpAccountSecretVersion is the resourceVersion of the <cluster>-dump
+                  Secret last applied to the cnmsql_dump account on the primary. The
+                  operator re-applies the account when the Secret changes. Written only by
+                  the operator.
+                type: string
               establishedAt:
                 description: |-
                   EstablishedAt records the first time the cluster reached full readiness

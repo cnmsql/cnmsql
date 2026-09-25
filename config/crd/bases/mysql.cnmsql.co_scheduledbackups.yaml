@@ -1161,12 +1161,43 @@ spec:
                       deletes the Job as soon as it finishes.
                     type: string
                 type: object
+              logical:
+                description: |-
+                  Logical is propagated to every generated Backup as its spec.logical when
+                  method is "logical".
+                properties:
+                  databases:
+                    description: |-
+                      Databases limits the dump to these schemas. Empty means every application
+                      schema. The system schemas (mysql, sys, performance_schema,
+                      information_schema) and operator-owned schemas are always excluded.
+                    items:
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-type: set
+                    x-kubernetes-validations:
+                    - message: system schemas cannot be dumped
+                      rule: self.all(d, !(d.lowerAscii() in ['mysql', 'sys', 'performance_schema',
+                        'information_schema']))
+                  extraArgs:
+                    description: |-
+                      ExtraArgs are appended to the dump command. They replace the cluster's
+                      spec.backup.logicalOptions. The operator does not validate them: flags
+                      that change the output format or GTID handling break restore.
+                    items:
+                      type: string
+                    type: array
+                type: object
               method:
                 default: xtrabackup
                 description: Method is the backup method used for the generated backups.
                 enum:
                 - xtrabackup
                 - volumeSnapshot
+                - logical
                 type: string
               online:
                 default: true
@@ -1226,6 +1257,12 @@ spec:
             - cluster
             - schedule
             type: object
+            x-kubernetes-validations:
+            - message: 'logical is only valid with method: logical'
+              rule: '!has(self.logical) || (has(self.method) && self.method == ''logical'')'
+            - message: a logical backup is always online
+              rule: '!has(self.method) || self.method != ''logical'' || !has(self.online)
+                || self.online'
           status:
             description: status defines the observed state of ScheduledBackup
             properties:

@@ -138,6 +138,22 @@ var _ = Describe("ScheduledBackup CreateBackup", func() {
 		Expect(backup.Finalizers).NotTo(ContainElement(BackupCleanupFinalizer))
 	})
 
+	It("propagates the logical method and options", func() {
+		sb := &ScheduledBackup{
+			ObjectMeta: metav1.ObjectMeta{Name: "nightly-dump", Namespace: "prod"},
+			Spec: ScheduledBackupSpec{
+				Cluster: LocalObjectReference{Name: "demo"},
+				Method:  BackupMethodLogical,
+				Logical: &LogicalBackupOptions{Databases: []string{"billing"}, ExtraArgs: []string{"--skip-extended-insert"}},
+			},
+		}
+		backup := sb.CreateBackup("nightly-dump-1")
+		Expect(backup.Spec.Method).To(Equal(BackupMethodLogical))
+		Expect(backup.Spec.Logical).NotTo(BeNil())
+		Expect(backup.Spec.Logical.Databases).To(Equal([]string{"billing"}))
+		Expect(backup.Spec.Logical.ExtraArgs).To(Equal([]string{"--skip-extended-insert"}))
+	})
+
 	It("propagates reclaimPolicy Delete to the generated backup", func() {
 		sb := &ScheduledBackup{
 			ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "prod"},
