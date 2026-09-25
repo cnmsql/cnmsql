@@ -71,6 +71,9 @@ type LogicalTool interface {
 	LoadBinary() string
 	// DumpArgs builds the dump client's arguments.
 	DumpArgs(opts DumpOpts) ([]string, error)
+	// LoadArgs builds the SQL client's arguments for loading a dump. The
+	// defaults file holds the loading account's user, password and socket.
+	LoadArgs(defaultsFile string) []string
 	// ParseSnapshotPosition extracts the snapshot position from the dump's
 	// comment lines (every line that starts with "-- "). The binlog coordinates
 	// come from the --source-data/--master-data comment near the top. MariaDB
@@ -117,6 +120,24 @@ func buildDumpArgs(opts DumpOpts, engineArgs ...string) ([]string, error) {
 	return append(args, opts.Databases...), nil
 }
 
+// maxLoadPacketBytes is the largest statement the SQL client sends while
+// loading a dump: the protocol's 1 GiB ceiling. mysqldump keeps its extended
+// INSERTs near --net-buffer-length, but a single large row is written as one
+// statement whatever its size.
+const maxLoadPacketBytes = 1 << 30
+
+// buildLoadArgs is shared by both engines: both clients load a dump the same
+// way. The dump sets its own session character set, but the client must read
+// the stream as utf8mb4 too.
+func buildLoadArgs(defaultsFile string) []string {
+	// --defaults-extra-file must be the first argument or the client rejects it.
+	return []string{
+		"--defaults-extra-file=" + defaultsFile,
+		"--default-character-set=utf8mb4",
+		fmt.Sprintf("--max-allowed-packet=%d", maxLoadPacketBytes),
+	}
+}
+
 // snapshotBinlogRE matches the commented replication coordinates both dump
 // clients write with --source-data=2 / --master-data=2. Percona 8.0 prints the
 // CHANGE MASTER spelling even for --source-data; 8.4 and later print CHANGE
@@ -157,6 +178,8 @@ func (mysqlLogicalTool) DumpArgs(opts DumpOpts) ([]string, error) {
 	return buildDumpArgs(opts, "--set-gtid-purged=OFF", sourceData)
 }
 
+func (mysqlLogicalTool) LoadArgs(defaultsFile string) []string { return buildLoadArgs(defaultsFile) }
+
 func (mysqlLogicalTool) ParseSnapshotPosition(comments string) (BinlogInfo, error) {
 	return parseSnapshotBinlog(comments)
 }
@@ -187,6 +210,8 @@ func (mariadbLogicalTool) LoadBinary() string { return mariadbSQLClient }
 func (mariadbLogicalTool) DumpArgs(opts DumpOpts) ([]string, error) {
 	return buildDumpArgs(opts, "--master-data=2")
 }
+
+func (mariadbLogicalTool) LoadArgs(defaultsFile string) []string { return buildLoadArgs(defaultsFile) }
 
 func (mariadbLogicalTool) ParseSnapshotPosition(comments string) (BinlogInfo, error) {
 	info, err := parseSnapshotBinlog(comments)

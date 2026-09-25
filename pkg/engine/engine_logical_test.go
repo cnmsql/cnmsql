@@ -136,6 +136,20 @@ func TestLogicalDumpArgs(t *testing.T) {
 	}
 }
 
+func TestLogicalLoadArgs(t *testing.T) {
+	for _, flavor := range []Flavor{FlavorMySQL, FlavorMariaDB} {
+		args := MustForFlavor(flavor).Logical().LoadArgs("/tmp/import/client.cnf")
+		want := []string{
+			"--defaults-extra-file=/tmp/import/client.cnf",
+			"--default-character-set=utf8mb4",
+			"--max-allowed-packet=1073741824",
+		}
+		if !slices.Equal(args, want) {
+			t.Errorf("%s: LoadArgs = %v, want %v", flavor, args, want)
+		}
+	}
+}
+
 func TestLogicalDumpArgsRequireDefaultsFileAndDatabases(t *testing.T) {
 	lt := MustForFlavor(FlavorMySQL).Logical()
 	if _, err := lt.DumpArgs(DumpOpts{Databases: []string{"a"}}); err == nil {
