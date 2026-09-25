@@ -21,6 +21,8 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +43,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -115,35 +120,48 @@ func logicalImages(t *testing.T) []logicalImage {
 	return out
 }
 
+// linuxBinary is a Go command built once for the container platform.
+type linuxBinary struct {
+	pkg  string
+	once sync.Once
+	path string
+	err  error
+}
+
 var (
-	managerOnce sync.Once
-	managerPath string
-	managerErr  error
+	managerBinary = &linuxBinary{pkg: "./cmd/manager"}
+	fakeS3Binary  = &linuxBinary{pkg: "./test/integration/fakes3"}
 )
+
+// build compiles the command for the container platform.
+func (b *linuxBinary) build(t *testing.T) string {
+	t.Helper()
+	b.once.Do(func() {
+		dir, err := os.MkdirTemp("", "cnmsql-bin-")
+		if err != nil {
+			b.err = err
+			return
+		}
+		b.path = filepath.Join(dir, filepath.Base(b.pkg))
+		cmd := exec.Command("go", "build", "-o", b.path, b.pkg)
+		cmd.Dir = filepath.Join("..", "..")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			b.err = fmt.Errorf("building %s: %v\n%s", b.pkg, err, out)
+		}
+	})
+	if b.err != nil {
+		t.Fatal(b.err)
+	}
+	return b.path
+}
 
 // buildManager compiles the instance manager for the container platform. The
 // published images do not ship it (the operator copies it into each Pod), so
 // the test copies it in the same way.
 func buildManager(t *testing.T) string {
 	t.Helper()
-	managerOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "cnmsql-manager-")
-		if err != nil {
-			managerErr = err
-			return
-		}
-		managerPath = filepath.Join(dir, "manager")
-		cmd := exec.Command("go", "build", "-o", managerPath, "./cmd/manager")
-		cmd.Dir = filepath.Join("..", "..")
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			managerErr = fmt.Errorf("building manager: %v\n%s", err, out)
-		}
-	})
-	if managerErr != nil {
-		t.Fatal(managerErr)
-	}
-	return managerPath
+	return managerBinary.build(t)
 }
 
 type logicalNode struct {
@@ -152,10 +170,76 @@ type logicalNode struct {
 	baseURL   string
 }
 
-// startLogicalNode runs `instance initdb` then `instance run` in the image, as
-// an instance Pod does, and waits for the control API.
-func startLogicalNode(ctx context.Context, t *testing.T, img logicalImage) *logicalNode {
+// nodeImport makes a node load a dump with `instance import` between initdb
+// and run, as the import init container does. The dump is served by fakes3
+// inside the container, so the test needs no network path to the host.
+type nodeImport struct {
+	// objects is the bucket content, as the JSON fakes3 reads.
+	objects       []byte
+	dumpKey       string
+	manifestKey   string
+	databases     []string
+	postImportSQL []string
+}
+
+// fakeS3Addr is where fakes3 listens inside an importing node.
+const fakeS3Addr = "127.0.0.1:9000"
+
+// env is the object-store environment the import command reads.
+func (imp *nodeImport) env() string {
+	return fmt.Sprintf("export %s=http://%s %s=us-east-1 %s=true %s=k %s=s",
+		objectstore.EnvEndpoint, fakeS3Addr, objectstore.EnvRegion,
+		objectstore.EnvForcePathStyle, objectstore.EnvAccessKeyID, objectstore.EnvSecretAccessKey)
+}
+
+// command is the import command line, quoted for bash.
+func (imp *nodeImport) command() string {
+	args := make([]string, 0, 10+len(imp.databases)+len(imp.postImportSQL))
+	args = append(args,
+		"manager", "instance", "import", "--mysqld=/usr/sbin/mysqld", "--config=/tmp/my.cnf",
+		"--data-dir=/var/lib/mysql", "--socket=/tmp/mysql.sock", "--bucket="+importBucket,
+		"--dump-key="+imp.dumpKey, "--manifest-key="+imp.manifestKey,
+	)
+	for _, db := range imp.databases {
+		args = append(args, "--database="+db)
+	}
+	for _, stmt := range imp.postImportSQL {
+		args = append(args, "--post-import-sql="+stmt)
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
+}
+
+// importBucket is the fake bucket dumps are served from.
+const importBucket = "backups"
+
+// startLogicalNode runs `instance initdb`, then `instance import` when imp is
+// set, then `instance run` in the image, as an instance Pod does, and waits
+// for the control API.
+func startLogicalNode(ctx context.Context, t *testing.T, img logicalImage, imp *nodeImport) *logicalNode {
 	t.Helper()
+	importStep := ""
+	files := []testcontainers.ContainerFile{{
+		HostFilePath: buildManager(t), ContainerFilePath: "/usr/local/bin/manager", FileMode: 0o755,
+	}}
+	if imp != nil {
+		importStep = fmt.Sprintf(`fakes3 --addr=%[1]s --bucket=%[2]s --objects=/tmp/objects.json &
+until (exec 3<>/dev/tcp/%[3]s) 2>/dev/null; do sleep 0.2; done
+%[4]s
+%[5]s
+`, fakeS3Addr, importBucket, strings.Replace(fakeS3Addr, ":", "/", 1), imp.env(), imp.command())
+		files = append(files,
+			testcontainers.ContainerFile{
+				HostFilePath: fakeS3Binary.build(t), ContainerFilePath: "/usr/local/bin/fakes3", FileMode: 0o755,
+			},
+			testcontainers.ContainerFile{
+				Reader: bytes.NewReader(imp.objects), ContainerFilePath: "/tmp/objects.json", FileMode: 0o644,
+			},
+		)
+	}
 	script := fmt.Sprintf(`set -e
 export MYSQL_ROOT_PASSWORD=rootpass MYSQL_CONTROL_PASSWORD=ctlpass MYSQL_APP_PASSWORD=apppass
 export CNMSQL_FLAVOR=%[1]s
@@ -164,10 +248,10 @@ cat > /tmp/my.cnf <<'CFG'
 manager instance initdb --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock \
   --database=app --owner=appuser --control-user=control --server-version=%[3]s
-exec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
+%[5]sexec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock --server-version=%[3]s \
   --instance-name=%[4]s --control-user=control --web-addr=:8080
-`, img.flavor, img.cnf, img.version, img.name)
+`, img.flavor, img.cnf, img.version, img.name, importStep)
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
@@ -175,9 +259,7 @@ exec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
 			ExposedPorts: []string{"8080/tcp"},
 			Entrypoint:   []string{"bash", "-c"},
 			Cmd:          []string{script},
-			Files: []testcontainers.ContainerFile{{
-				HostFilePath: buildManager(t), ContainerFilePath: "/usr/local/bin/manager", FileMode: 0o755,
-			}},
+			Files:        files,
 			WaitingFor: wait.ForHTTP("/readyz").WithPort("8080/tcp").
 				WithStatusCodeMatcher(func(status int) bool { return status == http.StatusOK }).
 				WithStartupTimeout(5 * time.Minute),
@@ -354,7 +436,7 @@ func TestLogicalBackupRoundTrip(t *testing.T) {
 func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 	ctx := context.Background()
 	const password = `dump-p"a\ss`
-	src := startLogicalNode(ctx, t, srcImg)
+	src := startLogicalNode(ctx, t, srcImg, nil)
 	src.sql(ctx, t, seedSQL)
 
 	// Before the account exists, the instance refuses with a retryable 503.
@@ -416,17 +498,34 @@ func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 		t.Errorf("partial dump = %d, contains shop: %v", partial.status, strings.Contains(partial.body, "`shop`"))
 	}
 
-	// Load into a fresh server of the next series, as an import will.
-	dst := startLogicalNode(ctx, t, dstImg)
-	if err := dst.container.CopyToContainer(ctx, []byte(full.body), "/tmp/dump.sql", 0o644); err != nil {
-		t.Fatal(err)
+	// Import into fresh servers of the next series, through the same
+	// `instance import` the import init container runs: the whole dump, then
+	// only billing plus post-import SQL.
+	objects := dumpObjects(t, full, srcImg)
+	dst := startLogicalNode(ctx, t, dstImg, &nodeImport{
+		objects: objects, dumpKey: importDumpKey, manifestKey: importManifestKey,
+	})
+	partialDst := startLogicalNode(ctx, t, dstImg, &nodeImport{
+		objects: objects, dumpKey: importDumpKey, manifestKey: importManifestKey,
+		databases: []string{"billing"},
+		postImportSQL: []string{
+			"CREATE TABLE billing.imported (id INT PRIMARY KEY)",
+			"INSERT INTO billing.imported VALUES (7)",
+		},
+	})
+
+	// The dump is GTID-neutral and the load runs with binary logging off: the
+	// imported server records no GTID for it and has none of it in its binlog.
+	if state := dst.gtidState(ctx, t); state != "" {
+		t.Errorf("the import left GTID state %q", state)
 	}
-	gtidBefore := dst.gtidState(ctx, t)
-	loader := engine.MustForFlavor(dstImg.flavor).Logical().LoadBinary()
-	dst.exec(ctx, t, "MYSQL_PWD=rootpass "+loader+" -uroot --socket=/tmp/mysql.sock < /tmp/dump.sql")
-	if after := dst.gtidState(ctx, t); after != gtidBefore {
-		t.Errorf("loading the dump changed the GTID state from %q to %q", gtidBefore, after)
+	if n := dst.binlogMentions(ctx, t, "price_with_tax"); n != 0 {
+		t.Errorf("the load reached the binlog (%d events)", n)
 	}
+	if src.binlogMentions(ctx, t, "price_with_tax") == 0 {
+		t.Error("the source's binlog does not show the seed either: the binlog check proves nothing")
+	}
+	dst.exec(ctx, t, "test -s /var/lib/mysql/"+instance.ImportMarkerName)
 
 	checks := map[string]string{
 		"SELECT name FROM shop.items WHERE id = 1":                                       "café ☕",
@@ -445,10 +544,96 @@ func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 			t.Errorf("%s on %s = %q, want %q", query, dstImg.name, got, want)
 		}
 	}
+
+	partialChecks := map[string]string{
+		"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'shop'": "0",
+		"SELECT SUM(total) FROM billing.invoices":                                     "350",
+		"SELECT id FROM billing.imported":                                             "7",
+	}
+	for query, want := range partialChecks {
+		if got := strings.TrimSpace(partialDst.sql(ctx, t, query+";")); got != want {
+			t.Errorf("partial import: %s on %s = %q, want %q", query, dstImg.name, got, want)
+		}
+	}
+
+	// A finished import is a no-op: running it again (the init container
+	// restarting) touches nothing, not even the running server.
+	imp := &nodeImport{dumpKey: importDumpKey, manifestKey: importManifestKey}
+	if out := dst.exec(ctx, t, imp.env()+"\nexport MYSQL_ROOT_PASSWORD=rootpass CNMSQL_FLAVOR="+
+		string(dstImg.flavor)+"\n"+imp.command()+" 2>&1"); !strings.Contains(out, "already imported") {
+		t.Errorf("second import did not skip:\n%s", out)
+	}
+
 	// The multi-line value survives as one value.
 	if got := dst.sql(ctx, t, "SELECT REPLACE(note, '\\n', '|') FROM shop.items WHERE id = 1;"); strings.TrimSpace(got) != "line one|line two" {
 		t.Errorf("multi-line value = %q", got)
 	}
+}
+
+// The keys the round trip serves each dump under.
+const (
+	importDumpKey     = "prod/nightly/b-1/dump.sql.zst"
+	importManifestKey = "prod/nightly/b-1/logical.json"
+)
+
+// dumpObjects stores a dump the way the backup worker does (zstd, plus a
+// logical.json manifest with its checksum) and returns the bucket content as
+// the JSON fakes3 serves.
+func dumpObjects(t *testing.T, dump dumpResponse, img logicalImage) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	zw, err := objectstore.NewZstdWriter(&compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write([]byte(dump.body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(compressed.Bytes())
+	dbs, _ := webserver.DecodeDumpDatabases(dump.header.Get(webserver.DumpDatabasesHeader))
+	manifest, err := json.Marshal(objectstore.LogicalBackupMetadata{
+		FormatVersion: objectstore.LogicalFormatVersion,
+		BackupID:      "b-1",
+		ClusterName:   "prod",
+		BackupName:    "nightly",
+		Method:        "logical",
+		Tool:          dump.header.Get(webserver.DumpToolHeader),
+		Flavor:        string(img.flavor),
+		ServerVersion: img.version,
+		Compression:   objectstore.LogicalCompressionZstd,
+		ArchiveKey:    importDumpKey,
+		SHA256:        hex.EncodeToString(sum[:]),
+		Databases:     dbs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, err := json.Marshal(map[string][]byte{
+		importDumpKey:     compressed.Bytes(),
+		importManifestKey: manifest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return objects
+}
+
+// binlogMentions counts the binlog events on n whose text contains needle.
+func (n *logicalNode) binlogMentions(ctx context.Context, t *testing.T, needle string) int {
+	t.Helper()
+	client := engine.MustForFlavor(n.img.flavor).Logical().LoadBinary()
+	out := n.exec(ctx, t, fmt.Sprintf(`export MYSQL_PWD=rootpass
+for f in $(%[1]s -uroot --socket=/tmp/mysql.sock -N -B -e 'SHOW BINARY LOGS' | cut -f1); do
+  %[1]s -uroot --socket=/tmp/mysql.sock -N -B -e "SHOW BINLOG EVENTS IN '$f'"
+done | grep -cF %[2]q || true`, client, needle))
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		t.Fatalf("counting binlog events on %s: %q", n.img.name, out)
+	}
+	return count
 }
 
 // gtidState is what a load must leave alone: gtid_purged on MySQL,

@@ -43,13 +43,20 @@ type Bucket struct {
 	objects map[string][]byte
 }
 
+// NewBucket returns a bucket holding the given objects, to serve with any
+// HTTP server.
+func NewBucket(name string, objects map[string][]byte) *Bucket {
+	b := &Bucket{Name: name, objects: map[string][]byte{}}
+	maps.Copy(b.objects, objects)
+	return b
+}
+
 // NewServer starts a server holding one bucket with the given objects and
 // stops it when the test ends. Clients reach it at the returned server's URL
 // with path-style addressing.
 func NewServer(t testing.TB, bucket string, objects map[string][]byte) (*httptest.Server, *Bucket) {
 	t.Helper()
-	b := &Bucket{Name: bucket, objects: map[string][]byte{}}
-	maps.Copy(b.objects, objects)
+	b := NewBucket(bucket, objects)
 	srv := httptest.NewServer(b)
 	t.Cleanup(srv.Close)
 	return srv, b
