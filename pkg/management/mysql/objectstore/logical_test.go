@@ -209,6 +209,51 @@ func TestPlanLogicalRetention(t *testing.T) {
 	}
 }
 
+func TestPlanLogicalRetentionBreaksEqualCompletedAtTiesDeterministically(t *testing.T) {
+	completed := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	entries := []LogicalBackupEntry{
+		{Prefix: "prod/shop/dump/b/", Meta: LogicalBackupMetadata{CompletedAt: completed}},
+		{Prefix: "prod/shop/dump/a/", Meta: LogicalBackupMetadata{CompletedAt: completed}},
+		{Prefix: "prod/shop/dump/c/", Meta: LogicalBackupMetadata{CompletedAt: completed}},
+	}
+	cutoff := completed.Add(time.Hour)
+
+	// The dumps share one completion time, so the tie must resolve the same
+	// way on every run instead of depending on sort instability. Three equal
+	// entries keep the check honest: Go's sort.Slice happens to be stable for
+	// two elements (insertion sort), so a two-entry test would pass even
+	// without the tie-break.
+	first := PlanLogicalRetention(entries, cutoff)
+	second := PlanLogicalRetention(entries, cutoff)
+	if !slices.Equal(first, second) {
+		t.Fatalf("plan is not deterministic: %v then %v", first, second)
+	}
+	if !slices.Equal(first, []string{"prod/shop/dump/a/", "prod/shop/dump/b/"}) {
+		t.Errorf("got %v, want the same two oldest prefixes expired on every run", first)
+	}
+}
+
+func TestPlanLogicalRetentionKeepsUndatedManifests(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	// Two manifests without a CompletedAt: the newest-kept rule alone would
+	// only save one of them, so retention must keep both rather than guess a
+	// completion date (fail-open GC of malformed manifests).
+	entries := []LogicalBackupEntry{
+		{Prefix: "prod/shop/dump/broken-1/", Meta: LogicalBackupMetadata{}},
+		{Prefix: "prod/shop/dump/broken-2/", Meta: LogicalBackupMetadata{}},
+		{Prefix: "prod/shop/dump/old/", Meta: LogicalBackupMetadata{CompletedAt: now.Add(-30 * 24 * time.Hour)}},
+		{Prefix: "prod/shop/dump/fresh/", Meta: LogicalBackupMetadata{CompletedAt: now.Add(-2 * 24 * time.Hour)}},
+	}
+	got := PlanLogicalRetention(entries, now.Add(-7*24*time.Hour))
+	if !slices.Equal(got, []string{"prod/shop/dump/old/"}) {
+		t.Errorf("got %v, want only the dated expired dump", got)
+	}
+
+	if got := PlanLogicalRetention(entries[:2], now.Add(-7*24*time.Hour)); got != nil {
+		t.Errorf("got %v, want nothing expired for undated manifests", got)
+	}
+}
+
 func TestZstdRoundTrip(t *testing.T) {
 	payload := bytes.Repeat([]byte("INSERT INTO `t` VALUES (1,'a');\n"), 10000)
 	var compressed bytes.Buffer

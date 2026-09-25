@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -26,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
@@ -128,6 +130,14 @@ func (r *BackupReconciler) readLogicalManifest(
 	return &meta, nil
 }
 
+// manifestUnrecoverable reports whether a manifest read failed in a way no
+// retry fixes: the object is not there, or it is not a manifest.
+func manifestUnrecoverable(err error) bool {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	return objectstore.IsNotFound(err) || errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
+}
+
 // applyLogicalManifest copies a logical backup's results onto its status. The
 // snapshot position is for reference only: a dump is never a recovery base.
 func applyLogicalManifest(status *mysqlv1alpha1.BackupStatus, meta *objectstore.LogicalBackupMetadata) {
@@ -149,12 +159,22 @@ func (r *BackupReconciler) workerFailure(ctx context.Context, job *batchv1.Job) 
 		client.InNamespace(job.Namespace),
 		client.MatchingLabels{batchv1.JobNameLabel: job.Name},
 	); err != nil {
+		// Without the pods the Backup falls back to the Job's generic reason;
+		// losing the worker's precise one is not worth failing the reconcile.
+		logf.FromContext(ctx).Info("Could not list backup worker Pods", "job", job.Name, "error", err.Error())
 		return "", "", false
 	}
-	// Newest attempt first: with a backoff limit the last word is the one that
-	// counts.
-	sort.Slice(pods.Items, func(i, j int) bool {
-		return pods.Items[j].CreationTimestamp.Before(&pods.Items[i].CreationTimestamp)
+	// Newest attempt first, names breaking same-second ties, so the reported
+	// attempt does not depend on the List order. The newest attempt that left a
+	// termination message wins: when the final attempt died without one (OOM,
+	// deadline kill), an older attempt's diagnosis is still more useful than
+	// the Job's generic reason.
+	sort.SliceStable(pods.Items, func(i, j int) bool {
+		ti, tj := pods.Items[i].CreationTimestamp, pods.Items[j].CreationTimestamp
+		if !ti.Equal(&tj) {
+			return tj.Before(&ti)
+		}
+		return pods.Items[i].Name < pods.Items[j].Name
 	})
 	for i := range pods.Items {
 		for _, cs := range pods.Items[i].Status.ContainerStatuses {

@@ -47,8 +47,8 @@ func TestIsNotFound(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := isNotFound(tc.err); got != tc.want {
-				t.Fatalf("isNotFound(%v) = %t, want %t", tc.err, got, tc.want)
+			if got := IsNotFound(tc.err); got != tc.want {
+				t.Fatalf("IsNotFound(%v) = %t, want %t", tc.err, got, tc.want)
 			}
 		})
 	}

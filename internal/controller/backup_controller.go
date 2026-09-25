@@ -200,7 +200,14 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		var manifest *objectstore.LogicalBackupMetadata
 		if method == mysqlv1alpha1.BackupMethodLogical {
 			if manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reading logical backup manifest: %w", err)
+				// A missing or undecodable manifest will not fix itself, so fail
+				// the Backup instead of leaving it Running forever. Anything else
+				// (store unreachable, credentials briefly unreadable) is retried.
+				if !manifestUnrecoverable(err) {
+					return ctrl.Result{}, fmt.Errorf("reading logical backup manifest: %w", err)
+				}
+				return ctrl.Result{}, r.failBackup(ctx, backup, "ManifestMissing",
+					fmt.Sprintf("The worker Job reported success but its logical.json manifest could not be read from the object store: %v", err))
 			}
 		}
 		log.Info("Backup completed", "backup", backup.Name, "job", jobName)

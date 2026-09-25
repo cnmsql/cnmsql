@@ -44,6 +44,7 @@ const (
 	dumpAccountReasonApplied         = "Applied"
 	dumpAccountReasonPrimaryNotReady = "PrimaryNotReady"
 	dumpAccountReasonApplyFailed     = "ApplyFailed"
+	dumpAccountReasonInvalidSecret   = "InvalidSecret"
 )
 
 // reconcileDumpAccount makes sure the read-only cnmsql_dump@localhost account
@@ -84,12 +85,20 @@ func (r *ClusterReconciler) reconcileDumpAccount(
 	}
 	password := string(secret.Data["password"])
 	if password == "" {
+		// Demote the condition before returning, so a stale True from an
+		// earlier apply cannot hide that every dump would fail.
+		if err := r.setDumpAccountCondition(ctx, cluster, metav1.ConditionFalse, dumpAccountReasonInvalidSecret,
+			fmt.Sprintf("The %s Secret has no password", key.Name), ""); err != nil {
+			return err
+		}
 		return fmt.Errorf("secret %s has no password", key.Name)
 	}
 
 	eng := engine.MustForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
 	serverVersion, err := eng.ParseServerVersion(primaryStatus.Version)
 	if err != nil {
+		logf.FromContext(ctx).Info("Could not parse the server version, falling back to the base dump grants",
+			"version", primaryStatus.Version, "error", err.Error())
 		serverVersion = version.Version{}
 	}
 	logical := eng.Logical()
@@ -130,15 +139,18 @@ func (r *ClusterReconciler) reconcileDumpAccount(
 		"The cnmsql_dump account matches the "+key.Name+" Secret", secret.ResourceVersion)
 }
 
-// reconcileDumpAccountBestEffort runs reconcileDumpAccount and logs a failure
-// for the next pass instead of failing the Cluster reconcile.
+// reconcileDumpAccountBestEffort runs reconcileDumpAccount and reports a
+// failure for the next pass instead of failing the Cluster reconcile.
 func (r *ClusterReconciler) reconcileDumpAccountBestEffort(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	observed observedCluster,
 ) {
 	if err := r.reconcileDumpAccount(ctx, cluster, observed); err != nil {
-		logf.FromContext(ctx).Info("Dump account reconciliation failed, will retry", "error", err.Error())
+		logf.FromContext(ctx).Error(err, "Could not reconcile the dump account")
+		if r.Recorder != nil {
+			r.Recorder.Event(cluster, corev1.EventTypeWarning, "DumpAccountFailed", err.Error())
+		}
 	}
 }
 
