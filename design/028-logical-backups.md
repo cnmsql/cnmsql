@@ -500,15 +500,24 @@ Their current state on `main`:
 3. A tool contract. Add `images/required-tools.txt` and
    `images/mariadb-required-tools.txt`, listing every binary the instance manager
    executes (server, backup tool, stream tool, binlog client, SQL client, dump
-   tool, install-db for MariaDB). A CI step in `build.yml` runs each built image
-   and fails if a listed binary is missing or `--version` fails. That stops a
-   later slimming pass from quietly removing a tool the operator needs.
+   tool, install-db for MariaDB). `images/check-tools.sh` runs each built image
+   and fails if a listed binary is missing or its probe fails (`--version` by
+   default; `mariadb-install-db` and `mariadb-upgrade` only have a presence
+   check, because they have no probe that exits 0 without side effects). The build
+   drivers run it before tagging or pushing, and `build.yml` also builds and
+   checks every image on pull requests, without pushing. That stops a later
+   slimming pass from quietly removing a tool the operator needs.
 4. README: update the "The build keeps…" paragraph and both flavor sections.
 5. Record the size difference per image in the PR. Expected to be small: the
    dump tools link against client libraries the kept `mysql`/`mariadb` client
    already loads.
 6. Publish. The build computes the next patch tag (`8.0-N`, `11.4-N`, …) and
    moves the bare `8.0` / `11.4` tags to it.
+
+Done in [cnmsql/containers#1](https://github.com/cnmsql/containers/pull/1),
+released as `v1.5.0`. The first tags with the dump tool are `8.0-5`, `8.4-5`
+and `9.x-5` (`cnmsql-instance`), and `10.11-4`, `11.4-4`, `11.8-4` and `12.3-4`
+(`cnmsql-mariadb-instance`). The images grew by 0.3 to 1.5 MB compressed.
 
 **Effect in this repo**:
 
@@ -641,6 +650,9 @@ Each phase ships on its own and updates `docs/`.
 The §5.9 changes: keep the dump tools, add the required-tools check to CI,
 update the README, publish new patch tags. Phase 1 code can be written in
 parallel, but its integration and e2e tests need these images.
+
+Done: [cnmsql/containers#1](https://github.com/cnmsql/containers/pull/1),
+released as `v1.5.0` (first tags in §5.9).
 
 ### Phase 1 — logical Backup (M-LB.1)
 
