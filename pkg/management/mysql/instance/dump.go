@@ -51,6 +51,9 @@ type DumpConfig struct {
 	WorkDir string
 	// DumpPath overrides the dump binary. Empty selects the engine's tool.
 	DumpPath string
+	// HeartbeatSchema is the replication-lag heartbeat schema to exclude from
+	// dumps. Empty takes heartbeat.DefaultSchema.
+	HeartbeatSchema string
 }
 
 // SetDumpConfig enables POST /cluster/dump on the controller.
@@ -58,22 +61,27 @@ func (c *Controller) SetDumpConfig(cfg DumpConfig) {
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = os.TempDir()
 	}
+	if cfg.HeartbeatSchema == "" {
+		cfg.HeartbeatSchema = heartbeat.DefaultSchema
+	}
 	c.dump = &cfg
 }
 
-// dumpExcludedSchemas are never dumped: the server's system schemas and the
-// schemas the operator owns.
+// dumpExcludedSchemas are the server's system schemas, which are never dumped.
 var dumpExcludedSchemas = map[string]struct{}{
-	"mysql":                 {},
-	"sys":                   {},
-	"performance_schema":    {},
-	"information_schema":    {},
-	heartbeat.DefaultSchema: {},
+	"mysql":              {},
+	"sys":                {},
+	"performance_schema": {},
+	"information_schema": {},
 }
 
-func isDumpExcludedSchema(name string) bool {
-	_, ok := dumpExcludedSchemas[strings.ToLower(name)]
-	return ok
+// isDumpExcludedSchema reports whether a schema is never dumped: a server
+// system schema, or the operator-owned heartbeat schema of this instance.
+func (c *Controller) isDumpExcludedSchema(name string) bool {
+	if _, ok := dumpExcludedSchemas[strings.ToLower(name)]; ok {
+		return true
+	}
+	return strings.EqualFold(name, c.dump.HeartbeatSchema)
 }
 
 const (
@@ -232,7 +240,7 @@ func (c *Controller) resolveDumpDatabases(ctx context.Context, requested []strin
 	var out []string
 	if len(requested) == 0 {
 		for name := range existing {
-			if !isDumpExcludedSchema(name) {
+			if !c.isDumpExcludedSchema(name) {
 				out = append(out, name)
 			}
 		}
@@ -242,7 +250,7 @@ func (c *Controller) resolveDumpDatabases(ctx context.Context, requested []strin
 		}
 	} else {
 		for _, name := range requested {
-			if isDumpExcludedSchema(name) {
+			if c.isDumpExcludedSchema(name) {
 				return nil, fmt.Errorf("%w: %q is a system or operator schema and cannot be dumped",
 					webserver.ErrInvalidDumpRequest, name)
 			}
