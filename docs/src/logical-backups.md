@@ -74,6 +74,14 @@ Taking a logical backup needs an instance image that includes the dump tool.
 Images published before logical backup support strip it. On such an image the
 Backup fails with reason `LogicalToolUnavailable`; move the cluster to a newer
 image tag of the same series (see [Instance Images and Versions](instance-images.md)).
+The moving series tags (`8.4`, `11.4`, …) already point to images with the tool.
+The first pinned tags that include it are:
+
+| Image | First tag with the dump tool |
+|---|---|
+| `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, `9.x-5` |
+| `ghcr.io/cnmsql/cnmsql-mariadb-instance` | `10.11-4`, `11.4-4`, `11.8-4`, `12.3-4` |
+
 Importing a dump works on any image.
 
 Every dump is one consistent snapshot of all selected databases
