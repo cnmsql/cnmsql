@@ -166,12 +166,17 @@ func dumpRefusal(err error) (int, string) {
 	}
 }
 
+// maxDumpRequestBodyBytes bounds the JSON body of POST /cluster/dump: a dump
+// request carries a password and two schema lists, not a data channel.
+const maxDumpRequestBodyBytes = 1 << 20
+
 // dumpHandler serves POST /cluster/dump. The checks in StartDump decide the
 // status; after that the SQL stream is the body, and a failure mid-stream can
 // only be reported in the error trailer, like the physical backup stream.
 func dumpHandler(streamer DumpStreamer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req DumpRequest
+		r.Body = http.MaxBytesReader(w, r.Body, maxDumpRequestBodyBytes)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

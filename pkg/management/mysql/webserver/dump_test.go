@@ -161,6 +161,18 @@ func TestDumpHandlerRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+func TestDumpHandlerRejectsOversizedBody(t *testing.T) {
+	ctrl := &dumpController{session: &fakeDumpSession{}}
+	body := `{"password":"` + strings.Repeat("x", maxDumpRequestBodyBytes) + `"}`
+	resp := postDump(t, Handler(ctrl), body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if ctrl.req != nil {
+		t.Fatal("an oversized body must not reach StartDump")
+	}
+}
+
 func TestDumpRouteAbsentWithoutStreamer(t *testing.T) {
 	// A manager that predates logical backups has no route: the worker reads the
 	// 404 as InstanceManagerOutdated.

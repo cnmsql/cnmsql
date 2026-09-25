@@ -271,6 +271,34 @@ func TestStartDumpAccountMissing(t *testing.T) {
 	}
 }
 
+func TestStartDumpExcludesConfiguredHeartbeatSchema(t *testing.T) {
+	f := newDumpFixture(t, engine.FlavorMySQL, "")
+	f.controller.dump.HeartbeatSchema = "hb_custom"
+	f.expectAccount(true)
+	f.expectSchemas("mysql", "sys", "hb_custom", "shop")
+	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	if strings.Join(session.Info().Databases, ",") != "shop" {
+		t.Fatalf("databases = %v, want only shop", session.Info().Databases)
+	}
+
+	// The configured schema cannot be dumped by name either.
+	f.expectAccount(true)
+	f.expectSchemas("mysql", "sys", "hb_custom", "shop")
+	_, err = f.controller.StartDump(context.Background(), webserver.DumpRequest{
+		Password: "pw", Databases: []string{"hb_custom"},
+	})
+	if !errors.Is(err, webserver.ErrInvalidDumpRequest) {
+		t.Fatalf("err = %v, want ErrInvalidDumpRequest", err)
+	}
+	if f.controller.dumpRunning.Load() {
+		t.Fatal("slot not released")
+	}
+}
+
 func TestStartDumpRejectsInvalidDatabases(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
