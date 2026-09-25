@@ -340,6 +340,27 @@ _Appears in:_
 | `recovery` _[BootstrapRecovery](#bootstraprecovery)_ | Recovery bootstraps the cluster by restoring a physical backup. |  | Optional: \{\} <br /> |
 
 
+#### BootstrapImport
+
+
+
+BootstrapImport selects the logical backup a new cluster loads. Exactly one
+of Backup and Source is set.
+
+
+
+_Appears in:_
+- [BootstrapInitDB](#bootstrapinitdb)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `backup` _[LocalObjectReference](#localobjectreference)_ | Backup references a completed logical Backup in this namespace. |  | Optional: \{\} <br /> |
+| `source` _string_ | Source is the name of an entry in ExternalClusters whose objectStore<br />holds the dump. The entry's name is the S3 key prefix to find it under.<br />Mutually exclusive with Backup. |  | Optional: \{\} <br /> |
+| `backupID` _string_ | BackupID selects a dump under Source. When empty, the latest completed<br />dump is used. Only valid with Source. |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases loads only these schemas from the dump. Empty loads every<br />schema in it. Each one must be in the dump. |  | MaxItems: 256 <br />items:MaxLength: 64 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `postImportSQL` _string array_ | PostImportSQL is a list of SQL statements run as root after the dump is<br />loaded. |  | Optional: \{\} <br /> |
+
+
 #### BootstrapInitDB
 
 
@@ -359,6 +380,7 @@ _Appears in:_
 | `postInitSQL` _string array_ | PostInitSQL is a list of SQL statements run as root after the database is<br />created. |  | Optional: \{\} <br /> |
 | `characterSet` _string_ | Encoding/charset of the application database. |  | Optional: \{\} <br /> |
 | `collation` _string_ | Collation of the application database. |  | Optional: \{\} <br /> |
+| `import` _[BootstrapImport](#bootstrapimport)_ | Import loads a logical backup (a SQL dump) into the new cluster after it<br />is initialised. The dump must come from the same flavor, and it can come<br />from any supported server series. Replicas then clone the loaded primary. |  | Optional: \{\} <br /> |
 
 
 #### BootstrapRecovery
@@ -1539,6 +1561,7 @@ namespace, identified by name.
 
 _Appears in:_
 - [BackupSpec](#backupspec)
+- [BootstrapImport](#bootstrapimport)
 - [BootstrapInitDB](#bootstrapinitdb)
 - [BootstrapRecovery](#bootstraprecovery)
 - [ClusterSpec](#clusterspec)

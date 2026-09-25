@@ -211,20 +211,14 @@ The manifest is `logical.json`, not `metadata.json`. Recovery from a raw object
 store (`bootstrap.recovery.source`) and binlog retention only look at physical
 backups, so a dump is never picked as a recovery base by mistake.
 
-`dump.sql.zst` is plain zstd-compressed SQL. You can inspect it without cnmsql:
+`dump.sql.zst` is plain zstd-compressed SQL. You can inspect it without cnmsql
+(or download it with [`kubectl cnmsql backup download`](#downloading-a-dump)):
 
 ```bash
 aws s3 cp s3://cnmsql-backups/production/shop/shop-dump/<id>/dump.sql.zst - | zstd -d | less
 ```
 
 ## Importing into a new cluster
-
-:::caution Not available yet
-Importing (`bootstrap.initdb.import`) is the next phase of
-[#47](https://github.com/cnmsql/cnmsql/issues/47) and is not accepted by the
-API yet. Until then, load a dump by hand: download `dump.sql.zst`, decompress
-it and pipe it into the `mysql` / `mariadb` client of the target cluster.
-:::
 
 To load a dump into a fresh cluster, use `bootstrap.initdb.import`. The cluster
 is initialised on its own server version, then the dump is loaded, so the target
@@ -240,18 +234,31 @@ spec:
   imageName: ghcr.io/cnmsql/cnmsql-instance:8.4
   bootstrap:
     initdb:
+      database: app
+      owner: app
       import:
         backup:
           name: shop-dump
         databases:
           - billing
+        postImportSQL:
+          - ANALYZE TABLE billing.invoices
   backup:
     objectStore:
       # ...
 ```
 
-`databases` is optional. When set, only those databases are loaded from the
-dump. Each one must be in the Backup's `status.databases`.
+- `backup` names a completed logical Backup in the same namespace. The dump is
+  read from the object store the Backup was written to: the Backup's own
+  `objectStore`, else its cluster's `spec.backup.objectStore`, else (when that
+  cluster is gone) the new cluster's.
+- `databases` is optional. When set, only those databases are loaded from the
+  dump. Each one must be in the Backup's `status.databases`.
+- `postImportSQL` is optional. The statements run as `root`, in order, after the
+  load. They are passed to the init container as arguments, so they show in the
+  Pod spec: don't put passwords in them.
+- `initdb` still creates its application database and owner. A dump that holds
+  a database of the same name is loaded into it.
 
 To import from an object store without a `Backup` object, for example in another
 Kubernetes cluster, point at an `externalClusters` entry, as for raw-S3 recovery:
@@ -269,13 +276,56 @@ spec:
         # ...
 ```
 
-The import runs in an init container on the first instance, against a temporary
-server with binary logging off. Replicas then clone the loaded primary as usual.
-If the Pod restarts half-way, the import starts over and overwrites what was
-already loaded.
+The entry's name is the cluster prefix the dumps are stored under. Only
+`logical.json` manifests are considered, so a physical backup under the same
+prefix is never picked.
 
-`bootstrap.recovery.backup` does not accept a logical Backup. Recovery restores
-a physical data directory; use `initdb.import` for dumps.
+`bootstrap.recovery.backup` does not accept a logical Backup, and
+`initdb.import` does not accept a physical one: recovery restores a physical
+data directory, and an import loads SQL.
+
+### How an import runs
+
+The first instance gets an extra init container, `import`, which runs after
+`initdb`. It:
+
+1. starts a temporary server over the new data directory, with networking and
+   binary logging off, and the event scheduler stopped;
+2. downloads `dump.sql.zst`, checks it against the SHA256 in `logical.json` while
+   streaming, decompresses it, keeps only the selected databases, and pipes it
+   into the `mysql` / `mariadb` client as `root`;
+3. runs `postImportSQL`, stops the server, and writes a marker file into the
+   data directory.
+
+Replicas then clone the loaded primary as usual. The load is not in the binlog
+and records no GTID, so the new cluster's replication history starts after it.
+
+If the Pod restarts half-way, the import starts over: the dump drops and
+recreates every table it loads, so a second run overwrites the first. Once the
+marker is written, a restart skips the import.
+
+The `import` container uses the cluster's `resources`, not the backup Job's: the
+temporary server has the same buffer pool as the real one. Large dumps take a
+while to load, and the instance stays in `Init` until the load is done. Follow
+it with:
+
+```bash
+kubectl logs shop-84-1 -c import -f
+```
+
+While the Backup is still running, or while the object store can't be read, the
+Cluster stays in phase `Provisioning` with a reason starting with
+`ImportSourceNotReady`, and the operator checks again every few seconds. It is
+blocked instead when the import can't work:
+
+| Reason | Meaning |
+|---|---|
+| `ImportIncompatible` | The dump comes from another flavor, a selected database is not in it, its Backup failed, or its manifest is missing or in a format this operator does not read. |
+| `PhysicalBackupNotImportable` | `import.backup` names a physical Backup. Use `bootstrap.recovery`. |
+
+Loading a dump from a newer series into an older one (for example 8.4 into 8.0)
+is allowed and emits a `ImportFromNewerServer` Warning event: it usually works,
+but it is not tested.
 
 ### Before you import
 
@@ -287,6 +337,71 @@ a physical data directory; use `initdb.import` for dumps.
   or the other way round.
 - **Take a physical backup afterwards.** An imported cluster has no base backup,
   so point-in-time recovery starts only after its first physical backup.
+
+### Moving to another server series
+
+In-place upgrades go one series at a time and never back (see
+[MySQL Version Upgrades](major-version-upgrade.md)). A dump skips both limits.
+To move `shop` from 8.0 to 9.x:
+
+1. Take a logical backup of the source and wait for it to complete:
+
+   ```bash
+   kubectl cnmsql backup shop --method logical --name shop-to-9x
+   kubectl get backup shop-to-9x -w
+   ```
+
+2. Declare the application users on the new cluster (as `spec.managed.roles`
+   or `DatabaseUser` objects), and create it with the import:
+
+   ```yaml
+   apiVersion: mysql.cnmsql.co/v1alpha1
+   kind: Cluster
+   metadata:
+     name: shop-9x
+   spec:
+     instances: 3
+     imageName: ghcr.io/cnmsql/cnmsql-instance:9.x
+     storage:
+       size: 20Gi
+     bootstrap:
+       initdb:
+         import:
+           backup:
+             name: shop-to-9x
+     backup:
+       objectStore:
+         # a new path or bucket: the destination must be empty
+   ```
+
+3. Once `shop-9x` is ready, check the data, move the clients to `shop-9x-rw`,
+   and take a physical backup of the new cluster.
+
+Writes made to `shop` after the dump are not in `shop-9x`. Stop them, or plan to
+replay them, before you switch.
+
+## Downloading a dump
+
+To get a dump out of the object store, for a developer or another tool:
+
+```bash
+# dump.sql.zst, named after the Backup
+kubectl cnmsql backup download shop-dump
+
+# plain SQL
+kubectl cnmsql backup download shop-dump --decompress -o shop.sql
+```
+
+The plugin reads the store's credentials from the Secrets the Backup's store
+references (so you need read access to them), connects to the store from your
+machine, and checks the download against the manifest's checksum. A download
+that fails leaves no file behind. When the store is only reachable inside the
+cluster, port-forward to it and pass `--endpoint`:
+
+```bash
+kubectl -n storage port-forward svc/minio 9000:9000 &
+kubectl cnmsql backup download shop-dump --endpoint http://127.0.0.1:9000
+```
 
 ## Retention and deletion
 
@@ -308,3 +423,5 @@ See [Backup Retention and Deletion](backup-retention-deletion.md).
 - Users, grants and system schemas are not included.
 - Dumps are GTID-neutral: loading one does not change the target's
   `gtid_executed` or `gtid_purged`.
+- An import only runs when a cluster is created. Loading a dump into a running
+  cluster is not supported yet.

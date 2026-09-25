@@ -259,7 +259,10 @@ type LogicalTool interface {
 }
 ```
 
-`LoadArgs` joins it in phase 2, when something loads a dump.
+`LoadArgs(defaultsFile)` joined it in phase 2: the SQL client reads root's
+credentials from an option file, reads the stream as utf8mb4, and sends
+statements up to the protocol's 1 GiB packet limit, since a single large row
+is dumped as one statement.
 
 Base arguments (MySQL; MariaDB swaps the ones it names differently):
 
@@ -441,10 +444,13 @@ On ordinal 1 of a cluster with `initdb.import`:
 1. The existing `initdb` init container initialises the data directory on the
    target series.
 2. A new `import` init container (`manager instance import`), with the
-   object-store env and the cluster's backup Job resources:
+   object-store env and the cluster's own `resources` (not the backup Job's:
+   the temporary server has the instance's buffer pool):
    - skips if `<datadir>/.cnmsql-import-done` exists;
-   - starts a temporary `mysqld --skip-networking --skip-log-bin` on the socket
-     (the same helper `instance restore` uses for credential reconcile);
+   - starts a temporary `mysqld --skip-networking --skip-log-bin
+     --event-scheduler=OFF` on the socket (the same helper `instance restore`
+     uses for credential reconcile), so imported events do not fire against a
+     half-loaded schema;
    - downloads `dump.sql.zst`, verifies the SHA256 against `logical.json` while
      streaming, zstd-decodes, filters to `import.databases` (LB6), and pipes into
      the SQL client as root;
@@ -452,6 +458,23 @@ On ordinal 1 of a cluster with `initdb.import`:
    - shuts the temporary server down cleanly and writes the marker file.
 3. `instance run` starts as usual. Replicas clone the loaded primary through the
    normal XtraBackup/MariaBackup path.
+
+The operator resolves the import (Backup or `externalClusters` entry, then its
+`logical.json`) only until the cluster is established (`status.establishedAt`).
+The import container is left out of the Pod template hash, so neither dropping
+it once the cluster is established nor a newer dump appearing under a `source`
+rolls the primary. A Backup that is still running, a missing Backup, or an
+object store that cannot be read keeps the cluster `Provisioning` with reason
+`ImportSourceNotReady` and requeues. A flavor mismatch, a missing database, a
+failed Backup or an unreadable manifest blocks it with `ImportIncompatible`; a
+physical Backup blocks it with `PhysicalBackupNotImportable`. The import command
+repeats the manifest checks before it starts the temporary server.
+
+An import Backup's dump is read from the Backup's own `objectStore`, else from
+the store of the cluster it was taken from, else from the new cluster's (the
+source cluster was deleted and replaced). `postImportSQL` and `databases` are
+passed as container arguments with `$` escaped, so the kubelet does not expand
+`$(VAR)` in them.
 
 Re-running after a crash half-way is safe: the dump's `DROP TABLE IF EXISTS`
 (mysqldump default) and `CREATE DATABASE IF NOT EXISTS` make a second load
@@ -744,6 +767,8 @@ released as `v1.5.0` (first tags in §5.9).
     `instance-images.md` lists the first image tag of each series that carries
     the dump tool.
 
+Done: [#132](https://github.com/cnmsql/cnmsql/pull/132).
+
 ### Phase 2 — bootstrap import (M-LB.2)
 
 1. API: `BootstrapImport` under `initdb`, webhook rules, samples.
@@ -752,7 +777,10 @@ released as `v1.5.0` (first tags in §5.9).
 3. Cluster reconciler: resolve the import source (Backup CR or external
    cluster + `ListLogicalBackups`), render the init container on ordinal 1,
    flavor/version guards, events.
-4. `kubectl cnmsql backup download`.
+4. `kubectl cnmsql backup download`: reads the store's credentials from its
+   Secrets, connects from the user's machine (`--endpoint` for an in-cluster
+   store behind a port-forward), verifies the checksum, and writes through a
+   partial file so a failed download leaves nothing behind.
 5. Docs: import section, cross-series walkthrough (`8.0 → 9.x`).
 
 ### Phase 3 — LogicalRestore (M-LB.3)

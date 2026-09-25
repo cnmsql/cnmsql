@@ -225,6 +225,12 @@ cross flavors. The mechanics and rollout behavior are covered in
 [MySQL Version Upgrades](major-version-upgrade.md), which applies to both engines
 with each following its own chain.
 
+To skip a series or go back to an older one, move the data with a
+[logical backup](logical-backups.md#moving-to-another-server-series): dump the
+cluster with `mariadb-dump`, then import it into a new cluster on the target
+series. A dump only loads into the flavor it was taken on, so this does not move
+data between MySQL and MariaDB.
+
 ## Testing and coverage
 
 MariaDB has a dedicated end-to-end test suite that runs in its own CI lane,
