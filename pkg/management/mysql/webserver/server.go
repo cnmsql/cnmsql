@@ -152,6 +152,9 @@ func Handler(controller InstanceController) http.Handler {
 	if streamer, ok := controller.(BackupStreamer); ok {
 		mux.HandleFunc("GET /cluster/backup", backupHandler(streamer))
 	}
+	if streamer, ok := controller.(DumpStreamer); ok {
+		mux.HandleFunc("POST /cluster/dump", dumpHandler(streamer))
+	}
 	return mux
 }
 

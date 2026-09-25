@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
@@ -71,6 +72,10 @@ type Controller struct {
 	// is untouched and never queries the GR tables.
 	groupReplication bool
 	backup           *BackupConfig
+	// dump enables POST /cluster/dump; dumpRunning allows one dump at a time, so
+	// a retried backup Job cannot stack dumps on the instance.
+	dump        *DumpConfig
+	dumpRunning atomic.Bool
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus
