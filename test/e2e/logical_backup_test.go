@@ -19,6 +19,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -34,7 +35,7 @@ import (
 // Logical backups (design 028, phase 1): a SQL dump taken on a replica through
 // the instance manager as cnmsql_dump, stored next to the physical backups
 // without ever being mistaken for one.
-var _ = Describe("Logical backups", Ordered, Label("flavor"), func() {
+var _ = Describe("Logical backups", Ordered, Label("feature", "flavor"), func() {
 	const (
 		cluster      = "lb-src"
 		physical     = "lb-physical"
@@ -119,6 +120,19 @@ var _ = Describe("Logical backups", Ordered, Label("flavor"), func() {
 		Expect(meta.Compression).To(Equal("zstd"))
 		Expect(meta.SHA256).To(Equal(status.SHA256))
 		Expect(meta.UncompressedBytes).To(BeNumerically(">", meta.SizeBytes))
+		// The manifest must describe the dump well enough to load it from the
+		// store alone. This spec's clusters run the MySQL instance image
+		// (logicalClusterManifest), so the dump tool and flavor are fixed.
+		Expect(meta.Databases).To(Equal(status.Databases), "the manifest must record the dumped databases")
+		Expect(meta.Tool).To(Equal("mysqldump"))
+		Expect(meta.Flavor).To(Equal("mysql"))
+		Expect(meta.ServerVersion).NotTo(BeEmpty())
+		Expect(meta.ArchiveKey).To(Equal(fmt.Sprintf("%s/dump.sql.zst", prefix)))
+		Expect(meta.FormatVersion).To(Equal(objectstore.LogicalFormatVersion))
+
+		By("checking the archive is a real zstd stream")
+		Expect(s3ObjectHead(objectKey("%s/dump.sql.zst", prefix), 4)).
+			To(Equal([]byte{0x28, 0xB5, 0x2F, 0xFD}), "the dump archive must start with the zstd magic bytes")
 	})
 
 	It("dumps only the selected databases", func() {
@@ -135,6 +149,16 @@ var _ = Describe("Logical backups", Ordered, Label("flavor"), func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(reason).To(Equal("InvalidDumpRequest"))
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+
+		// A failed dump must not leave a partial archive behind (design 028
+		// §5.4): the worker removes it once the dump is known bad.
+		status := backupStatus(missingDB)
+		Expect(status.BackupID).NotTo(BeEmpty(), "a failed backup still records its backupId")
+		prefix := fmt.Sprintf("%s/%s/%s", cluster, missingDB, status.BackupID)
+		Eventually(func(g Gomega) {
+			g.Expect(s3ObjectExists(objectKey("%s/dump.sql.zst", prefix))).To(BeFalse(),
+				"a failed dump must not leave a partial archive behind")
+		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 	})
 
 	It("still recovers from the physical backup when newer dumps share the prefix", func() {
@@ -248,6 +272,20 @@ func backupStatus(name string) e2eBackupStatus {
 	var status e2eBackupStatus
 	Expect(json.Unmarshal([]byte(out), &status)).To(Succeed(), "backup status: %s", out)
 	return status
+}
+
+// s3ObjectHead returns the first n bytes of an object in the store. The bytes
+// travel base64-encoded so a binary archive survives the kubectl transport
+// intact; a missing or short object fails the assertion.
+func s3ObjectHead(key string, n int) []byte {
+	GinkgoHelper()
+	out, err := s3Exec("sh", "-c",
+		fmt.Sprintf("rclone --quiet --retries=1 cat %s 2>/dev/null | head -c %d | base64 | tr -d '\\n'", key, n))
+	Expect(err).NotTo(HaveOccurred(), "reading %s: %s", key, out)
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
+	Expect(err).NotTo(HaveOccurred(), "decoding the head of %s: %q", key, out)
+	Expect(decoded).To(HaveLen(n), "object %s holds fewer than %d bytes", key, n)
+	return decoded
 }
 
 // instanceSelector matches a cluster's instance Pods only. Backup worker Pods

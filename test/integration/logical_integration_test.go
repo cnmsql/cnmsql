@@ -67,21 +67,46 @@ gtid_strict_mode=ON
 binlog_format=ROW
 `
 
-// logicalImages is every published image, in upgrade order per flavor. Each
-// dump is loaded into the next series, so the round trip also covers the
-// cross-series moves logical backups exist for.
+// mariadbSeries is the MariaDB half of the round-trip matrix, in upgrade
+// order. The version matrix mirrors the containers repo's images/versions.json
+// — keep the two in sync.
+var mariadbSeries = []struct{ tag, version string }{
+	{"10.11", "10.11.19"}, {"11.4", "11.4.13"}, {"11.8", "11.8.9"}, {"12.3", "12.3.3"},
+}
+
+// selectedMariaDBSeries returns the MariaDB series to exercise. By default it
+// is the full list; setting E2E_MARIADB_VERSION pins a single series so a CI
+// matrix job can run one flavor per job, mirroring selectedFlavors.
+func selectedMariaDBSeries(t *testing.T) []struct{ tag, version string } {
+	t.Helper()
+	want := strings.TrimSpace(os.Getenv("E2E_MARIADB_VERSION"))
+	if want == "" {
+		return mariadbSeries
+	}
+	for _, m := range mariadbSeries {
+		if m.tag == want {
+			return []struct{ tag, version string }{m}
+		}
+	}
+	t.Fatalf("E2E_MARIADB_VERSION=%q matches no known MariaDB series", want)
+	return nil
+}
+
+// logicalImages is the images the round trip runs on, in upgrade order per
+// flavor: the MySQL half from selectedFlavors and the MariaDB half from
+// selectedMariaDBSeries. Each dump is loaded into the next series of the same
+// flavor, so the round trip also covers the cross-series moves logical
+// backups exist for.
 func logicalImages(t *testing.T) []logicalImage {
 	t.Helper()
 	var out []logicalImage
-	for _, f := range flavors {
+	for _, f := range selectedFlavors(t) {
 		out = append(out, logicalImage{
 			name: "mysql-" + f.name, image: instanceImage(f), version: f.version,
 			flavor: engine.FlavorMySQL, cnf: f.myCnf(t, 1),
 		})
 	}
-	for _, m := range []struct{ tag, version string }{
-		{"10.11", "10.11.19"}, {"11.4", "11.4.13"}, {"11.8", "11.8.9"}, {"12.3", "12.3.3"},
-	} {
+	for _, m := range selectedMariaDBSeries(t) {
 		out = append(out, logicalImage{
 			name: "mariadb-" + m.tag, image: mariadbImageRepo() + ":" + m.tag, version: m.version,
 			flavor: engine.FlavorMariaDB, cnf: mariadbLogicalCnf,
@@ -207,7 +232,13 @@ func (n *logicalNode) post(ctx context.Context, t *testing.T, path string, body 
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.baseURL+path, bytes.NewReader(payload))
+	// Each request carries its own generous deadline (dumps stream for a
+	// while), covering the body read that happens after this helper returns:
+	// the caller's context alone has no deadline. The cancel is released with
+	// the test, since responses are consumed by the callers.
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, n.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
