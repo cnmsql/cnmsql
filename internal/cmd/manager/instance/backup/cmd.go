@@ -26,7 +26,7 @@ import (
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backup",
-		Short: "Run physical backup worker commands",
+		Short: "Run backup worker commands",
 	}
 	cmd.AddCommand(newUploadCommand())
 	return cmd
@@ -37,16 +37,24 @@ func newUploadCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "upload",
-		Short: "Upload a streamed XtraBackup archive to object storage",
+		Short: "Upload a streamed backup (XtraBackup archive or SQL dump) to object storage",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runUpload(cmd.Context(), opts)
+			err := runUpload(cmd.Context(), opts)
+			reportFailure(err)
+			return err
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.SourceManagerURL, "source-manager-url", "", "Source instance-manager backup stream URL")
+	cmd.Flags().StringVar(&opts.Method, "method", methodXtrabackup, "Backup method: xtrabackup or logical")
+	cmd.Flags().StringArrayVar(&opts.Databases, "database", nil,
+		"Logical backup: database to dump (repeatable; default every application database)")
+	cmd.Flags().StringArrayVar(&opts.DumpArgs, "dump-arg", nil,
+		"Logical backup: extra argument for the dump client (repeatable)")
+
+	cmd.Flags().StringVar(&opts.SourceManagerURL, "source-manager-url", "", "Source instance-manager stream URL (/cluster/backup or /cluster/dump)")
 	cmd.Flags().StringVar(&opts.SourceManagerServerName, "source-manager-server-name", "", "TLS server name for the source manager")
 	cmd.Flags().StringVar(&opts.Bucket, "bucket", "", "Destination object-store bucket")
-	cmd.Flags().StringVar(&opts.ArchiveKey, "archive-key", "", "Destination object key for the xbstream archive")
+	cmd.Flags().StringVar(&opts.ArchiveKey, "archive-key", "", "Destination object key for the archive (xbstream or dump)")
 	cmd.Flags().StringVar(&opts.MetadataKey, "metadata-key", "", "Destination object key for backup metadata")
 	cmd.Flags().StringVar(&opts.BackupID, "backup-id", "", "Backup identifier")
 	cmd.Flags().StringVar(&opts.BackupName, "backup-name", "", "Backup object name")

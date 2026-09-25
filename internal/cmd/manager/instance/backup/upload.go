@@ -27,13 +27,24 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
-// uploadOptions configures the backup worker that streams a physical backup
-// from a source instance to object storage.
+// Backup methods the worker understands.
+const (
+	methodXtrabackup = "xtrabackup"
+	methodLogical    = "logical"
+)
+
+// uploadOptions configures the backup worker that streams a backup from a
+// source instance to object storage.
 type uploadOptions struct {
+	// Method selects the stream: "xtrabackup" (the default) pulls a physical
+	// archive from GET /cluster/backup, "logical" a SQL dump from
+	// POST /cluster/dump.
+	Method                  string
 	SourceManagerURL        string
 	SourceManagerServerName string
 	Bucket                  string
@@ -48,6 +59,9 @@ type uploadOptions struct {
 	TLSCA                   string
 	Compress                bool
 	SHA256                  bool
+	// Databases and DumpArgs configure a logical dump.
+	Databases []string
+	DumpArgs  []string
 }
 
 func (o uploadOptions) validate() error {
@@ -66,6 +80,11 @@ func (o uploadOptions) validate() error {
 		if value == "" {
 			return fmt.Errorf("backup upload: %s is required", flag)
 		}
+	}
+	switch o.Method {
+	case "", methodXtrabackup, methodLogical:
+	default:
+		return fmt.Errorf("backup upload: unknown --method %q", o.Method)
 	}
 	return nil
 }
@@ -92,6 +111,14 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	client, err := mtlsClient(opts)
 	if err != nil {
 		return err
+	}
+
+	if opts.Method == methodLogical {
+		password := os.Getenv(backupworker.EnvDumpPassword)
+		if password == "" {
+			return fmt.Errorf("backup upload: %s is required for a logical backup", backupworker.EnvDumpPassword)
+		}
+		return runLogicalUpload(ctx, opts, store, client, password)
 	}
 
 	startedAt := time.Now().UTC()
@@ -139,7 +166,7 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 		ClusterName:      opts.ClusterName,
 		BackupName:       opts.BackupName,
 		InstanceName:     opts.InstanceName,
-		Method:           "xtrabackup",
+		Method:           methodXtrabackup,
 		ArchiveKey:       opts.ArchiveKey,
 		Compressed:       opts.Compress,
 		SizeBytes:        reader.Count(),
