@@ -190,9 +190,13 @@ func run(ctx context.Context, opts options, st store, client *http.Client) error
 		return changed(reason, err)
 	}
 
+	// The instance only answers 200 once the load succeeded; the result is a
+	// summary, and an unreadable one does not undo the load.
 	var result webserver.LoadResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return changed(webserver.LoadReasonFailed, fmt.Errorf("reading the load result: %w", err))
+		log.Info("Logical backup restored, but its result could not be read", "error", err.Error(),
+			"compressedBytes", stream.downloaded.Load())
+		return nil
 	}
 	log.Info("Logical backup restored", "databases", result.Databases, "bytes", result.Bytes,
 		"compressedBytes", stream.downloaded.Load())

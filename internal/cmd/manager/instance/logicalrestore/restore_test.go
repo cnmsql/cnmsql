@@ -126,6 +126,8 @@ type fakeTarget struct {
 	// refuse answers with this status and reason without reading the body.
 	refuseStatus int
 	refuseReason string
+	// garbledResult answers 200 with a body that is not a LoadResult.
+	garbledResult bool
 }
 
 func (f *fakeTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +146,10 @@ func (f *fakeTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.bodyErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(webserver.ReasonErrorBody{Reason: webserver.LoadReasonFailed, Error: f.bodyErr.Error()})
+		return
+	}
+	if f.garbledResult {
+		_, _ = w.Write([]byte("<html>"))
 		return
 	}
 	_ = json.NewEncoder(w).Encode(webserver.LoadResult{Databases: f.query[webserver.LoadDatabaseParam], Bytes: int64(len(f.body))})
@@ -318,4 +324,13 @@ func TestRestoreReportsATLSFailureAsUnchanged(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: time.Minute}}
 	err := run(context.Background(), testOptions(srv.URL), newStore(t, testStream, nil), client)
 	assertFailure(t, err, backupworker.ReasonTargetUnreachable, true)
+}
+
+// A 200 only comes once the load succeeded: an unreadable result does not
+// turn it into a failure.
+func TestRestoreSucceedsWithAnUnreadableResult(t *testing.T) {
+	target := &fakeTarget{garbledResult: true}
+	if err := runAgainst(t, target, newStore(t, testStream, nil), nil); err != nil {
+		t.Fatalf("err = %v, want success", err)
+	}
 }
