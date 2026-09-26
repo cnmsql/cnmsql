@@ -287,7 +287,8 @@ func TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary(t *testing.T) {
 	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("replica pod get = %v, want not created while primary unhealthy", err)
 	}
-	if err := reconciler.Get(ctx, replicaKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+	replicaJob := types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 2) + "-join"}
+	if err := reconciler.Get(ctx, replicaJob, &batchv1.Job{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("replica bootstrap Job get = %v, want not created while primary unhealthy", err)
 	}
 
@@ -299,7 +300,6 @@ func TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary(t *testing.T) {
 	if _, err := reconciler.reconcileInstances(ctx, cluster, plan, observed); err != nil {
 		t.Fatal(err)
 	}
-	replicaJob := types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 2) + "-join"}
 	if err := reconciler.Get(ctx, replicaJob, &batchv1.Job{}); err != nil {
 		t.Fatalf("replica bootstrap Job should be created once primary is healthy: %v", err)
 	}
@@ -559,7 +559,8 @@ func TestReconcileInstancesGatesBrandNewMemberWithoutDonor(t *testing.T) {
 	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("brand-new replica pod get = %v, want not created without a donor", err)
 	}
-	if err := reconciler.Get(ctx, replicaKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+	replicaJob := types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 2) + "-initdb"}
+	if err := reconciler.Get(ctx, replicaJob, &batchv1.Job{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("brand-new replica bootstrap Job get = %v, want not created without a donor", err)
 	}
 }

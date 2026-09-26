@@ -951,7 +951,7 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	scheme := testScheme(t)
-	recorder := record.NewFakeRecorder(10)
+	recorder := record.NewFakeRecorder(20)
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
