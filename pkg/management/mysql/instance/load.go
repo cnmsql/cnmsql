@@ -34,7 +34,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/heartbeat"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqldump"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -55,18 +54,12 @@ type LoadConfig struct {
 	WorkDir string
 	// LoadPath overrides the SQL client. Empty selects the engine's client.
 	LoadPath string
-	// HeartbeatSchema is the operator-owned heartbeat schema, never loaded.
-	// Empty takes heartbeat.DefaultSchema.
-	HeartbeatSchema string
 }
 
 // SetLoadConfig enables POST /cluster/load on the controller.
 func (c *Controller) SetLoadConfig(cfg LoadConfig) {
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = os.TempDir()
-	}
-	if cfg.HeartbeatSchema == "" {
-		cfg.HeartbeatSchema = heartbeat.DefaultSchema
 	}
 	c.load = &cfg
 }
@@ -90,7 +83,7 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 		return nil, errors.New("loads are not configured on this instance")
 	}
 	cfg := c.load
-	databases, err := validateLoadRequest(req, cfg.HeartbeatSchema)
+	databases, err := validateLoadRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +154,7 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 
 // validateLoadRequest checks the request and returns its databases without
 // duplicates, in request order.
-func validateLoadRequest(req webserver.LoadRequest, heartbeatSchema string) ([]string, error) {
+func validateLoadRequest(req webserver.LoadRequest) ([]string, error) {
 	switch req.Policy {
 	case webserver.LoadPolicyFailIfExists, webserver.LoadPolicyDropAndRecreate:
 	default:
@@ -176,7 +169,7 @@ func validateLoadRequest(req webserver.LoadRequest, heartbeatSchema string) ([]s
 		case db == "" || utf8.RuneCountInString(db) > maxDatabaseNameChars || !utf8.ValidString(db):
 			return nil, fmt.Errorf("%w: %q is not a valid database name (1 to %d characters)",
 				webserver.ErrInvalidLoadRequest, db, maxDatabaseNameChars)
-		case isExcludedSchema(db, heartbeatSchema):
+		case isExcludedSchema(db):
 			return nil, fmt.Errorf("%w: %q is a system or operator schema and cannot be loaded",
 				webserver.ErrInvalidLoadRequest, db)
 		}

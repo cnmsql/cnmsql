@@ -51,18 +51,12 @@ type DumpConfig struct {
 	WorkDir string
 	// DumpPath overrides the dump binary. Empty selects the engine's tool.
 	DumpPath string
-	// HeartbeatSchema is the replication-lag heartbeat schema to exclude from
-	// dumps. Empty takes heartbeat.DefaultSchema.
-	HeartbeatSchema string
 }
 
 // SetDumpConfig enables POST /cluster/dump on the controller.
 func (c *Controller) SetDumpConfig(cfg DumpConfig) {
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = os.TempDir()
-	}
-	if cfg.HeartbeatSchema == "" {
-		cfg.HeartbeatSchema = heartbeat.DefaultSchema
 	}
 	c.dump = &cfg
 }
@@ -75,19 +69,13 @@ var dumpExcludedSchemas = map[string]struct{}{
 	"information_schema": {},
 }
 
-// isDumpExcludedSchema reports whether a schema is never dumped: a server
-// system schema, or the operator-owned heartbeat schema of this instance.
-func (c *Controller) isDumpExcludedSchema(name string) bool {
-	return isExcludedSchema(name, c.dump.HeartbeatSchema)
-}
-
 // isExcludedSchema reports whether a schema is never dumped or loaded: a server
 // system schema, or the operator-owned heartbeat schema.
-func isExcludedSchema(name, heartbeatSchema string) bool {
+func isExcludedSchema(name string) bool {
 	if _, ok := dumpExcludedSchemas[strings.ToLower(name)]; ok {
 		return true
 	}
-	return strings.EqualFold(name, heartbeatSchema)
+	return strings.EqualFold(name, heartbeat.DefaultSchema)
 }
 
 const (
@@ -247,7 +235,7 @@ func (c *Controller) resolveDumpDatabases(ctx context.Context, requested []strin
 	var out []string
 	if len(requested) == 0 {
 		for name := range existing {
-			if !c.isDumpExcludedSchema(name) {
+			if !isExcludedSchema(name) {
 				out = append(out, name)
 			}
 		}
@@ -257,7 +245,7 @@ func (c *Controller) resolveDumpDatabases(ctx context.Context, requested []strin
 		}
 	} else {
 		for _, name := range requested {
-			if c.isDumpExcludedSchema(name) {
+			if isExcludedSchema(name) {
 				return nil, fmt.Errorf("%w: %q is a system or operator schema and cannot be dumped",
 					webserver.ErrInvalidDumpRequest, name)
 			}

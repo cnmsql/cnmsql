@@ -58,9 +58,9 @@ object store alongside physical backups, with a matching restore path".
   carries application schemas only. System schemas (`mysql`, `sys`,
   `performance_schema`, `information_schema`) are always excluded. This is also
   what keeps cross-series imports safe: auth plugins and privilege tables change
-  between series. Operator-owned schemas (the replication `heartbeat` schema,
-  configurable via the heartbeat settings) are excluded too, so an import never
-  collides with what the target cluster creates for itself.
+  between series. Operator-owned schemas (the replication `heartbeat` schema)
+  are excluded too, so an import never collides with what the target cluster
+  creates for itself.
 - **Logical backups as PITR anchors.** A dump is never a base for binlog
   replay, and retention never uses it to compute the binlog horizon.
 - **Parallel dump/load** (mydumper/myloader, MySQL Shell `util.dumpInstance`).

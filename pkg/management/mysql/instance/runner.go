@@ -523,22 +523,16 @@ func Run(ctx context.Context, opts RunOptions) error {
 		controller.SetBackupConfig(*opts.Backup)
 	}
 	// Logical dumps need nothing beyond the socket, so every instance serves
-	// them; the dump account's password arrives with each request. The dump
-	// exclusion follows the heartbeat schema this instance writes.
-	dumpCfg := DumpConfig{Engine: eng, Socket: opts.Socket}
-	if opts.Heartbeat != nil {
-		dumpCfg.HeartbeatSchema = opts.Heartbeat.Schema
-	}
-	controller.SetDumpConfig(dumpCfg)
+	// them; the dump account's password arrives with each request.
+	controller.SetDumpConfig(DumpConfig{Engine: eng, Socket: opts.Socket})
 	// A LogicalRestore loads into the primary as the control account, which
 	// the manager already holds; the instance refuses the load unless it is
 	// writable when the load starts.
 	controller.SetLoadConfig(LoadConfig{
-		Engine:          eng,
-		Socket:          opts.Socket,
-		User:            opts.Control.User,
-		Password:        opts.Control.Password,
-		HeartbeatSchema: dumpCfg.HeartbeatSchema,
+		Engine:   eng,
+		Socket:   opts.Socket,
+		User:     opts.Control.User,
+		Password: opts.Control.Password,
 	})
 
 	// Continuous binlog archiver: runs in every Pod but only ships from the

@@ -155,8 +155,8 @@ type LogicalRestoreStatus struct {
 Short name `mylogicalrestore`. Print columns: cluster, policy, phase, age.
 
 There is no webhook for this kind. The CEL rules cover the spec; the
-controller repeats the "exactly one of backup/source" check. The configured
-heartbeat schema cannot be checked by CEL; the instance manager refuses it
+controller repeats the "exactly one of backup/source" check. The operator's
+`heartbeat` schema is not checked by CEL; the instance manager refuses it
 (`InvalidLoadRequest`), and a dump never holds it anyway.
 
 ## 5. Data path

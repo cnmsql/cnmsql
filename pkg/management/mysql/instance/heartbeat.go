@@ -32,9 +32,6 @@ type HeartbeatConfig struct {
 	// Enabled turns the heartbeat on. The loop runs in every Pod; only the
 	// writable primary stamps the table.
 	Enabled bool
-	// Schema is the schema holding the heartbeat table. Empty takes the
-	// heartbeat package default, which is also what dumps exclude.
-	Schema string
 	// Interval is the stamping period. Zero takes the package default.
 	Interval time.Duration
 }
@@ -46,7 +43,7 @@ type HeartbeatConfig struct {
 // channel for the run loop to select on.
 func startHeartbeat(ctx context.Context, cfg HeartbeatConfig, db *sql.DB) *heartbeat.Loop {
 	log := logf.FromContext(ctx).WithName("heartbeat")
-	loop := heartbeat.NewLoop(db, heartbeat.Config{Schema: cfg.Schema, Interval: cfg.Interval}, log)
+	loop := heartbeat.NewLoop(db, heartbeat.Config{Interval: cfg.Interval}, log)
 	go loop.Run(ctx)
 	log.Info("Started replication-lag heartbeat", "interval", cfg.Interval)
 	return loop
