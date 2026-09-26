@@ -18,8 +18,9 @@ backup and restore-to-backup-point path.
 A physical backup copies the data directory: it is the base for disaster
 recovery and point-in-time recovery, and it restores onto the same server
 series. A [logical backup](logical-backups.md) (`method: logical`) is a SQL
-dump of the application schemas: use it to export or restore single databases,
-or to move to another series. It is never a recovery base.
+dump of the application schemas: use it to export single databases, restore
+them into a new or a running cluster, or move to another series. It is never a
+recovery base.
 :::
 
 ```mermaid

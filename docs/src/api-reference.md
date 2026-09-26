@@ -37,6 +37,8 @@ Package v1alpha1 contains API Schema definitions for the mysql v1alpha1 API grou
 - [DatabaseUserList](#databaseuserlist)
 - [ImageCatalog](#imagecatalog)
 - [ImageCatalogList](#imagecataloglist)
+- [LogicalRestore](#logicalrestore)
+- [LogicalRestoreList](#logicalrestorelist)
 - [ScheduledBackup](#scheduledbackup)
 - [ScheduledBackupList](#scheduledbackuplist)
 
@@ -148,6 +150,7 @@ cluster-wide spec.backup.jobTemplate field by field.
 _Appears in:_
 - [BackupConfiguration](#backupconfiguration)
 - [BackupSpec](#backupspec)
+- [LogicalRestoreSpec](#logicalrestorespec)
 - [ScheduledBackupSpec](#scheduledbackupspec)
 
 | Field | Description | Default | Validation |
@@ -1566,6 +1569,8 @@ _Appears in:_
 - [BootstrapRecovery](#bootstraprecovery)
 - [ClusterSpec](#clusterspec)
 - [DatabaseSpec](#databasespec)
+- [DatabaseUserSpec](#databaseuserspec)
+- [LogicalRestoreSpec](#logicalrestorespec)
 - [ScheduledBackupSpec](#scheduledbackupspec)
 
 | Field | Description | Default | Validation |
@@ -1589,6 +1594,160 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `databases` _string array_ | Databases limits the dump to these schemas. Empty means every application<br />schema. The system schemas (mysql, sys, performance_schema,<br />information_schema) and operator-owned schemas are always excluded. |  | MaxItems: 256 <br />items:MaxLength: 64 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
 | `extraArgs` _string array_ | ExtraArgs are appended to the dump command. They replace the cluster's<br />spec.backup.logicalOptions. The operator does not validate them: flags<br />that change the output format or GTID handling break restore. |  | Optional: \{\} <br /> |
+
+
+#### LogicalRestore
+
+
+
+`LogicalRestore` is a namespaced one-shot request to load selected databases from a logical backup into a running cluster's primary. **Short name:** `mylogicalrestore`
+
+**Example:**
+
+```yaml
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: LogicalRestore
+metadata:
+  name: restore-billing
+spec:
+  cluster:
+    name: shop
+  backup:
+    name: shop-dump
+  databases:
+    - billing
+  policy: DropAndRecreate
+```
+
+The spec is immutable. A failed restore is not retried, and its `status.error` says whether the selected databases were changed. See [Restoring into a running cluster](logical-backups.md#restoring-into-a-running-cluster).
+
+LogicalRestore loads selected databases from a logical backup into a running
+cluster's primary.
+
+
+
+_Appears in:_
+- [LogicalRestoreList](#logicalrestorelist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
+| `kind` _string_ | `LogicalRestore` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `spec` _[LogicalRestoreSpec](#logicalrestorespec)_ | spec defines the desired state of LogicalRestore |  | Required: \{\} <br /> |
+| `status` _[LogicalRestoreStatus](#logicalrestorestatus)_ | status defines the observed state of LogicalRestore |  | Optional: \{\} <br /> |
+
+
+#### LogicalRestoreList
+
+
+
+LogicalRestoreList contains a list of LogicalRestore.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
+| `kind` _string_ | `LogicalRestoreList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[LogicalRestore](#logicalrestore) array_ |  |  |  |
+
+
+#### LogicalRestorePhase
+
+_Underlying type:_ _string_
+
+LogicalRestorePhase is the current phase of a LogicalRestore.
+
+
+
+_Appears in:_
+- [LogicalRestoreStatus](#logicalrestorestatus)
+
+| Field | Description |
+| --- | --- |
+| `pending` | LogicalRestorePhasePending means the restore has not started: the dump or<br />the cluster's primary is not ready yet.<br /> |
+| `running` | LogicalRestorePhaseRunning means the restore worker Job is loading the<br />dump.<br /> |
+| `completed` | LogicalRestorePhaseCompleted means every selected database was loaded.<br /> |
+| `failed` | LogicalRestorePhaseFailed means the restore failed. The status error says<br />whether the selected databases were changed.<br /> |
+
+
+#### LogicalRestorePolicy
+
+_Underlying type:_ _string_
+
+LogicalRestorePolicy says what a restore does with a selected database that
+already holds objects.
++kubebuilder:validation:Enum=FailIfExists;DropAndRecreate
+
+_Validation:_
+- Enum: [FailIfExists DropAndRecreate]
+
+_Appears in:_
+- [LogicalRestoreSpec](#logicalrestorespec)
+
+| Field | Description |
+| --- | --- |
+| `FailIfExists` | LogicalRestoreFailIfExists refuses the whole restore when a selected<br />database holds a table, view, routine or event. Nothing is changed. An<br />empty database, such as one a Database resource created, is loaded into.<br /> |
+| `DropAndRecreate` | LogicalRestoreDropAndRecreate drops each selected database, then loads it<br />from the dump. Schema-level grants survive the drop.<br /> |
+
+
+#### LogicalRestoreSpec
+
+
+
+LogicalRestoreSpec defines the desired state of LogicalRestore. It is
+immutable: a restore is a one-shot action.
++kubebuilder:validation:XValidation:rule="has(self.backup) != (has(self.source) && size(self.source) > 0)",message="set exactly one of backup or source"
++kubebuilder:validation:XValidation:rule="!has(self.backupID) || size(self.backupID) == 0 || (has(self.source) && size(self.source) > 0)",message="backupID is only valid with source"
++kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; create a new LogicalRestore"
+
+
+
+_Appears in:_
+- [LogicalRestore](#logicalrestore)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `cluster` _[LocalObjectReference](#localobjectreference)_ | Cluster is the running cluster to load into. The dump is loaded into its<br />current primary and reaches the replicas through replication. |  | Required: \{\} <br /> |
+| `backup` _[LocalObjectReference](#localobjectreference)_ | Backup references a completed logical Backup in this namespace. Mutually<br />exclusive with Source. |  | Optional: \{\} <br /> |
+| `source` _string_ | Source names an entry of the target Cluster's spec.externalClusters whose<br />object store holds the dump. Mutually exclusive with Backup. |  | Optional: \{\} <br /> |
+| `backupID` _string_ | BackupID selects a dump under Source. Empty picks the latest. |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases are the schemas loaded from the dump. It is required: a restore<br />never loads a whole dump implicitly. Each must be in the dump. |  | MaxItems: 256 <br />MinItems: 1 <br />items:MaxLength: 64 <br />items:MinLength: 1 <br /> |
+| `policy` _[LogicalRestorePolicy](#logicalrestorepolicy)_ | Policy says what to do with a selected database that already holds<br />objects: FailIfExists refuses the restore, DropAndRecreate drops the<br />database first. It is required, so an overwrite is always explicit. |  | Enum: [FailIfExists DropAndRecreate] <br />Required: \{\} <br /> |
+| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate shapes the restore worker Job: resources, scheduling, extra<br />labels and annotations, the finished-Job TTL and the deadline. It<br />overrides the cluster-wide spec.backup.jobTemplate field by field, like a<br />Backup's. |  | Optional: \{\} <br /> |
+
+
+#### LogicalRestoreStatus
+
+
+
+LogicalRestoreStatus defines the observed state of LogicalRestore.
+
+
+
+_Appears in:_
+- [LogicalRestore](#logicalrestore)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[LogicalRestorePhase](#logicalrestorephase)_ | Phase is the current phase of the restore. |  | Optional: \{\} <br /> |
+| `targetInstance` _string_ | TargetInstance is the primary the dump is loaded into. |  | Optional: \{\} <br /> |
+| `jobName` _string_ | JobName is the Kubernetes Job running the restore. |  | Optional: \{\} <br /> |
+| `backupID` _string_ | BackupID identifies the dump in the object store. |  | Optional: \{\} <br /> |
+| `sourcePath` _string_ | SourcePath is the full object-store path of the dump. |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases lists the schemas restored. |  | Optional: \{\} <br /> |
+| `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | StartedAt/StoppedAt record the restore timing. |  | Optional: \{\} <br /> |
+| `stoppedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ |  |  | Optional: \{\} <br /> |
+| `error` _string_ | Error holds the error message if the restore failed, and says whether<br />the selected databases were changed. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest observations of the restore state. |  | Optional: \{\} <br /> |
 
 
 #### ManagedConfiguration
@@ -1999,6 +2158,7 @@ Wasabi, Backblaze B2, etc.).
 _Appears in:_
 - [BackupConfiguration](#backupconfiguration)
 - [BackupSpec](#backupspec)
+- [BackupStatus](#backupstatus)
 - [ExternalCluster](#externalcluster)
 
 | Field | Description | Default | Validation |

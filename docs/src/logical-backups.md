@@ -1,6 +1,6 @@
 ---
 title: "Logical Backups"
-description: "SQL dumps of application schemas in the object store, and importing them into a new cluster for partial restores, cross-version moves and schema exports."
+description: "SQL dumps of application schemas in the object store, imported into a new cluster or restored into a running one, for partial restores, cross-version moves and schema exports."
 sidebar_position: 12
 ---
 
@@ -9,7 +9,8 @@ sidebar_position: 12
 A logical backup is a SQL dump of your application schemas, stored in the same
 object store as your physical backups. Use it when a physical backup can't help:
 
-- **Partial restore:** bring back one database without touching the others.
+- **Partial restore:** bring back one database without touching the others,
+  into a new cluster or into the running one.
 - **Moving across server versions:** load an 8.0 dump into a fresh 9.x cluster,
   or go back to an older series.
 - **Exporting a schema** for a developer, a test environment or another tool.
@@ -81,7 +82,8 @@ The first pinned tags that include it are:
 | `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, `9.x-5` |
 | `ghcr.io/cnmsql/cnmsql-mariadb-instance` | `10.11-4`, `11.4-4`, `11.8-4`, `12.3-4` |
 
-Importing a dump works on any image.
+Importing or restoring a dump works on any image: loading only needs the SQL
+client, which every image ships.
 
 Every dump is one consistent snapshot of all selected databases
 (`--single-transaction`). Consistency covers InnoDB tables. Non-transactional
@@ -380,6 +382,116 @@ To move `shop` from 8.0 to 9.x:
 Writes made to `shop` after the dump are not in `shop-9x`. Stop them, or plan to
 replay them, before you switch.
 
+## Restoring into a running cluster
+
+A `LogicalRestore` loads selected databases from a dump into a running
+cluster's primary. The replicas follow through replication.
+
+```yaml
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: LogicalRestore
+metadata:
+  name: restore-billing
+spec:
+  cluster:
+    name: shop
+  backup:
+    name: shop-dump
+  databases:
+    - billing
+  policy: DropAndRecreate
+```
+
+- `databases` is required: a restore never loads a whole dump by default. Each
+  database must be in the dump (the Backup's `status.databases`).
+- `policy` is required, so overwriting data is always an explicit choice:
+  - `FailIfExists` refuses the whole restore when a selected database holds a
+    table, view, routine or event. An empty database, such as one a `Database`
+    object created, is loaded into.
+  - `DropAndRecreate` drops each selected database, then loads it from the dump.
+    Grants on the database survive the drop, so `Database` and `DatabaseUser`
+    objects keep working.
+- `backup` names a completed logical Backup in the namespace. Instead, `source`
+  (with an optional `backupID`) names an entry of the Cluster's
+  `externalClusters`, as for an import.
+- `jobTemplate` shapes the worker Job like a Backup's, over the cluster's
+  `spec.backup.jobTemplate`.
+
+The spec can't be changed once created. To retry, create a new
+`LogicalRestore`.
+
+With the plugin:
+
+```bash
+kubectl cnmsql restore shop --backup shop-dump --databases billing --policy DropAndRecreate
+```
+
+### How a restore runs
+
+1. The operator checks the dump's manifest against the cluster (same flavor,
+   databases present) and waits for a ready primary. It waits while a switchover
+   or failover is in progress.
+2. It starts a worker Job that downloads the dump, checks it against the
+   manifest's checksum, keeps the selected databases, and streams them over mTLS
+   to the primary's instance manager.
+3. Before it accepts any data, the instance manager checks that it is a writable
+   primary and applies the policy. Then it loads the stream with the `mysql` /
+   `mariadb` client over its local socket.
+
+The load runs as the operator's control account inside the primary's Pod. Loading
+views, routines, triggers and events that keep their `DEFINER` through the binary
+log needs `SUPER`, so no narrower account can do it. This means the dump is
+trusted input: anyone who can write to the backup bucket can make a restore run
+any SQL, the same way they could plant a physical backup.
+
+Unlike an import, a restore goes through the binary log:
+
+- replicas and continuous archiving follow it, and point-in-time recovery stays
+  valid across it;
+- a large restore writes about as much binlog as it loads, so expect replica lag
+  and more archive and disk use until the binlogs expire.
+
+Nothing on the server is reconfigured for the load. `max_allowed_packet` must
+fit the dump's largest row, as it did on the source. Enabled events start firing
+as soon as they are created. On a Group Replication cluster the usual limits
+apply: every table needs a primary key, and each dumped insert (about 1 MB) is
+its own transaction.
+
+Follow a restore with its worker's logs, which report progress every 30 seconds:
+
+```bash
+kubectl logs job/restore-billing-restore -f
+```
+
+### When a restore fails
+
+A restore is not atomic: each statement of the dump commits on its own. The
+`LogicalRestore` ends in phase `failed`, and its `status.error` says whether the
+data was touched: either "Nothing was changed on the cluster" or "The selected
+databases may be partly restored". A failed restore is not retried. Fix the
+cause, then create a new `LogicalRestore` (with `DropAndRecreate` if the first
+one got part of the way).
+
+| Reason | Changed data | Meaning |
+|---|---|---|
+| `SourceNotReady` | no | Not a failure: the restore waits in `pending` while its Backup is still running or the store can't be read. |
+| `PrimaryNotReady` | no | Not a failure: the restore waits in `pending` for a ready primary, or for a switchover to finish. |
+| `DatabaseNotEmpty` | no | `FailIfExists` found a selected database holding objects. |
+| `NotPrimary` | no | The target instance was read-only when the load started (the primary moved). |
+| `Incompatible` | no | The dump is from another flavor, lacks a selected database, its Backup failed, or its manifest is missing. |
+| `PhysicalBackupNotRestorable` | no | `backup` names a physical Backup. |
+| `InstanceManagerOutdated` | no | The primary still runs an instance manager from before restores. Retry once the operator upgrade has reached it. |
+| `LoadInProgress` | no | Another restore was loading into the same instance. |
+| `TargetUnreachable` | no | The worker could not connect to the primary's instance manager, or the TLS handshake failed. |
+| `JobConflict` | no | A Job with the restore's worker Job name exists and belongs to something else, for example a deleted restore of the same name. |
+| `LoadFailed` | maybe | The SQL client failed (its error is in the message), or the connection dropped mid-load. |
+| `DumpCorrupt` | maybe | The dump does not match its checksum or has no completion footer. The load stopped before its last statement. |
+| `DownloadFailed` | maybe | The object store failed mid-stream. |
+| `JobMissing` | maybe | The worker Job was deleted while the restore ran. |
+
+Deleting a running `LogicalRestore` deletes its Job, which stops the load
+part-way.
+
 ## Downloading a dump
 
 To get a dump out of the object store, for a developer or another tool:
@@ -423,5 +535,5 @@ See [Backup Retention and Deletion](backup-retention-deletion.md).
 - Users, grants and system schemas are not included.
 - Dumps are GTID-neutral: loading one does not change the target's
   `gtid_executed` or `gtid_purged`.
-- An import only runs when a cluster is created. Loading a dump into a running
-  cluster is not supported yet.
+- A restore into a running cluster is not atomic, and it writes as much binlog
+  as it loads.
