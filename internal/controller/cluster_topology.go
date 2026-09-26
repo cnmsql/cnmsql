@@ -437,9 +437,14 @@ func (r *ClusterReconciler) stampFencingAnnotation(ctx context.Context, _ *mysql
 	return r.Patch(ctx, pod, client.MergeFrom(before))
 }
 
-// removeInstanceResources deletes the owned Pod, ConfigMap and Service for a
-// removed instance. The PVC is intentionally retained.
+// removeInstanceResources deletes the owned Pod, bootstrap Jobs, ConfigMap and
+// Service for a removed instance. The PVC is intentionally retained.
 func (r *ClusterReconciler) removeInstanceResources(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
+	// A join Job still cloning the volume must not outlive the instance it was
+	// provisioning for.
+	if _, err := r.deleteBootstrapJobs(ctx, cluster, inst.Name); err != nil {
+		return err
+	}
 	objects := []client.Object{
 		&corev1.Pod{},
 		&corev1.ConfigMap{},

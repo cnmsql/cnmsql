@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,6 +100,44 @@ func TestReconcileReinitTearsDownThenClears(t *testing.T) {
 	}
 	if _, ok := got.Annotations[reinitAnnotation]; ok {
 		t.Fatalf("reinit annotation still present on persisted Cluster: %v", got.Annotations)
+	}
+}
+
+func TestReconcileReinitDeletesBootstrapJobs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Annotations = map[string]string{reinitAnnotation: testReplica2}
+	scheme := testScheme(t)
+	// A join is still running: it holds the PVC, so the PVC cannot go until it does.
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: testReplica2 + "-join", Namespace: cluster.Namespace,
+		Labels: map[string]string{clusterLabel: cluster.Name, bootstrapInstanceLabel: testReplica2},
+	}}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster, instancePVC(cluster, testReplica2), job).
+		Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan()
+	plan.Instances = 2
+	inst := plan.instanceFor(cluster, 2)
+
+	handled, err := r.reconcileReinit(ctx, cluster, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("teardown reported complete while a bootstrap Job existed")
+	}
+	if !instanceMissing(t, c, cluster, testReplica2+"-join", &batchv1.Job{}) {
+		t.Fatal("bootstrap Job not deleted during re-init teardown")
+	}
+	handled, err = r.reconcileReinit(ctx, cluster, inst)
+	if err != nil || handled {
+		t.Fatalf("second pass = %v, %v; want teardown complete", handled, err)
 	}
 }
 

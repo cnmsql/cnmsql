@@ -55,12 +55,13 @@ func reinitRequested(cluster *mysqlv1alpha1.Cluster, name string) bool {
 }
 
 // reconcileReinit drives a requested re-initialisation of a single instance. It
-// returns handled=true while the instance's Pod and PVC are being torn down, so
-// the caller skips the normal ensure* pass and does not recreate them until the
-// teardown completes. When both are gone it clears the request and returns
-// handled=false, letting the normal reconcile recreate them empty — the
-// bootstrap init-container then re-clones a fresh copy from a backup and rejoins
-// replication, preserving the instance's name/ordinal (hence server_id).
+// returns handled=true while the instance's Pod, bootstrap Jobs and PVC are
+// being torn down, so the caller skips the normal ensure* pass and does not
+// recreate them until the teardown completes. When all are gone it clears the
+// request and returns handled=false, letting the normal reconcile recreate the
+// PVC empty — a join bootstrap Job then re-clones a fresh copy from a backup
+// before the Pod comes back and rejoins replication, preserving the instance's
+// name/ordinal (hence server_id).
 //
 // The current primary is never re-initialised: it is the replication source, so
 // wiping it would destroy the cluster's data. Such a request is refused and
@@ -80,9 +81,10 @@ func (r *ClusterReconciler) reconcileReinit(ctx context.Context, cluster *mysqlv
 		return false, r.clearReinitRequest(ctx, cluster, inst.Name)
 	}
 
-	// Tear down the Pod first, then the PVC. The PVC stays Terminating until the
-	// Pod releases its mount, so this typically spans several reconciles; the
-	// owned-object watches re-trigger us as each object disappears.
+	// Tear down the Pod first, then the bootstrap Jobs and PVC. The PVC stays
+	// Terminating until the Pod releases its mount, so this typically spans
+	// several reconciles; the owned-object watches re-trigger us as each object
+	// disappears.
 	pod := &corev1.Pod{}
 	podGone := false
 	switch err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); {
@@ -101,6 +103,12 @@ func (r *ClusterReconciler) reconcileReinit(ctx context.Context, cluster *mysqlv
 		}
 	}
 
+	// A bootstrap Job (a join still cloning) holds the PVC too.
+	jobsLeft, err := r.deleteBootstrapJobs(ctx, cluster, inst.Name)
+	if err != nil {
+		return false, err
+	}
+
 	pvc := &corev1.PersistentVolumeClaim{}
 	pvcGone := false
 	switch err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); {
@@ -114,7 +122,7 @@ func (r *ClusterReconciler) reconcileReinit(ctx context.Context, cluster *mysqlv
 		}
 	}
 
-	if !podGone || !pvcGone {
+	if !podGone || !pvcGone || jobsLeft > 0 {
 		// Still tearing down: do not recreate the instance yet.
 		return true, nil
 	}
