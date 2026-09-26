@@ -73,21 +73,13 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 		RestartPolicy:                 corev1.RestartPolicyAlways,
 		TerminationGracePeriodSeconds: &gracePeriod,
 		ServiceAccountName:            instanceServiceAccountName(inst),
-		Volumes: []corev1.Volume{
-			{Name: scratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: inst.PVCName}}},
-			{Name: runVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			{Name: backupVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: inst.ConfigMapName}}}},
-			{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: inst.ServerTLSSecret}}},
-			{Name: clientCAVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.ClientCASecretName}}},
-		},
+		Volumes:                       instanceVolumes(plan, inst),
 		InitContainers: []corev1.Container{
 			{
-				Name:            "bootstrap-controller",
+				Name:            bootstrapControllerName,
 				Image:           operatorImage,
 				ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-				Command:         []string{"/manager"},
+				Command:         []string{operatorManagerBinary},
 				Args:            []string{managerBootstrapCmd, managerBinary},
 				VolumeMounts:    volumeMounts(),
 				Resources:       cluster.Spec.Resources,
@@ -190,6 +182,21 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 	}
 	podSpec.Containers[0].Env = append(podSpec.Containers[0].Env, cluster.Spec.Env...)
 	return podSpec
+}
+
+// instanceVolumes are the volumes an instance's Pod and its bootstrap Job
+// mount: the data PVC, the scratch/run/backup emptyDirs, my.cnf and the TLS
+// material.
+func instanceVolumes(plan clusterPlan, inst instancePlan) []corev1.Volume {
+	return []corev1.Volume{
+		{Name: scratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: inst.PVCName}}},
+		{Name: runVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: backupVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: inst.ConfigMapName}}}},
+		{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: inst.ServerTLSSecret}}},
+		{Name: clientCAVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.ClientCASecretName}}},
+	}
 }
 
 // bootstrapArgs returns the init-container command: the primary initialises a
