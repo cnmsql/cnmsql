@@ -265,6 +265,47 @@ func TestBootstrapJobDefaultsToInstanceResources(t *testing.T) {
 	}
 }
 
+// TestBootstrapJobTemplateResourcesOnlySizeRestore checks that the backup
+// JobTemplate's resources size only the restore Job: the initdb, join and
+// import Jobs keep the cluster's spec.resources even when the template sets
+// its own.
+func TestBootstrapJobTemplateResourcesOnlySizeRestore(t *testing.T) {
+	t.Parallel()
+	r, cluster, plan, _, _ := restoreTestFixture(t)
+	cluster.Spec.Instances = 2
+	plan.Instances = 2
+	cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+		},
+	}
+	imported := plan
+	imported.Import = &importPlan{Bucket: "bkt", DumpKey: "d/dump.sql.zst", ManifestKey: "d/logical.json"}
+
+	for _, tc := range []struct {
+		name string
+		mode bootstrapMode
+		plan clusterPlan
+		inst instancePlan
+		want string
+	}{
+		{"restore uses the template", bootstrapModeRestore, plan, plan.instanceFor(cluster, 1), "4Gi"},
+		{"initdb keeps the instance resources", bootstrapModeInitDB, plan, plan.instanceFor(cluster, 1), "1Gi"},
+		{"join keeps the instance resources", bootstrapModeJoin, plan, plan.instanceFor(cluster, 2), "1Gi"},
+		{"import keeps the instance resources", bootstrapModeImport, imported, imported.instanceFor(cluster, 1), "1Gi"},
+	} {
+		job, err := r.bootstrapJob(cluster, tc.plan, tc.inst, tc.mode, instancePVC(cluster, tc.inst.PVCName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range append(job.Spec.Template.Spec.InitContainers, job.Spec.Template.Spec.Containers...) {
+			if got := c.Resources.Limits.Memory().String(); got != tc.want {
+				t.Errorf("%s: container %s memory limit = %s, want %s", tc.name, c.Name, got, tc.want)
+			}
+		}
+	}
+}
+
 func TestBootstrapJobImportRunsInitDBFirst(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()

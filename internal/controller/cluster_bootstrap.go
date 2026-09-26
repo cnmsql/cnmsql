@@ -176,7 +176,7 @@ func (r *ClusterReconciler) bootstrapJob(
 ) (*batchv1.Job, error) {
 	tpl := bootstrapJobTemplate(cluster)
 	resources := cluster.Spec.Resources
-	if hasResourceRequirements(tpl.Resources) {
+	if mode == bootstrapModeRestore && hasResourceRequirements(tpl.Resources) {
 		resources = tpl.Resources
 	}
 	operatorImage := cmp.Or(plan.OperatorImage, plan.Image)
