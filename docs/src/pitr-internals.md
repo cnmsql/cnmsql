@@ -15,9 +15,9 @@ PITR has two independent halves that meet only through the object store:
 
 - **Archiving** runs in every instance pod but ships only from the primary. It
   continuously copies rotated binary logs to S3, GTID-addressable.
-- **Restore** runs once, in a recovering cluster's init container. It restores a
-  physical base backup, then replays archived binlogs from the backup's anchor up
-  to a recovery target.
+- **Restore** runs once, in a recovering cluster's `<instance>-restore`
+  bootstrap Job. It restores a physical base backup, then replays archived
+  binlogs from the backup's anchor up to a recovery target.
 
 The design is GTID-first: object names and binlog file numbers are operational
 details, and correctness is defined by whether the archived GTID set covers the
@@ -188,9 +188,9 @@ flowchart LR
 ## Restore process
 
 Restore is a bootstrap operation. A recovering cluster starts from an empty PVC,
-restores the first primary in an init container, and replicas later clone from that
-recovered primary through the normal join path. Replay itself lives in
-`replayBinlogs`.
+restores the first primary with its one-shot `<instance>-restore` bootstrap Job,
+and replicas later clone from that recovered primary through the normal join
+path. Replay itself lives in `replayBinlogs`.
 
 The steps:
 
@@ -215,15 +215,15 @@ The steps:
 
 ```mermaid
 sequenceDiagram
-    participant Init
+    participant Restore as Restore Job
     participant Store
     participant Temp as Temp mysqld
-    Init->>Store: base backup + metadata
-    Init->>Init: prepare + copy-back, read anchor
-    Init->>Store: _index.json + planned binlogs
-    Init->>Temp: start (socket, skip-grant-tables)
-    Init->>Temp: FLUSH PRIVILEGES, then decode | apply, bounded to target
-    Init->>Init: write .cnmsql-pitr-done
+    Restore->>Store: base backup + metadata
+    Restore->>Restore: prepare + copy-back, read anchor
+    Restore->>Store: _index.json + planned binlogs
+    Restore->>Temp: start (socket, skip-grant-tables)
+    Restore->>Temp: FLUSH PRIVILEGES, then decode | apply, bounded to target
+    Restore->>Restore: write .cnmsql-pitr-done
 ```
 
 The replay itself is `mysqlbinlog <bounded args> | mysql --socket=<temp>`, with
@@ -338,7 +338,7 @@ as `anchorServerUUID`, loaded onto `ReplayPlan.AnchorServerUUID`, and read by
 ### Restore guarantees
 
 - **Reentrant.** After a successful replay cnmsql writes `.cnmsql-pitr-done` on the
-  data directory. A retried init container sees the sentinel and skips replay
+  data directory. A retried restore Job sees the sentinel and skips replay
   instead of re-applying GTIDs (which `mysqld` would reject).
 - **Anchor persistence across retries.** The backup's binlog-info is copied into
   the durable data directory, not just the scratch backup dir, so a retry that lost

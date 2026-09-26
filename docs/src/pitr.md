@@ -35,7 +35,7 @@ flowchart LR
     end
 
     subgraph Recovery["Recovery Cluster"]
-        Init["Init Container\n(restore + replay)"]
+        Restore["Restore Job\n(restore + replay)"]
         RecPrimary["Recovered Primary"]
         Replicas["Replicas\n(clone from primary)"]
     end
@@ -43,9 +43,9 @@ flowchart LR
     Backup -->|"mTLS xbstream"| BaseBackup
     Archiver -->|"rotated binlogs"| Binlogs
     Primary -->|"local binlog dir"| Archiver
-    BaseBackup -->|"download base backup"| Init
-    Binlogs -->|"plan + replay"| Init
-    Init --> RecPrimary
+    BaseBackup -->|"download base backup"| Restore
+    Binlogs -->|"plan + replay"| Restore
+    Restore --> RecPrimary
     RecPrimary --> Replicas
 ```
 
@@ -64,8 +64,9 @@ straight from S3 without a `Backup` CR. The recovery bootstrap can target:
 - No `recoveryTarget`: restore the physical base backup only.
 
 PITR is a bootstrap operation. A recovering cluster starts from an empty PVC,
-restores the first primary in an init container, and then replicas clone from
-that recovered primary through the normal join path.
+restores the first primary with its one-shot `<instance>-restore` bootstrap Job,
+and then replicas clone from that recovered primary through the normal join
+path.
 
 ## Components
 
@@ -184,7 +185,7 @@ The planner:
 - Rejects targets before the base backup, targets beyond archive coverage, and
   incoherent or forked archive indexes.
 
-The restore init container then downloads the planned binlog files, starts a
+The restore Job then downloads the planned binlog files, starts a
 temporary socket-only `mysqld` over the restored data directory, and pipes:
 
 ```text
@@ -197,22 +198,22 @@ stderr is captured as structured logs.
 ```mermaid
 sequenceDiagram
     participant Op as Operator
-    participant Init as Init Container
+    participant Restore as Restore Job
     participant Store as Object Store
     participant MySQL as Temporary mysqld
 
-    Op->>Init: Resolve completed Backup + objectStore
-    Init->>Store: Download base backup (xbstream)
-    Store-->>Init: backup.xbstream + metadata.json
-    Init->>Init: xtrabackup prepare + copy-back
-    Init->>Init: Read anchor GTID (xtrabackup_binlog_info)
-    Init->>Store: Download archive index
-    Store-->>Init: binlogs/_index.json + segment manifests
-    Init->>Store: Download planned binlog segments
-    Store-->>Init: binlog files
-    Init->>MySQL: Start temporary mysqld (socket only)
-    Init->>MySQL: mysqlbinlog | mysql (--exclude-gtids=anchor)
-    Note over Init: Write .cnmsql-pitr-done sentinel
+    Op->>Restore: Resolve completed Backup + objectStore
+    Restore->>Store: Download base backup (xbstream)
+    Store-->>Restore: backup.xbstream + metadata.json
+    Restore->>Restore: xtrabackup prepare + copy-back
+    Restore->>Restore: Read anchor GTID (xtrabackup_binlog_info)
+    Restore->>Store: Download archive index
+    Store-->>Restore: binlogs/_index.json + segment manifests
+    Restore->>Store: Download planned binlog segments
+    Store-->>Restore: binlog files
+    Restore->>MySQL: Start temporary mysqld (socket only)
+    Restore->>MySQL: mysqlbinlog | mysql (--exclude-gtids=anchor)
+    Note over Restore: Write .cnmsql-pitr-done sentinel
     Note over Op: Start recovered primary
 ```
 
@@ -307,7 +308,7 @@ Crash behavior depends on replication durability:
 
 PITR RTO is the time to create the recovery primary plus any replicas:
 
-- Schedule the Pod and attach the PVC.
+- Schedule the restore Job and attach the PVC.
 - Download and extract the XtraBackup archive.
 - Run XtraBackup prepare and copy-back.
 - Reconcile restored internal account passwords to the recovery cluster secrets.
@@ -335,7 +336,7 @@ RTO.
 - The purge gate purges only files already shipped, so MySQL should not recycle
   unarchived logs unless an operator explicitly bypasses the guard.
 - Recovery replay is reentrant. After successful replay, cnmsql writes
-  `.cnmsql-pitr-done` in the data directory. If the init container retries, it
+  `.cnmsql-pitr-done` in the data directory. If the restore Job retries, it
   skips replay instead of reapplying GTIDs.
 
 ## Status and failure surfaces
@@ -358,7 +359,7 @@ the object-store path, network, or archiver throughput should be inspected.
 The operator performs an up-front PITR satisfiability check before provisioning a
 recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 `_index.json` coverage. Checks that require the base backup anchor, such as
-"target is older than this backup", run inside the restore init container.
+"target is older than this backup", run inside the restore Job.
 
 ## Integrator responsibilities
 
@@ -369,7 +370,7 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 - Enable continuous archiving before relying on PITR. A physical backup alone can
   restore only to the backup's consistency point.
 - Configure credentials or IAM so instance pods can write the source archive and
-  recovery init containers can read it.
+  recovery Jobs can read it.
 - Monitor the `ContinuousArchiving` condition, `pendingFiles`, object-store
   errors, and failover events.
 - Choose base-backup frequency and `targetRPOSeconds` together. The former
@@ -385,7 +386,7 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 - `targetTime` depends on binlog event timestamps and the server clock. Prefer
   `targetGTID` when an exact boundary is available.
 - The operator's up-front target check is intentionally conservative and
-  coverage-based. Some invalid targets are detected later by the init container.
+  coverage-based. Some invalid targets are detected later by the restore Job.
 - Recovery uses the archive index. If `_index.json` is missing, stale, or forked,
   recovery fails loudly rather than inferring a possibly unsafe order.
 - Object-store versioning, retention, and immutability are outside the operator.

@@ -50,16 +50,43 @@ Common causes:
 - image pull failed;
 - unsupported Cluster shape is blocked by the controller;
 - instance-manager `/status` is unavailable;
-- initdb, restore, or join init container failed.
+- a bootstrap Job (initdb, restore, join, or import) failed.
 
 Look at `status.phase`, `status.phaseReason`, and Events first.
 
-## Replica will not join
+## A bootstrap Job failed
 
-Check the replica init container logs:
+An instance's data volume is bootstrapped by a one-shot Job named
+`<instance>-<mode>` (`initdb`, `restore`, `join`, or `import`) that runs before
+the instance Pod exists. A failed Job sets the Cluster's `BootstrapFailed`
+condition with the Job's own reason (e.g. `BackoffLimitExceeded` or
+`DeadlineExceeded`), names it in `status.phaseReason`, and emits a
+`BootstrapJobFailed` Warning Event.
+
+Check:
 
 ```bash
-kubectl logs pod/<replica-pod> -c initdb
+kubectl get jobs -l mysql.cnmsql.co/bootstrap-instance
+kubectl logs job/<instance>-<mode>
+kubectl get cluster <cluster> -o \
+  jsonpath='{.status.conditions[?(@.type=="BootstrapFailed")]}'
+```
+
+The failed Job is kept, so its logs are available. The operator replaces it
+only when the spec it was built from changes (a new source Backup, a longer
+deadline); delete the Job by hand to retry with the same spec.
+
+`BootstrapRefused` Warning Events mean something different: the operator
+refused to bootstrap the current primary's volume on an established cluster and
+left the instance down. Recover it by restoring a backup (see
+[Point-in-time recovery](./pitr.md)) or failing over.
+
+## Replica will not join
+
+Check the clone Job's logs:
+
+```bash
+kubectl logs job/<replica>-join
 ```
 
 Common causes:
@@ -284,8 +311,9 @@ planned finalizer/retention feature.
 mysql.cnmsql.co/cluster=<cluster>
 mysql.cnmsql.co/instance=<instance>
 mysql.cnmsql.co/role=primary|replica
+mysql.cnmsql.co/bootstrap-instance=<instance>
 mysql.cnmsql.co/scheduled-backup=<scheduledbackup>
 ```
 
-These labels make it easier to list Pods, PVCs, Services, and generated Backups
-for one Cluster or schedule.
+These labels make it easier to list Pods, PVCs, Services, bootstrap Jobs, and
+generated Backups for one Cluster or schedule.

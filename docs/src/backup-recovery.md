@@ -30,7 +30,7 @@ flowchart LR
     Job["Backup Worker Job"]
     Source["Source Instance\ninstance-manager"]
     Store["S3-compatible Object Store"]
-    Restore["Recovery Init Container"]
+    Restore["Restore Bootstrap Job"]
     NewPrimary["Recovered Primary"]
 
     BackupCR --> Operator
@@ -123,9 +123,14 @@ The template exposes:
 
 - `resources`: requests and limits for the worker container. Streaming xbstream
   can be memory-hungry. During recovery the cluster-level template's `resources`
-  also apply to the restore init container.
+  also size the `<instance>-restore` bootstrap Job (the other bootstrap Jobs use
+  the instance's `spec.resources`).
 - `nodeSelector`, `tolerations`, `affinity`: keep backups off the critical nodes.
-- `priorityClassName`: the pod priority for the worker Job.
+  On instance bootstrap Jobs the template's `nodeSelector` and `affinity` are
+  not applied — they follow the instance's scheduling — while `tolerations` are
+  added to the instance's.
+- `priorityClassName`: the pod priority for the worker Job; on instance
+  bootstrap Jobs it overrides the instance's.
 - `labels`, `annotations`: merged onto the generated Job and its pod. Operator
   labels win on conflict.
 - `ttl`: how long a finished worker Job is kept before Kubernetes
@@ -237,10 +242,16 @@ spec:
           key: secretKey
 ```
 
-The recovery init container downloads `backup.xbstream`, verifies the checksum,
-extracts it, runs XtraBackup prepare, copy-backs into the data directory, and
-starts the first instance as the recovered primary. Additional replicas clone
-from that recovered primary through the normal replica join path.
+The primary's volume is bootstrapped by its one-shot `<instance>-restore`
+bootstrap Job, which downloads `backup.xbstream`, verifies the checksum,
+extracts it, and runs XtraBackup prepare and copy-back into the data directory.
+The operator then creates the first instance's Pod, which starts as the
+recovered primary. Additional replicas clone from that recovered primary
+through the normal replica join path.
+
+The recovery source is resolved only until the bootstrap primary's volume is
+bootstrapped. After that the source `Backup`, its object store and its Secrets
+can be deleted without affecting the recovered cluster.
 
 Without `recoveryTarget`, the Cluster restores to the backup's consistent point.
 With `recoveryTarget`, the PITR path replays archived binlogs after the base
@@ -321,13 +332,15 @@ status, and Events:
   directory.
 
 The controller-manager never handles backup payload bytes. Large data movement
-stays in Jobs and init containers so retries are isolated and observable through
-Kubernetes primitives.
+stays in Jobs so retries are isolated and observable through Kubernetes
+primitives.
 
 ## Operational notes
 
-- Keep completed Backup objects for as long as recovery clusters may reference
-  them.
+- A recovery cluster reads its source Backup only until its primary's volume is
+  bootstrapped; afterwards the Backup, its object store and its Secrets can be
+  deleted. Keep completed Backup objects while other clusters may still need to
+  recover from them.
 - Preserve both `backup.xbstream` and `metadata.json`; recovery needs metadata
   as well as bytes.
 - Use the same major-version-compatible cnmsql instance image for recovery.

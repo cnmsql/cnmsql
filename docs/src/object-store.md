@@ -146,8 +146,10 @@ unrelated destination.
 One-shot backup Jobs receive object-store credentials only for the duration of
 the Job.
 
-Recovery init containers receive read access so they can download base backups
-and binlogs.
+The bootstrap Jobs that restore a physical backup or import a logical dump
+(`<instance>-restore`, `<instance>-import`) receive read access for the length
+of the bootstrap. The credentials stay in those Jobs, never in instance Pods:
+once the primary's volume is bootstrapped the source is not resolved again.
 
 Continuous archiving writes from the primary instance manager, so instance Pods
 need object-store write credentials when archiving is enabled.
