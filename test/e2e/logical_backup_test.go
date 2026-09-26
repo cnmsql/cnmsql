@@ -253,11 +253,16 @@ func logicalBackupSpecs(f logicalFlavor) {
 		}
 
 		By("checking only the bootstrap primary ran the import")
-		exitCode, err := kubectl("get", "pod", imported+"-1", "-n", testNamespace, "-o",
-			`jsonpath={.status.initContainerStatuses[?(@.name=="import")].state.terminated.exitCode}`)
+		status, err := kubectl("get", "pvc", imported+"-1", "-n", testNamespace,
+			"-o", "jsonpath={.metadata.annotations.mysql\\.cnmsql\\.co/pvc-status}")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(exitCode).To(Equal("0"), "the import init container should have succeeded")
-		containers, err := kubectl("get", "pod", imported+"-2", "-n", testNamespace, "-o",
+		Expect(status).To(Equal("ready"), "the primary's PVC is not marked ready after the import")
+		containers, err := kubectl("get", "pod", imported+"-1", "-n", testNamespace, "-o",
+			"jsonpath={.spec.initContainers[*].name}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(containers).To(Equal("bootstrap-controller"),
+			"the instance Pod must only carry the bootstrap-controller init container")
+		containers, err = kubectl("get", "pod", imported+"-2", "-n", testNamespace, "-o",
 			"jsonpath={.spec.initContainers[*].name}")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.Fields(containers)).NotTo(ContainElement("import"), "a replica clones, it does not import")
