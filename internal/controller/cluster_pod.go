@@ -85,17 +85,6 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				Resources:       cluster.Spec.Resources,
 				SecurityContext: cluster.Spec.SecurityContext,
 			},
-			{
-				Name:            "bootstrap",
-				Image:           plan.Image,
-				ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-				Command:         []string{managerBinary},
-				Args:            r.bootstrapArgs(cluster, plan, inst),
-				Env:             bootstrapEnv(plan, inst),
-				VolumeMounts:    volumeMounts(),
-				Resources:       cluster.Spec.Resources,
-				SecurityContext: cluster.Spec.SecurityContext,
-			},
 		},
 		Containers: []corev1.Container{{
 			Name:            instanceContainerName,
@@ -160,23 +149,6 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 		SchedulerName:             cluster.Spec.SchedulerName,
 		SecurityContext:           podSecurityContext(cluster),
 	}
-	// During recovery the "bootstrap" init container restores a physical backup
-	// from object storage (xbstream), which can be far more memory-hungry than
-	// steady-state mysqld. Let operators size it via the cluster-level backup job
-	// template. Only resources apply here: the init container shares the instance
-	// pod, whose scheduling and priority are already owned by the cluster spec, so
-	// the template's nodeSelector/tolerations/affinity/priorityClassName do not.
-	if plan.Recovery != nil && cluster.Spec.Backup != nil && cluster.Spec.Backup.JobTemplate != nil {
-		if res := cluster.Spec.Backup.JobTemplate.Resources; hasResourceRequirements(res) {
-			// InitContainers[1] is "bootstrap"; [0] is "bootstrap-controller".
-			podSpec.InitContainers[1].Resources = res
-		}
-	}
-	// A cluster bootstrapped from a logical backup loads it on the primary,
-	// after initdb and before mysqld runs.
-	if inst.IsPrimary && plan.Import != nil {
-		podSpec.InitContainers = append(podSpec.InitContainers, importContainer(cluster, plan))
-	}
 	for _, pullSecret := range cluster.Spec.ImagePullSecrets {
 		podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, corev1.LocalObjectReference{Name: pullSecret.Name})
 	}
@@ -199,35 +171,11 @@ func instanceVolumes(plan clusterPlan, inst instancePlan) []corev1.Volume {
 	}
 }
 
-// bootstrapArgs returns the init-container command: the primary initialises a
-// fresh data dir (initdb) or restores a physical backup from object storage
-// (recovery); an async replica clones the primary over the streamed backup,
-// while a Group Replication member initialises an empty server and provisions
-// itself from a group donor via distributed recovery at run time.
-func (r *ClusterReconciler) bootstrapArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) []string {
-	if inst.IsPrimary {
-		if plan.Recovery != nil {
-			return restoreArgs(plan)
-		}
-		return r.initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB)
-	}
-	if r.topologyReconciler(cluster).PodPolicy(cluster).InitializeReplica {
-		// A GR member is not seeded by an XtraBackup clone of the primary (which
-		// would configure an async replication channel and copy the donor's
-		// server_uuid, both of which break START GROUP_REPLICATION). It initialises
-		// an empty server with the cluster's internal accounts but no application
-		// schema, then the in-Pod role strategy clears the initdb GTIDs and clones
-		// from a group donor via distributed recovery.
-		return r.initdbArgs(cluster, nil)
-	}
-	return joinArgs(cluster, plan)
-}
-
 // serverVersionArg passes the image's MySQL version (from the MYSQL_VERSION env
 // var the kubelet expands) to every instance subcommand that renders my.cnf.
 const serverVersionArg = "--server-version=$(MYSQL_VERSION)"
 
-// restoreArgs builds the recovering primary's init-container command: download
+// restoreArgs builds the recovering primary's bootstrap Job command: download
 // and restore a physical backup from object storage into the data directory,
 // then (for point-in-time recovery) replay archived binlogs up to the target.
 func restoreArgs(plan clusterPlan) []string {
@@ -304,7 +252,7 @@ func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *m
 	return args
 }
 
-// joinArgs builds the replica's init-container command: pull and restore a
+// joinArgs builds the replica's bootstrap Job command: pull and restore a
 // streamed backup from the primary over mTLS, then configure GTID replication.
 func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 	primaryFQDN := plan.primaryName(cluster) + "." + cluster.Namespace + ".svc"
@@ -397,20 +345,10 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 	return args
 }
 
-// bootstrapEnv is the init-container environment. The recovering primary also
-// gets the object-store credentials its restore worker needs.
-func bootstrapEnv(plan clusterPlan, inst instancePlan) []corev1.EnvVar {
-	env := initEnv(plan)
-	if inst.IsPrimary && plan.Recovery != nil {
-		env = append(env, plan.Recovery.StoreEnv...)
-	}
-	return env
-}
-
-// initEnv is the environment for the init container, which may run initdb (on
-// the primary) or join (on a replica). It reads no passwords: the instance
-// commands fetch the credentials from the cluster's Secrets through the
-// Kubernetes API, and replication uses mTLS-only auth.
+// initEnv is the environment for the bootstrap Job's workers, which run
+// initdb (on the primary) or join (on a replica). It reads no passwords: the
+// instance commands fetch the credentials from the cluster's Secrets through
+// the Kubernetes API, and replication uses mTLS-only auth.
 func initEnv(plan clusterPlan) []corev1.EnvVar {
 	return runEnv(nil, plan)
 }
@@ -419,12 +357,12 @@ func initEnv(plan clusterPlan) []corev1.EnvVar {
 // instance manager reads the credentials from the cluster's Secrets through
 // the Kubernetes API. When cluster has continuous archiving enabled, the
 // object-store credentials and destination (bucket/path) are appended so the
-// in-Pod archiver can ship binlogs. cluster may be nil for the init container,
-// which never archives.
+// in-Pod archiver can ship binlogs. cluster may be nil for the bootstrap
+// Job's workers, which never archive.
 func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
-	// The flavor rides on the plan (not the cluster arg) so the init container —
-	// which passes cluster=nil to keep archiving env out — still selects the
-	// right engine for data-dir bootstrap and replica join.
+	// The flavor rides on the plan (not the cluster arg) so the bootstrap Job's
+	// workers — which pass cluster=nil to keep archiving env out — still select
+	// the right engine for data-dir bootstrap and replica join.
 	flavor := string(plan.Flavor)
 	if flavor == "" {
 		flavor = string(mysqlv1alpha1.FlavorMySQL)

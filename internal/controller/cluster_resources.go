@@ -544,8 +544,6 @@ func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan 
 func restartTriggeringPodSpec(cluster *mysqlv1alpha1.Cluster, stablePlan clusterPlan, stableInst instancePlan, actual corev1.PodSpec) corev1.PodSpec {
 	stable := actual.DeepCopy()
 	stableTemplate := (&ClusterReconciler{}).podSpec(cluster, stablePlan, stableInst)
-	withoutImportContainer(stable)
-	withoutImportContainer(&stableTemplate)
 	if len(stable.InitContainers) == len(stableTemplate.InitContainers) {
 		for i := range stable.InitContainers {
 			stable.InitContainers[i].Args = stableTemplate.InitContainers[i].Args

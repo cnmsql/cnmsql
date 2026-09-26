@@ -428,25 +428,35 @@ func TestMergeGroupReplicationKeepsStickyMaxDuringPartialFailure(t *testing.T) {
 	}
 }
 
-// Restore into a fresh GR group: the bootstrap primary restores the physical
-// backup into its data dir (then bootstraps a fresh single-member group via the
-// in-Pod role strategy), while secondaries initialise an empty GR server and
-// provision via distributed recovery from that primary — never an async clone.
-func TestBootstrapArgsGroupReplicationRecovery(t *testing.T) {
+// Restore into a fresh GR group: the bootstrap primary's Job restores the
+// physical backup into its data dir (then bootstraps a fresh single-member
+// group via the in-Pod role strategy), while secondaries initialise an empty
+// GR server and provision via distributed recovery from that primary — never
+// an async clone.
+func TestBootstrapJobGroupReplicationRecovery(t *testing.T) {
 	t.Parallel()
 	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{GroupName: "g"})
 	cluster.Spec.Instances = 3
 	plan := testPlan()
 	plan.Instances = 3
 	plan.Recovery = &recoveryPlan{Bucket: "bkt", ArchiveKey: "clusters/demo/bk/", MetadataKey: "clusters/demo/bk/meta"}
-	r := &ClusterReconciler{}
+	r := &ClusterReconciler{Scheme: testScheme(t)}
 
-	primaryArgs := strings.Join(r.bootstrapArgs(cluster, plan, plan.instanceFor(cluster, 1)), " ")
+	jobArgs := func(ordinal int) string {
+		inst := plan.instanceFor(cluster, ordinal)
+		job, err := r.bootstrapJob(cluster, plan, inst, r.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+	}
+
+	primaryArgs := jobArgs(1)
 	if !strings.Contains(primaryArgs, "instance restore") || !strings.Contains(primaryArgs, "--bucket=bkt") {
 		t.Fatalf("GR recovery primary must restore from the object store, got: %s", primaryArgs)
 	}
 
-	secondaryArgs := strings.Join(r.bootstrapArgs(cluster, plan, plan.instanceFor(cluster, 2)), " ")
+	secondaryArgs := jobArgs(2)
 	if !strings.Contains(secondaryArgs, "instance initdb") || !strings.Contains(secondaryArgs, "--group-replication") {
 		t.Fatalf("GR secondary must initialise an empty server for distributed recovery, got: %s", secondaryArgs)
 	}

@@ -321,8 +321,13 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 		t.Fatalf("recovery target = %s/%s", plan.Recovery.Bucket, plan.Recovery.ArchiveKey)
 	}
 
-	spec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
-	initArgs := strings.Join(spec.InitContainers[1].Args, " ")
+	inst := plan.instanceFor(cluster, 1)
+	job, err := reconciler.bootstrapJob(cluster, plan, inst, reconciler.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := job.Spec.Template.Spec.Containers[0]
+	initArgs := strings.Join(main.Args, " ")
 	for _, want := range []string{
 		"instance restore",
 		"--bucket=cluster-backups",
@@ -330,16 +335,16 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 		"--metadata-key=clusters/demo/backup-sample/backup-sample-123/metadata.json",
 	} {
 		if !strings.Contains(initArgs, want) {
-			t.Fatalf("restore init args missing %q:\n%s", want, initArgs)
+			t.Fatalf("restore args missing %q:\n%s", want, initArgs)
 		}
 	}
 	if strings.Contains(initArgs, "instance initdb") {
 		t.Fatalf("recovery primary must not run initdb: %s", initArgs)
 	}
 
-	// The recovering primary's init container carries the object-store creds.
+	// The recovering primary's restore Job carries the object-store creds.
 	var hasEndpoint, hasAccessKey bool
-	for _, env := range spec.InitContainers[1].Env {
+	for _, env := range main.Env {
 		switch env.Name {
 		case "cnmsql_S3_ENDPOINT":
 			hasEndpoint = true
@@ -348,20 +353,24 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 		}
 	}
 	if !hasEndpoint || !hasAccessKey {
-		t.Fatalf("recovery init container missing S3 env (endpoint=%t accessKey=%t)", hasEndpoint, hasAccessKey)
+		t.Fatalf("recovery restore Job missing S3 env (endpoint=%t accessKey=%t)", hasEndpoint, hasAccessKey)
 	}
 
-	// Instance containers read no passwords at all: the init container must not
-	// reference the app password Secret, whatever the bootstrap mode.
-	for _, env := range spec.InitContainers[1].Env {
+	// Instance containers read no passwords at all: the bootstrap worker must
+	// not reference the app password Secret, whatever the bootstrap mode.
+	for _, env := range main.Env {
 		if env.Name == "MYSQL_APP_PASSWORD" {
-			t.Fatal("recovery init container must not reference the app password secret")
+			t.Fatal("recovery bootstrap Job must not reference the app password secret")
 		}
 	}
 
 	// A replica still clones from the primary via join, not restore.
-	replicaSpec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 2))
-	if got := strings.Join(replicaSpec.InitContainers[1].Args, " "); !strings.Contains(got, "instance join") {
+	replica := plan.instanceFor(cluster, 2)
+	replicaJob, err := reconciler.bootstrapJob(cluster, plan, replica, reconciler.bootstrapModeFor(cluster, plan, replica), instancePVC(cluster, replica.PVCName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(replicaJob.Spec.Template.Spec.Containers[0].Args, " "); !strings.Contains(got, "instance join") {
 		t.Fatalf("replica should join the primary, got: %s", got)
 	}
 }
@@ -376,9 +385,9 @@ func TestRecoveryBootstrapAppliesJobTemplateResources(t *testing.T) {
 			Backup: &mysqlv1alpha1.LocalObjectReference{Name: "backup-sample"},
 		},
 	}
-	// The restore init container is memory-hungry; size it via the cluster-level
-	// backup job template. Scheduling fields on the template are pod-level and do
-	// not apply to a single init container.
+	// The restore Job is memory-hungry; size it via the cluster-level backup
+	// job template. Scheduling fields on the template are not applied to
+	// instance bootstrap Jobs: they follow the instance's scheduling.
 	cluster.Spec.Backup.JobTemplate = &mysqlv1alpha1.BackupJobTemplate{
 		Resources: corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
@@ -401,14 +410,19 @@ func TestRecoveryBootstrapAppliesJobTemplateResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
-
-	if got := spec.InitContainers[1].Resources.Limits.Memory().String(); got != "4Gi" {
-		t.Fatalf("restore init container memory limit = %s, want 4Gi", got)
+	inst := plan.instanceFor(cluster, 1)
+	job, err := reconciler.bootstrapJob(cluster, plan, inst, reconciler.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The pod's scheduling is owned by the cluster spec, not the backup template.
-	if spec.NodeSelector["disk"] == testNodeSSD {
-		t.Fatal("backup template nodeSelector must not leak onto the instance pod")
+
+	main := job.Spec.Template.Spec.Containers[0]
+	if got := main.Resources.Limits.Memory().String(); got != "4Gi" {
+		t.Fatalf("restore Job memory limit = %s, want 4Gi", got)
+	}
+	// The Job's scheduling follows the instance, not the backup template.
+	if job.Spec.Template.Spec.NodeSelector["disk"] == testNodeSSD {
+		t.Fatal("backup template nodeSelector must not leak onto the instance's bootstrap job")
 	}
 }
 
@@ -452,15 +466,20 @@ func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
 		t.Fatalf("source cluster = %q, want %q", plan.Recovery.SourceCluster, cluster.Name)
 	}
 
-	spec := reconciler.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
-	initArgs := strings.Join(spec.InitContainers[1].Args, " ")
+	inst := plan.instanceFor(cluster, 1)
+	job, err := reconciler.bootstrapJob(cluster, plan, inst, reconciler.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := job.Spec.Template.Spec.Containers[0]
+	initArgs := strings.Join(main.Args, " ")
 	for _, want := range []string{
 		"instance restore",
 		"--source-cluster=demo",
 		"--target-time=2026-06-12T10:30:00Z",
 	} {
 		if !strings.Contains(initArgs, want) {
-			t.Fatalf("PITR restore init args missing %q:\n%s", want, initArgs)
+			t.Fatalf("PITR restore args missing %q:\n%s", want, initArgs)
 		}
 	}
 	if strings.Contains(initArgs, "--target-immediate") {
@@ -469,7 +488,7 @@ func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
 
 	// The bucket/path env the replay worker needs to rebuild binlog keys.
 	var hasBucket, hasPath bool
-	for _, env := range spec.InitContainers[1].Env {
+	for _, env := range main.Env {
 		switch env.Name {
 		case "cnmsql_S3_BUCKET":
 			hasBucket = env.Value == "cluster-backups"
@@ -478,7 +497,7 @@ func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
 		}
 	}
 	if !hasBucket || !hasPath {
-		t.Fatalf("recovery init container missing bucket/path env (bucket=%t path=%t)", hasBucket, hasPath)
+		t.Fatalf("recovery restore Job missing bucket/path env (bucket=%t path=%t)", hasBucket, hasPath)
 	}
 }
 
