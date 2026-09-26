@@ -172,7 +172,12 @@ func run(ctx context.Context, opts options, st store, client *http.Client) error
 	default:
 		refusal := backupworker.ReadRefusal(resp)
 		reason := refusal.Reason
-		if reason == "" {
+		switch {
+		case reason != "":
+		case resp.StatusCode == http.StatusNotImplemented:
+			// Only a missing SQL client answers 501, with or without a body.
+			reason = webserver.LoadReasonToolUnavailable
+		default:
 			reason = webserver.LoadReasonFailed
 		}
 		err := fmt.Errorf("instance %s refused or failed the load (%d): %s", opts.InstanceName, resp.StatusCode, refusal.Error)

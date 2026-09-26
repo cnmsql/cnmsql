@@ -228,7 +228,12 @@ func refusalFailure(status int, instance string, refusal webserver.ReasonErrorBo
 		}
 	}
 	reason := refusal.Reason
-	if reason == "" {
+	switch {
+	case reason != "":
+	case status == http.StatusNotImplemented:
+		// Only a missing dump client answers 501, with or without a body.
+		reason = webserver.DumpReasonToolUnavailable
+	default:
 		reason = backupworker.ReasonDumpFailed
 	}
 	return &backupworker.Failure{Reason: reason,

@@ -235,6 +235,7 @@ func TestRestoreReportsTheTargetsRefusal(t *testing.T) {
 		{http.StatusConflict, webserver.LoadReasonDatabaseNotEmpty, webserver.LoadReasonDatabaseNotEmpty, true},
 		{http.StatusConflict, webserver.LoadReasonNotPrimary, webserver.LoadReasonNotPrimary, true},
 		{http.StatusNotFound, "", backupworker.ReasonInstanceManagerOutdated, true},
+		{http.StatusNotImplemented, "", webserver.LoadReasonToolUnavailable, true},
 		{http.StatusInternalServerError, webserver.LoadReasonFailed, webserver.LoadReasonFailed, false},
 		{http.StatusBadGateway, "", webserver.LoadReasonFailed, false},
 	} {
