@@ -59,8 +59,8 @@ func NewCommand() *cobra.Command {
 		Long: "Restore a streamed XtraBackup into the data directory and configure " +
 			"GTID replication so the replica resumes from the backup point when it " +
 			"starts. The temporary server's root password is read from the " +
-			"cluster's credential Secrets and the replication password from " +
-			"MYSQL_REPLICATION_PASSWORD.",
+			"cluster's credential Secrets; the replication user authenticates " +
+			"with a client certificate (--source-ssl-*), never a password.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if serverVersion == "" {
 				serverVersion = os.Getenv("MYSQL_VERSION")
@@ -107,7 +107,6 @@ func NewCommand() *cobra.Command {
 					Host:         sourceHost,
 					Port:         sourcePort,
 					User:         replUser,
-					Password:     os.Getenv("MYSQL_REPLICATION_PASSWORD"),
 					AutoPosition: true,
 					SSL:          useTLS,
 					SSLCA:        sslCA,

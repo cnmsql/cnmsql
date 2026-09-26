@@ -55,8 +55,8 @@ func NewCommand() *cobra.Command {
 		Short: "Initialise a fresh MySQL data directory",
 		Long: "Initialise a fresh MySQL data directory and bootstrap the application " +
 			"and replication accounts. Passwords are read from the cluster's " +
-			"credential Secrets; the replication password from " +
-			"MYSQL_REPLICATION_PASSWORD. " +
+			"credential Secrets; the replication account is X.509-only (mTLS) " +
+			"and takes no password. " +
 			"This command is idempotent: it is a no-op on an already initialised directory.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if serverVersion == "" {
@@ -123,7 +123,6 @@ func NewCommand() *cobra.Command {
 					CharacterSet:              charset,
 					Collation:                 collation,
 					ReplicationUser:           replUser,
-					ReplicationPassword:       os.Getenv("MYSQL_REPLICATION_PASSWORD"),
 					ReplicationRequireX509:    requireTLS,
 					BackupUser:                backupUser,
 					BackupPassword:            backupPassword,
