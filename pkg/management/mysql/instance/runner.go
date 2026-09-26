@@ -90,6 +90,11 @@ type RunOptions struct {
 	// Backup, when set, enables the streaming physical-backup endpoint so this
 	// instance can clone replicas.
 	Backup *BackupConfig
+	// DumpPassword, when set, returns the dump account's current password, read
+	// from the <cluster>-dump Secret the manager watches, so a rotated Secret
+	// reaches the next POST /cluster/dump (design 030). While it yields an
+	// empty string, the instance refuses dumps.
+	DumpPassword func() string
 	// Archiving, when set and Enabled, runs the continuous binlog archiver in
 	// this Pod (active only while the instance is the writable primary).
 	Archiving *ArchivingConfig
@@ -523,17 +528,19 @@ func Run(ctx context.Context, opts RunOptions) error {
 		controller.SetBackupConfig(*opts.Backup)
 	}
 	// Logical dumps need nothing beyond the socket, so every instance serves
-	// them; the dump account's password arrives with each request.
-	controller.SetDumpConfig(DumpConfig{Engine: eng, Socket: opts.Socket, WorkDir: ScratchWorkDir()})
+	// them; the dump account's password comes from its Secret.
+	controller.SetDumpConfig(DumpConfig{Engine: eng, Socket: opts.Socket, WorkDir: ScratchWorkDir(),
+		PasswordFunc: opts.DumpPassword})
 	// A LogicalRestore loads into the primary as the control account, which
 	// the manager already holds; the instance refuses the load unless it is
 	// writable when the load starts.
 	controller.SetLoadConfig(LoadConfig{
-		Engine:   eng,
-		Socket:   opts.Socket,
-		User:     opts.Control.User,
-		Password: opts.Control.CurrentPassword(),
-		WorkDir:  ScratchWorkDir(),
+		Engine:       eng,
+		Socket:       opts.Socket,
+		User:         opts.Control.User,
+		Password:     opts.Control.Password,
+		PasswordFunc: opts.Control.PasswordFunc,
+		WorkDir:      ScratchWorkDir(),
 	})
 
 	// Continuous binlog archiver: runs in every Pod but only ships from the

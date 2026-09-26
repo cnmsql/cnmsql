@@ -24,10 +24,6 @@ import (
 	"os"
 )
 
-// EnvDumpPassword carries the cnmsql_dump password into a logical backup
-// worker, from the cluster's <cluster>-dump Secret.
-const EnvDumpPassword = "CNMSQL_DUMP_PASSWORD"
-
 // Failure reasons a logical backup worker reports on top of the ones the
 // source instance returns (webserver.DumpReason*).
 const (

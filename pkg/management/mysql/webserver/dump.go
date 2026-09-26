@@ -27,11 +27,11 @@ import (
 )
 
 // DumpRequest is the JSON body of POST /cluster/dump. It is a POST because the
-// body carries the dump account's password, which must not go in a URL or a
-// header that proxies and access logs record.
+// body carries the database list and the dump client's extra arguments, which
+// must not go in a URL that proxies and access logs record. The dump account's
+// password is not in the request: the instance manager reads the dump Secret
+// itself (design 030).
 type DumpRequest struct {
-	// Password authenticates the cnmsql_dump account.
-	Password string `json:"password"`
 	// Databases limits the dump. Empty dumps every application schema.
 	Databases []string `json:"databases,omitempty"`
 	// ExtraArgs are appended to the dump client's arguments.
@@ -89,7 +89,8 @@ var (
 	// ErrDumpInProgress: another dump is running on this instance. Retryable.
 	ErrDumpInProgress = errors.New("dump already in progress")
 	// ErrInvalidDumpRequest: the request names a database that does not exist
-	// or cannot be dumped, or resolves to no database at all.
+	// or cannot be dumped, or resolves to no database at all, or the manager
+	// has not read the dump account's password from its Secret yet.
 	ErrInvalidDumpRequest = errors.New("invalid dump request")
 )
 
@@ -168,7 +169,7 @@ func dumpRefusal(err error) (int, string) {
 }
 
 // maxDumpRequestBodyBytes bounds the JSON body of POST /cluster/dump: a dump
-// request carries a password and two schema lists, not a data channel.
+// request carries two schema lists, not a data channel.
 const maxDumpRequestBodyBytes = 1 << 20
 
 // dumpHandler serves POST /cluster/dump. The checks in StartDump decide the

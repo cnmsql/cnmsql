@@ -440,22 +440,20 @@ func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 	src.sql(ctx, t, seedSQL)
 
 	// Before the account exists, the instance refuses with a retryable 503.
-	if r := src.dump(ctx, t, webserver.DumpRequest{Password: password}); r.status != http.StatusServiceUnavailable ||
+	if r := src.dump(ctx, t, webserver.DumpRequest{}); r.status != http.StatusServiceUnavailable ||
 		r.errorBody.Reason != webserver.DumpReasonAccountMissing {
 		t.Fatalf("dump without account = %d %+v", r.status, r.errorBody)
 	}
 	src.createDumpAccount(ctx, t, password)
 
-	// A wrong password fails before any byte is streamed.
-	if r := src.dump(ctx, t, webserver.DumpRequest{Password: "wrong"}); r.status != http.StatusInternalServerError ||
-		!strings.Contains(r.errorBody.Error, "Access denied") {
-		t.Fatalf("dump with a wrong password = %d %+v", r.status, r.errorBody)
-	}
-	if r := src.dump(ctx, t, webserver.DumpRequest{Password: password, Databases: []string{"nope"}}); r.status != http.StatusUnprocessableEntity {
+	// The request no longer carries a password (design 030): the manager reads
+	// the dump account's password from the cluster's Secret itself, so a
+	// "wrong password" dump is not expressible any more.
+	if r := src.dump(ctx, t, webserver.DumpRequest{Databases: []string{"nope"}}); r.status != http.StatusUnprocessableEntity {
 		t.Fatalf("dump of a missing database = %d %+v", r.status, r.errorBody)
 	}
 
-	full := src.dump(ctx, t, webserver.DumpRequest{Password: password})
+	full := src.dump(ctx, t, webserver.DumpRequest{})
 	if full.status != http.StatusOK {
 		t.Fatalf("dump = %d %+v", full.status, full.errorBody)
 	}
@@ -492,7 +490,7 @@ func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 		}
 	}
 
-	partial := src.dump(ctx, t, webserver.DumpRequest{Password: password, Databases: []string{"billing"}})
+	partial := src.dump(ctx, t, webserver.DumpRequest{Databases: []string{"billing"}})
 	if partial.status != http.StatusOK || strings.Contains(partial.body, "`shop`") ||
 		!strings.Contains(partial.body, "invoices") {
 		t.Errorf("partial dump = %d, contains shop: %v", partial.status, strings.Contains(partial.body, "`shop`"))

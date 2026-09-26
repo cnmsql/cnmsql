@@ -67,6 +67,10 @@ type dumpFixture struct {
 	workDir    string
 }
 
+// dumpPassword is the password the fixture's DumpConfig hands out, as the
+// manager would have read it from the <cluster>-dump Secret.
+const dumpPassword = `p"w\d`
+
 func newDumpFixture(t *testing.T, flavor engine.Flavor, mode string) *dumpFixture {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -92,7 +96,8 @@ func newDumpFixture(t *testing.T, flavor engine.Flavor, mode string) *dumpFixtur
 	f := &dumpFixture{controller: c, mock: mock, capture: t.TempDir(), workDir: t.TempDir()}
 	t.Setenv("FAKE_DUMP_CAPTURE", f.capture)
 	t.Setenv("FAKE_DUMP_MODE", mode)
-	c.SetDumpConfig(DumpConfig{Engine: eng, Socket: "/var/run/mysqld/mysqld.sock", WorkDir: f.workDir, DumpPath: script})
+	c.SetDumpConfig(DumpConfig{Engine: eng, Socket: "/var/run/mysqld/mysqld.sock", WorkDir: f.workDir, DumpPath: script,
+		PasswordFunc: func() string { return dumpPassword }})
 	return f
 }
 
@@ -142,7 +147,7 @@ func TestStartDumpStreamsEveryApplicationSchema(t *testing.T) {
 	f.expectSchemas(allSchemas...)
 
 	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{
-		Password: `p"w\d`, ExtraArgs: []string{"--max-allowed-packet=1G"},
+		ExtraArgs: []string{"--max-allowed-packet=1G"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,12 +206,50 @@ func TestStartDumpStreamsEveryApplicationSchema(t *testing.T) {
 	}
 }
 
+// The manager reads the dump account's password from the <cluster>-dump Secret
+// itself (design 030): StartDump writes the value it holds at start time into
+// the credentials file, so a rotated Secret reaches the next dump.
+func TestStartDumpUsesManagerPassword(t *testing.T) {
+	f := newDumpFixture(t, engine.FlavorMySQL, "")
+	f.controller.dump.PasswordFunc = func() string { return "from-secret" }
+	f.expectAccount(true)
+	f.expectSchemas(allSchemas...)
+	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if got := f.read(t, "defaults"); !strings.Contains(got, `password="from-secret"`) {
+		t.Fatalf("credentials file = %q", got)
+	}
+}
+
+func TestStartDumpRejectsMissingPassword(t *testing.T) {
+	f := newDumpFixture(t, engine.FlavorMySQL, "")
+	// No PasswordFunc: the manager has not read the <cluster>-dump Secret yet.
+	f.controller.dump.PasswordFunc = nil
+	// The refusal happens before any check that talks to mysqld, so sqlmock
+	// expects nothing.
+	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
+	if !errors.Is(err, webserver.ErrInvalidDumpRequest) {
+		t.Fatalf("err = %v, want ErrInvalidDumpRequest", err)
+	}
+	if f.controller.dumpRunning.Load() {
+		t.Fatal("a refused dump must not hold the slot")
+	}
+	_, err = f.controller.StartDump(context.Background(), webserver.DumpRequest{})
+	if err == nil || !errors.Is(err, webserver.ErrInvalidDumpRequest) {
+		t.Fatalf("second dump err = %v, want ErrInvalidDumpRequest (the slot must be free)", err)
+	}
+	f.assertWorkDirEmpty(t)
+}
+
 func TestStartDumpMariaDBReportsSnapshotGTID(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMariaDB, "")
 	f.expectAccount(true)
 	f.expectSchemas(allSchemas...)
 	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{
-		Password: "pw", Databases: []string{"shop"},
+		Databases: []string{"shop"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +270,7 @@ func TestStartDumpMariaDBReportsSnapshotGTID(t *testing.T) {
 func TestStartDumpToolUnavailable(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "")
 	f.controller.dump.DumpPath = filepath.Join(t.TempDir(), "mysqldump")
-	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if !errors.Is(err, webserver.ErrDumpToolUnavailable) {
 		t.Fatalf("err = %v, want ErrDumpToolUnavailable", err)
 	}
@@ -243,11 +286,11 @@ func TestStartDumpAllowsOneDumpAtATime(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "slow")
 	f.expectAccount(true)
 	f.expectSchemas(allSchemas...)
-	first, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	first, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	_, err = f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if !errors.Is(err, webserver.ErrDumpInProgress) {
 		t.Fatalf("second dump err = %v, want ErrDumpInProgress", err)
 	}
@@ -262,7 +305,7 @@ func TestStartDumpAllowsOneDumpAtATime(t *testing.T) {
 func TestStartDumpAccountMissing(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "")
 	f.expectAccount(false)
-	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if !errors.Is(err, webserver.ErrDumpAccountMissing) {
 		t.Fatalf("err = %v, want ErrDumpAccountMissing", err)
 	}
@@ -275,7 +318,7 @@ func TestStartDumpExcludesTheHeartbeatSchema(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "")
 	f.expectAccount(true)
 	f.expectSchemas("mysql", "sys", "heartbeat", "shop")
-	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +331,7 @@ func TestStartDumpExcludesTheHeartbeatSchema(t *testing.T) {
 	f.expectAccount(true)
 	f.expectSchemas("mysql", "sys", "heartbeat", "shop")
 	_, err = f.controller.StartDump(context.Background(), webserver.DumpRequest{
-		Password: "pw", Databases: []string{"heartbeat"},
+		Databases: []string{"heartbeat"},
 	})
 	if !errors.Is(err, webserver.ErrInvalidDumpRequest) {
 		t.Fatalf("err = %v, want ErrInvalidDumpRequest", err)
@@ -314,7 +357,7 @@ func TestStartDumpRejectsInvalidDatabases(t *testing.T) {
 			f.expectAccount(true)
 			f.expectSchemas(tc.schemas...)
 			_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{
-				Password: "pw", Databases: tc.requested,
+				Databases: tc.requested,
 			})
 			if !errors.Is(err, webserver.ErrInvalidDumpRequest) {
 				t.Fatalf("err = %v, want ErrInvalidDumpRequest", err)
@@ -329,17 +372,20 @@ func TestStartDumpRejectsInvalidDatabases(t *testing.T) {
 
 func TestStartDumpRejectsPasswordWithLineBreak(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "")
-	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "a\nb"})
+	f.controller.dump.PasswordFunc = func() string { return "a\nb" }
+	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if !errors.Is(err, webserver.ErrInvalidDumpRequest) {
 		t.Fatalf("err = %v, want ErrInvalidDumpRequest", err)
 	}
+	f.assertWorkDirEmpty(t)
 }
 
 func TestStartDumpClientExitsBeforeOutput(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "early")
+	f.controller.dump.PasswordFunc = func() string { return "wrong" }
 	f.expectAccount(true)
 	f.expectSchemas(allSchemas...)
-	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "wrong"})
+	_, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if err == nil || !strings.Contains(err.Error(), "Access denied") {
 		t.Fatalf("err = %v, want the client's stderr", err)
 	}
@@ -360,7 +406,7 @@ func TestDumpStreamReportsClientFailure(t *testing.T) {
 	f := newDumpFixture(t, engine.FlavorMySQL, "late")
 	f.expectAccount(true)
 	f.expectSchemas(allSchemas...)
-	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"})
+	session, err := f.controller.StartDump(context.Background(), webserver.DumpRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

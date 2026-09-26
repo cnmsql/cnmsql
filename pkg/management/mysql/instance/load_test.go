@@ -188,6 +188,31 @@ func TestLoadFailIfExistsLoadsOnlyTheSelectedSections(t *testing.T) {
 	}
 }
 
+// The load reads the control account's current password at start time: a
+// PasswordFunc (design 030) wins over the static Password, so a rotated
+// credential Secret reaches the next load.
+func TestLoadUsesTheCurrentPassword(t *testing.T) {
+	f := newLoadFixture(t, "")
+	f.controller.load.PasswordFunc = func() string { return `f"r\l` }
+	f.expectReadOnly(0)
+	f.expectObjects("shop", 0)
+	session, err := f.controller.StartLoad(context.Background(), webserver.LoadRequest{
+		Databases: []string{"shop"}, Policy: webserver.LoadPolicyFailIfExists,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Load(context.Background(), strings.NewReader(loadStream)); err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	if got := f.read(t, "defaults"); !strings.Contains(got, `password="f\"r\\l"`) ||
+		strings.Contains(got, `c\"t\\l`) {
+		t.Errorf("defaults file = %q", got)
+	}
+	f.assertWorkDirEmpty(t)
+}
+
 func TestLoadFailIfExistsRefusesANonEmptyDatabase(t *testing.T) {
 	f := newLoadFixture(t, "")
 	f.expectReadOnly(0)
@@ -377,7 +402,7 @@ func TestLoadAndDumpWithoutAnEngineAreRefused(t *testing.T) {
 	}); err == nil {
 		t.Error("a load without an engine was accepted")
 	}
-	if _, err := c.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"}); err == nil {
+	if _, err := c.StartDump(context.Background(), webserver.DumpRequest{}); err == nil {
 		t.Error("a dump without an engine was accepted")
 	}
 }

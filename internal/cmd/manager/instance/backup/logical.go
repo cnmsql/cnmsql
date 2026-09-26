@@ -59,13 +59,13 @@ type logicalStore interface {
 
 // runLogicalUpload asks the source instance for a dump, compresses it with
 // zstd, checksums and uploads it, checks it is complete, and writes the
-// logical.json manifest.
+// logical.json manifest. The request carries no password: the source instance
+// manager reads the dump Secret itself (design 030).
 func runLogicalUpload(
 	ctx context.Context,
 	opts uploadOptions,
 	store logicalStore,
 	client *http.Client,
-	password string,
 ) error {
 	log := logf.FromContext(ctx).WithName("backup-upload").WithValues(
 		"sourceURL", opts.SourceManagerURL,
@@ -76,7 +76,7 @@ func runLogicalUpload(
 	)
 
 	startedAt := time.Now().UTC()
-	resp, err := requestDump(logf.IntoContext(ctx, log), client, opts, password)
+	resp, err := requestDump(logf.IntoContext(ctx, log), client, opts)
 	if err != nil {
 		return err
 	}
@@ -176,11 +176,9 @@ func requestDump(
 	ctx context.Context,
 	client *http.Client,
 	opts uploadOptions,
-	password string,
 ) (*http.Response, error) {
 	log := logf.FromContext(ctx)
 	payload, err := json.Marshal(webserver.DumpRequest{
-		Password:  password,
 		Databases: opts.Databases,
 		ExtraArgs: opts.DumpArgs,
 	})

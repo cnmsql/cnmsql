@@ -21,12 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -118,11 +116,9 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	}
 
 	if opts.Method == methodLogical {
-		password := os.Getenv(backupworker.EnvDumpPassword)
-		if password == "" {
-			return fmt.Errorf("backup upload: %s is required for a logical backup", backupworker.EnvDumpPassword)
-		}
-		return runLogicalUpload(ctx, opts, store, client, password)
+		// The dump account's password is not the worker's business (design
+		// 030): the source instance manager reads the dump Secret itself.
+		return runLogicalUpload(ctx, opts, store, client)
 	}
 
 	startedAt := time.Now().UTC()
