@@ -504,6 +504,9 @@ kubectl cnmsql backup download shop-dump
 
 # plain SQL
 kubectl cnmsql backup download shop-dump --decompress -o shop.sql
+
+# only some databases, as plain SQL
+kubectl cnmsql backup download shop-dump --databases shop -o shop.sql
 ```
 
 The plugin reads the store's credentials from the Secrets the Backup's store

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -30,6 +31,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqldump"
 )
 
 // downloadOptions configures `backup download`.
@@ -39,6 +41,9 @@ type downloadOptions struct {
 	Output string
 	// Decompress writes plain SQL instead of the zstd archive.
 	Decompress bool
+	// Databases keeps only these databases' sections of the dump. It implies
+	// Decompress: the sections are only found in plain SQL.
+	Databases []string
 	// Endpoint replaces the object store's endpoint, for a store only
 	// reachable inside the cluster (through a port-forward).
 	Endpoint string
@@ -61,6 +66,9 @@ func newBackupDownloadCommand() *cobra.Command {
 
   # Write plain SQL instead
   kubectl cnmsql backup download cluster-sample-20260925120000 --decompress -o dump.sql
+
+  # Export one database, as plain SQL
+  kubectl cnmsql backup download cluster-sample-20260925120000 --databases shop -o shop.sql
 
   # Load it somewhere else without keeping a file
   kubectl cnmsql backup download cluster-sample-20260925120000 --decompress -o - | mysql -h db.example
@@ -91,6 +99,8 @@ func newBackupDownloadCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.Output, "output", "o", "",
 		`file to write, or "-" for stdout (default: <backup>.sql.zst, or <backup>.sql with --decompress)`)
 	cmd.Flags().BoolVar(&opts.Decompress, "decompress", false, "write plain SQL instead of the zstd archive")
+	cmd.Flags().StringSliceVar(&opts.Databases, "databases", nil,
+		"comma-separated databases to keep from the dump, as plain SQL (implies --decompress)")
 	cmd.Flags().StringVar(&opts.Endpoint, "endpoint", "",
 		"object-store endpoint to use instead of the one in the store's spec (e.g. a port-forward)")
 	return cmd
@@ -142,6 +152,16 @@ func downloadLogicalBackup(
 	if want == "" {
 		want = backup.Status.SHA256
 	}
+	databases := cleanDatabases(opts.Databases)
+	for _, db := range databases {
+		if !slices.Contains(meta.Databases, db) {
+			return "", fmt.Errorf("backup %q holds no database %q (it holds %s)",
+				backup.Name, db, strings.Join(meta.Databases, ", "))
+		}
+	}
+	if len(databases) > 0 {
+		opts.Decompress = true
+	}
 
 	output := opts.Output
 	if output == "" {
@@ -151,7 +171,7 @@ func downloadLogicalBackup(
 		}
 	}
 	if output == "-" {
-		return output, streamDump(ctx, osClient, store.Bucket, keys.ArchiveKey, want, opts.Decompress, stdout)
+		return output, streamDump(ctx, osClient, store.Bucket, keys.ArchiveKey, want, opts.Decompress, databases, stdout)
 	}
 
 	// O_EXCL on the final name refuses to overwrite a file the user already
@@ -167,7 +187,7 @@ func downloadLogicalBackup(
 		_ = os.Remove(output)
 		return "", err
 	}
-	err = streamDump(ctx, osClient, store.Bucket, keys.ArchiveKey, want, opts.Decompress, f)
+	err = streamDump(ctx, osClient, store.Bucket, keys.ArchiveKey, want, opts.Decompress, databases, f)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -183,12 +203,14 @@ func downloadLogicalBackup(
 }
 
 // streamDump copies the dump object to w, decompressing it on the way when
-// asked, and checks the compressed bytes against the expected SHA256.
+// asked and then keeping only the selected databases (all when none is), and
+// checks the compressed bytes against the expected SHA256.
 func streamDump(
 	ctx context.Context,
 	osClient *objectstore.Client,
 	bucket, key, wantSHA256 string,
 	decompress bool,
+	databases []string,
 	w io.Writer,
 ) error {
 	var sum string
@@ -209,7 +231,7 @@ func streamDump(
 		}()
 		dec, err := objectstore.NewZstdReader(pr)
 		if err == nil {
-			_, err = io.Copy(w, dec)
+			_, err = sqldump.FilterDatabases(w, dec, databases)
 			_ = dec.Close()
 		}
 		_ = pr.CloseWithError(errDownloadStopped)

@@ -786,7 +786,8 @@ Done: [#132](https://github.com/cnmsql/cnmsql/pull/132).
 4. `kubectl cnmsql backup download`: reads the store's credentials from its
    Secrets, connects from the user's machine (`--endpoint` for an in-cluster
    store behind a port-forward), verifies the checksum, and writes through a
-   partial file so a failed download leaves nothing behind.
+   partial file so a failed download leaves nothing behind. `--databases`
+   keeps only those databases' sections, as plain SQL.
 5. Docs: import section, cross-series walkthrough (`8.0 → 9.x`).
 
 ### Phase 3 — LogicalRestore (M-LB.3)

@@ -38,7 +38,11 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore/objectstoretest"
 )
 
-const downloadSQL = "-- Current Database: `shop`\nUSE `shop`;\n"
+const (
+	downloadShopSQL    = "-- Current Database: `shop`\nUSE `shop`;\n"
+	downloadBillingSQL = "-- Current Database: `billing`\nUSE `billing`;\n"
+	downloadSQL        = "-- header\n" + downloadShopSQL + downloadBillingSQL
+)
 
 // downloadFixture serves one logical backup of cluster "prod" and returns a
 // client holding the Backup, its Cluster and the store's Secret. The store's
@@ -69,6 +73,7 @@ func newDownloadFixture(t *testing.T, specEndpoint bool) *downloadFixture {
 		BackupID:      "b-1",
 		Compression:   objectstore.LogicalCompressionZstd,
 		SHA256:        hex.EncodeToString(sum[:]),
+		Databases:     []string{"shop", "billing"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +168,29 @@ func TestDownloadLogicalBackupDecompressed(t *testing.T) {
 	}
 	if out.String() != downloadSQL {
 		t.Errorf("stdout = %q", out.String())
+	}
+}
+
+func TestDownloadLogicalBackupSelectedDatabases(t *testing.T) {
+	f := newDownloadFixture(t, true)
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	// A selection writes plain SQL, even without --decompress.
+	written, err := downloadLogicalBackup(context.Background(), f.client, f.backup,
+		downloadOptions{Databases: []string{" billing", "billing"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, written)); written != "nightly.sql" ||
+		string(got) != "-- header\n"+downloadBillingSQL {
+		t.Errorf("wrote %q to %s", got, written)
+	}
+
+	_, err = downloadLogicalBackup(context.Background(), f.client, f.backup,
+		downloadOptions{Databases: []string{"shop", "crm"}, Output: "-"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), `no database "crm"`) {
+		t.Errorf("err = %v, want a missing-database error", err)
 	}
 }
 
