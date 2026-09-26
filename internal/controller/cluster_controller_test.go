@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -452,10 +453,11 @@ func TestPodSpecUsesInitContainerAndCertManagerSecrets(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()
 	plan := testPlan()
-	spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+	r := &ClusterReconciler{Scheme: testScheme(t)}
+	spec := r.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
 
 	t.Run("init containers", func(t *testing.T) {
-		testInitContainers(t, &spec)
+		testInitContainers(t, &spec, cluster, plan, r)
 	})
 	t.Run("container args", func(t *testing.T) {
 		testContainerArgs(t, &spec)
@@ -551,16 +553,21 @@ func TestPodSpecSwitchoverPreStopHook(t *testing.T) {
 	})
 }
 
-func testInitContainers(t *testing.T, spec *corev1.PodSpec) {
+func testInitContainers(t *testing.T, spec *corev1.PodSpec, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, r *ClusterReconciler) {
 	t.Helper()
-	if len(spec.InitContainers) != 2 {
-		t.Fatalf("init containers = %d", len(spec.InitContainers))
+	if got := containerNames(spec.InitContainers); !slices.Equal(got, []string{bootstrapControllerName}) {
+		t.Fatalf("init containers = %v, want only %s", got, bootstrapControllerName)
 	}
 	if got := strings.Join(spec.InitContainers[0].Args, " "); got != "bootstrap /controller/manager" {
 		t.Fatalf("bootstrap-controller init container args = %q", got)
 	}
-	if got := strings.Join(spec.InitContainers[1].Args, " "); !strings.Contains(got, "instance initdb") {
-		t.Fatalf("init container args = %q", got)
+	inst := plan.instanceFor(cluster, 1)
+	job, err := r.bootstrapJob(cluster, plan, inst, r.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " "); !strings.Contains(got, "instance initdb") {
+		t.Fatalf("bootstrap Job args = %q", got)
 	}
 }
 
@@ -632,11 +639,17 @@ func TestPodSpecReplicaUsesJoin(t *testing.T) {
 	cluster := baseCluster()
 	plan := testPlan()
 	plan.Instances = 3
+	r := &ClusterReconciler{Scheme: testScheme(t)}
 
-	spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 2))
-	got := strings.Join(spec.InitContainers[1].Args, " ")
+	inst := plan.instanceFor(cluster, 2)
+	job, err := r.bootstrapJob(cluster, plan, inst, r.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := job.Spec.Template.Spec.Containers[0]
+	got := strings.Join(main.Args, " ")
 	if !strings.Contains(got, "instance join") {
-		t.Fatalf("replica init container should join: %q", got)
+		t.Fatalf("replica bootstrap Job should join: %q", got)
 	}
 	if !strings.Contains(got, "--source-manager-url=https://demo-1.default.svc:8080/cluster/backup") {
 		t.Fatalf("replica should clone from the primary manager: %q", got)
@@ -644,6 +657,7 @@ func TestPodSpecReplicaUsesJoin(t *testing.T) {
 	if !strings.Contains(got, "--source-host=demo-1.default.svc") {
 		t.Fatalf("replica should replicate from the primary: %q", got)
 	}
+	spec := r.podSpec(cluster, plan, inst)
 	got = strings.Join(spec.Containers[0].Args, " ")
 	// The run container is role-agnostic: no --role/--source-host. It gets the
 	// Cluster identity plus the static replication connection parameters; the
@@ -657,7 +671,7 @@ func TestPodSpecReplicaUsesJoin(t *testing.T) {
 	if !strings.Contains(got, "--replication-user="+replicationUser) {
 		t.Fatalf("run container should carry the replication connection user: %q", got)
 	}
-	for _, container := range []corev1.Container{spec.InitContainers[1], spec.Containers[0]} {
+	for _, container := range []corev1.Container{main, spec.Containers[0]} {
 		for _, env := range container.Env {
 			if env.Name == "MYSQL_REPLICATION_PASSWORD" {
 				t.Fatalf("%s must use mTLS-only replication auth, found MYSQL_REPLICATION_PASSWORD env", container.Name)

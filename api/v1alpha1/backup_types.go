@@ -21,13 +21,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// BackupJobTemplate is a curated subset of the pod configuration operators may
-// set on the backup worker Job. It deliberately does not expose a full
-// PodTemplateSpec: the operator owns the bootstrap init container, the
-// scratch/TLS volumes and mounts, the worker command and args, and the
-// object-store credential env, and a free-form template would let those be
-// broken. Every field is optional; a per-Backup template overrides the
-// cluster-wide spec.backup.jobTemplate field by field.
+// BackupJobTemplate is a curated subset of the pod configuration applied to
+// the backup, restore and instance bootstrap worker Jobs. It deliberately does
+// not expose a full PodTemplateSpec: the operator owns the bootstrap init
+// container, the scratch/TLS volumes and mounts, the worker command and args,
+// and the object-store credential env, and a free-form template would let
+// those be broken. Every field is optional; a per-Backup template overrides
+// the cluster-wide spec.backup.jobTemplate field by field.
 type BackupJobTemplate struct {
 	// TTL is how long the finished backup worker Job is kept before Kubernetes
 	// garbage-collects it (its ttlSecondsAfterFinished). When unset on both the
@@ -47,27 +47,32 @@ type BackupJobTemplate struct {
 
 	// Resources sets the resource requests and limits on the backup worker
 	// container. Streaming xbstream can be memory-hungry, so operators often want
-	// explicit limits. During recovery the same requests/limits from the
-	// cluster-level template are applied to the restore init container.
+	// explicit limits. During recovery the cluster-level template's
+	// requests/limits also apply to the restore Job. The other instance
+	// bootstrap Jobs (initdb, join, import) always use `spec.resources`.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
 	// NodeSelector constrains the backup worker Job's pod to nodes with matching
-	// labels, e.g. to keep backups off the critical nodes.
+	// labels, e.g. to keep backups off the critical nodes. Not applied to
+	// instance bootstrap Jobs: they follow the instance's scheduling so the
+	// data volume binds where the instance can run.
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
 	// Tolerations allow the backup worker Job's pod to schedule onto tainted
-	// nodes.
+	// nodes. Added to the instance's tolerations on instance bootstrap Jobs.
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
 	// Affinity sets the affinity/anti-affinity rules for the backup worker Job's
-	// pod.
+	// pod. Not applied to instance bootstrap Jobs: they follow the instance's
+	// scheduling so the data volume binds where the instance can run.
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 
-	// PriorityClassName sets the pod priority for the backup worker Job.
+	// PriorityClassName sets the pod priority for the backup worker Job. Also
+	// applies to instance bootstrap Jobs, over `spec.priorityClassName`.
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
 

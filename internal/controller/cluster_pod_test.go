@@ -19,6 +19,10 @@ package controller
 import (
 	"slices"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 // TestPrestopHookNamesCluster asserts the preStop hook carries the owning
@@ -57,6 +61,34 @@ func TestBootstrapArgsNameCluster(t *testing.T) {
 	} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("%s args %v lack %s", name, args, want)
+		}
+	}
+}
+
+func TestPodSpecHasNoBootstrapContainers(t *testing.T) {
+	t.Parallel()
+	cluster := baseBackupCluster()
+	cluster.Status.CurrentPrimary = ""
+	plan := testPlan()
+	plan.Instances = 2
+	plan.Recovery = &recoveryPlan{
+		Bucket: "bkt", ArchiveKey: "a", MetadataKey: "m",
+		StoreEnv: []corev1.EnvVar{{Name: objectstore.EnvBucket, Value: "bkt"}},
+	}
+	plan.Import = &importPlan{Bucket: "bkt", DumpKey: "d", ManifestKey: "m"}
+	r := &ClusterReconciler{}
+
+	for ordinal := 1; ordinal <= 2; ordinal++ {
+		spec := r.podSpec(cluster, plan, plan.instanceFor(cluster, ordinal))
+		if got := containerNames(spec.InitContainers); !slices.Equal(got, []string{"bootstrap-controller"}) {
+			t.Fatalf("instance %d init containers = %v, want only bootstrap-controller", ordinal, got)
+		}
+		for _, c := range append(spec.InitContainers, spec.Containers...) {
+			for _, env := range c.Env {
+				if env.Name == objectstore.EnvBucket {
+					t.Fatalf("instance %d container %s carries the recovery object-store env", ordinal, c.Name)
+				}
+			}
 		}
 	}
 }

@@ -30,10 +30,6 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
-// importContainerName is the init container that loads a logical backup into
-// the bootstrap primary, after initdb.
-const importContainerName = "import"
-
 const (
 	// reasonImportSourceNotReady prefixes the phase reason of a cluster whose
 	// import source is not usable yet: the Backup is still running, or the
@@ -68,10 +64,10 @@ func (e *importNotReadyError) Error() string { return reasonImportSourceNotReady
 
 // resolveImport locates the dump the bootstrap primary loads when
 // spec.bootstrap.initdb.import is set, and checks that this cluster can load
-// it. It returns nil when there is no import, and once the cluster is
-// established: the import has run by then, and its container is kept out of
-// the Pod template hash, so dropping it rolls nothing. Resolving it again
-// would read a Backup and an object store the cluster no longer needs.
+// it. The import runs in the primary's bootstrap Job. It returns nil when
+// there is no import, and once the cluster is established: the import has run
+// by then, and resolving it again would read a Backup and an object store the
+// cluster no longer needs.
 func (r *ClusterReconciler) resolveImport(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
@@ -175,7 +171,7 @@ func dumpFromNewerSeries(source, target string) bool {
 	return s.Major > t.Major || (s.Major == t.Major && s.Minor > t.Minor)
 }
 
-// importArgs builds the import init container's command.
+// importArgs builds the import command the primary's bootstrap Job runs.
 func importArgs(plan clusterPlan) []string {
 	args := make([]string, 0, 10+len(plan.Import.Databases)+len(plan.Import.PostImportSQL))
 	args = append(args,
@@ -204,32 +200,4 @@ func importArgs(plan clusterPlan) []string {
 // user-supplied container argument: "$$" is a literal "$".
 func escapeArgVars(s string) string {
 	return strings.ReplaceAll(s, "$", "$$")
-}
-
-// importContainer is the init container that loads the dump. It runs after
-// "bootstrap" (initdb) and starts a temporary mysqld over the same data
-// directory, with the same my.cnf, so it gets the instance's resources, not
-// the backup Job's: the server's buffer pool is sized for them.
-func importContainer(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) corev1.Container {
-	return corev1.Container{
-		Name:            importContainerName,
-		Image:           plan.Image,
-		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-		Command:         []string{managerBinary},
-		Args:            importArgs(plan),
-		Env:             append(initEnv(plan), plan.Import.StoreEnv...),
-		VolumeMounts:    volumeMounts(),
-		Resources:       cluster.Spec.Resources,
-		SecurityContext: cluster.Spec.SecurityContext,
-	}
-}
-
-// withoutImportContainer drops the import init container. The container only
-// exists until the cluster is established, and its arguments follow the
-// resolved dump, so it must never move the Pod template hash: dropping it, or
-// a newer dump appearing under the source, would otherwise roll the primary.
-func withoutImportContainer(spec *corev1.PodSpec) {
-	spec.InitContainers = slices.DeleteFunc(spec.InitContainers, func(c corev1.Container) bool {
-		return c.Name == importContainerName
-	})
 }
