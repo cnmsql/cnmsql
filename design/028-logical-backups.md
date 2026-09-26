@@ -525,13 +525,12 @@ spec:
   policy: FailIfExists         # FailIfExists | DropAndRecreate
 ```
 
-- The operator runs a Job (same worker image) that streams, filters and loads
-  into the **current primary** through the `rw` service, as a dedicated
-  short-lived account created through the instance manager SQL API and dropped
-  afterwards.
-- `FailIfExists` refuses if any selected database exists and has tables.
-  `DropAndRecreate` drops them first. The policy is required so an overwrite is
-  always an explicit choice.
+- The operator runs a Job (same worker image) that streams, verifies and
+  filters the dump, and posts it to the **current primary's instance manager**
+  (`POST /cluster/load`), which loads it over the local socket.
+- `FailIfExists` refuses if any selected database holds a table, view, routine
+  or event. `DropAndRecreate` drops them first. The policy is required so an
+  overwrite is always an explicit choice.
 - The load goes through the binlog (LB17), unlike bootstrap, so replicas and
   the continuous archive follow it. A large restore produces a binlog burst of
   about the same size: replica lag during the restore, and more archive and
@@ -539,9 +538,11 @@ spec:
 - The restore is not atomic. A failure leaves the selected databases partly
   loaded, and the status says so.
 
-This phase gets its own sub-design review before implementation: the load
-account's exact grants, how `DropAndRecreate` interacts with `Database` CRs that
-own the dropped schema, and progress reporting.
+The sub-design is [029 — Logical Restore](029-logical-restore.md). It changes
+one point of this section: the load does **not** run as a dedicated
+least-privilege account. Loading definers through the binlog needs `SUPER`
+(029 §2.1), so the load runs as the instance manager's control account,
+inside the instance Pod (029 LR1, LR2).
 
 ### 5.8 kubectl plugin
 
@@ -723,8 +724,9 @@ account; there is no separate migration step or flag. Specific cases:
 - `extraArgs` are passed to the dump tool as-is. They go through argv (not a
   shell) so there is no injection, but a user can break the output format. That
   is documented, as in CNPG.
-- Phase 3 load account: least privilege on the selected schemas only, dropped
-  when the Job finishes.
+- Phase 3 load: runs as the instance manager's control account over the local
+  socket, inside the primary's Pod. A least-privilege account cannot load a
+  dump with definers through the binlog (029 §2.1, LR2).
 
 ## 7. Implementation plan
 
@@ -785,8 +787,9 @@ Done: [#132](https://github.com/cnmsql/cnmsql/pull/132).
 
 ### Phase 3 — LogicalRestore (M-LB.3)
 
-Sub-design first (§10), then scaffold with `kubebuilder create api`,
-controller, Job, docs.
+Sub-design: [029 — Logical Restore](029-logical-restore.md). Scaffold with
+`kubebuilder create api`, instance-manager `POST /cluster/load`, worker
+command, controller, kubectl, docs.
 
 ## 8. Testing
 
