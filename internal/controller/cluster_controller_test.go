@@ -25,6 +25,7 @@ import (
 	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -951,12 +952,13 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	cluster := baseCluster()
 	scheme := testScheme(t)
 	recorder := record.NewFakeRecorder(10)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster).
+		Build()
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
-			WithObjects(cluster).
-			Build(),
+		Client:        c,
 		Scheme:        scheme,
 		Recorder:      recorder,
 		ControlClient: readyStatusClient{},
@@ -1008,6 +1010,25 @@ func TestReconcileBootstrapsSingleInstanceToReady(t *testing.T) {
 	assertOwnedObject(t, ctx, reconciler, &corev1.ConfigMap{}, "demo-1-config")
 	assertOwnedObject(t, ctx, reconciler, &corev1.PersistentVolumeClaim{}, "demo-1")
 	assertOwnedObject(t, ctx, reconciler, &corev1.Service{}, "demo-1")
+	// The instance Pod only comes up once its volume is bootstrapped (design 031):
+	// the second reconcile creates the bootstrap Job, the third marks the volume
+	// bootstrapped and deletes the finished Job, and the fourth creates the Pod.
+	assertOwnedObject(t, ctx, reconciler, &batchv1.Job{}, primaryName+"-initdb")
+	finishJob(t, ctx, c, cluster, primaryName+"-initdb", batchv1.JobComplete)
+	result, err = reconciler.Reconcile(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("third reconcile should requeue while the bootstrap Job is cleaned up")
+	}
+	result, err = reconciler.Reconcile(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("fourth reconcile should requeue while waiting for pod readiness")
+	}
 	pod := &corev1.Pod{}
 	assertOwnedObject(t, ctx, reconciler, pod, "demo-1")
 	if pod.Annotations[podTemplateHashAnnotation] == "" {
