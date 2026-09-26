@@ -508,7 +508,9 @@ func instanceRestarts(cluster string) string {
 	return out
 }
 
-func logicalClusterManifest(f logicalFlavor, name string, instances int) string {
+// logicalFlavorCluster renders a Cluster of flavor f; specTail follows the
+// shared spec fields: its bootstrap block and anything after it.
+func logicalFlavorCluster(f logicalFlavor, name string, instances int, specTail string) string {
 	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
@@ -523,15 +525,17 @@ spec:
   mysql:
     binlogFormat: ROW
 %s
-  bootstrap:
+%s`, name, testNamespace, f.flavorYAML, instances, f.image, e2eInstanceResources, e2eMySQLParameters, specTail)
+}
+
+func logicalClusterManifest(f logicalFlavor, name string, instances int) string {
+	return logicalFlavorCluster(f, name, instances, `  bootstrap:
     initdb:
       database: app
       owner: app
   backup:
     retentionPolicy: 7d
-%s
-`, name, testNamespace, f.flavorYAML, instances, f.image, e2eInstanceResources, e2eMySQLParameters,
-		objectStoreYAML("    "))
+`+objectStoreYAML("    ")+"\n")
 }
 
 func logicalBackupManifest(name, cluster string, databases []string) string {
@@ -575,52 +579,22 @@ spec:
 // rawRecoveryClusterManifest recovers from the source cluster's object-store
 // prefix without a Backup object, which is the path that lists base backups.
 func rawRecoveryClusterManifest(f logicalFlavor, name, source string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
-kind: Cluster
-metadata:
-  name: %s
-  namespace: %s
-spec:
-%s  instances: 1
-  imageName: %s
-  storage:
-    size: 2Gi
-%s
-  mysql:
-    binlogFormat: ROW
-%s
-  bootstrap:
+	return logicalFlavorCluster(f, name, 1, fmt.Sprintf(`  bootstrap:
     recovery:
       source: %s
   externalClusters:
     - name: %s
 %s
-`, name, testNamespace, f.flavorYAML, f.image, e2eInstanceResources, e2eMySQLParameters, source, source,
-		objectStoreYAML("      "))
+`, source, source, objectStoreYAML("      ")))
 }
 
 // importClusterManifest bootstraps a cluster from a logical backup. importYAML
 // is the initdb.import block, extraYAML is appended to the spec. The cluster
 // has no backup store of its own: the dump is read from the source's.
 func importClusterManifest(f logicalFlavor, name string, instances int, importYAML, extraYAML string) string {
-	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
-kind: Cluster
-metadata:
-  name: %s
-  namespace: %s
-spec:
-%s  instances: %d
-  imageName: %s
-  storage:
-    size: 2Gi
-%s
-  mysql:
-    binlogFormat: ROW
-%s
-  bootstrap:
+	return logicalFlavorCluster(f, name, instances, `  bootstrap:
     initdb:
       database: app
       owner: app
-%s%s`, name, testNamespace, f.flavorYAML, instances, f.image, e2eInstanceResources, e2eMySQLParameters,
-		importYAML, extraYAML)
+`+importYAML+extraYAML)
 }
