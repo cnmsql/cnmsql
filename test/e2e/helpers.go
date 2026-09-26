@@ -108,7 +108,7 @@ func createTestNamespace(prefix string) string {
 	ns := generateTestNamespace(prefix)
 	By(fmt.Sprintf("creating test namespace %s", ns))
 	_, _ = kubectl("delete",
-		"clusters,backups,scheduledbackups,databases,databaseusers,imagecatalogs",
+		"logicalrestores,clusters,backups,scheduledbackups,databases,databaseusers,imagecatalogs",
 		"--all", "-n", ns, "--ignore-not-found", "--wait=false")
 	_, _ = kubectl("delete", "pods", "--all", "-n", ns, "--ignore-not-found",
 		"--grace-period=10", "--wait=false")
@@ -130,7 +130,7 @@ func createTestNamespace(prefix string) string {
 func deleteTestNamespace(ns, prev string) {
 	By(fmt.Sprintf("deleting test namespace %s", ns))
 	_, _ = kubectl("delete",
-		"clusters,backups,scheduledbackups,databases,databaseusers,imagecatalogs",
+		"logicalrestores,clusters,backups,scheduledbackups,databases,databaseusers,imagecatalogs",
 		"--all", "-n", ns, "--ignore-not-found", "--wait=false")
 	_, _ = kubectl("delete", "pods", "--all", "-n", ns, "--ignore-not-found",
 		"--grace-period=10", "--wait=false")

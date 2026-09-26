@@ -91,6 +91,8 @@ func logicalBackupSpecs(f logicalFlavor) {
 		billingOnly  = f.prefix + "-billing-only"
 		schedule     = f.prefix + "-nightly"
 		again        = f.prefix + "-after-migration"
+		refused      = f.prefix + "-restore-refused"
+		restoreShop  = f.prefix + "-restore-shop"
 		stalePrefix  = cluster + "/stale-dump/stale-id"
 		dumpSecret   = cluster + "-dump"
 		dumpReadyJSP = `{.status.conditions[?(@.type=="DumpAccountReady")].status}`
@@ -288,6 +290,48 @@ func logicalBackupSpecs(f logicalFlavor) {
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
+	It("refuses to restore over a database that holds objects", func() {
+		manifest := logicalRestoreManifest(refused, cluster, fullDump, "shop", "FailIfExists")
+		applyManifest(refused, manifest)
+		DeferCleanup(func() { deleteManifest(refused, manifest) })
+		status := expectRestoreFinished(refused, 5*time.Minute)
+		Expect(status.Phase).To(Equal("failed"))
+		Expect(status.Reason).To(Equal("DatabaseNotEmpty"))
+		Expect(status.Error).To(ContainSubstring("Nothing was changed on the cluster"))
+		out, err := f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "", "SELECT name FROM shop.items WHERE id = 1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(Equal("widget"))
+	})
+
+	It("restores one database into the running cluster, and the replica follows", func() {
+		By("damaging both databases after the dump")
+		_, err := f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
+			"DELETE FROM shop.items; UPDATE billing.invoices SET total = 0;")
+		Expect(err).NotTo(HaveOccurred())
+
+		manifest := logicalRestoreManifest(restoreShop, cluster, fullDump, "shop", "DropAndRecreate")
+		applyManifest(restoreShop, manifest)
+		DeferCleanup(func() { deleteManifest(restoreShop, manifest) })
+		status := expectRestoreFinished(restoreShop, 8*time.Minute)
+		Expect(status.Phase).To(Equal("completed"), "restore failed: %s", status.Error)
+		Expect(status.TargetInstance).To(Equal(clusterPrimary(cluster)))
+		Expect(status.Databases).To(Equal([]string{"shop"}))
+
+		By("checking shop is back on every instance and billing kept its damage")
+		for _, pod := range []string{cluster + "-1", cluster + "-2"} {
+			Eventually(func(g Gomega) {
+				out, err := f.exec(pod, "root", rootPassword(cluster), "",
+					"SELECT CONCAT((SELECT name FROM shop.items WHERE id = 1), '/', (SELECT SUM(total) FROM billing.invoices))")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal("widget/0"), "on %s", pod)
+			}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+		}
+
+		_, err = f.exec(clusterPrimary(cluster), "root", rootPassword(cluster), "",
+			"UPDATE billing.invoices SET total = 100 WHERE id = 1;")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	if f.operatorSpecs {
 		It("runs logical ScheduledBackups", func() {
 			applyManifest(schedule, logicalScheduledBackupManifest(schedule, cluster))
@@ -378,6 +422,51 @@ type e2eBackupStatus struct {
 	BeginBinlog     string   `json:"beginBinlog"`
 	BeginGTID       string   `json:"beginGTID"`
 	Databases       []string `json:"databases"`
+}
+
+type e2eRestoreStatus struct {
+	Phase          string   `json:"phase"`
+	TargetInstance string   `json:"targetInstance"`
+	Databases      []string `json:"databases"`
+	Error          string   `json:"error"`
+	// Reason is the Ready condition's reason.
+	Reason string `json:"-"`
+}
+
+// expectRestoreFinished waits for a LogicalRestore to complete or fail and
+// returns its status.
+func expectRestoreFinished(name string, timeout time.Duration) e2eRestoreStatus {
+	GinkgoHelper()
+	var status e2eRestoreStatus
+	Eventually(func(g Gomega) {
+		out, err := kubectl("get", "logicalrestore", name, "-n", testNamespace, "-o", "jsonpath={.status}")
+		g.Expect(err).NotTo(HaveOccurred())
+		status = e2eRestoreStatus{}
+		g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed(), "status: %s", out)
+		g.Expect(status.Phase).To(BeElementOf("completed", "failed"), "restore %s is %q", name, status.Phase)
+	}, e2eTimeout(timeout), 5*time.Second).Should(Succeed())
+	reason, err := kubectl("get", "logicalrestore", name, "-n", testNamespace, "-o",
+		`jsonpath={.status.conditions[?(@.type=="Ready")].reason}`)
+	Expect(err).NotTo(HaveOccurred())
+	status.Reason = reason
+	return status
+}
+
+func logicalRestoreManifest(name, cluster, backup, database, policy string) string {
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: LogicalRestore
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster:
+    name: %s
+  backup:
+    name: %s
+  databases:
+    - %s
+  policy: %s
+`, name, testNamespace, cluster, backup, database, policy)
 }
 
 func backupStatus(name string) e2eBackupStatus {
