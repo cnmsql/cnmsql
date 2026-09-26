@@ -145,26 +145,46 @@ func (p *Provider) watch(ctx context.Context, a Account) {
 			delay = min(delay*2, maxBackoff)
 			continue
 		}
-		delay = p.backoffBase
-		p.consume(ctx, a, w)
+		failed := p.consume(ctx, a, w)
 		w.Stop()
 		// The watch closed or expired (410 Gone): re-read to get a fresh
-		// resourceVersion before watching again.
-		_ = p.refresh(ctx, a)
-	}
-}
-
-func (p *Provider) consume(ctx context.Context, a Account, w watch.Interface) {
-	for {
+		// resourceVersion before watching again. When that fails too (the
+		// Secret is gone), forget the old resourceVersion, which may have
+		// expired: watching from it would fail again at once.
+		if err := p.refresh(ctx, a); err != nil {
+			failed = true
+			p.mu.Lock()
+			delete(p.versions, a)
+			p.mu.Unlock()
+		}
+		if !failed {
+			delay = p.backoffBase
+			continue
+		}
+		// Back off so a watch the server ends at once cannot spin against it.
+		log.V(1).Info("Credential Secret watch ended with an error, retrying")
 		select {
 		case <-ctx.Done():
 			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, maxBackoff)
+	}
+}
+
+// consume stores the Secret updates of w until it closes or ctx ends. It
+// reports whether the watch ended on an error event.
+func (p *Provider) consume(ctx context.Context, a Account, w watch.Interface) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
 		case ev, ok := <-w.ResultChan():
 			if !ok {
-				return
+				return false
 			}
 			if ev.Type == watch.Error {
-				return
+				return true
 			}
 			if s, isSecret := ev.Object.(*corev1.Secret); isSecret && (ev.Type == watch.Added || ev.Type == watch.Modified) {
 				p.store(ctx, a, s)

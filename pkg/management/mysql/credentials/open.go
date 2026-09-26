@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -83,8 +84,13 @@ func Open(ctx context.Context, o Options, required ...Account) (Source, error) {
 	}
 	cluster := &mysqlv1alpha1.Cluster{}
 	// The API server may still be starting; retry like Load does.
+	log := logf.FromContext(ctx).WithName("credentials")
 	if err := retry(ctx, defaultBackoff, func() error {
-		return o.Cluster.Get(ctx, types.NamespacedName{Namespace: o.Namespace, Name: o.ClusterName}, cluster)
+		err := o.Cluster.Get(ctx, types.NamespacedName{Namespace: o.Namespace, Name: o.ClusterName}, cluster)
+		if err != nil {
+			log.Info("Could not read Cluster, retrying", "cluster", o.ClusterName, "error", err.Error())
+		}
+		return err
 	}); err != nil {
 		return nil, fmt.Errorf("credentials: reading cluster %s: %w", o.ClusterName, err)
 	}

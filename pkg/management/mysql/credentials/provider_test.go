@@ -156,3 +156,35 @@ func TestProviderRunPicksUpLateSecret(t *testing.T) {
 	watches("demo-dump").Add(secret("demo-dump", "d1"))
 	waitFor(t, func() bool { v, _ := p.Password(Dump); return v == "d1" })
 }
+
+// A watch the server ends at once with an error (410 Gone on an expired
+// resourceVersion) while the Secret cannot be re-read (it was deleted) must
+// back off and drop the stale resourceVersion, not spin against the API server.
+func TestProviderWatchBacksOffWhenSecretIsGone(t *testing.T) {
+	cs := fake.NewClientset() // secret deleted
+	var mu sync.Mutex
+	var versions []string
+	cs.PrependWatchReactor("secrets", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		mu.Lock()
+		versions = append(versions, action.(k8stesting.WatchActionImpl).WatchRestrictions.ResourceVersion)
+		mu.Unlock()
+		w := watch.NewFakeWithChanSize(1, false)
+		w.Error(&metav1.Status{Code: 410, Reason: metav1.StatusReasonExpired})
+		return true, w, nil
+	})
+	p := NewProvider(cs, ns, map[Account]string{Root: "demo-root"})
+	p.backoffBase = 20 * time.Millisecond
+	p.versions[Root] = "1"
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	p.watch(ctx, Root)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if n := len(versions); n > 5 {
+		t.Fatalf("watched %d times in 100ms, want a backoff between attempts", n)
+	}
+	if len(versions) < 2 || versions[0] != "1" || versions[1] != "" {
+		t.Fatalf("watch resourceVersions = %q, want \"1\" then \"\" once the secret cannot be re-read", versions)
+	}
+}
