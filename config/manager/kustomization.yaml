@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: ghcr.io/cnmsql/cnmsql
-  newTag: a8c5d2f-dirty
+  newTag: 0ffee0c

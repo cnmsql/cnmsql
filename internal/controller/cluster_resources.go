@@ -77,6 +77,12 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{corev1.BasicAuthUsernameKey: backupUser}); err != nil {
 		return err
 	}
+	// The logical-backup account's password. It is not mounted in the instance
+	// Pods (adding it would change their spec and restart them on an operator
+	// upgrade); logical backup worker Jobs carry it instead.
+	if err := r.ensurePasswordSecret(ctx, cluster, dumpAccountSecretName(cluster), map[string]string{corev1.BasicAuthUsernameKey: engine.DumpAccountName}); err != nil {
+		return err
+	}
 	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{corev1.BasicAuthUsernameKey: controlUser})
 }
 
@@ -523,6 +529,8 @@ func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan 
 func restartTriggeringPodSpec(cluster *mysqlv1alpha1.Cluster, stablePlan clusterPlan, stableInst instancePlan, actual corev1.PodSpec) corev1.PodSpec {
 	stable := actual.DeepCopy()
 	stableTemplate := (&ClusterReconciler{}).podSpec(cluster, stablePlan, stableInst)
+	withoutImportContainer(stable)
+	withoutImportContainer(&stableTemplate)
 	if len(stable.InitContainers) == len(stableTemplate.InitContainers) {
 		for i := range stable.InitContainers {
 			stable.InitContainers[i].Args = stableTemplate.InitContainers[i].Args

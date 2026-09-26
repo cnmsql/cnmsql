@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,9 +29,10 @@ import (
 
 func newBackupCommand() *cobra.Command {
 	var (
-		name   string
-		method string
-		target string
+		name      string
+		method    string
+		target    string
+		databases []string
 	)
 	cmd := &cobra.Command{
 		Use:   "backup [CLUSTER]",
@@ -46,7 +48,10 @@ func newBackupCommand() *cobra.Command {
   kubectl cnmsql backup cluster-sample --target=primary
 
   # Name the backup explicitly
-  kubectl cnmsql backup cluster-sample --name=pre-upgrade`,
+  kubectl cnmsql backup cluster-sample --name=pre-upgrade
+
+  # Take a logical backup (SQL dump) of two databases
+  kubectl cnmsql backup cluster-sample --method=logical --databases=billing,catalog`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			env, err := newEnv()
@@ -60,13 +65,9 @@ func newBackupCommand() *cobra.Command {
 			if name == "" {
 				name = fmt.Sprintf("%s-%s", cluster.Name, time.Now().Format("20060102150405"))
 			}
-			backup := &mysqlv1alpha1.Backup{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace},
-				Spec: mysqlv1alpha1.BackupSpec{
-					Cluster: mysqlv1alpha1.LocalObjectReference{Name: cluster.Name},
-					Method:  mysqlv1alpha1.BackupMethod(method),
-					Target:  mysqlv1alpha1.BackupTarget(target),
-				},
+			backup, err := buildBackup(cluster, name, method, target, databases)
+			if err != nil {
+				return err
 			}
 			if err := env.Client.Create(ctx, backup); err != nil {
 				return fmt.Errorf("creating backup: %w", err)
@@ -77,8 +78,67 @@ func newBackupCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&name, "name", "", "backup name (default: <cluster>-<timestamp>)")
 	cmd.Flags().StringVar(&method, "method", string(mysqlv1alpha1.BackupMethodXtrabackup),
-		"backup method: xtrabackup|volumeSnapshot")
+		"backup method: xtrabackup|volumeSnapshot|logical")
 	cmd.Flags().StringVar(&target, "target", string(mysqlv1alpha1.BackupTargetPreferStandby),
 		"backup target: primary|prefer-standby")
+	cmd.Flags().StringSliceVar(&databases, "databases", nil,
+		"logical backup only: comma-separated databases to dump (default: every application database)")
+	_ = cmd.RegisterFlagCompletionFunc("method",
+		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return []string{
+				string(mysqlv1alpha1.BackupMethodXtrabackup),
+				string(mysqlv1alpha1.BackupMethodVolumeSnapshot),
+				string(mysqlv1alpha1.BackupMethodLogical),
+			}, cobra.ShellCompDirectiveNoFileComp
+		})
+	_ = cmd.RegisterFlagCompletionFunc("target",
+		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return []string{
+				string(mysqlv1alpha1.BackupTargetPrimary),
+				string(mysqlv1alpha1.BackupTargetPreferStandby),
+			}, cobra.ShellCompDirectiveNoFileComp
+		})
+	cmd.AddCommand(newBackupDownloadCommand())
 	return cmd
+}
+
+// buildBackup renders the Backup the command creates.
+func buildBackup(
+	cluster *mysqlv1alpha1.Cluster, name, method, target string, databases []string,
+) (*mysqlv1alpha1.Backup, error) {
+	backup := &mysqlv1alpha1.Backup{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace},
+		Spec: mysqlv1alpha1.BackupSpec{
+			Cluster: mysqlv1alpha1.LocalObjectReference{Name: cluster.Name},
+			Method:  mysqlv1alpha1.BackupMethod(method),
+			Target:  mysqlv1alpha1.BackupTarget(target),
+		},
+	}
+	databases = cleanDatabases(databases)
+	if len(databases) > 0 {
+		if backup.Spec.Method != mysqlv1alpha1.BackupMethodLogical {
+			return nil, fmt.Errorf("--databases needs --method=%s", mysqlv1alpha1.BackupMethodLogical)
+		}
+		backup.Spec.Logical = &mysqlv1alpha1.LogicalBackupOptions{Databases: databases}
+	}
+	return backup, nil
+}
+
+// cleanDatabases trims whitespace from each --databases entry, drops empty
+// entries and removes duplicates, preserving order.
+func cleanDatabases(databases []string) []string {
+	cleaned := make([]string, 0, len(databases))
+	seen := make(map[string]struct{}, len(databases))
+	for _, database := range databases {
+		database = strings.TrimSpace(database)
+		if database == "" {
+			continue
+		}
+		if _, ok := seen[database]; ok {
+			continue
+		}
+		seen[database] = struct{}{}
+		cleaned = append(cleaned, database)
+	}
+	return cleaned
 }

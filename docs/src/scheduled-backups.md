@@ -76,6 +76,24 @@ The generated Backup inherits the cluster reference, method, target, and online
 setting. The object store is resolved by the Backup controller, usually from
 `Cluster.spec.backup.objectStore`.
 
+A schedule can also take [logical backups](logical-backups.md). Set
+`method: logical`; the optional `logical` block is copied onto every generated
+Backup:
+
+```yaml
+spec:
+  schedule: "0 0 3 * * *"
+  cluster:
+    name: cluster-sample
+  method: logical
+  logical:
+    databases:
+      - billing
+```
+
+A schedule has one method, so history limits and retention apply to its dumps
+only. Run a physical schedule next to it for disaster recovery and PITR.
+
 ## Object-store cleanup on deletion
 
 By default, deleting a generated Backup leaves its archive (`backup.xbstream` +

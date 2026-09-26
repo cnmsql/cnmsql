@@ -14,6 +14,15 @@ archive plus metadata, and records enough status for a future Cluster recovery.
 PITR builds on this base-backup mechanism. This page focuses on the physical
 backup and restore-to-backup-point path.
 
+:::tip Physical or logical
+A physical backup copies the data directory: it is the base for disaster
+recovery and point-in-time recovery, and it restores onto the same server
+series. A [logical backup](logical-backups.md) (`method: logical`) is a SQL
+dump of the application schemas: use it to export single databases, restore
+them into a new or a running cluster, or move to another series. It is never a
+recovery base.
+:::
+
 ```mermaid
 flowchart LR
     BackupCR["Backup CR"]
@@ -281,7 +290,8 @@ spec:
             key: secretKey
 ```
 
-The operator lists the base backups under the prefix, selects the latest
+The operator lists the base backups under the prefix (logical backups in the
+same prefix are ignored, they carry a different manifest), selects the latest
 completed one (or the entry matching `backupID` when set), derives the archive
 and metadata keys, and restores exactly as the Backup-based path does. `source`
 and `backup` are mutually exclusive. PITR with `recoveryTarget` works
@@ -305,7 +315,10 @@ status, and Events:
 - raw-S3 recovery: `source` does not name an `externalClusters` entry;
 - raw-S3 recovery: the referenced external cluster entry has no `objectStore`;
 - raw-S3 recovery: no base backups found under the source prefix;
-- raw-S3 recovery: the requested `backupID` is not present in the object store.
+- raw-S3 recovery: the requested `backupID` is not present in the object store;
+- `bootstrap.recovery.backup` names a logical Backup: the Cluster is blocked
+  with `LogicalBackupNotRecoverable`, because recovery restores a physical data
+  directory.
 
 The controller-manager never handles backup payload bytes. Large data movement
 stays in Jobs and init containers so retries are isolated and observable through

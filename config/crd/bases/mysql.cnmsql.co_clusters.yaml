@@ -2190,6 +2190,15 @@ spec:
                           deletes the Job as soon as it finishes.
                         type: string
                     type: object
+                  logicalOptions:
+                    description: |-
+                      LogicalOptions are extra flags passed to the dump client (mysqldump /
+                      mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs
+                      replaces them. The operator does not validate them: flags that change the
+                      output format or GTID handling break restore.
+                    items:
+                      type: string
+                    type: array
                   objectStore:
                     description: |-
                       ObjectStore is the S3-compatible destination for backups and binlog
@@ -2598,6 +2607,56 @@ spec:
                         description: Database is the name of the application database
                           to create.
                         type: string
+                      import:
+                        description: |-
+                          Import loads a logical backup (a SQL dump) into the new cluster after it
+                          is initialised. The dump must come from the same flavor, and it can come
+                          from any supported server series. Replicas then clone the loaded primary.
+                        properties:
+                          backup:
+                            description: Backup references a completed logical Backup
+                              in this namespace.
+                            properties:
+                              name:
+                                description: Name of the referent
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          backupID:
+                            description: |-
+                              BackupID selects a dump under Source. When empty, the latest completed
+                              dump is used. Only valid with Source.
+                            type: string
+                          databases:
+                            description: |-
+                              Databases loads only these schemas from the dump. Empty loads every
+                              schema in it. Each one must be in the dump.
+                            items:
+                              maxLength: 64
+                              minLength: 1
+                              type: string
+                            maxItems: 256
+                            type: array
+                            x-kubernetes-list-type: set
+                            x-kubernetes-validations:
+                            - message: system schemas cannot be imported
+                              rule: self.all(d, !(d.lowerAscii() in ['mysql', 'sys',
+                                'performance_schema', 'information_schema']))
+                          postImportSQL:
+                            description: |-
+                              PostImportSQL is a list of SQL statements run as root after the dump is
+                              loaded.
+                            items:
+                              type: string
+                            type: array
+                          source:
+                            description: |-
+                              Source is the name of an entry in ExternalClusters whose objectStore
+                              holds the dump. The entry's name is the S3 key prefix to find it under.
+                              Mutually exclusive with Backup.
+                            type: string
+                        type: object
                       owner:
                         description: Owner is the name of the application user that
                           owns the database.
@@ -5083,6 +5142,20 @@ spec:
                 items:
                   type: string
                 type: array
+              dumpAccountSecretVersion:
+                description: |-
+                  DumpAccountSecretVersion is the resourceVersion of the `<cluster>-dump`
+                  Secret last applied to the cnmsql_dump account on the primary. The
+                  operator re-applies the account when the Secret changes. Written only by
+                  the operator.
+                type: string
+              dumpAccountServerVersion:
+                description: |-
+                  DumpAccountServerVersion is the server version of the primary the
+                  cnmsql_dump account was last applied on. Its grants depend on the
+                  version, so the operator re-applies the account when the primary's
+                  version changes, after an in-place upgrade. Written only by the operator.
+                type: string
               establishedAt:
                 description: |-
                   EstablishedAt records the first time the cluster reached full readiness

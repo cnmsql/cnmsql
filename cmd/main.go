@@ -213,6 +213,16 @@ func main() {
 					return err
 				}
 			}
+			if err := (&controller.LogicalRestoreReconciler{
+				Client:            mgr.GetClient(),
+				APIReader:         mgr.GetAPIReader(),
+				Scheme:            mgr.GetScheme(),
+				Recorder:          mgr.GetEventRecorderFor("logicalrestore-controller"), //nolint:staticcheck
+				OperatorImageName: operatorImage,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "Failed to create controller", "controller", "logicalrestore")
+				return err
+			}
 			// +kubebuilder:scaffold:builder
 
 			if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

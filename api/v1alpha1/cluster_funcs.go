@@ -829,6 +829,42 @@ func (spec *ClusterSpec) validateBootstrap(path *field.Path) field.ErrorList {
 	if spec.Bootstrap.Recovery != nil {
 		allErrs = append(allErrs, spec.validateRecovery(path.Child("recovery"))...)
 	}
+	if spec.Bootstrap.InitDB != nil && spec.Bootstrap.InitDB.Import != nil {
+		allErrs = append(allErrs, spec.validateImport(path.Child("initdb", "import"))...)
+	}
+	return allErrs
+}
+
+// validateImport checks that the import names exactly one dump location: a
+// Backup, or an externalClusters entry with an object store.
+func (spec *ClusterSpec) validateImport(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	imp := spec.Bootstrap.InitDB.Import
+	hasBackup := imp.Backup != nil && imp.Backup.Name != ""
+	switch {
+	case imp.Source == "" && !hasBackup:
+		allErrs = append(allErrs, field.Required(
+			path.Child("backup"), "import requires a backup reference or source"))
+	case imp.Source != "" && hasBackup:
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("source"), imp.Source,
+			"source and backup are mutually exclusive"))
+	case imp.Source != "":
+		if ext := spec.FindExternalCluster(imp.Source); ext == nil {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("source"), imp.Source,
+				"source must reference an entry in externalClusters"))
+		} else if ext.ObjectStore == nil {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("source"), imp.Source,
+				"external cluster referenced by source must have objectStore configured"))
+		}
+	}
+	if imp.BackupID != "" && imp.Source == "" {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("backupID"), imp.BackupID,
+			"backupID selects a dump under source and is only valid with it"))
+	}
 	return allErrs
 }
 

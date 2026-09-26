@@ -226,6 +226,9 @@ func (r *ClusterReconciler) createPreUpgradeBackup(
 		},
 		Spec: mysqlv1alpha1.BackupSpec{
 			Cluster: mysqlv1alpha1.LocalObjectReference{Name: cluster.Name},
+			// Explicit: only a physical backup can bring the data directory back
+			// if the upgrade goes wrong.
+			Method: mysqlv1alpha1.BackupMethodXtrabackup,
 		},
 	}
 	if err := controllerutil.SetControllerReference(cluster, backup, r.Scheme); err != nil {

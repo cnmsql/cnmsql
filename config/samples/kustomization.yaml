@@ -2,8 +2,10 @@
 resources:
 - mysql_v1alpha1_cluster.yaml
 - mysql_v1alpha1_backup.yaml
+- mysql_v1alpha1_backup-logical.yaml
 - mysql_v1alpha1_scheduledbackup.yaml
 - mysql_v1alpha1_database.yaml
 - mysql_v1alpha1_imagecatalog.yaml
 - mysql_v1alpha1_clusterimagecatalog.yaml
+- mysql_v1alpha1_logicalrestore.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

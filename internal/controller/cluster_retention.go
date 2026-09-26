@@ -35,10 +35,10 @@ import (
 const retentionInterval = time.Hour
 
 // reconcileRetention expires base backups (and the now-uncoverable binlog
-// segments) past spec.backup.retentionPolicy. It is best-effort and throttled:
-// it only runs on an established, archiving cluster, at most once per
-// retentionInterval, and a transient object-store error is returned for a retry
-// without failing the wider reconcile.
+// segments) and logical backups past spec.backup.retentionPolicy. It is
+// best-effort and throttled: it only runs on an established, archiving cluster,
+// at most once per retentionInterval, and a transient object-store error is
+// returned for a retry without failing the wider reconcile.
 func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
 	log := logf.FromContext(ctx)
 
@@ -101,6 +101,9 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	cutoff := time.Now().Add(-window)
 	plan := objectstore.PlanRetention(backups, binlogs, index, cutoff)
 
+	// Base backups and binlogs anchor recovery, so their expiry is applied
+	// before the logical pass below: a failure on the logical side must not
+	// keep expired recovery points alive.
 	if !plan.Empty() {
 		if err := objectstore.ApplyRetention(ctx, client, *store, cluster.Name, plan); err != nil {
 			return err
@@ -112,6 +115,24 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		log.Info("Applied backup retention", "deletedBackups", len(plan.DeleteBackupPrefixes),
 			"deletedBinlogs", len(plan.DeleteBinlogKeys)/2)
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", msg)
+	}
+
+	// Logical backups expire on the same window but on their own: they never
+	// anchor recovery, so they neither move the horizon nor keep binlogs.
+	logical, err := objectstore.ListLogicalBackups(ctx, client, *store, cluster.Name)
+	if err != nil {
+		return err
+	}
+	expiredDumps := objectstore.PlanLogicalRetention(logical, cutoff)
+	for _, prefix := range expiredDumps {
+		if err := client.RemovePrefix(ctx, store.Bucket, prefix); err != nil {
+			return err
+		}
+	}
+	if len(expiredDumps) > 0 {
+		log.Info("Applied logical backup retention", "deletedLogicalBackups", len(expiredDumps))
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", fmt.Sprintf(
+			"Retention (%s) removed %d logical backup(s)", backup.RetentionPolicy, len(expiredDumps)))
 	}
 
 	// Stamp the run time even on a no-op pass so the throttle holds.

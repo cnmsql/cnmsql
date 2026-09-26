@@ -34,6 +34,13 @@ const (
 	BackupArchiveName = "backup.xbstream"
 	// BackupMetadataName is the object name used for inspectable metadata.
 	BackupMetadataName = "metadata.json"
+	// LogicalArchiveName is the object name of a logical backup's
+	// zstd-compressed SQL dump.
+	LogicalArchiveName = "dump.sql.zst"
+	// LogicalMetadataName is a logical backup's manifest. It is deliberately not
+	// metadata.json, so base-backup listing (and so raw-S3 recovery and binlog
+	// retention) never mistakes a dump for a physical backup.
+	LogicalMetadataName = "logical.json"
 )
 
 // BackupKeys contains the object keys and URI for a physical backup.
@@ -45,6 +52,22 @@ type BackupKeys struct {
 
 // BuildBackupKeys returns deterministic object-store keys for a backup.
 func BuildBackupKeys(store mysqlv1alpha1.S3ObjectStore, clusterName, backupName, backupID string) (BackupKeys, error) {
+	return buildKeys(store, clusterName, backupName, backupID, BackupArchiveName, BackupMetadataName)
+}
+
+// BuildLogicalBackupKeys returns deterministic object-store keys for a logical
+// backup. It uses the same directory as a physical backup, with the dump and
+// its logical.json manifest inside it.
+func BuildLogicalBackupKeys(
+	store mysqlv1alpha1.S3ObjectStore, clusterName, backupName, backupID string,
+) (BackupKeys, error) {
+	return buildKeys(store, clusterName, backupName, backupID, LogicalArchiveName, LogicalMetadataName)
+}
+
+func buildKeys(
+	store mysqlv1alpha1.S3ObjectStore,
+	clusterName, backupName, backupID, archiveName, metadataName string,
+) (BackupKeys, error) {
 	if store.Bucket == "" {
 		return BackupKeys{}, fmt.Errorf("object store bucket is required")
 	}
@@ -56,10 +79,10 @@ func BuildBackupKeys(store mysqlv1alpha1.S3ObjectStore, clusterName, backupName,
 	if prefix != "" {
 		base = prefix + "/" + base
 	}
-	archiveKey := base + "/" + BackupArchiveName
+	archiveKey := base + "/" + archiveName
 	return BackupKeys{
 		ArchiveKey:  archiveKey,
-		MetadataKey: base + "/" + BackupMetadataName,
+		MetadataKey: base + "/" + metadataName,
 		ArchiveURI:  "s3://" + store.Bucket + "/" + archiveKey,
 	}, nil
 }

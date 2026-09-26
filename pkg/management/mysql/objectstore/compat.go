@@ -30,7 +30,7 @@ func asErrorResponse(err error) (minio.ErrorResponse, bool) {
 	return errors.AsType[minio.ErrorResponse](err)
 }
 
-// isNotFound reports whether err is an object-store "this key is not there"
+// IsNotFound reports whether err is an object-store "this key is not there"
 // answer.
 //
 // The S3 API has no single spelling for it: GET of a missing key returns
@@ -39,7 +39,7 @@ func asErrorResponse(err error) (minio.ErrorResponse, bool) {
 // provider-specific code. Keying off the status code and treating the error
 // codes as a secondary signal keeps a benign miss from being reported as a hard
 // failure, which is what turns a routine retention pass into a stuck backup.
-func isNotFound(err error) bool {
+func IsNotFound(err error) bool {
 	response, ok := asErrorResponse(err)
 	if !ok {
 		return false

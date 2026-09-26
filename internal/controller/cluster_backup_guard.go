@@ -20,10 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -174,65 +170,5 @@ func (r *ClusterReconciler) objectStoreConfig(
 	namespace string,
 	store *mysqlv1alpha1.S3ObjectStore,
 ) (objectstore.Config, error) {
-	return resolveObjectStoreConfig(ctx, r.Client, namespace, store)
-}
-
-// resolveObjectStoreConfig resolves an object store plus its secret-backed
-// credentials into a client Config, using c to read the referenced Secrets. It
-// is shared by every reconciler that needs its own object-store access.
-func resolveObjectStoreConfig(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	store *mysqlv1alpha1.S3ObjectStore,
-) (objectstore.Config, error) {
-	var secrets objectstore.StoreSecrets
-	creds := store.Credentials
-	if creds.AccessKeyID != nil {
-		value, err := resolveSecretValue(ctx, c, namespace, *creds.AccessKeyID)
-		if err != nil {
-			return objectstore.Config{}, err
-		}
-		secrets.AccessKeyID = value
-	}
-	if creds.SecretAccessKey != nil {
-		value, err := resolveSecretValue(ctx, c, namespace, *creds.SecretAccessKey)
-		if err != nil {
-			return objectstore.Config{}, err
-		}
-		secrets.SecretAccessKey = value
-	}
-	if creds.SessionToken != nil {
-		value, err := resolveSecretValue(ctx, c, namespace, *creds.SessionToken)
-		if err != nil {
-			return objectstore.Config{}, err
-		}
-		secrets.SessionToken = value
-	}
-	if store.TLS != nil && store.TLS.CABundleSecret != nil {
-		value, err := resolveSecretValue(ctx, c, namespace, *store.TLS.CABundleSecret)
-		if err != nil {
-			return objectstore.Config{}, err
-		}
-		secrets.CABundle = value
-	}
-	return objectstore.ConfigFromStore(*store, secrets), nil
-}
-
-func resolveSecretValue(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	selector mysqlv1alpha1.SecretKeySelector,
-) (string, error) {
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: namespace, Name: selector.Name}
-	if err := c.Get(ctx, key, secret); err != nil {
-		return "", fmt.Errorf("reading secret %s/%s: %w", namespace, selector.Name, err)
-	}
-	value, ok := secret.Data[selector.Key]
-	if !ok {
-		return "", fmt.Errorf("secret %s/%s has no key %q", namespace, selector.Name, selector.Key)
-	}
-	return string(value), nil
+	return objectstore.ResolveConfig(ctx, r.Client, namespace, store)
 }

@@ -290,6 +290,51 @@ var _ = Describe("Cluster validation", func() {
 		Expect(cluster.Validate()).To(BeEmpty())
 	})
 
+	importCluster := func(imp *BootstrapImport) *Cluster {
+		cluster := newValidCluster()
+		cluster.Spec.Bootstrap = &BootstrapConfiguration{InitDB: &BootstrapInitDB{Import: imp}}
+		cluster.Spec.ExternalClusters = []ExternalCluster{
+			{Name: "prod", ObjectStore: &S3ObjectStore{Bucket: "backups"}},
+			{Name: "no-store"},
+		}
+		return cluster
+	}
+
+	DescribeTable("validates initdb.import",
+		func(imp *BootstrapImport, wantField string) {
+			errs := importCluster(imp).Validate()
+			if wantField == "" {
+				Expect(errs).To(BeEmpty())
+				return
+			}
+			Expect(errs).To(ContainElement(HaveField("Field", wantField)))
+		},
+		Entry("a Backup reference",
+			&BootstrapImport{Backup: &LocalObjectReference{Name: "nightly"}}, ""),
+		Entry("a source with a backupID and databases",
+			&BootstrapImport{Source: "prod", BackupID: "20260612T100000", Databases: []string{"billing"}}, ""),
+		Entry("neither backup nor source",
+			&BootstrapImport{}, "spec.bootstrap.initdb.import.backup"),
+		Entry("an empty backup name",
+			&BootstrapImport{Backup: &LocalObjectReference{}}, "spec.bootstrap.initdb.import.backup"),
+		Entry("both backup and source",
+			&BootstrapImport{Source: "prod", Backup: &LocalObjectReference{Name: "nightly"}},
+			"spec.bootstrap.initdb.import.source"),
+		Entry("a source missing from externalClusters",
+			&BootstrapImport{Source: "staging"}, "spec.bootstrap.initdb.import.source"),
+		Entry("a source without an objectStore",
+			&BootstrapImport{Source: "no-store"}, "spec.bootstrap.initdb.import.source"),
+		Entry("a backupID without a source",
+			&BootstrapImport{Backup: &LocalObjectReference{Name: "nightly"}, BackupID: "20260612T100000"},
+			"spec.bootstrap.initdb.import.backupID"),
+	)
+
+	It("rejects initdb.import together with recovery", func() {
+		cluster := importCluster(&BootstrapImport{Backup: &LocalObjectReference{Name: "nightly"}})
+		cluster.Spec.Bootstrap.Recovery = &BootstrapRecovery{Backup: &LocalObjectReference{Name: "base"}}
+		Expect(cluster.Validate()).To(ContainElement(HaveField("Field", "spec.bootstrap")))
+	})
+
 	It("rejects a replica source missing from externalClusters", func() {
 		cluster := newValidCluster()
 		cluster.Spec.Replica = &ReplicaClusterConfiguration{Source: "origin"}

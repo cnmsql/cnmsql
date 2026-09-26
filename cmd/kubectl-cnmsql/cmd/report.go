@@ -143,6 +143,7 @@ type clusterReport struct {
 	events    corev1.EventList
 	backups   mysqlv1alpha1.BackupList
 	scheduled mysqlv1alpha1.ScheduledBackupList
+	restores  mysqlv1alpha1.LogicalRestoreList
 }
 
 func (cr clusterReport) writeToZip(zipper *zip.Writer, format plugin.ReportFormat, folder string) error {
@@ -163,6 +164,7 @@ func (cr clusterReport) writeToZip(zipper *zip.Writer, format plugin.ReportForma
 		{cr.events, "events"},
 		{cr.backups, "backups"},
 		{cr.scheduled, "scheduledbackups"},
+		{cr.restores, "logicalrestores"},
 	}
 	for _, o := range objects {
 		if err := plugin.AddContentToZip(o.content, o.name, manifests, format, zipper); err != nil {
@@ -217,10 +219,14 @@ func runReportCluster(
 	var scheduled mysqlv1alpha1.ScheduledBackupList
 	_ = env.Client.List(ctx, &scheduled, ns)
 	filterScheduledByCluster(&scheduled, clusterName)
+	var restores mysqlv1alpha1.LogicalRestoreList
+	_ = env.Client.List(ctx, &restores, ns)
+	filterRestoresByCluster(&restores, clusterName)
 
 	rep := clusterReport{
 		cluster: *cluster, pods: pods, jobs: jobs, pvcs: pvcs,
 		services: services, pdbs: pdbs, events: events, backups: backups, scheduled: scheduled,
+		restores: restores,
 	}
 	sections := []plugin.ZipFileWriter{
 		func(z *zip.Writer, folder string) error { return rep.writeToZip(z, format, folder) },
@@ -248,6 +254,16 @@ func filterBackupsByCluster(list *mysqlv1alpha1.BackupList, clusterName string) 
 }
 
 func filterScheduledByCluster(list *mysqlv1alpha1.ScheduledBackupList, clusterName string) {
+	kept := list.Items[:0]
+	for i := range list.Items {
+		if list.Items[i].Spec.Cluster.Name == clusterName {
+			kept = append(kept, list.Items[i])
+		}
+	}
+	list.Items = kept
+}
+
+func filterRestoresByCluster(list *mysqlv1alpha1.LogicalRestoreList, clusterName string) {
 	kept := list.Items[:0]
 	for i := range list.Items {
 		if list.Items[i].Spec.Cluster.Name == clusterName {

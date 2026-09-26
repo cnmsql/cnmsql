@@ -37,6 +37,8 @@ Package v1alpha1 contains API Schema definitions for the mysql v1alpha1 API grou
 - [DatabaseUserList](#databaseuserlist)
 - [ImageCatalog](#imagecatalog)
 - [ImageCatalogList](#imagecataloglist)
+- [LogicalRestore](#logicalrestore)
+- [LogicalRestoreList](#logicalrestorelist)
 - [ScheduledBackup](#scheduledbackup)
 - [ScheduledBackupList](#scheduledbackuplist)
 
@@ -87,7 +89,7 @@ spec:
   online: true
 ```
 
-By default, deleting a `Backup` object does not delete remote object-store data. To opt a Backup into remote cleanup, add the `mysql.cnmsql.co/cleanup-backup-files` finalizer: the operator then deletes the backup's archive (`backup.xbstream` + `metadata.json`) from the object store when the Backup is deleted, and releases the finalizer only after cleanup succeeds. The operator never adds this finalizer on its own.
+By default, deleting a `Backup` object does not delete remote object-store data. To opt a Backup into remote cleanup, add the `mysql.cnmsql.co/cleanup-backup-files` finalizer: the operator then deletes the backup's archive (its payload and manifest, such as `backup.xbstream` + `metadata.json` or `dump.sql.zst` + `logical.json`) from the object store when the Backup is deleted, and releases the finalizer only after cleanup succeeds. The operator never adds this finalizer on its own.
 
 Backup is the Schema for the backups API.
 
@@ -126,6 +128,7 @@ _Appears in:_
 | `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to the cluster's entire object-store<br />archive (every base backup, the archived binlogs, and the archive index)<br />when the Cluster is deleted. With "Delete" the operator adds a cleanup<br />finalizer and wipes the archive on teardown; with "Retain" (the default)<br />the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take backups from, defaults to a standby if available. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `xtrabackupOptions` _string array_ | XtrabackupOptions are extra flags passed to xtrabackup. |  | Optional: \{\} <br /> |
+| `logicalOptions` _string array_ | LogicalOptions are extra flags passed to the dump client (mysqldump /<br />mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs<br />replaces them. The operator does not validate them: flags that change the<br />output format or GTID handling break restore. |  | Optional: \{\} <br /> |
 | `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is the default shaping applied to backup worker Jobs created for<br />this cluster: resources, scheduling (nodeSelector/tolerations/affinity/<br />priorityClassName), extra labels/annotations, and the finished-Job TTL. A<br />per-Backup spec.jobTemplate overrides it field by field. During recovery the<br />resources from this template are also applied to the restore init container. |  | Optional: \{\} <br /> |
 | `continuousArchiving` _[ContinuousArchivingConfiguration](#continuousarchivingconfiguration)_ | ContinuousArchiving configures continuous binary-log archiving to the<br />object store, the foundation for point-in-time recovery. Disabled by<br />default. |  | Optional: \{\} <br /> |
 
@@ -147,6 +150,7 @@ cluster-wide spec.backup.jobTemplate field by field.
 _Appears in:_
 - [BackupConfiguration](#backupconfiguration)
 - [BackupSpec](#backupspec)
+- [LogicalRestoreSpec](#logicalrestorespec)
 - [ScheduledBackupSpec](#scheduledbackupspec)
 
 | Field | Description | Default | Validation |
@@ -186,11 +190,11 @@ BackupList contains a list of Backup.
 
 _Underlying type:_ _string_
 
-BackupMethod is the method used to take a physical backup.
-+kubebuilder:validation:Enum=xtrabackup;volumeSnapshot
+BackupMethod is the method used to take a backup.
++kubebuilder:validation:Enum=xtrabackup;volumeSnapshot;logical
 
 _Validation:_
-- Enum: [xtrabackup volumeSnapshot]
+- Enum: [xtrabackup volumeSnapshot logical]
 
 _Appears in:_
 - [BackupSpec](#backupspec)
@@ -201,6 +205,7 @@ _Appears in:_
 | --- | --- |
 | `xtrabackup` | BackupMethodXtrabackup uses Percona XtraBackup to stream a physical backup<br />to the object store.<br /> |
 | `volumeSnapshot` | BackupMethodVolumeSnapshot uses CSI volume snapshots.<br /> |
+| `logical` | BackupMethodLogical takes a SQL dump of the application schemas with the<br />engine's dump client (mysqldump / mariadb-dump). A logical backup is never a<br />base for recovery or point-in-time replay; load it into a new cluster<br />instead.<br /> |
 
 
 #### BackupPhase
@@ -248,6 +253,8 @@ _Appears in:_
 
 
 BackupSpec defines the desired state of Backup.
++kubebuilder:validation:XValidation:rule="!has(self.logical) || (has(self.method) && self.method == 'logical')",message="logical is only valid with method: logical"
++kubebuilder:validation:XValidation:rule="!has(self.method) || self.method != 'logical' || !has(self.online) || self.online",message="a logical backup is always online"
 
 
 
@@ -258,11 +265,12 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `cluster` _[LocalObjectReference](#localobjectreference)_ | Cluster references the cluster to back up. |  | Required: \{\} <br /> |
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore overrides the destination configured on the referenced<br />Cluster. When omitted, the Cluster's backup object store is used. |  | Optional: \{\} <br /> |
-| `method` _[BackupMethod](#backupmethod)_ | Method is the backup method to use. | xtrabackup | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
+| `method` _[BackupMethod](#backupmethod)_ | Method is the backup method to use. | xtrabackup | Enum: [xtrabackup volumeSnapshot logical] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the backup from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs a non-blocking (hot) backup. Defaults to true. | true | Optional: \{\} <br /> |
-| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(backup.xbstream + metadata.json) when the Backup object is deleted. With<br />"Delete" the operator adds the cleanup finalizer and removes the archive on<br />deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(the backup payload and its manifest) when the Backup object is deleted.<br />With "Delete" the operator adds the cleanup finalizer and removes the<br />archive on deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate shapes the backup worker Job for this backup: resources,<br />scheduling (nodeSelector/tolerations/affinity/priorityClassName), extra<br />labels/annotations, and the finished-Job TTL. It overrides the cluster-wide<br />spec.backup.jobTemplate field by field. |  | Optional: \{\} <br /> |
+| `logical` _[LogicalBackupOptions](#logicalbackupoptions)_ | Logical configures the dump when method is "logical". |  | Optional: \{\} <br /> |
 
 
 #### BackupStatus
@@ -280,16 +288,17 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `phase` _[BackupPhase](#backupphase)_ | Phase is the current phase of the backup. |  | Optional: \{\} <br /> |
 | `instanceName` _string_ | InstanceName is the instance the backup was taken from. |  | Optional: \{\} <br /> |
-| `method` _[BackupMethod](#backupmethod)_ | Method is the method that was used. |  | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
+| `method` _[BackupMethod](#backupmethod)_ | Method is the method that was used. |  | Enum: [xtrabackup volumeSnapshot logical] <br />Optional: \{\} <br /> |
 | `backupId` _string_ | BackupID is a unique identifier of the backup in the object store. |  | Optional: \{\} <br /> |
 | `jobName` _string_ | JobName is the Kubernetes Job running this backup. |  | Optional: \{\} <br /> |
 | `destinationPath` _string_ | DestinationPath is the full path of the backup in the object store. |  | Optional: \{\} <br /> |
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore records the destination the backup was uploaded to, resolved at<br />backup time from the Backup spec or the referenced Cluster. It is snapshotted<br />so the cleanup finalizer can still locate and remove the archive after the<br />referenced Cluster is gone. |  | Optional: \{\} <br /> |
 | `sha256` _string_ | SHA256 is the checksum of the uploaded backup artifact. |  | Optional: \{\} <br /> |
-| `beginGTID` _string_ | BeginGTID/EndGTID record the GTID range covered by the backup. |  | Optional: \{\} <br /> |
+| `beginGTID` _string_ | BeginGTID/EndGTID record the GTID range covered by the backup. For a<br />logical backup both hold the dump's snapshot GTID (MariaDB only), for<br />reference. |  | Optional: \{\} <br /> |
 | `endGTID` _string_ |  |  | Optional: \{\} <br /> |
-| `beginBinlog` _string_ | BeginBinlog/EndBinlog record the binary log coordinates. |  | Optional: \{\} <br /> |
+| `beginBinlog` _string_ | BeginBinlog/EndBinlog record the binary log coordinates. For a logical<br />backup both hold the dump's snapshot position (file:position), for<br />reference. |  | Optional: \{\} <br /> |
 | `endBinlog` _string_ |  |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases lists the schemas in a logical backup, which are the ones an<br />import can select. |  | Optional: \{\} <br /> |
 | `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | StartedAt/StoppedAt record the backup timing. |  | Optional: \{\} <br /> |
 | `stoppedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ |  |  | Optional: \{\} <br /> |
 | `error` _string_ | Error holds the error message if the backup failed. |  | Optional: \{\} <br /> |
@@ -334,6 +343,27 @@ _Appears in:_
 | `recovery` _[BootstrapRecovery](#bootstraprecovery)_ | Recovery bootstraps the cluster by restoring a physical backup. |  | Optional: \{\} <br /> |
 
 
+#### BootstrapImport
+
+
+
+BootstrapImport selects the logical backup a new cluster loads. Exactly one
+of Backup and Source is set.
+
+
+
+_Appears in:_
+- [BootstrapInitDB](#bootstrapinitdb)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `backup` _[LocalObjectReference](#localobjectreference)_ | Backup references a completed logical Backup in this namespace. |  | Optional: \{\} <br /> |
+| `source` _string_ | Source is the name of an entry in ExternalClusters whose objectStore<br />holds the dump. The entry's name is the S3 key prefix to find it under.<br />Mutually exclusive with Backup. |  | Optional: \{\} <br /> |
+| `backupID` _string_ | BackupID selects a dump under Source. When empty, the latest completed<br />dump is used. Only valid with Source. |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases loads only these schemas from the dump. Empty loads every<br />schema in it. Each one must be in the dump. |  | MaxItems: 256 <br />items:MaxLength: 64 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `postImportSQL` _string array_ | PostImportSQL is a list of SQL statements run as root after the dump is<br />loaded. |  | Optional: \{\} <br /> |
+
+
 #### BootstrapInitDB
 
 
@@ -353,6 +383,7 @@ _Appears in:_
 | `postInitSQL` _string array_ | PostInitSQL is a list of SQL statements run as root after the database is<br />created. |  | Optional: \{\} <br /> |
 | `characterSet` _string_ | Encoding/charset of the application database. |  | Optional: \{\} <br /> |
 | `collation` _string_ | Collation of the application database. |  | Optional: \{\} <br /> |
+| `import` _[BootstrapImport](#bootstrapimport)_ | Import loads a logical backup (a SQL dump) into the new cluster after it<br />is initialised. The dump must come from the same flavor, and it can come<br />from any supported server series. Replicas then clone the loaded primary. |  | Optional: \{\} <br /> |
 
 
 #### BootstrapRecovery
@@ -892,6 +923,8 @@ _Appears in:_
 | `certificates` _[CertificatesStatus](#certificatesstatus)_ | Certificates reports the status of the managed certificates. |  | Optional: \{\} <br /> |
 | `continuousArchiving` _[ContinuousArchivingStatus](#continuousarchivingstatus)_ | ContinuousArchiving reports the health of continuous binlog archiving when<br />it is enabled. |  | Optional: \{\} <br /> |
 | `lastRetentionRunTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | LastRetentionRunTime is when the operator last ran a backup-retention GC<br />pass against the object store. It throttles the periodic pass. |  | Optional: \{\} <br /> |
+| `dumpAccountSecretVersion` _string_ | DumpAccountSecretVersion is the resourceVersion of the `<cluster>-dump`<br />Secret last applied to the cnmsql_dump account on the primary. The<br />operator re-applies the account when the Secret changes. Written only by<br />the operator. |  | Optional: \{\} <br /> |
+| `dumpAccountServerVersion` _string_ | DumpAccountServerVersion is the server version of the primary the<br />cnmsql_dump account was last applied on. Its grants depend on the<br />version, so the operator re-applies the account when the primary's<br />version changes, after an in-place upgrade. Written only by the operator. |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the generation observed by the controller. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest available observations of the cluster's<br />state. |  | Optional: \{\} <br /> |
 | `managedRolesStatus` _[ManagedRolesStatus](#managedrolesstatus)_ | ManagedRolesStatus reports the reconciliation state of the declarative<br />managed roles. |  | Optional: \{\} <br /> |
@@ -1532,15 +1565,190 @@ namespace, identified by name.
 
 _Appears in:_
 - [BackupSpec](#backupspec)
+- [BootstrapImport](#bootstrapimport)
 - [BootstrapInitDB](#bootstrapinitdb)
 - [BootstrapRecovery](#bootstraprecovery)
 - [ClusterSpec](#clusterspec)
 - [DatabaseSpec](#databasespec)
+- [DatabaseUserSpec](#databaseuserspec)
+- [LogicalRestoreSpec](#logicalrestorespec)
 - [ScheduledBackupSpec](#scheduledbackupspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the referent |  | Required: \{\} <br /> |
+
+
+#### LogicalBackupOptions
+
+
+
+LogicalBackupOptions configures a logical (SQL dump) backup.
+
+
+
+_Appears in:_
+- [BackupSpec](#backupspec)
+- [ScheduledBackupSpec](#scheduledbackupspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `databases` _string array_ | Databases limits the dump to these schemas. Empty means every application<br />schema. The system schemas (mysql, sys, performance_schema,<br />information_schema) and operator-owned schemas are always excluded. |  | MaxItems: 256 <br />items:MaxLength: 64 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
+| `extraArgs` _string array_ | ExtraArgs are appended to the dump command. They replace the cluster's<br />spec.backup.logicalOptions. The operator does not validate them: flags<br />that change the output format or GTID handling break restore. |  | Optional: \{\} <br /> |
+
+
+#### LogicalRestore
+
+
+
+`LogicalRestore` is a namespaced one-shot request to load selected databases from a logical backup into a running cluster's primary. **Short name:** `mylogicalrestore`
+
+**Example:**
+
+```yaml
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: LogicalRestore
+metadata:
+  name: restore-billing
+spec:
+  cluster:
+    name: shop
+  backup:
+    name: shop-dump
+  databases:
+    - billing
+  policy: DropAndRecreate
+```
+
+The spec is immutable. A failed restore is not retried, and its `status.error` says whether the selected databases were changed. See [Restoring into a running cluster](logical-backups.md#restoring-into-a-running-cluster).
+
+LogicalRestore loads selected databases from a logical backup into a running
+cluster's primary.
+
+
+
+_Appears in:_
+- [LogicalRestoreList](#logicalrestorelist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
+| `kind` _string_ | `LogicalRestore` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `spec` _[LogicalRestoreSpec](#logicalrestorespec)_ | spec defines the desired state of LogicalRestore |  | Required: \{\} <br /> |
+| `status` _[LogicalRestoreStatus](#logicalrestorestatus)_ | status defines the observed state of LogicalRestore |  | Optional: \{\} <br /> |
+
+
+#### LogicalRestoreList
+
+
+
+LogicalRestoreList contains a list of LogicalRestore.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `mysql.cnmsql.co/v1alpha1` | | |
+| `kind` _string_ | `LogicalRestoreList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[LogicalRestore](#logicalrestore) array_ |  |  |  |
+
+
+#### LogicalRestorePhase
+
+_Underlying type:_ _string_
+
+LogicalRestorePhase is the current phase of a LogicalRestore.
+
+
+
+_Appears in:_
+- [LogicalRestoreStatus](#logicalrestorestatus)
+
+| Field | Description |
+| --- | --- |
+| `pending` | LogicalRestorePhasePending means the restore has not started: the dump or<br />the cluster's primary is not ready yet.<br /> |
+| `running` | LogicalRestorePhaseRunning means the restore worker Job is loading the<br />dump.<br /> |
+| `completed` | LogicalRestorePhaseCompleted means every selected database was loaded.<br /> |
+| `failed` | LogicalRestorePhaseFailed means the restore failed. The status error says<br />whether the selected databases were changed.<br /> |
+
+
+#### LogicalRestorePolicy
+
+_Underlying type:_ _string_
+
+LogicalRestorePolicy says what a restore does with a selected database that
+already holds objects.
++kubebuilder:validation:Enum=FailIfExists;DropAndRecreate
+
+_Validation:_
+- Enum: [FailIfExists DropAndRecreate]
+
+_Appears in:_
+- [LogicalRestoreSpec](#logicalrestorespec)
+
+| Field | Description |
+| --- | --- |
+| `FailIfExists` | LogicalRestoreFailIfExists refuses the whole restore when a selected<br />database holds a table, view, routine or event. Nothing is changed. An<br />empty database, such as one a Database resource created, is loaded into.<br /> |
+| `DropAndRecreate` | LogicalRestoreDropAndRecreate drops each selected database, then loads it<br />from the dump. Schema-level grants survive the drop.<br /> |
+
+
+#### LogicalRestoreSpec
+
+
+
+LogicalRestoreSpec defines the desired state of LogicalRestore. It is
+immutable: a restore is a one-shot action.
++kubebuilder:validation:XValidation:rule="has(self.backup) != (has(self.source) && size(self.source) > 0)",message="set exactly one of backup or source"
++kubebuilder:validation:XValidation:rule="!has(self.backupID) || size(self.backupID) == 0 || (has(self.source) && size(self.source) > 0)",message="backupID is only valid with source"
++kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; create a new LogicalRestore"
+
+
+
+_Appears in:_
+- [LogicalRestore](#logicalrestore)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `cluster` _[LocalObjectReference](#localobjectreference)_ | Cluster is the running cluster to load into. The dump is loaded into its<br />current primary and reaches the replicas through replication. |  | Required: \{\} <br /> |
+| `backup` _[LocalObjectReference](#localobjectreference)_ | Backup references a completed logical Backup in this namespace. Mutually<br />exclusive with Source. |  | Optional: \{\} <br /> |
+| `source` _string_ | Source names an entry of the target Cluster's spec.externalClusters whose<br />object store holds the dump. Mutually exclusive with Backup. |  | Optional: \{\} <br /> |
+| `backupID` _string_ | BackupID selects a dump under Source. Empty picks the latest. |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases are the schemas loaded from the dump. It is required: a restore<br />never loads a whole dump implicitly. Each must be in the dump. |  | MaxItems: 256 <br />MinItems: 1 <br />items:MaxLength: 64 <br />items:MinLength: 1 <br /> |
+| `policy` _[LogicalRestorePolicy](#logicalrestorepolicy)_ | Policy says what to do with a selected database that already holds<br />objects: FailIfExists refuses the restore, DropAndRecreate drops the<br />database first. It is required, so an overwrite is always explicit. |  | Enum: [FailIfExists DropAndRecreate] <br />Required: \{\} <br /> |
+| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate shapes the restore worker Job: resources, scheduling, extra<br />labels and annotations, the finished-Job TTL and the deadline. It<br />overrides the cluster-wide spec.backup.jobTemplate field by field, like a<br />Backup's. |  | Optional: \{\} <br /> |
+
+
+#### LogicalRestoreStatus
+
+
+
+LogicalRestoreStatus defines the observed state of LogicalRestore.
+
+
+
+_Appears in:_
+- [LogicalRestore](#logicalrestore)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[LogicalRestorePhase](#logicalrestorephase)_ | Phase is the current phase of the restore. |  | Optional: \{\} <br /> |
+| `targetInstance` _string_ | TargetInstance is the primary the dump is loaded into. |  | Optional: \{\} <br /> |
+| `jobName` _string_ | JobName is the Kubernetes Job running the restore. |  | Optional: \{\} <br /> |
+| `backupID` _string_ | BackupID identifies the dump in the object store. |  | Optional: \{\} <br /> |
+| `sourcePath` _string_ | SourcePath is the full object-store path of the dump. |  | Optional: \{\} <br /> |
+| `databases` _string array_ | Databases lists the schemas restored. |  | Optional: \{\} <br /> |
+| `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | StartedAt/StoppedAt record the restore timing. |  | Optional: \{\} <br /> |
+| `stoppedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ |  |  | Optional: \{\} <br /> |
+| `error` _string_ | Error holds the error message if the restore failed, and says whether<br />the selected databases were changed. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest observations of the restore state. |  | Optional: \{\} <br /> |
 
 
 #### ManagedConfiguration
@@ -1951,6 +2159,7 @@ Wasabi, Backblaze B2, etc.).
 _Appears in:_
 - [BackupConfiguration](#backupconfiguration)
 - [BackupSpec](#backupspec)
+- [BackupStatus](#backupstatus)
 - [ExternalCluster](#externalcluster)
 
 | Field | Description | Default | Validation |
@@ -2078,6 +2287,8 @@ ScheduledBackupList contains a list of ScheduledBackup.
 
 
 ScheduledBackupSpec defines the desired state of ScheduledBackup.
++kubebuilder:validation:XValidation:rule="!has(self.logical) || (has(self.method) && self.method == 'logical')",message="logical is only valid with method: logical"
++kubebuilder:validation:XValidation:rule="!has(self.method) || self.method != 'logical' || !has(self.online) || self.online",message="a logical backup is always online"
 
 
 
@@ -2091,11 +2302,12 @@ _Appears in:_
 | `suspend` _boolean_ | Suspend, when true, pauses the schedule. | false | Optional: \{\} <br /> |
 | `immediate` _boolean_ | Immediate, when true, takes a backup as soon as the ScheduledBackup is<br />created, in addition to the schedule. | false | Optional: \{\} <br /> |
 | `backupOwnerReference` _string_ | BackupOwnerReference controls the owner reference set on the generated<br />Backup objects. | self | Enum: [none self cluster] <br />Optional: \{\} <br /> |
-| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy is propagated to every generated Backup as its<br />spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup<br />finalizer, so deleting it also removes its archive (backup.xbstream +<br />metadata.json) from the object store. Defaults to "Retain", the<br />non-destructive default. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
-| `method` _[BackupMethod](#backupmethod)_ | Method is the backup method used for the generated backups. | xtrabackup | Enum: [xtrabackup volumeSnapshot] <br />Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy is propagated to every generated Backup as its<br />spec.reclaimPolicy. With "Delete" each generated Backup carries the cleanup<br />finalizer, so deleting it also removes its archive (the backup payload<br />and its manifest) from the object store. Defaults to "Retain", the<br />non-destructive default. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `method` _[BackupMethod](#backupmethod)_ | Method is the backup method used for the generated backups. | xtrabackup | Enum: [xtrabackup volumeSnapshot logical] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the generated backups from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `online` _boolean_ | Online, when true, performs non-blocking (hot) backups. | true | Optional: \{\} <br /> |
 | `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is propagated to every generated Backup as its spec.jobTemplate,<br />shaping the backup worker Job (resources, scheduling, labels/annotations, and<br />the finished-Job TTL). When unset the generated Backups fall back to the<br />cluster-wide spec.backup.jobTemplate. |  | Optional: \{\} <br /> |
+| `logical` _[LogicalBackupOptions](#logicalbackupoptions)_ | Logical is propagated to every generated Backup as its spec.logical when<br />method is "logical". |  | Optional: \{\} <br /> |
 | `successfulBackupsHistoryLimit` _integer_ | SuccessfulBackupsHistoryLimit caps how many completed Backup objects this<br />schedule keeps. The newest that many are retained and older completed Backups<br />are garbage-collected. Unset means no count limit. The single newest completed<br />Backup is always kept regardless, so a schedule never prunes its last recovery<br />point. Deleting a Backup honours its reclaimPolicy: a Delete-policy Backup also<br />reclaims its object-store archive, a Retain-policy one leaves the archive (see<br />spec.backup.retentionPolicy on the Cluster for object-store retention). |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `failedBackupsHistoryLimit` _integer_ | FailedBackupsHistoryLimit caps how many failed Backup objects this schedule<br />keeps. The newest that many are retained and older failed Backups are<br />garbage-collected. Unset means no count limit. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `retentionPolicy` _string_ | RetentionPolicy is a time window (e.g. "30d", "8w", "3m"; days, weeks, months,<br />where a month is 30 days) after which this schedule's terminal Backup objects<br />are garbage-collected. It uses the same syntax as the Cluster<br />spec.backup.retentionPolicy. A terminal Backup is pruned when it exceeds the<br />history limit OR ages past this window, whichever applies. Unset means no time<br />limit. The newest completed Backup is always kept. |  | Pattern: `^[1-9][0-9]*[dwm]$` <br />Optional: \{\} <br /> |

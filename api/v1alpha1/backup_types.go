@@ -82,15 +82,15 @@ type BackupJobTemplate struct {
 }
 
 // BackupCleanupFinalizer, when present on a Backup, makes the operator delete
-// the backup's object-store artifacts (backup.xbstream + metadata.json) when the
-// Backup object is deleted. It is opt-in: the operator only adds it when the
+// the backup's object-store artifacts (the backup payload and its manifest) when
+// the Backup object is deleted. It is opt-in: the operator only adds it when the
 // Backup (or the ScheduledBackup that generated it) sets reclaimPolicy: Delete,
 // so default deletes leave remote archives untouched.
 const BackupCleanupFinalizer = "mysql.cnmsql.co/cleanup-backup-files"
 
 // ClusterBackupCleanupFinalizer, when present on a Cluster, makes the operator
-// delete the cluster's entire object-store archive (every base backup, the
-// archived binlogs, and the archive index) when the Cluster is deleted. It is
+// delete the cluster's entire object-store archive (every backup, the archived
+// binlogs, and the archive index) when the Cluster is deleted. It is
 // opt-in via spec.backup.reclaimPolicy: Delete; the default keeps the archive so
 // a deleted Cluster can still be recovered.
 const ClusterBackupCleanupFinalizer = "mysql.cnmsql.co/cleanup-object-store"
@@ -111,8 +111,8 @@ const (
 	BackupReclaimDelete BackupReclaimPolicy = "Delete"
 )
 
-// BackupMethod is the method used to take a physical backup.
-// +kubebuilder:validation:Enum=xtrabackup;volumeSnapshot
+// BackupMethod is the method used to take a backup.
+// +kubebuilder:validation:Enum=xtrabackup;volumeSnapshot;logical
 type BackupMethod string
 
 const (
@@ -122,7 +122,33 @@ const (
 
 	// BackupMethodVolumeSnapshot uses CSI volume snapshots.
 	BackupMethodVolumeSnapshot BackupMethod = "volumeSnapshot"
+
+	// BackupMethodLogical takes a SQL dump of the application schemas with the
+	// engine's dump client (mysqldump / mariadb-dump). A logical backup is never a
+	// base for recovery or point-in-time replay; load it into a new cluster
+	// instead.
+	BackupMethodLogical BackupMethod = "logical"
 )
+
+// LogicalBackupOptions configures a logical (SQL dump) backup.
+type LogicalBackupOptions struct {
+	// Databases limits the dump to these schemas. Empty means every application
+	// schema. The system schemas (mysql, sys, performance_schema,
+	// information_schema) and operator-owned schemas are always excluded.
+	// +kubebuilder:validation:MaxItems=256
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=64
+	// +kubebuilder:validation:XValidation:rule="self.all(d, !(d.lowerAscii() in ['mysql', 'sys', 'performance_schema', 'information_schema']))",message="system schemas cannot be dumped"
+	// +listType=set
+	// +optional
+	Databases []string `json:"databases,omitempty"`
+
+	// ExtraArgs are appended to the dump command. They replace the cluster's
+	// spec.backup.logicalOptions. The operator does not validate them: flags
+	// that change the output format or GTID handling break restore.
+	// +optional
+	ExtraArgs []string `json:"extraArgs,omitempty"`
+}
 
 // BackupPhase is the current phase of a Backup.
 type BackupPhase string
@@ -139,6 +165,8 @@ const (
 )
 
 // BackupSpec defines the desired state of Backup.
+// +kubebuilder:validation:XValidation:rule="!has(self.logical) || (has(self.method) && self.method == 'logical')",message="logical is only valid with method: logical"
+// +kubebuilder:validation:XValidation:rule="!has(self.method) || self.method != 'logical' || !has(self.online) || self.online",message="a logical backup is always online"
 type BackupSpec struct {
 	// Cluster references the cluster to back up.
 	// +kubebuilder:validation:Required
@@ -165,9 +193,9 @@ type BackupSpec struct {
 	Online *bool `json:"online,omitempty"`
 
 	// ReclaimPolicy controls what happens to this backup's object-store archive
-	// (backup.xbstream + metadata.json) when the Backup object is deleted. With
-	// "Delete" the operator adds the cleanup finalizer and removes the archive on
-	// deletion; with "Retain" (the default) the archive is kept.
+	// (the backup payload and its manifest) when the Backup object is deleted.
+	// With "Delete" the operator adds the cleanup finalizer and removes the
+	// archive on deletion; with "Retain" (the default) the archive is kept.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default:=Retain
 	// +optional
@@ -179,6 +207,10 @@ type BackupSpec struct {
 	// spec.backup.jobTemplate field by field.
 	// +optional
 	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
+
+	// Logical configures the dump when method is "logical".
+	// +optional
+	Logical *LogicalBackupOptions `json:"logical,omitempty"`
 }
 
 // BackupStatus defines the observed state of Backup.
@@ -218,17 +250,26 @@ type BackupStatus struct {
 	// +optional
 	SHA256 string `json:"sha256,omitempty"`
 
-	// BeginGTID/EndGTID record the GTID range covered by the backup.
+	// BeginGTID/EndGTID record the GTID range covered by the backup. For a
+	// logical backup both hold the dump's snapshot GTID (MariaDB only), for
+	// reference.
 	// +optional
 	BeginGTID string `json:"beginGTID,omitempty"`
 	// +optional
 	EndGTID string `json:"endGTID,omitempty"`
 
-	// BeginBinlog/EndBinlog record the binary log coordinates.
+	// BeginBinlog/EndBinlog record the binary log coordinates. For a logical
+	// backup both hold the dump's snapshot position (file:position), for
+	// reference.
 	// +optional
 	BeginBinlog string `json:"beginBinlog,omitempty"`
 	// +optional
 	EndBinlog string `json:"endBinlog,omitempty"`
+
+	// Databases lists the schemas in a logical backup, which are the ones an
+	// import can select.
+	// +optional
+	Databases []string `json:"databases,omitempty"`
 
 	// StartedAt/StoppedAt record the backup timing.
 	// +optional

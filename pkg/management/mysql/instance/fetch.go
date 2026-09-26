@@ -18,8 +18,6 @@ package instance
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,6 +27,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 // FetchOptions configures pulling a streamed backup from a source instance's
@@ -145,24 +144,11 @@ func FetchBackup(ctx context.Context, opts FetchOptions) error {
 }
 
 func (o *FetchOptions) transport() (*http.Transport, error) {
-	cert, err := tls.LoadX509KeyPair(o.CertFile, o.KeyFile)
+	cfg, err := webserver.ClientTLSConfig(webserver.ClientTLSOptions{
+		CertFile: o.CertFile, KeyFile: o.KeyFile, CAFile: o.CAFile, ServerName: o.ServerName,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("loading client certificate: %w", err)
+		return nil, err
 	}
-	caPEM, err := os.ReadFile(o.CAFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading CA: %w", err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("CA file %s contains no certificates", o.CAFile)
-	}
-	return &http.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			ServerName:   o.ServerName,
-			Certificates: []tls.Certificate{cert},
-			RootCAs:      roots,
-		},
-	}, nil
+	return &http.Transport{TLSClientConfig: cfg}, nil
 }

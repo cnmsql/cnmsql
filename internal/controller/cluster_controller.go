@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -152,7 +153,8 @@ const (
 	mysqlPortName = "mysql"
 
 	// managerBinary is where the bootstrap-controller init container copies the
-	// instance manager, on the shared scratch volume.
+	// instance manager, on the shared scratch volume. The instance manager also
+	// writes its client credentials files there (instance.ScratchWorkDir).
 	managerBinary = "/controller/manager"
 
 	// Subcommands of the instance manager binary.
@@ -302,12 +304,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	plan, err := r.buildPlan(ctx, cluster)
 	if err != nil {
-		return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{
-			Phase:       topology.PhaseBlocked,
-			PhaseReason: err.Error(),
-			Ready:       false,
-			Progressing: false,
-		})
+		return r.planFailed(ctx, cluster, err)
 	}
 
 	// Elect the bootstrap primary by pointing targetPrimary at the first
@@ -446,6 +443,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return result, err
 	}
 	r.reconcileAvailability(ctx, cluster, observed)
+	// Create (or, on clusters older than logical backups, migrate) the dump
+	// account as soon as the primary is up. Best effort: only logical Backups
+	// wait on it.
+	r.reconcileDumpAccountBestEffort(ctx, cluster, observed)
 	if !observed.Ready {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
@@ -453,6 +454,28 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Keep re-polling the instance managers so status (GTID, roles, readiness)
 	// stays fresh even when no Kubernetes event triggers a reconcile.
 	return ctrl.Result{RequeueAfter: readyResync}, nil
+}
+
+// planFailed reports a cluster whose plan could not be built. An import
+// source that is not ready yet (a Backup still running, an object store that
+// cannot be read) resolves on its own, so the cluster keeps provisioning and
+// is looked at again; anything else needs a spec change and blocks it.
+func (r *ClusterReconciler) planFailed(ctx context.Context, cluster *mysqlv1alpha1.Cluster, err error) (ctrl.Result, error) {
+	if _, ok := errors.AsType[*importNotReadyError](err); ok {
+		logf.FromContext(ctx).Info("Import source is not ready, will retry", "reason", err.Error())
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       topology.PhaseProvisioning,
+			PhaseReason: err.Error(),
+			Ready:       false,
+			Progressing: true,
+		})
+	}
+	return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{
+		Phase:       topology.PhaseBlocked,
+		PhaseReason: err.Error(),
+		Ready:       false,
+		Progressing: false,
+	})
 }
 
 // ensureInfrastructure provisions the supporting resources a Cluster needs

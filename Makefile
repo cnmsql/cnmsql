@@ -112,7 +112,7 @@ fuzz: ## Run the fuzz targets, FUZZTIME each (e.g. make fuzz FUZZTIME=5m). Faili
 
 .PHONY: test-integration
 test-integration: ## Run the instance-manager integration tests against real Percona containers (requires Docker).
-	go test -tags integration -timeout 600s ./test/integration/...
+	go test -tags integration -timeout 1800s ./test/integration/...
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.

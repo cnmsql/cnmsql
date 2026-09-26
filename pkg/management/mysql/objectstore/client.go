@@ -450,7 +450,7 @@ func (c *Client) listObjectsWith(ctx context.Context, bucket, prefix string, rec
 // per-object deletes that every store supports.
 func (c *Client) Remove(ctx context.Context, bucket, key string) error {
 	err := c.mc.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
-	if err != nil && !isNotFound(err) {
+	if err != nil && !IsNotFound(err) {
 		return fmt.Errorf("removing s3://%s/%s: %w", bucket, key, err)
 	}
 	return nil
@@ -478,7 +478,7 @@ func (c *Client) Exists(ctx context.Context, bucket, key string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if isNotFound(err) {
+	if IsNotFound(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("stat s3://%s/%s: %w", bucket, key, err)

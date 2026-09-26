@@ -119,6 +119,7 @@ type statusView struct {
 	live      map[string]*instanceStatus
 	backups   []mysqlv1alpha1.Backup
 	scheduled []mysqlv1alpha1.ScheduledBackup
+	restores  []mysqlv1alpha1.LogicalRestore
 }
 
 func (v *statusView) liveStatus(instance string) *webserver.Status {
@@ -165,6 +166,7 @@ func runStatus(ctx context.Context, clusterName, output string) error {
 		v.live[live[i].Instance] = &live[i]
 	}
 	v.backups, v.scheduled = listBackups(ctx, env, cluster)
+	v.restores = listLogicalRestores(ctx, env, cluster)
 	sortInstances(v.pods, v.primary)
 
 	printSummary(v)
@@ -177,6 +179,7 @@ func runStatus(ctx context.Context, clusterName, output string) error {
 	}
 	printInstances(v)
 	printBackups(v)
+	printLogicalRestores(v)
 	printManagedRoles(cluster)
 	printCertificates(cluster)
 	if statusVerbose > 0 {
@@ -416,27 +419,7 @@ func printContinuousBackup(v *statusView) {
 		f.Add("Object store", objectStoreURL(c.Spec.Backup.ObjectStore))
 	}
 
-	var firstRecoverable, lastSuccess *mysqlv1alpha1.Backup
-	var lastFailed *mysqlv1alpha1.Backup
-	for i := range v.backups {
-		b := &v.backups[i]
-		switch b.Status.Phase {
-		case mysqlv1alpha1.BackupPhaseCompleted:
-			if b.Status.StoppedAt == nil {
-				continue
-			}
-			if firstRecoverable == nil || b.Status.StoppedAt.Before(firstRecoverable.Status.StoppedAt) {
-				firstRecoverable = b
-			}
-			if lastSuccess == nil || lastSuccess.Status.StoppedAt.Before(b.Status.StoppedAt) {
-				lastSuccess = b
-			}
-		case mysqlv1alpha1.BackupPhaseFailed:
-			if lastFailed == nil || backupTime(lastFailed).Before(backupTime(b)) {
-				lastFailed = b
-			}
-		}
-	}
+	firstRecoverable, lastSuccess, lastFailed := summarizeBackups(v.backups)
 	if firstRecoverable != nil {
 		f.Add("First point of recoverability", plugin.Timestamp(firstRecoverable.Status.StoppedAt.Time))
 	} else {
@@ -488,6 +471,36 @@ func printContinuousBackup(v *statusView) {
 		f.Add("Working binlog archiving", plugin.Faint("disabled"))
 	}
 	f.Print()
+}
+
+// summarizeBackups picks the oldest completed physical backup (the first point
+// of recoverability), the newest completed backup of any method, and the newest
+// failed one. A logical backup is never a recovery base, so it does not move
+// the first point of recoverability.
+func summarizeBackups(
+	backups []mysqlv1alpha1.Backup,
+) (firstRecoverable, lastSuccess, lastFailed *mysqlv1alpha1.Backup) {
+	for i := range backups {
+		b := &backups[i]
+		switch b.Status.Phase {
+		case mysqlv1alpha1.BackupPhaseCompleted:
+			if b.Status.StoppedAt == nil {
+				continue
+			}
+			if b.Status.Method != mysqlv1alpha1.BackupMethodLogical &&
+				(firstRecoverable == nil || b.Status.StoppedAt.Before(firstRecoverable.Status.StoppedAt)) {
+				firstRecoverable = b
+			}
+			if lastSuccess == nil || lastSuccess.Status.StoppedAt.Before(b.Status.StoppedAt) {
+				lastSuccess = b
+			}
+		case mysqlv1alpha1.BackupPhaseFailed:
+			if lastFailed == nil || backupTime(lastFailed).Before(backupTime(b)) {
+				lastFailed = b
+			}
+		}
+	}
+	return firstRecoverable, lastSuccess, lastFailed
 }
 
 // archivingFailing reports whether archiving is currently broken: its most
@@ -858,6 +871,61 @@ func listBackups(
 		}
 	}
 	return backups, scheduled
+}
+
+// printLogicalRestores lists the cluster's LogicalRestores, newest first.
+// Whether a failed one changed the data is in its status error, which
+// `kubectl describe logicalrestore` shows.
+func printLogicalRestores(v *statusView) {
+	if len(v.restores) == 0 {
+		return
+	}
+	restores := append([]mysqlv1alpha1.LogicalRestore(nil), v.restores...)
+	sort.Slice(restores, func(i, j int) bool {
+		return restores[j].CreationTimestamp.Before(&restores[i].CreationTimestamp)
+	})
+	title := "Logical restores"
+	if statusVerbose == 0 && len(restores) > recentBackups {
+		title = fmt.Sprintf("Logical restores (latest %d of %d, -v for all)", recentBackups, len(restores))
+		restores = restores[:recentBackups]
+	}
+	rows := make([][]string, 0, len(restores))
+	for i := range restores {
+		r := &restores[i]
+		started, duration := plugin.NoValue, plugin.NoValue
+		if r.Status.StartedAt != nil {
+			started = r.Status.StartedAt.Local().Format(time.DateTime)
+			end := time.Now()
+			if r.Status.StoppedAt != nil {
+				end = r.Status.StoppedAt.Time
+			}
+			duration = plugin.HumanDuration(end.Sub(r.Status.StartedAt.Time))
+		}
+		rows = append(rows, []string{
+			r.Name, backupPhase(mysqlv1alpha1.BackupPhase(r.Status.Phase)), string(r.Spec.Policy),
+			strings.Join(r.Spec.Databases, ","), plugin.Or(r.Status.TargetInstance), started, duration,
+		})
+	}
+	plugin.Section(title)
+	plugin.Table([]string{"Name", "Phase", "Policy", "Databases", "Target", "Started", "Duration"}, rows)
+}
+
+func listLogicalRestores(
+	ctx context.Context, env *plugin.Env, cluster *mysqlv1alpha1.Cluster,
+) []mysqlv1alpha1.LogicalRestore {
+	list := &mysqlv1alpha1.LogicalRestoreList{}
+	// An operator without the LogicalRestore CRD answers with an error; the
+	// section is then simply left out.
+	if err := env.Client.List(ctx, list, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil
+	}
+	var restores []mysqlv1alpha1.LogicalRestore
+	for i := range list.Items {
+		if list.Items[i].Spec.Cluster.Name == cluster.Name {
+			restores = append(restores, list.Items[i])
+		}
+	}
+	return restores
 }
 
 func printManagedRoles(c *mysqlv1alpha1.Cluster) {

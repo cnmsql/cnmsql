@@ -82,6 +82,9 @@ type clusterPlan struct {
 	// Recovery, when set, makes the bootstrap primary restore from an object
 	// store instead of running initdb. Replicas always clone from the primary.
 	Recovery *recoveryPlan
+	// Import, when set, makes the bootstrap primary load a logical backup after
+	// initdb. It is only set until the cluster is established.
+	Import *importPlan
 }
 
 // instanceServiceAccountName returns the per-instance ServiceAccount name.
@@ -288,6 +291,12 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		return clusterPlan{}, err
 	}
 	plan.Recovery = recovery
+
+	imp, err := r.resolveImport(ctx, cluster, serverVersion)
+	if err != nil {
+		return clusterPlan{}, err
+	}
+	plan.Import = imp
 	return plan, nil
 }
 
@@ -298,6 +307,10 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 // The referenced Backup must stay present and completed for as long as the
 // Cluster references it: its status carries the backupID the archive keys are
 // derived from, and the recovery init-container's spec depends on those keys.
+// reasonLogicalBackupNotRecoverable prefixes the Blocked reason of a cluster
+// whose bootstrap.recovery.backup names a logical Backup.
+const reasonLogicalBackupNotRecoverable = "LogicalBackupNotRecoverable"
+
 func (r *ClusterReconciler) resolveRecovery(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
@@ -317,6 +330,11 @@ func (r *ClusterReconciler) resolveRecovery(
 	key := types.NamespacedName{Namespace: cluster.Namespace, Name: rec.Backup.Name}
 	if err := r.Get(ctx, key, backup); err != nil {
 		return nil, fmt.Errorf("resolving recovery backup %q: %w", rec.Backup.Name, err)
+	}
+	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical || backup.Status.Method == mysqlv1alpha1.BackupMethodLogical {
+		return nil, fmt.Errorf("%s: recovery backup %q is a logical backup, and recovery restores a physical "+
+			"data directory; load a logical backup into a new cluster with bootstrap.initdb.import instead",
+			reasonLogicalBackupNotRecoverable, backup.Name)
 	}
 	if backup.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted {
 		return nil, fmt.Errorf("recovery backup %q is not completed (phase %q)", backup.Name, backup.Status.Phase)

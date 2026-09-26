@@ -342,6 +342,9 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 		case cluster.IsEstablished():
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = degradedReason(*o, plan)
+		case o.ReadyInstances == 0 && plan.Import != nil:
+			o.Phase = topology.PhasePending
+			o.PhaseReason = "Waiting for the primary instance to initialise and import the logical backup"
 		case o.ReadyInstances == 0:
 			o.Phase = topology.PhasePending
 			o.PhaseReason = "Waiting for the primary instance"

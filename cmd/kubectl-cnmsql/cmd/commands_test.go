@@ -10,7 +10,7 @@ import (
 func TestRootCommandContainsExpectedCommands(t *testing.T) {
 	want := []string{
 		"backup", "bench", "certificate", "database", "destroy", "fence", "group", "logs",
-		"maintenance", "metrics", "promote", "reinit", "reload", "restart", "status",
+		"maintenance", "metrics", "promote", "reinit", "reload", "restart", "restore", "status",
 		"user", "version", "report",
 	}
 	root := NewRootCommand()
@@ -27,7 +27,7 @@ func TestRootCommandContainsExpectedCommands(t *testing.T) {
 func TestRootCommandGroupsAssigned(t *testing.T) {
 	root := NewRootCommand()
 	want := map[string]string{
-		"status": groupCluster, "promote": groupCluster, "backup": groupCluster,
+		"status": groupCluster, "promote": groupCluster, "backup": groupCluster, "restore": groupCluster,
 		"user": groupDatabase, "database": groupDatabase, "shell": groupDatabase,
 		"logs": groupTroubleshooting, "metrics": groupTroubleshooting, "report": groupTroubleshooting,
 		"version": groupMisc, "certificate": groupMisc,

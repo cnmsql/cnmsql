@@ -18,8 +18,7 @@ package backup
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -27,13 +26,24 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
-// uploadOptions configures the backup worker that streams a physical backup
-// from a source instance to object storage.
+// Backup methods the worker understands.
+const (
+	methodXtrabackup = "xtrabackup"
+	methodLogical    = "logical"
+)
+
+// uploadOptions configures the backup worker that streams a backup from a
+// source instance to object storage.
 type uploadOptions struct {
+	// Method selects the stream: "xtrabackup" (the default) pulls a physical
+	// archive from GET /cluster/backup, "logical" a SQL dump from
+	// POST /cluster/dump.
+	Method                  string
 	SourceManagerURL        string
 	SourceManagerServerName string
 	Bucket                  string
@@ -48,6 +58,9 @@ type uploadOptions struct {
 	TLSCA                   string
 	Compress                bool
 	SHA256                  bool
+	// Databases and DumpArgs configure a logical dump.
+	Databases []string
+	DumpArgs  []string
 }
 
 func (o uploadOptions) validate() error {
@@ -66,6 +79,16 @@ func (o uploadOptions) validate() error {
 		if value == "" {
 			return fmt.Errorf("backup upload: %s is required", flag)
 		}
+	}
+	switch o.Method {
+	case "", methodXtrabackup:
+	case methodLogical:
+		// The worker compresses and checksums a dump itself, always.
+		if o.Compress {
+			return errors.New("backup upload: --compress applies to xtrabackup; a logical dump is always compressed")
+		}
+	default:
+		return fmt.Errorf("backup upload: unknown --method %q", o.Method)
 	}
 	return nil
 }
@@ -92,6 +115,14 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	client, err := mtlsClient(opts)
 	if err != nil {
 		return err
+	}
+
+	if opts.Method == methodLogical {
+		password := os.Getenv(backupworker.EnvDumpPassword)
+		if password == "" {
+			return fmt.Errorf("backup upload: %s is required for a logical backup", backupworker.EnvDumpPassword)
+		}
+		return runLogicalUpload(ctx, opts, store, client, password)
 	}
 
 	startedAt := time.Now().UTC()
@@ -139,7 +170,7 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 		ClusterName:      opts.ClusterName,
 		BackupName:       opts.BackupName,
 		InstanceName:     opts.InstanceName,
-		Method:           "xtrabackup",
+		Method:           methodXtrabackup,
 		ArchiveKey:       opts.ArchiveKey,
 		Compressed:       opts.Compress,
 		SizeBytes:        reader.Count(),
@@ -161,26 +192,11 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 // instance manager. The transfer is unbounded: large datasets can take a long
 // time to stream.
 func mtlsClient(opts uploadOptions) (*http.Client, error) {
-	cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
+	cfg, err := webserver.ClientTLSConfig(webserver.ClientTLSOptions{
+		CertFile: opts.TLSCert, KeyFile: opts.TLSKey, CAFile: opts.TLSCA, ServerName: opts.SourceManagerServerName,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("loading client certificate: %w", err)
+		return nil, err
 	}
-	caPEM, err := os.ReadFile(opts.TLSCA)
-	if err != nil {
-		return nil, fmt.Errorf("reading CA: %w", err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("CA file %s contains no certificates", opts.TLSCA)
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion:   tls.VersionTLS12,
-				ServerName:   opts.SourceManagerServerName,
-				Certificates: []tls.Certificate{cert},
-				RootCAs:      roots,
-			},
-		},
-	}, nil
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}, nil
 }

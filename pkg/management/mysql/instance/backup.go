@@ -29,6 +29,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -112,11 +113,11 @@ func (c *Controller) BackupStream(ctx context.Context, w io.Writer) (webserver.B
 		"instance", c.name,
 		"dataDir", c.backup.DataDir,
 	), "stderr")
-	tail := newTailWriter(maxBinlogPosTailBytes)
+	stderrTail := tail.NewWriter(maxBinlogPosTailBytes)
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdout = w
-	cmd.Stderr = io.MultiWriter(logWriter, tail)
+	cmd.Stderr = io.MultiWriter(logWriter, stderrTail)
 	if err := cmd.Run(); err != nil {
 		return webserver.BackupResult{}, err
 	}
@@ -126,7 +127,7 @@ func (c *Controller) BackupStream(ctx context.Context, w io.Writer) (webserver.B
 	if flavor != engine.FlavorMariaDB {
 		return webserver.BackupResult{}, nil
 	}
-	anchorGTID, err := c.resolveAnchorGTID(ctx, tail.String())
+	anchorGTID, err := c.resolveAnchorGTID(ctx, stderrTail.String())
 	if err != nil {
 		return webserver.BackupResult{}, err
 	}

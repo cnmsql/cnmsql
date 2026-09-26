@@ -49,24 +49,3 @@ func parseMariabackupBinlogPos(stderr string) (file string, pos int64, gtid stri
 	}
 	return m[1], p, m[3], true
 }
-
-// tailWriter is an io.Writer that retains only the last max bytes written to it.
-// mariabackup's stderr is dominated by progress lines and the coordinate line we
-// need is printed at the very end, so a head-bounded buffer would miss it; keeping
-// the tail bounds memory while preserving the line of interest.
-type tailWriter struct {
-	max int
-	buf []byte
-}
-
-func newTailWriter(max int) *tailWriter { return &tailWriter{max: max} }
-
-func (t *tailWriter) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.max {
-		t.buf = t.buf[len(t.buf)-t.max:]
-	}
-	return len(p), nil
-}
-
-func (t *tailWriter) String() string { return string(t.buf) }

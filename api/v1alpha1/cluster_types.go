@@ -702,6 +702,46 @@ type BootstrapInitDB struct {
 	// Collation of the application database.
 	// +optional
 	Collation string `json:"collation,omitempty"`
+
+	// Import loads a logical backup (a SQL dump) into the new cluster after it
+	// is initialised. The dump must come from the same flavor, and it can come
+	// from any supported server series. Replicas then clone the loaded primary.
+	// +optional
+	Import *BootstrapImport `json:"import,omitempty"`
+}
+
+// BootstrapImport selects the logical backup a new cluster loads. Exactly one
+// of Backup and Source is set.
+type BootstrapImport struct {
+	// Backup references a completed logical Backup in this namespace.
+	// +optional
+	Backup *LocalObjectReference `json:"backup,omitempty"`
+
+	// Source is the name of an entry in ExternalClusters whose objectStore
+	// holds the dump. The entry's name is the S3 key prefix to find it under.
+	// Mutually exclusive with Backup.
+	// +optional
+	Source string `json:"source,omitempty"`
+
+	// BackupID selects a dump under Source. When empty, the latest completed
+	// dump is used. Only valid with Source.
+	// +optional
+	BackupID string `json:"backupID,omitempty"`
+
+	// Databases loads only these schemas from the dump. Empty loads every
+	// schema in it. Each one must be in the dump.
+	// +kubebuilder:validation:MaxItems=256
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=64
+	// +kubebuilder:validation:XValidation:rule="self.all(d, !(d.lowerAscii() in ['mysql', 'sys', 'performance_schema', 'information_schema']))",message="system schemas cannot be imported"
+	// +listType=set
+	// +optional
+	Databases []string `json:"databases,omitempty"`
+
+	// PostImportSQL is a list of SQL statements run as root after the dump is
+	// loaded.
+	// +optional
+	PostImportSQL []string `json:"postImportSQL,omitempty"`
 }
 
 // BootstrapRecovery configures bootstrapping from a physical backup.
@@ -776,6 +816,13 @@ type BackupConfiguration struct {
 	// XtrabackupOptions are extra flags passed to xtrabackup.
 	// +optional
 	XtrabackupOptions []string `json:"xtrabackupOptions,omitempty"`
+
+	// LogicalOptions are extra flags passed to the dump client (mysqldump /
+	// mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs
+	// replaces them. The operator does not validate them: flags that change the
+	// output format or GTID handling break restore.
+	// +optional
+	LogicalOptions []string `json:"logicalOptions,omitempty"`
 
 	// JobTemplate is the default shaping applied to backup worker Jobs created for
 	// this cluster: resources, scheduling (nodeSelector/tolerations/affinity/
@@ -1360,6 +1407,20 @@ type ClusterStatus struct {
 	// pass against the object store. It throttles the periodic pass.
 	// +optional
 	LastRetentionRunTime *metav1.Time `json:"lastRetentionRunTime,omitempty"`
+
+	// DumpAccountSecretVersion is the resourceVersion of the `<cluster>-dump`
+	// Secret last applied to the cnmsql_dump account on the primary. The
+	// operator re-applies the account when the Secret changes. Written only by
+	// the operator.
+	// +optional
+	DumpAccountSecretVersion string `json:"dumpAccountSecretVersion,omitempty"`
+
+	// DumpAccountServerVersion is the server version of the primary the
+	// cnmsql_dump account was last applied on. Its grants depend on the
+	// version, so the operator re-applies the account when the primary's
+	// version changes, after an in-place upgrade. Written only by the operator.
+	// +optional
+	DumpAccountServerVersion string `json:"dumpAccountServerVersion,omitempty"`
 
 	// ObservedGeneration is the generation observed by the controller.
 	// +optional

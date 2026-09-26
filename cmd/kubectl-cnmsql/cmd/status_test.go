@@ -199,3 +199,32 @@ func readyPod(name string) corev1.Pod {
 		},
 	}
 }
+
+func TestContinuousBackupIgnoresLogicalBackupsForRecoverability(t *testing.T) {
+	var buf bytes.Buffer
+	origOut := plugin.Out
+	plugin.Out = &buf
+	t.Cleanup(func() { plugin.Out = origOut })
+
+	completed := func(name string, method mysqlv1alpha1.BackupMethod) mysqlv1alpha1.Backup {
+		stopped := metav1.Now()
+		return mysqlv1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status: mysqlv1alpha1.BackupStatus{
+				Phase: mysqlv1alpha1.BackupPhaseCompleted, Method: method, StoppedAt: &stopped,
+			},
+		}
+	}
+	cluster := testCluster()
+	printContinuousBackup(&statusView{
+		cluster: &cluster,
+		backups: []mysqlv1alpha1.Backup{completed("nightly-dump", mysqlv1alpha1.BackupMethodLogical)},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "none (no completed backup)") {
+		t.Errorf("a logical backup must not count as a point of recoverability:\n%s", out)
+	}
+	if !strings.Contains(out, "nightly-dump") {
+		t.Errorf("the logical backup still counts as the last successful backup:\n%s", out)
+	}
+}

@@ -109,6 +109,17 @@ There is **no in-place downgrade**. To return to the previous series:
 A backup taken after the upgrade has already-upgraded data and cannot restore the
 old series.
 
+## Moving outside the chain
+
+A [logical backup](logical-backups.md) moves data between any two supported
+series of the same flavor, in either direction: take a dump of the source, then
+create a new cluster on the target series with `bootstrap.initdb.import`. Use it
+to skip series (`8.0` straight to `9.x`), to go back to an older series after
+the upgraded cluster has taken writes, or to move only some databases. It is
+slower than an in-place upgrade on large datasets, and the new cluster is a
+separate cluster that clients must be moved to. See
+[Moving to another server series](logical-backups.md#moving-to-another-server-series).
+
 ## Troubleshooting
 
 - **The update is rejected on apply.** Admission refused the transition. Check the

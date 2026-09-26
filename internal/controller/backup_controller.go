@@ -39,6 +39,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -102,7 +103,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	if backup.Status.Phase == mysqlv1alpha1.BackupPhaseCompleted {
+	if backupTerminal(backup.Status.Phase) {
 		return ctrl.Result{}, nil
 	}
 
@@ -116,11 +117,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	cluster.SetDefaults()
 
 	method := backup.Spec.Method
-	if method == "" {
-		method = mysqlv1alpha1.BackupMethodXtrabackup
-	}
-	if method != mysqlv1alpha1.BackupMethodXtrabackup {
-		return ctrl.Result{}, r.failBackup(ctx, backup, "UnsupportedMethod", fmt.Sprintf("Backup method %q is not supported in M6", method))
+	buildKeys, reason, message := backupKeysForMethod(backup)
+	if reason != "" {
+		return ctrl.Result{}, r.failBackup(ctx, backup, reason, message)
 	}
 
 	store, err := backupObjectStore(backup, cluster)
@@ -131,9 +130,18 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if backupID == "" {
 		backupID = defaultBackupID(backup)
 	}
-	keys, err := objectstore.BuildBackupKeys(*store, cluster.Name, backup.Name, backupID)
+	keys, err := buildKeys(*store, cluster.Name, backup.Name, backupID)
 	if err != nil {
 		return ctrl.Result{}, r.failBackup(ctx, backup, "InvalidObjectStore", err.Error())
+	}
+
+	// A logical backup runs as cnmsql_dump, which the Cluster reconciler creates
+	// (or migrates onto an older cluster). Wait for it rather than fail, until
+	// the worker Job exists.
+	if method == mysqlv1alpha1.BackupMethodLogical && backup.Status.JobName == "" &&
+		!apimeta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlv1alpha1.ConditionDumpAccountReady) {
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markBackupPending(ctx, backup, "DumpAccountNotReady",
+			fmt.Sprintf("Waiting for the %s condition on Cluster %q", mysqlv1alpha1.ConditionDumpAccountReady, cluster.Name))
 	}
 
 	sourceInstance, err := r.selectBackupSource(ctx, backup, cluster)
@@ -186,12 +194,31 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	switch {
 	case latestJob.Status.Succeeded > 0:
+		// A logical backup's results live in its manifest; read them before
+		// declaring the Backup complete, so a completed Backup always shows what
+		// it holds.
+		var manifest *objectstore.LogicalBackupMetadata
+		if method == mysqlv1alpha1.BackupMethodLogical {
+			if manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys); err != nil {
+				// A missing or undecodable manifest will not fix itself, so fail
+				// the Backup instead of leaving it Running forever. Anything else
+				// (store unreachable, credentials briefly unreadable) is retried.
+				if !manifestUnrecoverable(err) {
+					return ctrl.Result{}, fmt.Errorf("reading logical backup manifest: %w", err)
+				}
+				return ctrl.Result{}, r.failBackup(ctx, backup, "ManifestMissing",
+					fmt.Sprintf("The worker Job reported success but its logical.json manifest could not be read from the object store: %v", err))
+			}
+		}
 		log.Info("Backup completed", "backup", backup.Name, "job", jobName)
 		return ctrl.Result{}, r.patchBackupStatus(ctx, backup, func(status *mysqlv1alpha1.BackupStatus) {
 			now := metav1.Now()
 			status.Phase = mysqlv1alpha1.BackupPhaseCompleted
 			status.StoppedAt = &now
 			status.Error = ""
+			if manifest != nil {
+				applyLogicalManifest(status, manifest)
+			}
 			setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, backupPhaseCompleted, "Backup completed", backup.Generation)
 			setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, backupPhaseCompleted, "Backup completed", backup.Generation)
 		})
@@ -199,6 +226,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// Not gated on Status.Failed: a Job killed at its active deadline can be
 		// marked Failed before any pod is counted as failed.
 		reason, message := jobFailure(latestJob)
+		// The worker states a precise reason (LogicalToolUnavailable, ...) in
+		// its termination message when it knows one.
+		if workerReason, workerMessage, ok := r.workerFailure(ctx, latestJob); ok {
+			reason, message = workerReason, workerMessage
+		}
 		return ctrl.Result{}, r.failBackup(ctx, backup, reason, message)
 	default:
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
@@ -211,6 +243,14 @@ func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mysqlv1alpha1.Backup{}).
 		Owns(&batchv1.Job{}).
 		Complete(r)
+}
+
+// backupTerminal reports whether a Backup in phase is done. Failed is terminal
+// like Completed: reconciling a failed Backup again would mark it Running
+// before re-reading its failed Job, and each of those status patches triggers
+// the next reconcile. A failed Backup is retried by recreating it.
+func backupTerminal(phase mysqlv1alpha1.BackupPhase) bool {
+	return phase == mysqlv1alpha1.BackupPhaseCompleted || phase == mysqlv1alpha1.BackupPhaseFailed
 }
 
 func backupObjectStore(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster) (*mysqlv1alpha1.S3ObjectStore, error) {
@@ -249,7 +289,14 @@ func resolveBackupJobTemplate(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alph
 	if cluster.Spec.Backup != nil {
 		levels = append(levels, cluster.Spec.Backup.JobTemplate)
 	}
+	return mergeJobTemplates(levels...)
+}
 
+// mergeJobTemplates merges worker Job templates field by field, highest
+// priority first: the first level that sets a field wins. Labels and
+// annotations are merged across every level, earlier levels winning on
+// conflict.
+func mergeJobTemplates(levels ...*mysqlv1alpha1.BackupJobTemplate) mysqlv1alpha1.BackupJobTemplate {
 	var out mysqlv1alpha1.BackupJobTemplate
 	for _, t := range levels {
 		if t == nil {
@@ -277,8 +324,8 @@ func resolveBackupJobTemplate(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alph
 			out.PriorityClassName = t.PriorityClassName
 		}
 		// Overlay the already-resolved (higher-priority) keys on top of this
-		// level's keys so the Backup's values win on conflict while lower-level
-		// keys are still carried through.
+		// level's keys so the earlier level's values win on conflict while
+		// lower-level keys are still carried through.
 		out.Labels = combineStringMaps(t.Labels, out.Labels)
 		out.Annotations = combineStringMaps(t.Annotations, out.Annotations)
 	}
@@ -401,16 +448,36 @@ func backupJob(
 	ttl := backupJobTTLSeconds(tpl)
 	sourceHost := sourceInstance + "." + backup.Namespace + ".svc"
 	env := backupObjectStoreEnv(store)
+	streamPath := "/cluster/backup"
+	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical {
+		streamPath = "/cluster/dump"
+	}
+	args := []string{
+		managerInstanceCmd, "backup", "upload",
+		"--source-manager-url=https://" + sourceHost + ":8080" + streamPath,
+		"--source-manager-server-name=" + sourceHost,
+		"--bucket=" + store.Bucket,
+		"--archive-key=" + keys.ArchiveKey,
+		"--metadata-key=" + keys.MetadataKey,
+		"--backup-id=" + backupID,
+		"--backup-name=" + backup.Name,
+		"--cluster-name=" + cluster.Name,
+		"--instance-name=" + sourceInstance,
+		"--sha256",
+		"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
+		"--tls-key=" + topology.ServerTLSPath + "/tls.key",
+		"--tls-ca=" + topology.ClientCAPath + "/ca.crt",
+	}
+	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical {
+		args = append(args, logicalWorkerArgs(backup, cluster)...)
+		// The dump account's password travels with the Job, not the instance
+		// Pod, so creating the account never changes (and restarts) the Pods.
+		env = append(env, secretEnv(backupworker.EnvDumpPassword, dumpAccountSecretName(cluster)))
+	}
 
 	// Operator-owned labels take precedence over the template's, so a user can
 	// add labels but not clobber the ones the operator selects on.
-	operatorLabels := map[string]string{
-		"app.kubernetes.io/name":       appLabelValue,
-		"app.kubernetes.io/managed-by": appLabelValue,
-		clusterLabel:                   cluster.Name,
-		"mysql.cnmsql.co/backup":       backup.Name,
-	}
-	jobLabels := combineStringMaps(tpl.Labels, operatorLabels)
+	jobLabels := combineStringMaps(tpl.Labels, workerJobLabels(cluster.Name, "mysql.cnmsql.co/backup", backup.Name))
 	jobAnnotations := combineStringMaps(tpl.Annotations, nil)
 	podLabels := combineStringMaps(tpl.Labels, map[string]string{clusterLabel: cluster.Name})
 
@@ -436,36 +503,12 @@ func backupJob(
 					Tolerations:       tpl.Tolerations,
 					Affinity:          tpl.Affinity,
 					PriorityClassName: tpl.PriorityClassName,
-					InitContainers: []corev1.Container{{
-						// Copy the manager binary out of the operator image into
-						// the shared scratch volume; the instance image no longer
-						// ships it, so the worker runs /controller/manager.
-						Name:         "bootstrap-controller",
-						Image:        operatorImage,
-						Command:      []string{"/manager"},
-						Args:         []string{managerBootstrapCmd, managerBinary},
-						VolumeMounts: backupWorkerVolumeMounts(),
-					}},
+					InitContainers:    []corev1.Container{workerBootstrapContainer(operatorImage)},
 					Containers: []corev1.Container{{
-						Name:    "backup",
-						Image:   image,
-						Command: []string{managerBinary},
-						Args: []string{
-							managerInstanceCmd, "backup", "upload",
-							"--source-manager-url=https://" + sourceHost + ":8080/cluster/backup",
-							"--source-manager-server-name=" + sourceHost,
-							"--bucket=" + store.Bucket,
-							"--archive-key=" + keys.ArchiveKey,
-							"--metadata-key=" + keys.MetadataKey,
-							"--backup-id=" + backupID,
-							"--backup-name=" + backup.Name,
-							"--cluster-name=" + cluster.Name,
-							"--instance-name=" + sourceInstance,
-							"--sha256",
-							"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
-							"--tls-key=" + topology.ServerTLSPath + "/tls.key",
-							"--tls-ca=" + topology.ClientCAPath + "/ca.crt",
-						},
+						Name:         backupWorkerContainer,
+						Image:        image,
+						Command:      []string{managerBinary},
+						Args:         args,
 						Env:          env,
 						VolumeMounts: backupWorkerVolumeMounts(),
 						Resources:    tpl.Resources,
@@ -474,6 +517,32 @@ func backupJob(
 				},
 			},
 		},
+	}
+}
+
+// workerJobLabels are the operator's labels on a worker Job: the app labels,
+// the cluster, and ownerKey naming the object the Job works for. They take
+// precedence over a job template's labels, so a user can add labels but not
+// clobber the ones the operator selects on.
+func workerJobLabels(clusterName, ownerKey, ownerName string) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       appLabelValue,
+		"app.kubernetes.io/managed-by": appLabelValue,
+		clusterLabel:                   clusterName,
+		ownerKey:                       ownerName,
+	}
+}
+
+// workerBootstrapContainer copies the manager binary out of the operator image
+// into a worker's shared scratch volume; the instance image no longer ships
+// it, so the worker runs /controller/manager.
+func workerBootstrapContainer(operatorImage string) corev1.Container {
+	return corev1.Container{
+		Name:         "bootstrap-controller",
+		Image:        operatorImage,
+		Command:      []string{"/manager"},
+		Args:         []string{managerBootstrapCmd, managerBinary},
+		VolumeMounts: backupWorkerVolumeMounts(),
 	}
 }
 
@@ -599,7 +668,7 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 		return nil
 	}
 
-	store, err := r.resolveBackupStore(ctx, backup)
+	store, err := objectstore.BackupStore(ctx, r.Client, backup, nil)
 	if err != nil {
 		log.Info("Skipping backup object-store cleanup: object store not resolvable",
 			"backup", backup.Name, "reason", err.Error())
@@ -610,7 +679,7 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 	if err != nil {
 		return err
 	}
-	cfg, err := resolveObjectStoreConfig(ctx, r.Client, backup.Namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, backup.Namespace, store)
 	if err != nil {
 		return err
 	}
@@ -631,28 +700,6 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 			fmt.Sprintf("Removed object-store artifacts under s3://%s/%s", store.Bucket, prefix))
 	}
 	return nil
-}
-
-// resolveBackupStore resolves the Backup's destination object store. It prefers
-// the destination snapshotted onto status at backup time (which survives the
-// referenced Cluster being deleted), then the spec override, and finally reads
-// it from the referenced Cluster.
-func (r *BackupReconciler) resolveBackupStore(
-	ctx context.Context,
-	backup *mysqlv1alpha1.Backup,
-) (*mysqlv1alpha1.S3ObjectStore, error) {
-	if backup.Status.ObjectStore != nil {
-		return backup.Status.ObjectStore, nil
-	}
-	if backup.Spec.ObjectStore != nil {
-		return backup.Spec.ObjectStore, nil
-	}
-	cluster := &mysqlv1alpha1.Cluster{}
-	key := types.NamespacedName{Namespace: backup.Namespace, Name: backup.Spec.Cluster.Name}
-	if err := r.Get(ctx, key, cluster); err != nil {
-		return nil, err
-	}
-	return backupObjectStore(backup, cluster)
 }
 
 func (r *BackupReconciler) failBackup(ctx context.Context, backup *mysqlv1alpha1.Backup, reason, message string) error {
@@ -696,6 +743,12 @@ func setBackupCondition(status *mysqlv1alpha1.BackupStatus, conditionType string
 // Failed condition (e.g. DeadlineExceeded, BackoffLimitExceeded), so the Backup
 // says why the worker gave up rather than only that it did.
 func jobFailure(job *batchv1.Job) (string, string) {
+	return workerJobFailure(job, "Backup worker")
+}
+
+// workerJobFailure is jobFailure for any worker Job, named worker in the
+// message.
+func workerJobFailure(job *batchv1.Job, worker string) (string, string) {
 	for _, condition := range job.Status.Conditions {
 		if condition.Type != batchv1.JobFailed || condition.Status != corev1.ConditionTrue {
 			continue
@@ -703,13 +756,13 @@ func jobFailure(job *batchv1.Job) (string, string) {
 		if condition.Reason == "" {
 			break
 		}
-		message := "Backup worker Job failed: " + condition.Reason
+		message := worker + " Job failed: " + condition.Reason
 		if condition.Message != "" {
 			message += ": " + condition.Message
 		}
 		return condition.Reason, message
 	}
-	return "JobFailed", "Backup worker Job failed"
+	return "JobFailed", worker + " Job failed"
 }
 
 func jobFinished(job *batchv1.Job, conditionType batchv1.JobConditionType) bool {

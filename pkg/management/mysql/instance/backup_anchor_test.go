@@ -19,6 +19,8 @@ package instance
 import (
 	"strings"
 	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 )
 
 func TestParseMariabackupBinlogPos(t *testing.T) {
@@ -72,21 +74,10 @@ func TestParseMariabackupBinlogPos(t *testing.T) {
 	}
 }
 
-func TestTailWriterKeepsLastBytes(t *testing.T) {
-	tw := newTailWriter(10)
-	// Write more than the cap across several writes; only the last 10 bytes survive.
-	for _, chunk := range []string{"aaaa", "bbbb", "cccc", "dddd"} {
-		if _, err := tw.Write([]byte(chunk)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got, want := tw.String(), "bbccccdddd"; got != want {
-		t.Fatalf("tail = %q, want %q", got, want)
-	}
-
+func TestTailKeepsTheCoordinateLine(t *testing.T) {
 	// The coordinate line printed at the very end must survive a flood of preceding
 	// output when the cap is large enough to hold it.
-	tw = newTailWriter(maxBinlogPosTailBytes)
+	tw := tail.NewWriter(maxBinlogPosTailBytes)
 	_, _ = tw.Write([]byte(strings.Repeat("noise\n", 100000)))
 	line := "mariabackup: MySQL binlog position: filename 'binlog.000009', position '4242'\n"
 	_, _ = tw.Write([]byte(line))

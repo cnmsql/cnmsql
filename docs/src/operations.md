@@ -318,6 +318,12 @@ kubectl cnmsql status cluster-sample
 kubectl get backup -l mysql.cnmsql.co/cluster=cluster-sample
 ```
 
+For a SQL dump instead, add `--method logical` (and `--databases` to dump only
+some). `kubectl cnmsql backup download <backup>` fetches a finished dump from the
+object store, and `kubectl cnmsql restore <cluster> --backup <backup> --databases
+<db>` loads databases from it back into the running cluster. See [Logical
+Backups](./logical-backups.md).
+
 For recurring backups, create a `ScheduledBackup` resource. See the [Scheduled
 Backups](./scheduled-backups.md) page for the schedule format and options.
 
