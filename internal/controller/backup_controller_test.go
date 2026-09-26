@@ -722,6 +722,55 @@ func TestBackupFailsWithJobFailureReason(t *testing.T) {
 	}
 }
 
+// A failed Backup is terminal: reconciling it again must not flip it back to
+// Running (and then Failed again), which would loop on its own status patches.
+func TestBackupFailedIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	backup := baseBackup()
+	backup.Status = mysqlv1alpha1.BackupStatus{
+		Phase:   mysqlv1alpha1.BackupPhaseFailed,
+		JobName: "backup-sample-backup",
+		Error:   "Backup worker Job failed: BackoffLimitExceeded",
+	}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "backup-sample-backup", Namespace: "default"},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+			Type:   batchv1.JobFailed,
+			Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded",
+		}}},
+	}
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod(), job).
+			Build(),
+		Scheme: scheme,
+	}
+	key := types.NamespacedName{Namespace: "default", Name: "backup-sample"}
+	before := &mysqlv1alpha1.Backup{}
+	if err := reconciler.Get(context.Background(), key, before); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	updated := &mysqlv1alpha1.Backup{}
+	if err := reconciler.Get(context.Background(), key, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != mysqlv1alpha1.BackupPhaseFailed {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, mysqlv1alpha1.BackupPhaseFailed)
+	}
+	if updated.ResourceVersion != before.ResourceVersion {
+		t.Fatalf("resourceVersion changed %s -> %s, want a failed Backup left untouched", before.ResourceVersion, updated.ResourceVersion)
+	}
+}
+
 // A worker Job that succeeded but left no readable manifest fails the Backup
 // when the manifest is missing or malformed, since no retry fixes that. Any
 // other store error (here an access denial) is retried with the Backup still

@@ -103,7 +103,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	if backup.Status.Phase == mysqlv1alpha1.BackupPhaseCompleted {
+	if backupTerminal(backup.Status.Phase) {
 		return ctrl.Result{}, nil
 	}
 
@@ -243,6 +243,14 @@ func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mysqlv1alpha1.Backup{}).
 		Owns(&batchv1.Job{}).
 		Complete(r)
+}
+
+// backupTerminal reports whether a Backup in phase is done. Failed is terminal
+// like Completed: reconciling a failed Backup again would mark it Running
+// before re-reading its failed Job, and each of those status patches triggers
+// the next reconcile. A failed Backup is retried by recreating it.
+func backupTerminal(phase mysqlv1alpha1.BackupPhase) bool {
+	return phase == mysqlv1alpha1.BackupPhaseCompleted || phase == mysqlv1alpha1.BackupPhaseFailed
 }
 
 func backupObjectStore(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster) (*mysqlv1alpha1.S3ObjectStore, error) {
