@@ -341,6 +341,8 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 			o.Phase = topology.PhaseBlocked
 			if cluster.IsEstablished() {
 				o.Phase = topology.PhaseDegraded
+			} else {
+				o.Progressing = false
 			}
 			o.PhaseReason = bootstrapFailureReason(failedBootstrapJobs(o.BootstrapJobs))
 		case o.Ready:

@@ -982,24 +982,28 @@ func TestComputeClusterPhaseReportsBootstrapJobs(t *testing.T) {
 	now := metav1.Now()
 
 	for _, tc := range []struct {
-		name        string
-		jobs        []bootstrapJobState
-		established bool
-		wantPhase   string
-		wantReason  string
+		name            string
+		jobs            []bootstrapJobState
+		established     bool
+		wantPhase       string
+		wantReason      string
+		wantProgressing bool
 	}{
-		{"failed before established", []bootstrapJobState{failed}, false, topology.PhaseBlocked, "demo-1-restore"},
-		{"failed after established", []bootstrapJobState{failed}, true, topology.PhaseDegraded, "DeadlineExceeded"},
-		{"running", []bootstrapJobState{running}, false, topology.PhasePending, "Waiting for bootstrap Job demo-1-restore"},
+		{"failed before established", []bootstrapJobState{failed}, false, topology.PhaseBlocked, "demo-1-restore", false},
+		{"failed after established", []bootstrapJobState{failed}, true, topology.PhaseDegraded, "DeadlineExceeded", true},
+		{"running", []bootstrapJobState{running}, false, topology.PhasePending, "Waiting for bootstrap Job demo-1-restore", true},
 	} {
 		cluster := baseCluster()
 		if tc.established {
 			cluster.Status.EstablishedAt = &now
 		}
-		o := observedCluster{BootstrapJobs: tc.jobs}
+		o := observedCluster{BootstrapJobs: tc.jobs, Progressing: true}
 		o.computeClusterPhase(cluster, testPlan())
 		if o.Phase != tc.wantPhase || !strings.Contains(o.PhaseReason, tc.wantReason) {
 			t.Errorf("%s: phase %q reason %q, want %q containing %q", tc.name, o.Phase, o.PhaseReason, tc.wantPhase, tc.wantReason)
+		}
+		if o.Progressing != tc.wantProgressing {
+			t.Errorf("%s: progressing %t, want %t", tc.name, o.Progressing, tc.wantProgressing)
 		}
 	}
 }
