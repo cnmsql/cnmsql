@@ -324,7 +324,7 @@ func TestResolveImportWarnsOnNewerSeries(t *testing.T) {
 
 func importTestPlan(t *testing.T, cluster *mysqlv1alpha1.Cluster, dumpKey string) clusterPlan {
 	t.Helper()
-	r := &ClusterReconciler{}
+	r := &ClusterReconciler{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).Build()}
 	plan, err := r.buildPlan(context.Background(), cluster)
 	if err != nil {
 		t.Fatal(err)

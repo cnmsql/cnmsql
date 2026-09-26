@@ -591,6 +591,72 @@ func TestEnsureBootstrappedRefusesPrimaryOnEstablishedCluster(t *testing.T) {
 	}
 }
 
+func recoveryCluster() *mysqlv1alpha1.Cluster {
+	cluster := baseBackupCluster()
+	cluster.Status.CurrentPrimary = ""
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{
+		Recovery: &mysqlv1alpha1.BootstrapRecovery{
+			Backup: &mysqlv1alpha1.LocalObjectReference{Name: "backup-sample"},
+		},
+	}
+	return cluster
+}
+
+func TestBuildPlanSkipsRecoveryOnceBootstrapped(t *testing.T) {
+	t.Parallel()
+	cluster := recoveryCluster()
+	pvc := instancePVC(cluster, instanceName(cluster, 1))
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusReady}
+	// No Backup object: it was deleted after the restore.
+	r, _ := bootstrapFixture(t, cluster, pvc)
+
+	plan, err := r.buildPlan(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("buildPlan failed although the primary is bootstrapped: %v", err)
+	}
+	if plan.Recovery != nil {
+		t.Fatal("plan.Recovery resolved after the primary was bootstrapped")
+	}
+}
+
+func TestBuildPlanSkipsRecoveryForLegacyVolume(t *testing.T) {
+	t.Parallel()
+	cluster := recoveryCluster()
+	r, _ := bootstrapFixture(t, cluster, instancePVC(cluster, instanceName(cluster, 1)))
+
+	if _, err := r.buildPlan(context.Background(), cluster); err != nil {
+		t.Fatalf("buildPlan failed on a pre-031 volume whose Backup is gone: %v", err)
+	}
+}
+
+func TestBuildPlanSkipsRecoveryOnEstablishedCluster(t *testing.T) {
+	t.Parallel()
+	cluster := recoveryCluster()
+	now := metav1.Now()
+	cluster.Status.EstablishedAt = &now
+	r, _ := bootstrapFixture(t, cluster)
+
+	if _, err := r.buildPlan(context.Background(), cluster); err != nil {
+		t.Fatalf("buildPlan failed on an established cluster whose Backup is gone: %v", err)
+	}
+}
+
+func TestBuildPlanResolvesRecoveryWhileInitializing(t *testing.T) {
+	t.Parallel()
+	cluster := recoveryCluster()
+	backup := baseBackup()
+	backup.Status = mysqlv1alpha1.BackupStatus{Phase: mysqlv1alpha1.BackupPhaseCompleted, BackupID: testBackupID}
+	r, _ := bootstrapFixture(t, cluster, backup, initializingPVC(cluster, instanceName(cluster, 1), "uid-1"))
+
+	plan, err := r.buildPlan(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Recovery == nil {
+		t.Fatal("plan.Recovery not resolved while the primary volume is initializing")
+	}
+}
+
 // markVolumeBootstrapped creates or marks inst's PVC as bootstrapped, so a test
 // about Pod handling skips the bootstrap Job.
 func markVolumeBootstrapped(t *testing.T, ctx context.Context, c client.Client, cluster *mysqlv1alpha1.Cluster, inst instancePlan) {
