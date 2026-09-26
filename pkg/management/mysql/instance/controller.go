@@ -76,6 +76,9 @@ type Controller struct {
 	// a retried backup Job cannot stack dumps on the instance.
 	dump        *DumpConfig
 	dumpRunning atomic.Bool
+	// load enables POST /cluster/load; loadRunning allows one load at a time.
+	load        *LoadConfig
+	loadRunning atomic.Bool
 	// archiving, when set, supplies the continuous archiver's current state so it
 	// surfaces in the instance status.
 	archiving func() *webserver.ArchivingStatus

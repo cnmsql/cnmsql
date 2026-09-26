@@ -52,3 +52,23 @@ func TestProcessLogWriterLogsCompleteLines(t *testing.T) {
 		}
 	}
 }
+
+// A line with no end is logged in bounded pieces instead of buffered whole.
+func TestProcessLogWriterBoundsALongLine(t *testing.T) {
+	t.Parallel()
+	var lines int
+	logger := funcr.NewJSON(func(string) { lines++ }, funcr.Options{})
+	w := newProcessLogWriter(logger, "stdout")
+	chunk := []byte(strings.Repeat("x", 32<<10))
+	for range 8 {
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+		if w.buf.Len() >= maxProcessLogLine {
+			t.Fatalf("buffered %d bytes, want under %d", w.buf.Len(), maxProcessLogLine)
+		}
+	}
+	if lines != 4 {
+		t.Errorf("logged %d pieces, want 4", lines)
+	}
+}

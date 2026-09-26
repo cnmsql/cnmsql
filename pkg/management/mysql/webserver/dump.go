@@ -118,7 +118,8 @@ const (
 	DumpErrorTrailer          = "X-Cnmsql-Dump-Error"
 )
 
-// DumpErrorBody is the JSON body of a refused dump.
+// DumpErrorBody is the JSON body of a refused dump, and of a refused or failed
+// load.
 type DumpErrorBody struct {
 	Reason string `json:"reason"`
 	Error  string `json:"error"`

@@ -78,10 +78,16 @@ var dumpExcludedSchemas = map[string]struct{}{
 // isDumpExcludedSchema reports whether a schema is never dumped: a server
 // system schema, or the operator-owned heartbeat schema of this instance.
 func (c *Controller) isDumpExcludedSchema(name string) bool {
+	return isExcludedSchema(name, c.dump.HeartbeatSchema)
+}
+
+// isExcludedSchema reports whether a schema is never dumped or loaded: a server
+// system schema, or the operator-owned heartbeat schema.
+func isExcludedSchema(name, heartbeatSchema string) bool {
 	if _, ok := dumpExcludedSchemas[strings.ToLower(name)]; ok {
 		return true
 	}
-	return strings.EqualFold(name, c.dump.HeartbeatSchema)
+	return strings.EqualFold(name, heartbeatSchema)
 }
 
 const (

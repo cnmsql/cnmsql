@@ -23,6 +23,11 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// maxProcessLogLine bounds the partial line a processLogWriter holds. A child
+// that writes a longer line (a SQL client printing a huge row) has it logged in
+// pieces of this size instead of buffered whole.
+const maxProcessLogLine = 64 << 10
+
 // processLogWriter turns child-process stdout/stderr into structured log lines.
 type processLogWriter struct {
 	logger logr.Logger
@@ -53,6 +58,9 @@ func (w *processLogWriter) Write(p []byte) (int, error) {
 			continue
 		}
 		w.buf.Write(p)
+		if w.buf.Len() >= maxProcessLogLine {
+			w.flushLocked()
+		}
 		break
 	}
 	return written, nil
