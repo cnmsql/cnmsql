@@ -409,3 +409,18 @@ func (c *commentCapture) String() string {
 
 // Ensure Controller advertises the optional logical dump capability.
 var _ webserver.DumpStreamer = (*Controller)(nil)
+
+// podScratchDir is the instance Pod's scratch emptyDir, which the operator
+// mounts at /controller to copy the manager binary in. Worker and client
+// credentials files go there, not on the container's writable layer (design
+// 028 §5.4).
+const podScratchDir = "/controller"
+
+// ScratchWorkDir returns the Pod's scratch directory, or "" (the system temp
+// dir) when the manager runs outside an instance Pod.
+func ScratchWorkDir() string {
+	if fi, err := os.Stat(podScratchDir); err == nil && fi.IsDir() {
+		return podScratchDir
+	}
+	return ""
+}

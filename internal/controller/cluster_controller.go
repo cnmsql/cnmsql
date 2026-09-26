@@ -153,7 +153,8 @@ const (
 	mysqlPortName = "mysql"
 
 	// managerBinary is where the bootstrap-controller init container copies the
-	// instance manager, on the shared scratch volume.
+	// instance manager, on the shared scratch volume. The instance manager also
+	// writes its client credentials files there (instance.ScratchWorkDir).
 	managerBinary = "/controller/manager"
 
 	// Subcommands of the instance manager binary.

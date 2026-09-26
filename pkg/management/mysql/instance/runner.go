@@ -524,7 +524,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	// Logical dumps need nothing beyond the socket, so every instance serves
 	// them; the dump account's password arrives with each request.
-	controller.SetDumpConfig(DumpConfig{Engine: eng, Socket: opts.Socket})
+	controller.SetDumpConfig(DumpConfig{Engine: eng, Socket: opts.Socket, WorkDir: ScratchWorkDir()})
 	// A LogicalRestore loads into the primary as the control account, which
 	// the manager already holds; the instance refuses the load unless it is
 	// writable when the load starts.
@@ -533,6 +533,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		Socket:   opts.Socket,
 		User:     opts.Control.User,
 		Password: opts.Control.Password,
+		WorkDir:  ScratchWorkDir(),
 	})
 
 	// Continuous binlog archiver: runs in every Pod but only ships from the

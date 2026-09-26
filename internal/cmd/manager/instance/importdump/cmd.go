@@ -19,6 +19,7 @@ limitations under the License.
 package importdump
 
 import (
+	"cmp"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -72,7 +73,7 @@ func NewCommand() *cobra.Command {
 				ConfigFile:   configFile,
 				DataDir:      dataDir,
 				Socket:       socket,
-				WorkDir:      workDir,
+				WorkDir:      cmp.Or(workDir, instance.ScratchWorkDir()),
 				RootPassword: os.Getenv("MYSQL_ROOT_PASSWORD"),
 			})
 		},
@@ -83,7 +84,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&configFile, "config", "/etc/mysql/my.cnf", "Path to the rendered my.cnf for the temporary server")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket for the temporary server")
-	cmd.Flags().StringVar(&workDir, "work-dir", "", "Directory for the SQL client's credentials file (defaults to the system temp dir)")
+	cmd.Flags().StringVar(&workDir, "work-dir", "", "Directory for the SQL client's credentials file (defaults to the Pod's scratch volume, else the system temp dir)")
 	cmd.Flags().StringVar(&bucket, "bucket", "", "Source object-store bucket")
 	cmd.Flags().StringVar(&dumpKey, "dump-key", "", "Object key of the dump.sql.zst dump")
 	cmd.Flags().StringVar(&manifestKey, "manifest-key", "", "Object key of the dump's logical.json manifest")
