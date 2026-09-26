@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 
@@ -31,6 +32,17 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 )
+
+// instanceSecretNames lists the credential Secrets an instance manager reads.
+// Object-store and replication Secrets are deliberately absent.
+func instanceSecretNames(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
+	names := []string{plan.RootSecretName, plan.ControlSecretName, plan.BackupSecretName, cluster.DumpSecretName()}
+	if cluster.AppSecretName() != "" {
+		names = append(names, plan.AppSecretName)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
 
 // ensureInstanceRBAC provisions the per-Cluster Role and the per-instance
 // ServiceAccounts that let each instance's in-Pod reconciler watch this Cluster
@@ -51,6 +63,15 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 				Resources:     []string{"clusters"},
 				Verbs:         []string{"get", "list", "watch"},
 				ResourceNames: []string{cluster.Name},
+			},
+			{
+				// The instance manager reads its account passwords through the API
+				// (design 030). Named Secrets only, and never list: list would
+				// expose every Secret in the namespace.
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get", "watch"},
+				ResourceNames: instanceSecretNames(cluster, plan),
 			},
 		}
 		role.Rules = append(role.Rules, topologyReconciler.InstancePolicyRules(cluster)...)
