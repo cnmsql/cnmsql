@@ -30,6 +30,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 )
 
@@ -44,15 +45,27 @@ func NewCommand() *cobra.Command {
 		user     string
 		timeout  time.Duration
 		interval time.Duration
+		creds    credentials.Options
 	)
 	cmd := &cobra.Command{
 		Use:   "prestop",
 		Short: "Block until this instance is no longer the writable primary (graceful switchover handoff)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds.Namespace = os.Getenv("POD_NAMESPACE")
+			// preStop must never hold up a drain: a bounded read, and on failure
+			// proceed exactly as when mysqld is unreachable.
+			readCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+			src, err := credentials.Open(readCtx, creds, credentials.Control)
+			cancel()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "prestop: cannot read the control password (%v); proceeding with shutdown\n", err)
+				return nil
+			}
+			password, _ := src.Password(credentials.Control)
 			cfg := pool.Config{
 				Socket:       socket,
 				User:         user,
-				Password:     os.Getenv("MYSQL_CONTROL_PASSWORD"),
+				Password:     password,
 				MaxOpenConns: 1,
 			}
 			db, err := pool.Open(cmd.Context(), cfg)
@@ -68,6 +81,8 @@ func NewCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket path")
 	cmd.Flags().StringVar(&user, "control-user", "root", "Privileged user for the control connection")
+	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")
+	credentials.AddFlags(cmd.Flags(), &creds)
 	cmd.Flags().DurationVar(&timeout, "timeout", 25*time.Second,
 		"Maximum time to wait for the switchover handoff before proceeding with shutdown")
 	cmd.Flags().DurationVar(&interval, "poll-interval", time.Second,

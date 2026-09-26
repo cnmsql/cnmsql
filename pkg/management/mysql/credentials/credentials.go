@@ -47,9 +47,14 @@ var envNames = map[Account]string{
 	App:     "MYSQL_APP_PASSWORD",
 	Control: "MYSQL_CONTROL_PASSWORD",
 	Backup:  "MYSQL_BACKUP_PASSWORD",
+	// MYSQL_DUMP_PASSWORD is new: the dump account's password was previously
+	// carried by the backup worker, so env mode had no name for it. This lets
+	// standalone runs and the Docker integration tests still serve dumps.
+	Dump: "MYSQL_DUMP_PASSWORD",
 }
 
-// FromEnv reads the legacy MYSQL_*_PASSWORD variables. Unset ones are absent.
+// FromEnv reads the legacy MYSQL_*_PASSWORD variables (the dump account comes
+// from MYSQL_DUMP_PASSWORD). Unset ones are absent.
 func FromEnv() Static {
 	s := Static{}
 	for a, name := range envNames {

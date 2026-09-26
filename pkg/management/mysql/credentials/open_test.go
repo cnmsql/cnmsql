@@ -70,10 +70,20 @@ func TestOpenSecretsModeNeedsCluster(t *testing.T) {
 	}
 }
 
-func TestOpenEnvModeDumpHasNoSource(t *testing.T) {
-	_, err := Open(context.Background(), Options{Mode: ModeEnv}, Dump)
-	const want = "credentials: dump has no environment variable source"
-	if err == nil || err.Error() != want {
+func TestOpenEnvModeDump(t *testing.T) {
+	if _, err := Open(context.Background(), Options{Mode: ModeEnv}, Dump); err == nil {
+		t.Fatal("env mode must fail when MYSQL_DUMP_PASSWORD is unset")
+	}
+	const want = "credentials: MYSQL_DUMP_PASSWORD must be set"
+	if _, err := Open(context.Background(), Options{Mode: ModeEnv}, Dump); err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
+	}
+	t.Setenv("MYSQL_DUMP_PASSWORD", "d")
+	src, err := Open(context.Background(), Options{Mode: ModeEnv}, Dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := src.Password(Dump); p != "d" {
+		t.Fatalf("dump = %q", p)
 	}
 }

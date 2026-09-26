@@ -54,6 +54,7 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 				Exec: &corev1.ExecAction{
 					Command: []string{
 						managerBinary, managerInstanceCmd, "prestop",
+						"--cluster-name=" + cluster.Name,
 						"--socket=" + socketPath,
 						"--control-user=" + controlUser,
 						fmt.Sprintf("--timeout=%ds", handoff),

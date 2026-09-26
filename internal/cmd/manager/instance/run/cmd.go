@@ -24,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
@@ -75,13 +76,15 @@ func NewCommand() *cobra.Command {
 
 		stopDelay            int
 		smartShutdownTimeout int
+
+		creds credentials.Options
 	)
 
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run as PID1, supervise mysqld and serve the control API",
-		Long: "Run mysqld under supervision and expose the control API. The control " +
-			"user's password is read from MYSQL_CONTROL_PASSWORD; the server version " +
+		Long: "Run mysqld under supervision and expose the control API. Passwords are read from " +
+			"the cluster's credential Secrets through the Kubernetes API; the server version " +
 			"from --server-version or MYSQL_VERSION.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if serverVersion == "" {
@@ -102,13 +105,25 @@ func NewCommand() *cobra.Command {
 				namespace = os.Getenv("POD_NAMESPACE")
 			}
 
+			creds.Namespace, creds.ClusterName = namespace, clusterName
+			required := []credentials.Account{credentials.Control}
+			if backupUser != "" {
+				required = append(required, credentials.Backup)
+			}
+			src, err := credentials.Open(cmd.Context(), creds, required...)
+			if err != nil {
+				return err
+			}
+			if p, ok := src.(*credentials.Provider); ok {
+				go p.Run(cmd.Context())
+			}
+
 			// Static replication connection parameters. The role reconciler fills
 			// the source host from status.currentPrimary; the legacy fallback uses
 			// the explicit --source-host.
 			sourceTemplate := replication.SourceOptions{
 				Port:         sourcePort,
 				User:         replUser,
-				Password:     os.Getenv("MYSQL_REPLICATION_PASSWORD"),
 				AutoPosition: true,
 				SSL:          useSourceTLS,
 				SSLCA:        sourceSSLCA,
@@ -137,7 +152,7 @@ func NewCommand() *cobra.Command {
 					DataDir:        dataDir,
 					Socket:         socket,
 					User:           backupUser,
-					Password:       os.Getenv("MYSQL_BACKUP_PASSWORD"),
+					PasswordFunc:   credentials.Getter(src, credentials.Backup),
 				}
 			}
 
@@ -195,11 +210,12 @@ func NewCommand() *cobra.Command {
 				SmartShutdownTimeout:  time.Duration(smartShutdownTimeout) * time.Second,
 				Control: pool.ControlParams{
 					User:         controlUser,
-					Password:     os.Getenv("MYSQL_CONTROL_PASSWORD"),
+					PasswordFunc: credentials.Getter(src, credentials.Control),
 					Socket:       socket,
 					AdminAddress: adminAddress,
 					AdminPort:    adminPort,
 				},
+				DumpPassword: credentials.Getter(src, credentials.Dump),
 				TLS: webserver.TLSOptions{
 					ServerCertFile: serverCert,
 					ServerKeyFile:  serverKey,
@@ -233,10 +249,11 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sourceSSLCA, "source-ssl-ca", "", "Replication source CA certificate")
 	cmd.Flags().StringVar(&sourceSSLCert, "source-ssl-cert", "", "Replication client certificate")
 	cmd.Flags().StringVar(&sourceSSLKey, "source-ssl-key", "", "Replication client key")
-	cmd.Flags().StringVar(&backupUser, "backup-user", "", "Backup user for streaming clones (password from MYSQL_BACKUP_PASSWORD); enables GET /cluster/backup")
+	cmd.Flags().StringVar(&backupUser, "backup-user", "", "Backup user for streaming clones (password from the backup credential Secret); enables GET /cluster/backup")
 	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary for streaming clones (defaults to the engine's tool: xtrabackup / mariabackup)")
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Owning Cluster name; enables the in-Pod role reconciler (dynamic role)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Cluster namespace (defaults to POD_NAMESPACE)")
+	credentials.AddFlags(cmd.Flags(), &creds)
 	cmd.Flags().BoolVar(&groupReplication, "group-replication", false, "Run as a MySQL Group Replication member (the group role strategy and GR status)")
 	cmd.Flags().BoolVar(&archiving, "continuous-archiving", false, "Run the continuous binlog archiver (destination from cnmsql_S3_* env)")
 	cmd.Flags().IntVar(&archiveRPOSeconds, "archive-rpo-seconds", 300, "Force a binlog rotation at least this often to bound RPO")

@@ -36,7 +36,7 @@ type Options struct {
 func AddFlags(fs *pflag.FlagSet, o *Options) {
 	fs.StringVar((*string)(&o.Mode), "credentials-source", string(ModeSecrets),
 		"Where to read MySQL passwords: secrets (the Cluster's credential Secrets through the Kubernetes API) "+
-			"or env (MYSQL_{ROOT,APP,CONTROL,BACKUP}_PASSWORD, for tests and standalone runs)")
+			"or env (MYSQL_{ROOT,APP,CONTROL,BACKUP,DUMP}_PASSWORD, for tests and standalone runs)")
 }
 
 // SecretNames maps each account to its Secret on cluster.
