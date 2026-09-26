@@ -91,13 +91,20 @@ var _ = Describe("Auto corruption recovery", Label("corruption"), func() {
 })
 
 // corruptReplica corrupts a replica's InnoDB data by deleting the ibdata1
-// system tablespace file, making mysqld unable to start. The Pod's mysqld will
-// crash repeatedly, escalating through innodb_force_recovery levels 1→2→3
-// before the controller auto-reinits.
+// system tablespace file and killing mysqld, so the next start fails on the
+// missing system tablespace. A running server keeps the deleted file open and
+// never notices the deletion — the damage only surfaces on a restart, after
+// which mysqld crash-loops and the instance manager publishes the corruption
+// diagnosis the controller auto-reinits on.
 func corruptReplica(pod string) {
 	GinkgoHelper()
 	_, err := kubectl("exec", pod, "-n", testNamespace, "-c", "mysql", "--",
 		"rm", "-f", "/var/lib/mysql/ibdata1")
 	Expect(err).NotTo(HaveOccurred(),
 		"failed to corrupt replica %s (delete ibdata1)", pod)
+	// The image ships pidof but not pkill, so kill through the shell builtin.
+	_, err = kubectl("exec", pod, "-n", testNamespace, "-c", "mysql", "--",
+		"sh", "-c", "kill -9 $(pidof mysqld)")
+	Expect(err).NotTo(HaveOccurred(),
+		"failed to corrupt replica %s (kill mysqld)", pod)
 }
