@@ -342,4 +342,11 @@ const (
 	// exists on the primary with the password in the <cluster>-dump Secret, so
 	// logical backups can run.
 	ConditionDumpAccountReady = "DumpAccountReady"
+
+	// ConditionBootstrapFailed is True while an instance's bootstrap Job
+	// (initdb, restore, join or import) has failed and was not replaced. Its
+	// reason is the Job's (for example BackoffLimitExceeded or
+	// DeadlineExceeded). Delete the Job, or change the spec it was built from,
+	// to retry.
+	ConditionBootstrapFailed = "BootstrapFailed"
 )

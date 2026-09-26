@@ -19,8 +19,10 @@ package controller
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -259,6 +261,66 @@ func (r *ClusterReconciler) bootstrapJobs(ctx context.Context, cluster *mysqlv1a
 	}
 	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
 	return list.Items, nil
+}
+
+// bootstrapJobState is the observed state of a bootstrap Job that has not
+// completed: running, or failed.
+type bootstrapJobState struct {
+	Instance string
+	Job      string
+	Mode     bootstrapMode
+	Failed   bool
+	Reason   string
+	Message  string
+}
+
+// observeBootstrapJobs lists the cluster's running and failed bootstrap Jobs,
+// sorted by instance. Completed and terminating Jobs are about to go and are
+// skipped.
+func (r *ClusterReconciler) observeBootstrapJobs(ctx context.Context, cluster *mysqlv1alpha1.Cluster) ([]bootstrapJobState, error) {
+	list := &batchv1.JobList{}
+	if err := r.List(ctx, list, client.InNamespace(cluster.Namespace),
+		client.MatchingLabels{clusterLabel: cluster.Name}, client.HasLabels{bootstrapInstanceLabel}); err != nil {
+		return nil, err
+	}
+	var states []bootstrapJobState
+	for i := range list.Items {
+		job := &list.Items[i]
+		if job.DeletionTimestamp != nil || jobFinished(job, batchv1.JobComplete) {
+			continue
+		}
+		state := bootstrapJobState{
+			Instance: job.Labels[bootstrapInstanceLabel],
+			Job:      job.Name,
+			Mode:     bootstrapMode(job.Labels[bootstrapModeLabel]),
+		}
+		if jobFinished(job, batchv1.JobFailed) {
+			state.Failed = true
+			state.Reason, state.Message = workerJobFailure(job, "Bootstrap")
+		}
+		states = append(states, state)
+	}
+	sort.Slice(states, func(i, j int) bool { return states[i].Instance < states[j].Instance })
+	return states, nil
+}
+
+func failedBootstrapJobs(jobs []bootstrapJobState) []bootstrapJobState {
+	var failed []bootstrapJobState
+	for _, j := range jobs {
+		if j.Failed {
+			failed = append(failed, j)
+		}
+	}
+	return failed
+}
+
+// bootstrapFailureReason names every failed Job, its instance and why.
+func bootstrapFailureReason(failed []bootstrapJobState) string {
+	parts := make([]string, 0, len(failed))
+	for _, j := range failed {
+		parts = append(parts, fmt.Sprintf("bootstrap Job %s for %s failed (%s): %s", j.Job, j.Instance, j.Reason, j.Message))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // deleteBootstrapJobs deletes the instance's bootstrap Jobs and their Pods and

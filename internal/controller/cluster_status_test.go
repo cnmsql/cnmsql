@@ -908,6 +908,68 @@ func TestPatchStatusEmitsObservedGroupFailover(t *testing.T) {
 	}
 }
 
+func TestComputeClusterPhaseReportsBootstrapJobs(t *testing.T) {
+	t.Parallel()
+	failed := bootstrapJobState{Instance: "demo-1", Job: "demo-1-restore", Mode: bootstrapModeRestore,
+		Failed: true, Reason: "DeadlineExceeded", Message: "Bootstrap Job failed: DeadlineExceeded"}
+	running := bootstrapJobState{Instance: "demo-1", Job: "demo-1-restore", Mode: bootstrapModeRestore}
+	now := metav1.Now()
+
+	for _, tc := range []struct {
+		name        string
+		jobs        []bootstrapJobState
+		established bool
+		wantPhase   string
+		wantReason  string
+	}{
+		{"failed before established", []bootstrapJobState{failed}, false, topology.PhaseBlocked, "demo-1-restore"},
+		{"failed after established", []bootstrapJobState{failed}, true, topology.PhaseDegraded, "DeadlineExceeded"},
+		{"running", []bootstrapJobState{running}, false, topology.PhasePending, "Waiting for bootstrap Job demo-1-restore"},
+	} {
+		cluster := baseCluster()
+		if tc.established {
+			cluster.Status.EstablishedAt = &now
+		}
+		o := observedCluster{BootstrapJobs: tc.jobs}
+		o.computeClusterPhase(cluster, testPlan())
+		if o.Phase != tc.wantPhase || !strings.Contains(o.PhaseReason, tc.wantReason) {
+			t.Errorf("%s: phase %q reason %q, want %q containing %q", tc.name, o.Phase, o.PhaseReason, tc.wantPhase, tc.wantReason)
+		}
+	}
+}
+
+func TestPatchStatusSetsBootstrapFailedCondition(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	recorder := record.NewFakeRecorder(10)
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&mysqlv1alpha1.Cluster{}).WithObjects(cluster).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme, Recorder: recorder}
+	observed := observedCluster{
+		Plan:          testPlan(),
+		InstanceNames: []string{"demo-1"},
+		Phase:         topology.PhaseBlocked,
+		BootstrapJobs: []bootstrapJobState{{Instance: "demo-1", Job: "demo-1-restore", Failed: true,
+			Reason: "DeadlineExceeded", Message: "Bootstrap Job failed: DeadlineExceeded"}},
+	}
+
+	if err := r.patchStatus(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "DeadlineExceeded" {
+		t.Fatalf("BootstrapFailed condition = %+v", cond)
+	}
+	// patchStatus may emit a phase-transition event before the bootstrap one, so
+	// drain the recorder until the BootstrapJobFailed event or the buffer is empty.
+	assertEvent(t, recorder, "BootstrapJobFailed")
+}
+
 func TestObservedGroupFailoverExcludesPlannedAndBootstrapChanges(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -111,6 +111,9 @@ type observedCluster struct {
 	// desired count, empty otherwise. Scale-down cannot remove it, so the cluster
 	// is not converged until a switchover brings the role back in range.
 	OutOfRangePrimary string
+	// BootstrapJobs are the cluster's running and failed instance bootstrap
+	// Jobs (design 031).
+	BootstrapJobs []bootstrapJobState
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -230,6 +233,12 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
 
+	bootstrapJobs, err := r.observeBootstrapJobs(ctx, cluster)
+	if err != nil {
+		return observedCluster{}, err
+	}
+	observed.BootstrapJobs = bootstrapJobs
+
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
 }
@@ -326,6 +335,14 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = fmt.Sprintf("replica(s) diverged from primary %s and cannot safely rejoin: %s",
 				o.PrimaryName, strings.Join(o.DivergedInstances, ", "))
+		case len(failedBootstrapJobs(o.BootstrapJobs)) > 0:
+			// Before the cluster is established a failed bootstrap needs a spec
+			// change or a retry by hand; after it, only a replica's join failed.
+			o.Phase = topology.PhaseBlocked
+			if cluster.IsEstablished() {
+				o.Phase = topology.PhaseDegraded
+			}
+			o.PhaseReason = bootstrapFailureReason(failedBootstrapJobs(o.BootstrapJobs))
 		case o.Ready:
 			o.Phase = topology.PhaseReady
 			o.PhaseReason = "All instances are ready"
@@ -342,9 +359,10 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 		case cluster.IsEstablished():
 			o.Phase = topology.PhaseDegraded
 			o.PhaseReason = degradedReason(*o, plan)
-		case o.ReadyInstances == 0 && plan.Import != nil:
+		case o.ReadyInstances == 0 && len(o.BootstrapJobs) > 0:
+			j := o.BootstrapJobs[0]
 			o.Phase = topology.PhasePending
-			o.PhaseReason = "Waiting for the primary instance to initialise and import the logical backup"
+			o.PhaseReason = fmt.Sprintf("Waiting for bootstrap Job %s (%s) of %s", j.Job, j.Mode, j.Instance)
 		case o.ReadyInstances == 0:
 			o.Phase = topology.PhasePending
 			o.PhaseReason = "Waiting for the primary instance"
@@ -580,6 +598,10 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// below fires only on the transition, not on every reconcile while pressured.
 	wasStoragePressured := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStoragePressure)
 	r.applyStoragePressureCondition(latest, observed)
+	wasBootstrapFailed := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed)
+	if len(observed.InstanceNames) > 0 {
+		r.applyBootstrapFailedCondition(latest, observed)
+	}
 	// gtid_executed advances on every write, so persisting it on every reconcile
 	// would patch the Cluster status (an etcd write) continuously under load. So
 	// we refresh it only when (a) some other part of the status is already
@@ -643,7 +665,31 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		return err
 	}
 	r.recordFailoverEvent(ctx, latest, before)
+	if !wasBootstrapFailed && r.Recorder != nil &&
+		apimeta.IsStatusConditionTrue(latest.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed) {
+		r.Recorder.Event(latest, corev1.EventTypeWarning, "BootstrapJobFailed",
+			apimeta.FindStatusCondition(latest.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed).Message)
+	}
 	return nil
+}
+
+// applyBootstrapFailedCondition reports failed bootstrap Jobs. It only runs on
+// a full observation: the early status patches (plan failed, waiting for
+// certificates) carry no Job view and must not clear it.
+func (r *ClusterReconciler) applyBootstrapFailedCondition(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
+	cond := metav1.Condition{
+		Type:               mysqlv1alpha1.ConditionBootstrapFailed,
+		Status:             metav1.ConditionFalse,
+		Reason:             "NoFailedBootstrapJobs",
+		Message:            "No instance bootstrap Job has failed",
+		ObservedGeneration: latest.Generation,
+	}
+	if failed := failedBootstrapJobs(observed.BootstrapJobs); len(failed) > 0 {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = failed[0].Reason
+		cond.Message = bootstrapFailureReason(failed)
+	}
+	apimeta.SetStatusCondition(&latest.Status.Conditions, cond)
 }
 
 func (r *ClusterReconciler) applyContinuousArchivingCondition(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
