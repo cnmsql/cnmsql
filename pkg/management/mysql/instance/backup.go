@@ -45,9 +45,12 @@ type BackupConfig struct {
 	// Socket connects xtrabackup to the local mysqld for locking and binlog
 	// coordinates.
 	Socket string
-	// User and Password authenticate the local backup account.
-	User     string
-	Password string
+	// User and Password authenticate the local backup account. PasswordFunc,
+	// when set, returns the account's current password and wins over Password,
+	// so a rotated credential Secret applies to the next use.
+	User         string
+	Password     string
+	PasswordFunc func() string
 	// WorkDir is a writable scratch directory xtrabackup uses for transient
 	// metadata while streaming (default os.TempDir()).
 	WorkDir string
@@ -61,6 +64,15 @@ func (c *BackupConfig) applyDefaults() {
 	if c.WorkDir == "" {
 		c.WorkDir = os.TempDir()
 	}
+}
+
+// password is the backup account's password to use now: the func wins over the
+// static field.
+func (c *BackupConfig) password() string {
+	if c.PasswordFunc != nil {
+		return c.PasswordFunc()
+	}
+	return c.Password
 }
 
 // SetBackupConfig enables the streaming backup endpoint on the controller. With
@@ -93,7 +105,7 @@ func (c *Controller) BackupStream(ctx context.Context, w io.Writer) (webserver.B
 		TargetDir: c.backup.WorkDir,
 		Socket:    c.backup.Socket,
 		User:      c.backup.User,
-		Password:  c.backup.Password,
+		Password:  c.backup.password(),
 		Parallel:  c.backup.Parallel,
 		Stream:    true,
 		Compress:  c.backup.Compress,

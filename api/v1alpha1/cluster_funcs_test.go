@@ -435,6 +435,25 @@ var _ = Describe("Cluster validation", func() {
 	})
 })
 
+var _ = Describe("Credential secret names", func() {
+	It("derives the credential Secret names from the cluster name", func() {
+		cluster := &Cluster{ObjectMeta: metav1.ObjectMeta{Name: "demo"}}
+		Expect(cluster.RootSecretName()).To(Equal("demo-root"))
+		Expect(cluster.AppSecretName()).To(Equal(""), "the app secret is empty without initdb")
+		Expect(cluster.ControlSecretName()).To(Equal("demo-control"))
+		Expect(cluster.BackupSecretName()).To(Equal("demo-backup"))
+		Expect(cluster.DumpSecretName()).To(Equal("demo-dump"))
+
+		cluster.Spec.Bootstrap = &BootstrapConfiguration{InitDB: &BootstrapInitDB{}}
+		Expect(cluster.AppSecretName()).To(Equal("demo-app"))
+
+		cluster.Spec.Bootstrap.InitDB.Secret = &LocalObjectReference{Name: "mine"}
+		cluster.Spec.RootPasswordSecret = &LocalObjectReference{Name: "my-root"}
+		Expect(cluster.AppSecretName()).To(Equal("mine"), "user-provided secret names are honoured")
+		Expect(cluster.RootSecretName()).To(Equal("my-root"))
+	})
+})
+
 var _ = Describe("Cluster helpers", func() {
 	It("reports replica mode correctly", func() {
 		cluster := &Cluster{}

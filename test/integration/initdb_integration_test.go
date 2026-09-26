@@ -56,7 +56,7 @@ func runInitdbTest(t *testing.T, f flavor) {
 export MYSQL_ROOT_PASSWORD=rootpass MYSQL_APP_PASSWORD=%s
 manager instance initdb --mysqld=/usr/sbin/mysqld --config='' \
   --data-dir=/var/lib/mysql --socket=/var/run/mysqld/mysqld.sock \
-  --database=%s --owner=%s --server-version=%s
+  --database=%s --owner=%s --server-version=%s --credentials-source=env
 exec /usr/sbin/mysqld --datadir=/var/lib/mysql --socket=/var/run/mysqld/mysqld.sock
 `, appPass, appDB, appUser, f.version)
 

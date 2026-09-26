@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
@@ -43,6 +44,8 @@ func NewCommand() *cobra.Command {
 		manifestKey   string
 		databases     []string
 		postImportSQL []string
+
+		creds credentials.Options
 	)
 
 	cmd := &cobra.Command{
@@ -52,12 +55,19 @@ func NewCommand() *cobra.Command {
 			"a freshly initialised data directory, through a temporary socket-only " +
 			"server with binary logging off. Idempotent: a no-op once an import has " +
 			"finished. Object-store credentials are read from the cnmsql_S3_* " +
-			"environment variables, the root password from MYSQL_ROOT_PASSWORD.",
+			"environment variables, the root password from the cluster's " +
+			"credential Secrets.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := objectstore.NewClientFromEnv()
 			if err != nil {
 				return err
 			}
+			creds.Namespace = os.Getenv("POD_NAMESPACE")
+			src, err := credentials.Open(cmd.Context(), creds, credentials.Root)
+			if err != nil {
+				return err
+			}
+			rootPassword, _ := src.Password(credentials.Root)
 			return instance.Import(cmd.Context(), instance.ImportOptions{
 				Store:         store,
 				Bucket:        bucket,
@@ -74,7 +84,7 @@ func NewCommand() *cobra.Command {
 				DataDir:      dataDir,
 				Socket:       socket,
 				WorkDir:      cmp.Or(workDir, instance.ScratchWorkDir()),
-				RootPassword: os.Getenv("MYSQL_ROOT_PASSWORD"),
+				RootPassword: rootPassword,
 			})
 		},
 	}
@@ -92,6 +102,8 @@ func NewCommand() *cobra.Command {
 	// comma, and each flag is one value.
 	cmd.Flags().StringArrayVar(&databases, "database", nil, "Load only this database from the dump (repeatable; default: every database in it)")
 	cmd.Flags().StringArrayVar(&postImportSQL, "post-import-sql", nil, "SQL statement run as root after the load (repeatable, in order)")
+	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")
+	credentials.AddFlags(cmd.Flags(), &creds)
 
 	return cmd
 }

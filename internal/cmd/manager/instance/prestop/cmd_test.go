@@ -25,6 +25,23 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+// TestPrestopProceedsWithoutCredentials proves the hook never fails or hangs
+// the Pod's termination when it cannot read the control password: without a
+// cluster it must return promptly, degrading to the reactive failover path.
+func TestPrestopProceedsWithoutCredentials(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "default")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "") // not in a cluster: in-cluster config fails fast
+	cmd := NewCommand()
+	cmd.SetArgs([]string{"--cluster-name=demo", "--socket=/nonexistent.sock"})
+	start := time.Now()
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("prestop must not fail the hook: %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("prestop blocked on credentials")
+	}
+}
+
 func TestWaitUntilDemotedReturnsWhenReadOnly(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New()

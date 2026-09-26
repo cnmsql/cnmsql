@@ -100,7 +100,7 @@ func runLogicalRestore(t *testing.T, img logicalImage) {
 	node := startLogicalNode(ctx, t, img, nil)
 	node.sql(ctx, t, seedSQL+definerSQL)
 	node.createDumpAccount(ctx, t, password)
-	dump := node.dump(ctx, t, webserver.DumpRequest{Password: password})
+	dump := node.dump(ctx, t, webserver.DumpRequest{})
 	if dump.status != http.StatusOK {
 		t.Fatalf("dump = %d %+v", dump.status, dump.errorBody)
 	}

@@ -374,7 +374,7 @@ func TestImportContainerOnlyOnTheBootstrapPrimary(t *testing.T) {
 	for _, e := range imp.Env {
 		env[e.Name] = true
 	}
-	for _, want := range []string{"MYSQL_ROOT_PASSWORD", "CNMSQL_FLAVOR", objectstore.EnvBucket} {
+	for _, want := range []string{"CNMSQL_FLAVOR", objectstore.EnvBucket} {
 		if !env[want] {
 			t.Errorf("import env lacks %s", want)
 		}

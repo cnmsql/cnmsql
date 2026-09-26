@@ -33,8 +33,10 @@ import (
 
 // TestJoinProvisionsReplica verifies that `instance join` clones a populated
 // primary via XtraBackup and resumes GTID replication: the pre-existing row is
-// present on the replica, and a subsequent write on the source propagates. It
-// runs across every supported MySQL flavor.
+// present on the replica, and a subsequent write on the source propagates. The
+// replication channel is mTLS-only: the source server presents a certificate
+// and the replication user (REQUIRE X509) authenticates with a client
+// certificate. It runs across every supported MySQL flavor.
 func TestJoinProvisionsReplica(t *testing.T) {
 	for _, f := range selectedFlavors(t) {
 		t.Run(f.name, func(t *testing.T) {
@@ -60,26 +62,30 @@ func runJoinTest(t *testing.T, f flavor) {
 	// it up, provision a replica via join, then run the replica in foreground.
 	// The operator performs this across pods in M3.
 	script := fmt.Sprintf(`set -e
-export MYSQL_ROOT_PASSWORD=rootpass MYSQL_APP_PASSWORD=%s MYSQL_REPLICATION_PASSWORD=replpass
+export MYSQL_ROOT_PASSWORD=rootpass MYSQL_APP_PASSWORD=%s
 SRC=/tmp/source REP=/tmp/replica BK=/tmp/backup
 GA="%s"
 manager instance initdb --mysqld=/usr/sbin/mysqld --config='' \
   --data-dir=$SRC --socket=/tmp/src.sock \
-  --database=app --owner=%s --replication-user=repl --server-version=%s
-/usr/sbin/mysqld --datadir=$SRC --socket=/tmp/src.sock --port=3306 --server-id=1 $GA >/tmp/src.log 2>&1 &
+  --database=app --owner=%s --replication-user=repl --replication-require-x509 --server-version=%s --credentials-source=env
+/usr/sbin/mysqld --datadir=$SRC --socket=/tmp/src.sock --port=3306 --server-id=1 $GA \
+  --ssl-ca=/pki/ca.crt --ssl-cert=/pki/server.crt --ssl-key=/pki/server.key >/tmp/src.log 2>&1 &
 until mysqladmin --socket=/tmp/src.sock -uroot -prootpass ping >/dev/null 2>&1; do sleep 1; done
 mysql --socket=/tmp/src.sock -uroot -prootpass app -e "CREATE TABLE t (id INT PRIMARY KEY); INSERT INTO t VALUES (1);"
 xtrabackup --backup --target-dir=$BK --datadir=$SRC --socket=/tmp/src.sock --user=root --password=rootpass
 manager instance join --xtrabackup=xtrabackup --mysqld=/usr/sbin/mysqld --config='' \
   --backup-dir=$BK --data-dir=$REP --socket=/tmp/reptemp.sock \
   --server-version=%s --source-host=127.0.0.1 --source-port=3306 \
-  --replication-user=repl --source-get-public-key
+  --replication-user=repl --source-ssl \
+  --source-ssl-ca=/pki/ca.crt --source-ssl-cert=/pki/client.crt --source-ssl-key=/pki/client.key \
+  --credentials-source=env
 exec /usr/sbin/mysqld --datadir=$REP --socket=/tmp/rep.sock --port=3307 --server-id=2 $GA
 `, appPass, f.gtidArgs(t), appUser, f.version, f.version)
 
 	req := testcontainers.ContainerRequest{
 		Image:        instanceImage(f),
 		ExposedPorts: []string{"3306/tcp", "3307/tcp"},
+		Files:        pkiContainerFiles(t),
 		Entrypoint:   []string{"bash", "-lc"},
 		Cmd:          []string{script},
 		WaitingFor:   wait.ForListeningPort("3307/tcp").WithStartupTimeout(5 * time.Minute),

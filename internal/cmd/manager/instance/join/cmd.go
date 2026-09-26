@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
@@ -48,6 +49,8 @@ func NewCommand() *cobra.Command {
 		managerURL     string
 		managerName    string
 		streamCompress bool
+
+		creds credentials.Options
 	)
 
 	cmd := &cobra.Command{
@@ -55,9 +58,9 @@ func NewCommand() *cobra.Command {
 		Short: "Provision a replica from a source backup via XtraBackup",
 		Long: "Restore a streamed XtraBackup into the data directory and configure " +
 			"GTID replication so the replica resumes from the backup point when it " +
-			"starts. The temporary server's root password is read from " +
-			"MYSQL_ROOT_PASSWORD and the replication password from " +
-			"MYSQL_REPLICATION_PASSWORD.",
+			"starts. The temporary server's root password is read from the " +
+			"cluster's credential Secrets; the replication user authenticates " +
+			"with a client certificate (--source-ssl-*), never a password.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if serverVersion == "" {
 				serverVersion = os.Getenv("MYSQL_VERSION")
@@ -65,6 +68,13 @@ func NewCommand() *cobra.Command {
 			if serverVersion == "" {
 				return fmt.Errorf("--server-version or MYSQL_VERSION must be set")
 			}
+
+			creds.Namespace = os.Getenv("POD_NAMESPACE")
+			src, err := credentials.Open(cmd.Context(), creds, credentials.Root)
+			if err != nil {
+				return err
+			}
+			rootPassword, _ := src.Password(credentials.Root)
 
 			// When a source manager URL is given, pull and extract the backup
 			// stream over mTLS before restoring it. Idempotent: skip when the
@@ -92,12 +102,11 @@ func NewCommand() *cobra.Command {
 				ConfigFile:     configFile,
 				Socket:         socket,
 				Version:        serverVersion,
-				RootPassword:   os.Getenv("MYSQL_ROOT_PASSWORD"),
+				RootPassword:   rootPassword,
 				Source: replication.SourceOptions{
 					Host:         sourceHost,
 					Port:         sourcePort,
 					User:         replUser,
-					Password:     os.Getenv("MYSQL_REPLICATION_PASSWORD"),
 					AutoPosition: true,
 					SSL:          useTLS,
 					SSLCA:        sslCA,
@@ -127,6 +136,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&managerURL, "source-manager-url", "", "Source instance-manager backup stream URL; when set, the backup is pulled and extracted into --backup-dir over mTLS (reusing --source-ssl-* material)")
 	cmd.Flags().StringVar(&managerName, "source-manager-server-name", "", "TLS server name to verify on the source manager certificate")
 	cmd.Flags().BoolVar(&streamCompress, "source-stream-compress", false, "The backup stream is compressed and must be decompressed after extraction")
+	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")
+	credentials.AddFlags(cmd.Flags(), &creds)
 
 	return cmd
 }

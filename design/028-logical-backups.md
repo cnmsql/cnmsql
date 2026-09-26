@@ -138,7 +138,7 @@ These must learn about `method: logical` or they will break:
 | LB12 | Restore into a running cluster is a separate one-shot CR, `LogicalRestore`, in a later phase | It has different safety rules (it writes to a live primary) and should not hold up the backup and bootstrap work. |
 | LB13 | The instance manager checks that the dump tool exists before it starts, and the Backup fails with reason `LogicalToolUnavailable` when it doesn't | Clusters pinned to an older image tag (`8.0-1`, or an `ImageCatalog` entry) will not have the tool. They need a clear failure that says which image to move to, not a crash in the middle of the stream. |
 | LB14 | Dumps run as a dedicated read-only system account, `cnmsql_dump@localhost`, not the control account | Least privilege: the account can read application data and take the brief read lock the dump needs, and nothing else. `localhost` means it only works over the instance's Unix socket, so it can't be used from another Pod even if the password leaks. `cnmsql_*` names are already reserved (`isReservedRoleName`), so no user can declare a clashing role. |
-| LB15 | The operator creates and migrates the dump account from its reconcile loop, on new and existing clusters alike, by calling the primary's instance manager (the managed-roles path). The worker Job, not the instance Pod, carries the password and sends it with the dump request | One code path for new clusters and for the migration. Putting the password in the instance Pod's env would change the Pod template hash and restart every instance on operator upgrade, which the upgrade design avoids on purpose. The account replicates to replicas through the binlog, so no replica needs the password in advance. Carrying the password in the Job is temporary until [#128](https://github.com/cnmsql/cnmsql/issues/128) (§5.10). |
+| LB15 | The operator creates and migrates the dump account from its reconcile loop, on new and existing clusters alike, by calling the primary's instance manager (the managed-roles path). The instance manager reads the `<cluster>-dump` Secret itself ([design 030](030-instance-credentials-from-api.md)): the worker Job and the dump request carry no password | One code path for new clusters and for the migration. Putting the password in the instance Pod's env would change the Pod template hash and restart every instance on operator upgrade, which the upgrade design avoids on purpose. The account replicates to replicas through the binlog, so no replica needs the password in advance. The worker-Job workaround this design shipped is gone: design 030 has the manager read its credential Secrets through the Kubernetes API, and `POST /cluster/dump` takes no password (§5.10). |
 | LB16 | `DEFINER` clauses are kept as dumped; no rewriting option | Rewriting means editing SQL text, which LB6 avoids. The missing definer accounts are declared as CRs, like any other user. |
 | LB17 | `LogicalRestore` loads through the binlog, with `sql_log_bin` left on | Replicas and continuous archiving follow the restore with no extra step, and PITR stays correct across it. The cost, a burst of binlog the size of the restore, is documented. |
 
@@ -679,14 +679,13 @@ the primary through the instance manager (`/user/list`, `/user/create`,
 upgrade, the first reconcile of each existing Cluster creates the Secret and the
 account; there is no separate migration step or flag. Specific cases:
 
-- **No Pod restart.** The instance Pod spec doesn't change: the password goes to
-  the worker Job (LB15), not the instance env, so the Pod template hash stays
-  the same.
-  This is a workaround. [#128](https://github.com/cnmsql/cnmsql/issues/128)
+- **No Pod restart.** The instance Pod spec doesn't change, so the Pod template
+  hash stays the same. The worker-Job workaround this design shipped (LB15) is
+  gone: [design 030](030-instance-credentials-from-api.md)
   has the instance manager read its credential Secrets through the Kubernetes
-  API instead of env vars. Once it lands, the manager reads `<cluster>-dump`
+  API instead of env vars. The manager reads `<cluster>-dump`
   itself, the worker Job no longer carries the password, and
-  `POST /cluster/dump` stops taking it in the request body.
+  `POST /cluster/dump` no longer takes it in the request body.
 - **Instances still on the old manager** (rolling or in-place manager upgrade
   not finished). Creating the account only needs `/user/create`, which old
   managers have. Dumping needs `/cluster/dump`, so a logical Backup against an

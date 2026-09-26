@@ -46,3 +46,24 @@ func TestSetBackupConfigDefaults(t *testing.T) {
 		t.Error("work dir default not applied")
 	}
 }
+
+// password() resolves the account's password at use time: the func wins over
+// the static field, so a rotated credential Secret applies to the next backup.
+func TestBackupConfigPasswordPrefersTheFunc(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  BackupConfig
+		want string
+	}{
+		{"static password", BackupConfig{Password: "static"}, "static"},
+		{"the func wins",
+			BackupConfig{Password: "static", PasswordFunc: func() string { return "from-secret" }}, "from-secret"},
+		{"neither set", BackupConfig{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.password(); got != tc.want {
+				t.Fatalf("password() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

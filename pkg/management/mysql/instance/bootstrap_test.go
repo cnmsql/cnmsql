@@ -45,23 +45,19 @@ func TestBootstrapMinimal(t *testing.T) {
 
 func TestBootstrapFull(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{
-		RootPassword:        "rootpw",
-		Database:            "app",
-		AppUser:             "appuser",
-		AppPassword:         "apppw",
-		CharacterSet:        "utf8mb4",
-		Collation:           "utf8mb4_0900_ai_ci",
-		ReplicationUser:     "repl",
-		ReplicationPassword: "replpw",
-		PostInitSQL:         []string{"CREATE TABLE app.t (id INT)"},
+		RootPassword: "rootpw",
+		Database:     "app",
+		AppUser:      "appuser",
+		AppPassword:  "apppw",
+		CharacterSet: "utf8mb4",
+		Collation:    "utf8mb4_0900_ai_ci",
+		PostInitSQL:  []string{"CREATE TABLE app.t (id INT)"},
 	})
 
 	for _, want := range []string{
 		"CREATE DATABASE IF NOT EXISTS `app` CHARACTER SET `utf8mb4` COLLATE `utf8mb4_0900_ai_ci`",
 		"CREATE USER IF NOT EXISTS 'appuser'@'%' IDENTIFIED BY 'apppw'",
 		"GRANT ALL PRIVILEGES ON `app`.* TO 'appuser'@'%'",
-		"CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED BY 'replpw'",
-		"GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%'",
 		"CREATE TABLE app.t (id INT)",
 	} {
 		if !strings.Contains(out, want) {
@@ -280,6 +276,31 @@ func TestBootstrapReplicationX509(t *testing.T) {
 	})
 	if !strings.Contains(out, "CREATE USER IF NOT EXISTS 'repl'@'%' REQUIRE X509") {
 		t.Errorf("expected X509 replication user:\n%s", out)
+	}
+}
+
+func TestBootstrapReplicationUserRequiresX509(t *testing.T) {
+	p := BootstrapParams{RootPassword: "r", ReplicationUser: "repl"}
+	if err := p.Validate(); err == nil {
+		t.Fatal("a replication user without REQUIRE X509 must be rejected")
+	}
+	p.ReplicationRequireX509 = true
+	stmts, err := BootstrapStatements(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range stmts {
+		if strings.Contains(s, "'repl'") && strings.HasPrefix(s, "CREATE USER") &&
+			(!strings.Contains(s, "REQUIRE X509") || strings.Contains(s, "IDENTIFIED BY")) {
+			t.Fatalf("replication account is not X.509-only: %s", s)
+		}
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	p.ReplicationRequireX509 = false
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "X.509") {
+		t.Fatalf("err = %v, want the X.509 requirement named", err)
 	}
 }
 

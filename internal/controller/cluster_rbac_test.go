@@ -27,6 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func TestEnsureInstanceRBACScopesGroupReplicationDoorbell(t *testing.T) {
@@ -145,5 +147,69 @@ func TestEnsureInstanceRBACKeepsAsyncStatusAndLeasePermissions(t *testing.T) {
 	}
 	if !slices.Contains(resources, "clusters/status") || !slices.Contains(resources, "leases") {
 		t.Fatalf("async role lost status or lease permissions: %v", resources)
+	}
+}
+
+func TestEnsureInstanceRBACScopesCredentialSecrets(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster() // has initdb
+	plan := testPlan()
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Scheme: scheme,
+	}
+	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	role := &rbacv1.Role{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name + "-instance"}, role); err != nil {
+		t.Fatal(err)
+	}
+	var secretRules []rbacv1.PolicyRule
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "secrets") {
+			secretRules = append(secretRules, rule)
+		}
+	}
+	if len(secretRules) != 1 {
+		t.Fatalf("want exactly one secrets rule, got %+v", secretRules)
+	}
+	rule := secretRules[0]
+	if !slices.Equal(rule.Verbs, []string{"get", "watch"}) {
+		t.Fatalf("secrets verbs = %v, want [get watch] (never list)", rule.Verbs)
+	}
+	want := []string{plan.AppSecretName, plan.BackupSecretName, plan.ControlSecretName, cluster.DumpSecretName(), plan.RootSecretName}
+	slices.Sort(want)
+	if !slices.Equal(rule.ResourceNames, want) {
+		t.Fatalf("secret names = %v, want %v", rule.ResourceNames, want)
+	}
+	for _, name := range rule.ResourceNames {
+		if name == plan.ReplicationSecret {
+			t.Fatal("replication secret must not be readable by instances")
+		}
+	}
+}
+
+func TestEnsureInstanceRBACOmitsAppSecretWithoutInitDB(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{Recovery: &mysqlv1alpha1.BootstrapRecovery{}}
+	plan := testPlan()
+	scheme := testScheme(t)
+	r := &ClusterReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(), Scheme: scheme}
+	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	role := &rbacv1.Role{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name + "-instance"}, role); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "secrets") && slices.Contains(rule.ResourceNames, plan.AppSecretName) {
+			t.Fatalf("app secret granted on a recovery cluster: %+v", rule)
+		}
 	}
 }

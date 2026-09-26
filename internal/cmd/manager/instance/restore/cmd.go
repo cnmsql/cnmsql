@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
@@ -56,15 +57,18 @@ func NewCommand() *cobra.Command {
 		targetImmediate bool
 		mysqlbinlogPath string
 		mysqlPath       string
+
+		creds credentials.Options
 	)
 
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Restore a physical backup from object storage into the data directory",
 		Long: "Download an XtraBackup archive from S3-compatible object storage, " +
-			"extract, prepare and restore it into the data directory. Idempotent: " +
-			"a no-op when the data directory is already initialised. Object-store " +
-			"credentials are read from the cnmsql_S3_* environment variables.",
+			"extract, prepare and restore it into the data directory. Account " +
+			"passwords are read from the cluster's credential Secrets; " +
+			"object-store credentials from the cnmsql_S3_* environment variables. " +
+			"Idempotent: a no-op when the data directory is already initialised.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := objectstore.NewClientFromEnv()
 			if err != nil {
@@ -73,6 +77,22 @@ func NewCommand() *cobra.Command {
 			if serverVersion == "" {
 				serverVersion = os.Getenv("MYSQL_VERSION")
 			}
+
+			creds.Namespace = os.Getenv("POD_NAMESPACE")
+			required := []credentials.Account{credentials.Root}
+			if controlUser != "" {
+				required = append(required, credentials.Control)
+			}
+			if backupUser != "" {
+				required = append(required, credentials.Backup)
+			}
+			src, err := credentials.Open(cmd.Context(), creds, required...)
+			if err != nil {
+				return err
+			}
+			rootPassword, _ := src.Password(credentials.Root)
+			controlPassword, _ := src.Password(credentials.Control)
+			backupPassword, _ := src.Password(credentials.Backup)
 
 			// Resolve the optional point-in-time recovery target. Replay is enabled
 			// only when --source-cluster is set; the bucket/path come from the same
@@ -99,17 +119,17 @@ func NewCommand() *cobra.Command {
 				XtrabackupPath: xtrabackupPath,
 				Compress:       compress,
 				VerifyChecksum: verifyChecksum,
-				// Post-restore credential reconcile. Passwords come from the same
-				// environment the run container uses; root drives the reconcile.
+				// Post-restore credential reconcile. Passwords come from the
+				// cluster's credential Secrets; root drives the reconcile.
 				MysqldPath:      mysqldPath,
 				ConfigFile:      configFile,
 				Socket:          socket,
 				Version:         serverVersion,
-				RootPassword:    os.Getenv("MYSQL_ROOT_PASSWORD"),
+				RootPassword:    rootPassword,
 				ControlUser:     controlUser,
-				ControlPassword: os.Getenv("MYSQL_CONTROL_PASSWORD"),
+				ControlPassword: controlPassword,
 				BackupUser:      backupUser,
-				BackupPassword:  os.Getenv("MYSQL_BACKUP_PASSWORD"),
+				BackupPassword:  backupPassword,
 				// Point-in-time recovery: object-store layout from env, archive
 				// cluster + target from flags.
 				ObjectStore:     objectstore.StoreFromEnv(),
@@ -134,8 +154,10 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&configFile, "config", "/etc/mysql/my.cnf", "Path to the rendered my.cnf for the reconcile server")
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket for the temporary reconcile server")
 	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version; gates ALTER USER vs SET PASSWORD syntax")
-	cmd.Flags().StringVar(&controlUser, "control-user", "", "Control account to reset to MYSQL_CONTROL_PASSWORD after restore")
-	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup account to reset to MYSQL_BACKUP_PASSWORD after restore")
+	cmd.Flags().StringVar(&controlUser, "control-user", "", "Control account to reset to the control credential's password after restore")
+	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup account to reset to the backup credential's password after restore")
+	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")
+	credentials.AddFlags(cmd.Flags(), &creds)
 
 	// Point-in-time recovery (M7.2): replay archived binlogs after the base
 	// restore. Enabled by --source-cluster; bucket/path come from cnmsql_S3_*.

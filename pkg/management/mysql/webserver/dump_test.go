@@ -79,7 +79,7 @@ func TestDumpHandlerStreamsWithHeadersAndTrailers(t *testing.T) {
 		},
 	}
 	ctrl := &dumpController{session: session}
-	resp := postDump(t, Handler(ctrl), `{"password":"pw","databases":["shop"],"extraArgs":["--x"]}`)
+	resp := postDump(t, Handler(ctrl), `{"databases":["shop"],"extraArgs":["--x"]}`)
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -88,7 +88,7 @@ func TestDumpHandlerStreamsWithHeadersAndTrailers(t *testing.T) {
 	if string(body) != session.body {
 		t.Fatalf("body = %q", body)
 	}
-	if ctrl.req == nil || ctrl.req.Password != "pw" || !slices.Equal(ctrl.req.Databases, []string{"shop"}) ||
+	if ctrl.req == nil || !slices.Equal(ctrl.req.Databases, []string{"shop"}) ||
 		!slices.Equal(ctrl.req.ExtraArgs, []string{"--x"}) {
 		t.Fatalf("request = %+v", ctrl.req)
 	}
@@ -111,7 +111,7 @@ func TestDumpHandlerStreamsWithHeadersAndTrailers(t *testing.T) {
 
 func TestDumpHandlerReportsMidStreamFailureInTrailer(t *testing.T) {
 	session := &fakeDumpSession{body: "-- partial", err: errors.New("mysqldump exited with status 2")}
-	resp := postDump(t, Handler(&dumpController{session: session}), `{"password":"pw"}`)
+	resp := postDump(t, Handler(&dumpController{session: session}), `{}`)
 	_, _ = io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, the 200 is committed before the stream", resp.StatusCode)
@@ -139,7 +139,7 @@ func TestDumpHandlerRefusals(t *testing.T) {
 		{errors.New("boom"), http.StatusInternalServerError, ""},
 	} {
 		t.Run(tc.err.Error(), func(t *testing.T) {
-			resp := postDump(t, Handler(&dumpController{startErr: tc.err}), `{"password":"pw"}`)
+			resp := postDump(t, Handler(&dumpController{startErr: tc.err}), `{}`)
 			if resp.StatusCode != tc.status {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.status)
 			}
@@ -163,7 +163,7 @@ func TestDumpHandlerRejectsMalformedBody(t *testing.T) {
 
 func TestDumpHandlerRejectsOversizedBody(t *testing.T) {
 	ctrl := &dumpController{session: &fakeDumpSession{}}
-	body := `{"password":"` + strings.Repeat("x", maxDumpRequestBodyBytes) + `"}`
+	body := `{"databases":["` + strings.Repeat("x", maxDumpRequestBodyBytes) + `"]}`
 	resp := postDump(t, Handler(ctrl), body)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
@@ -176,7 +176,7 @@ func TestDumpHandlerRejectsOversizedBody(t *testing.T) {
 func TestDumpRouteAbsentWithoutStreamer(t *testing.T) {
 	// A manager that predates logical backups has no route: the worker reads the
 	// 404 as InstanceManagerOutdated.
-	resp := postDump(t, Handler(&fakeController{}), `{"password":"pw"}`)
+	resp := postDump(t, Handler(&fakeController{}), `{}`)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
@@ -185,7 +185,7 @@ func TestDumpRouteAbsentWithoutStreamer(t *testing.T) {
 func TestDumpRouteIsPostOnly(t *testing.T) {
 	rec := httptest.NewRecorder()
 	Handler(&dumpController{session: &fakeDumpSession{}}).
-		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cluster/dump?password=pw", nil))
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cluster/dump", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET status = %d, want 405", rec.Code)
 	}

@@ -18,12 +18,12 @@ limitations under the License.
 package initdb
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
@@ -46,21 +46,19 @@ func NewCommand() *cobra.Command {
 		backupUser    string
 		metricsUser   string
 		serverVersion string
+
+		creds credentials.Options
 	)
 
 	cmd := &cobra.Command{
 		Use:   "initdb",
 		Short: "Initialise a fresh MySQL data directory",
 		Long: "Initialise a fresh MySQL data directory and bootstrap the application " +
-			"and replication accounts. Passwords are read from the environment " +
-			"(MYSQL_ROOT_PASSWORD, MYSQL_APP_PASSWORD, MYSQL_REPLICATION_PASSWORD). " +
+			"and replication accounts. Passwords are read from the cluster's " +
+			"credential Secrets; the replication account is X.509-only (mTLS) " +
+			"and takes no password. " +
 			"This command is idempotent: it is a no-op on an already initialised directory.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			rootPassword := os.Getenv("MYSQL_ROOT_PASSWORD")
-			if rootPassword == "" {
-				return fmt.Errorf("MYSQL_ROOT_PASSWORD must be set")
-			}
-
 			if serverVersion == "" {
 				serverVersion = os.Getenv("MYSQL_VERSION")
 			}
@@ -87,10 +85,28 @@ func NewCommand() *cobra.Command {
 			// A Group Replication joining member initialises an empty server (no
 			// --database) and clones the schema and app account from a group donor,
 			// so it must not read an app password it would never use.
+			creds.Namespace = os.Getenv("POD_NAMESPACE")
+			required := []credentials.Account{credentials.Root}
+			if database != "" {
+				required = append(required, credentials.App)
+			}
+			if controlUser != "" {
+				required = append(required, credentials.Control)
+			}
+			if backupUser != "" {
+				required = append(required, credentials.Backup)
+			}
+			src, err := credentials.Open(cmd.Context(), creds, required...)
+			if err != nil {
+				return err
+			}
+			rootPassword, _ := src.Password(credentials.Root)
 			appPassword := ""
 			if database != "" {
-				appPassword = os.Getenv("MYSQL_APP_PASSWORD")
+				appPassword, _ = src.Password(credentials.App)
 			}
+			controlPassword, _ := src.Password(credentials.Control)
+			backupPassword, _ := src.Password(credentials.Backup)
 
 			return instance.Initialize(cmd.Context(), instance.InitOptions{
 				MysqldPath: mysqldPath,
@@ -107,12 +123,11 @@ func NewCommand() *cobra.Command {
 					CharacterSet:              charset,
 					Collation:                 collation,
 					ReplicationUser:           replUser,
-					ReplicationPassword:       os.Getenv("MYSQL_REPLICATION_PASSWORD"),
 					ReplicationRequireX509:    requireTLS,
 					BackupUser:                backupUser,
-					BackupPassword:            os.Getenv("MYSQL_BACKUP_PASSWORD"),
+					BackupPassword:            backupPassword,
 					ControlUser:               controlUser,
-					ControlPassword:           os.Getenv("MYSQL_CONTROL_PASSWORD"),
+					ControlPassword:           controlPassword,
 					MetricsUser:               metricsUser,
 					SupportsDynamicPrivileges: dynamicPrivileges,
 					GroupReplication:          groupRepl,
@@ -132,10 +147,12 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&groupRepl, "group-replication", false, "Grant the replication user the privileges Group Replication distributed recovery needs")
 	cmd.Flags().StringVar(&charset, "character-set", "", "Character set for the application database")
 	cmd.Flags().StringVar(&collation, "collation", "", "Collation for the application database")
-	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from MYSQL_CONTROL_PASSWORD)")
-	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup user for cloning replicas (password from MYSQL_BACKUP_PASSWORD)")
+	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from the control credential Secret)")
+	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup user for cloning replicas (password from the backup credential Secret)")
 	cmd.Flags().StringVar(&metricsUser, "metrics-user", "", "Local metrics exporter user to create")
 	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version (e.g. 8.0.36); gates dynamic privilege grants")
+	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")
+	credentials.AddFlags(cmd.Flags(), &creds)
 
 	return cmd
 }

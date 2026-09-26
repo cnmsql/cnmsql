@@ -167,7 +167,7 @@ func runWithStore(t *testing.T, store *memStore, src *sourceServer) error {
 	t.Helper()
 	srv := httptest.NewServer(src)
 	t.Cleanup(srv.Close)
-	return runLogicalUpload(context.Background(), logicalOpts(srv.URL), store, srv.Client(), "s3cret")
+	return runLogicalUpload(context.Background(), logicalOpts(srv.URL), store, srv.Client())
 }
 
 func runAgainst(t *testing.T, src *sourceServer) (*memStore, error) {
@@ -201,7 +201,7 @@ func TestLogicalUploadWritesDumpAndManifest(t *testing.T) {
 	}
 
 	req := src.requests[0]
-	if req.Password != "s3cret" || !slices.Equal(req.Databases, []string{"billing", "shop"}) ||
+	if !slices.Equal(req.Databases, []string{"billing", "shop"}) ||
 		!slices.Equal(req.ExtraArgs, []string{"--max-allowed-packet=1G"}) {
 		t.Fatalf("request = %+v", req)
 	}

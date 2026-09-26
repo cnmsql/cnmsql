@@ -35,10 +35,10 @@ type BootstrapParams struct {
 	// CharacterSet and Collation apply to the application database.
 	CharacterSet string
 	Collation    string
-	// ReplicationUser and ReplicationPassword create the replication account
-	// used by replicas. Both must be set together, or empty to skip.
-	ReplicationUser     string
-	ReplicationPassword string
+	// ReplicationUser creates the replication account used by replicas, or is
+	// empty to skip it. The account is X.509-only: production replication is
+	// mTLS-only, so there is no replication password.
+	ReplicationUser string
 	// ReplicationRequireX509 creates the replication user requiring a client
 	// certificate (mTLS) rather than password authentication.
 	ReplicationRequireX509 bool
@@ -106,8 +106,8 @@ func (p BootstrapParams) Validate() error {
 		(p.Database == "" || p.AppUser == "" || p.AppPassword == "") {
 		return fmt.Errorf("bootstrap: database, appUser and appPassword must be set together")
 	}
-	if p.ReplicationUser != "" && p.ReplicationPassword == "" && !p.ReplicationRequireX509 {
-		return fmt.Errorf("bootstrap: replication user needs a password or requireX509")
+	if p.ReplicationUser != "" && !p.ReplicationRequireX509 {
+		return fmt.Errorf("bootstrap: the replication user requires X.509 (replication is mTLS-only)")
 	}
 	if (p.BackupUser != "") != (p.BackupPassword != "") {
 		return fmt.Errorf("bootstrap: backupUser and backupPassword must be set together")
@@ -154,13 +154,10 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 		)
 	}
 
-	// Replication account.
+	// Replication account. Production replication is mTLS-only: the account
+	// authenticates with a client certificate, never a password.
 	if p.ReplicationUser != "" {
-		idClause := "IDENTIFIED BY " + quoteString(p.ReplicationPassword)
-		if p.ReplicationRequireX509 {
-			idClause = "REQUIRE X509"
-		}
-		stmts = append(stmts, d.createUser(p.ReplicationUser, idClause))
+		stmts = append(stmts, d.createUser(p.ReplicationUser, "REQUIRE X509"))
 		stmts = append(stmts,
 			fmt.Sprintf("GRANT REPLICATION SLAVE ON *.* TO '%s'@'%%'",
 				escapeName(p.ReplicationUser)),

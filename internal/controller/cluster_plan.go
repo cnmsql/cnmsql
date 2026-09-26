@@ -45,6 +45,9 @@ type clusterPlan struct {
 	Instances int
 	// PrimaryName is the instance currently expected to be primary.
 	PrimaryName string
+	// ClusterName is the owning Cluster's name. The bootstrap commands carry
+	// it as --cluster-name to locate the cluster's credential Secrets.
+	ClusterName string
 
 	// Cluster-wide secret names.
 	RootSecretName    string
@@ -238,12 +241,13 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		Flavor:             cluster.ResolvedFlavor(),
 		Instances:          cluster.Spec.Instances,
 		PrimaryName:        cluster.Status.CurrentPrimary,
+		ClusterName:        cluster.Name,
 		OperatorImage:      r.OperatorImageName,
-		RootSecretName:     cluster.Name + "-root",
+		RootSecretName:     cluster.RootSecretName(),
 		AppSecretName:      cluster.Name + "-app",
 		ReplicationSecret:  cluster.Name + "-replication",
-		ControlSecretName:  cluster.Name + "-control",
-		BackupSecretName:   cluster.Name + "-backup",
+		ControlSecretName:  cluster.ControlSecretName(),
+		BackupSecretName:   cluster.BackupSecretName(),
 		SelfSignedIssuer:   cluster.Name + "-selfsigned",
 		CAIssuer:           cluster.Name + "-ca",
 		ServerCASecretName: cluster.Name + "-ca",
@@ -264,11 +268,8 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 	if plan.PrimaryName == "" {
 		plan.PrimaryName = instanceName(cluster, 1)
 	}
-	if cluster.Spec.RootPasswordSecret != nil && cluster.Spec.RootPasswordSecret.Name != "" {
-		plan.RootSecretName = cluster.Spec.RootPasswordSecret.Name
-	}
-	if initdb := cluster.Spec.Bootstrap.InitDB; initdb != nil && initdb.Secret != nil && initdb.Secret.Name != "" {
-		plan.AppSecretName = initdb.Secret.Name
+	if name := cluster.AppSecretName(); name != "" {
+		plan.AppSecretName = name
 	}
 	if certs != nil {
 		if certs.ServerCASecret != "" {

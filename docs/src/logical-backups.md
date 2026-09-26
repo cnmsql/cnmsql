@@ -57,11 +57,12 @@ physical backups.
 
 The dump runs as `cnmsql_dump`, a read-only account the operator creates on
 every cluster. It can only connect over the instance's local socket. Its
-password is in the `<cluster>-dump` Secret, which the backup worker Job sends
-along with the dump request. Clusters created before logical backup support get
-the account on the first reconcile after the operator upgrade, with no Pod
-restart. Logical Backups wait in `pending` (reason `DumpAccountNotReady`) until
-the Cluster's `DumpAccountReady` condition is true:
+password is in the `<cluster>-dump` Secret, which the source instance manager
+reads itself through the Kubernetes API: the dump request carries no password
+and the backup worker Job carries none. Clusters created before logical backup
+support get the account on the first reconcile after the operator upgrade, with
+no Pod restart. Logical Backups wait in `pending` (reason `DumpAccountNotReady`)
+until the Cluster's `DumpAccountReady` condition is true:
 
 ```bash
 kubectl get cluster shop -o jsonpath='{.status.conditions[?(@.type=="DumpAccountReady")]}'

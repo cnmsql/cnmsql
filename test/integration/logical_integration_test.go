@@ -194,11 +194,12 @@ func (imp *nodeImport) env() string {
 
 // command is the import command line, quoted for bash.
 func (imp *nodeImport) command() string {
-	args := make([]string, 0, 10+len(imp.databases)+len(imp.postImportSQL))
+	args := make([]string, 0, 11+len(imp.databases)+len(imp.postImportSQL))
 	args = append(args,
 		"manager", "instance", "import", "--mysqld=/usr/sbin/mysqld", "--config=/tmp/my.cnf",
 		"--data-dir=/var/lib/mysql", "--socket=/tmp/mysql.sock", "--bucket="+importBucket,
 		"--dump-key="+imp.dumpKey, "--manifest-key="+imp.manifestKey,
+		"--credentials-source=env",
 	)
 	for _, db := range imp.databases {
 		args = append(args, "--database="+db)
@@ -215,6 +216,11 @@ func (imp *nodeImport) command() string {
 
 // importBucket is the fake bucket dumps are served from.
 const importBucket = "backups"
+
+// logicalDumpPassword is the cnmsql_dump account's password the round trip
+// creates on the source node. It is also exported there as MYSQL_DUMP_PASSWORD,
+// so the manager can serve POST /cluster/dump with --credentials-source=env.
+const logicalDumpPassword = `dump-p"a\ss`
 
 // startLogicalNode runs `instance initdb`, then `instance import` when imp is
 // set, then `instance run` in the image, as an instance Pod does, and waits
@@ -242,16 +248,17 @@ until (exec 3<>/dev/tcp/%[3]s) 2>/dev/null; do sleep 0.2; done
 	}
 	script := fmt.Sprintf(`set -e
 export MYSQL_ROOT_PASSWORD=rootpass MYSQL_CONTROL_PASSWORD=ctlpass MYSQL_APP_PASSWORD=apppass
+export MYSQL_DUMP_PASSWORD='%[6]s'
 export CNMSQL_FLAVOR=%[1]s
 cat > /tmp/my.cnf <<'CFG'
 %[2]sCFG
 manager instance initdb --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock \
-  --database=app --owner=appuser --control-user=control --server-version=%[3]s
+  --database=app --owner=appuser --control-user=control --server-version=%[3]s --credentials-source=env
 %[5]sexec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock --server-version=%[3]s \
-  --instance-name=%[4]s --control-user=control --web-addr=:8080
-`, img.flavor, img.cnf, img.version, img.name, importStep)
+  --instance-name=%[4]s --control-user=control --web-addr=:8080 --credentials-source=env
+`, img.flavor, img.cnf, img.version, img.name, importStep, logicalDumpPassword)
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
@@ -435,27 +442,25 @@ func TestLogicalBackupRoundTrip(t *testing.T) {
 
 func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 	ctx := context.Background()
-	const password = `dump-p"a\ss`
+	const password = logicalDumpPassword
 	src := startLogicalNode(ctx, t, srcImg, nil)
 	src.sql(ctx, t, seedSQL)
 
 	// Before the account exists, the instance refuses with a retryable 503.
-	if r := src.dump(ctx, t, webserver.DumpRequest{Password: password}); r.status != http.StatusServiceUnavailable ||
+	if r := src.dump(ctx, t, webserver.DumpRequest{}); r.status != http.StatusServiceUnavailable ||
 		r.errorBody.Reason != webserver.DumpReasonAccountMissing {
 		t.Fatalf("dump without account = %d %+v", r.status, r.errorBody)
 	}
 	src.createDumpAccount(ctx, t, password)
 
-	// A wrong password fails before any byte is streamed.
-	if r := src.dump(ctx, t, webserver.DumpRequest{Password: "wrong"}); r.status != http.StatusInternalServerError ||
-		!strings.Contains(r.errorBody.Error, "Access denied") {
-		t.Fatalf("dump with a wrong password = %d %+v", r.status, r.errorBody)
-	}
-	if r := src.dump(ctx, t, webserver.DumpRequest{Password: password, Databases: []string{"nope"}}); r.status != http.StatusUnprocessableEntity {
+	// The request no longer carries a password (design 030): the manager reads
+	// the dump account's password from the cluster's Secret itself, so a
+	// "wrong password" dump is not expressible any more.
+	if r := src.dump(ctx, t, webserver.DumpRequest{Databases: []string{"nope"}}); r.status != http.StatusUnprocessableEntity {
 		t.Fatalf("dump of a missing database = %d %+v", r.status, r.errorBody)
 	}
 
-	full := src.dump(ctx, t, webserver.DumpRequest{Password: password})
+	full := src.dump(ctx, t, webserver.DumpRequest{})
 	if full.status != http.StatusOK {
 		t.Fatalf("dump = %d %+v", full.status, full.errorBody)
 	}
@@ -492,7 +497,7 @@ func runLogicalRoundTrip(t *testing.T, srcImg, dstImg logicalImage) {
 		}
 	}
 
-	partial := src.dump(ctx, t, webserver.DumpRequest{Password: password, Databases: []string{"billing"}})
+	partial := src.dump(ctx, t, webserver.DumpRequest{Databases: []string{"billing"}})
 	if partial.status != http.StatusOK || strings.Contains(partial.body, "`shop`") ||
 		!strings.Contains(partial.body, "invoices") {
 		t.Errorf("partial dump = %d, contains shop: %v", partial.status, strings.Contains(partial.body, "`shop`"))

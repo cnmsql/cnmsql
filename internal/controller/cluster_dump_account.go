@@ -36,7 +36,7 @@ import (
 
 // dumpAccountSecretName is the Secret holding the cnmsql_dump password.
 func dumpAccountSecretName(cluster *mysqlv1alpha1.Cluster) string {
-	return cluster.Name + "-dump"
+	return cluster.DumpSecretName()
 }
 
 // Reasons of the DumpAccountReady condition.

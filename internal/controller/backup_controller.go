@@ -39,7 +39,6 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -470,9 +469,6 @@ func backupJob(
 	}
 	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical {
 		args = append(args, logicalWorkerArgs(backup, cluster)...)
-		// The dump account's password travels with the Job, not the instance
-		// Pod, so creating the account never changes (and restarts) the Pods.
-		env = append(env, secretEnv(backupworker.EnvDumpPassword, dumpAccountSecretName(cluster)))
 	}
 
 	// Operator-owned labels take precedence over the template's, so a user can

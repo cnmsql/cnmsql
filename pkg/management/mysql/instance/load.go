@@ -48,9 +48,12 @@ type LoadConfig struct {
 	Engine engine.Engine
 	// Socket is the local mysqld socket the client connects through.
 	Socket string
-	// User and Password are the control account's credentials.
-	User     string
-	Password string
+	// User and Password are the control account's credentials. PasswordFunc,
+	// when set, returns the account's current password and wins over Password,
+	// so a rotated credential Secret applies to the next use.
+	User         string
+	Password     string
+	PasswordFunc func() string
 	// WorkDir holds the per-load credentials file (default os.TempDir()).
 	WorkDir string
 	// LoadPath overrides the SQL client. Empty selects the engine's client.
@@ -63,6 +66,15 @@ func (c *Controller) SetLoadConfig(cfg LoadConfig) {
 		cfg.WorkDir = os.TempDir()
 	}
 	c.load = &cfg
+}
+
+// password is the control account's password to use now: the func wins over
+// the static field.
+func (c *LoadConfig) password() string {
+	if c.PasswordFunc != nil {
+		return c.PasswordFunc()
+	}
+	return c.Password
 }
 
 // maxDatabaseNameChars is the server's limit on a schema name, the same bound
@@ -84,6 +96,9 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 		return nil, errors.New("loads are not configured on this instance")
 	}
 	cfg := c.load
+	// Read the control password once, at the start of the load, so the
+	// validation and the credentials file use the same value.
+	pw := cfg.password()
 	databases, err := validateLoadRequest(req)
 	if err != nil {
 		return nil, err
@@ -97,10 +112,10 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s is not in this instance image", webserver.ErrLoadToolUnavailable, binary)
 	}
-	if cfg.User == "" || cfg.Password == "" {
+	if cfg.User == "" || pw == "" {
 		return nil, errors.New("load: the control account credentials are not configured")
 	}
-	if strings.ContainsAny(cfg.Password, "\n\r") {
+	if strings.ContainsAny(pw, "\n\r") {
 		return nil, errors.New("load: the control account password cannot contain a line break")
 	}
 
@@ -128,7 +143,7 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 		return nil, fmt.Errorf("load: creating work directory: %w", err)
 	}
 	defaults := filepath.Join(session.dir, "client.cnf")
-	if err := os.WriteFile(defaults, clientDefaultsFile(cfg.User, cfg.Password, cfg.Socket), 0o600); err != nil {
+	if err := os.WriteFile(defaults, clientDefaultsFile(cfg.User, pw, cfg.Socket), 0o600); err != nil {
 		return nil, fmt.Errorf("load: writing credentials file: %w", err)
 	}
 

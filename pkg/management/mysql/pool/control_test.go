@@ -71,3 +71,17 @@ func TestControlConfigDSNIsValid(t *testing.T) {
 		t.Errorf("control config produced invalid DSN: %v", err)
 	}
 }
+
+func TestControlConfigCarriesPasswordFunc(t *testing.T) {
+	f := func() string { return "x" }
+	cfg := ControlConfig(true, ControlParams{User: "u", PasswordFunc: f})
+	if cfg.PasswordFunc == nil || cfg.PasswordFunc() != "x" {
+		t.Fatal("PasswordFunc not propagated")
+	}
+	if (ControlParams{Password: "s"}).CurrentPassword() != "s" {
+		t.Fatal("static password fallback broken")
+	}
+	if (ControlParams{Password: "s", PasswordFunc: f}).CurrentPassword() != "x" {
+		t.Fatal("PasswordFunc must win over Password")
+	}
+}

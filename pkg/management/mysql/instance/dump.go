@@ -52,6 +52,10 @@ type DumpConfig struct {
 	WorkDir string
 	// DumpPath overrides the dump binary. Empty selects the engine's tool.
 	DumpPath string
+	// PasswordFunc returns the dump account's current password, read from the
+	// <cluster>-dump Secret the manager watches (design 030). DumpConfig has no
+	// static password: until the func yields one, StartDump refuses the dump.
+	PasswordFunc func() string
 }
 
 // SetDumpConfig enables POST /cluster/dump on the controller.
@@ -60,6 +64,15 @@ func (c *Controller) SetDumpConfig(cfg DumpConfig) {
 		cfg.WorkDir = os.TempDir()
 	}
 	c.dump = &cfg
+}
+
+// password is the dump account's password to use now, or "" while the manager
+// has not read the dump Secret yet.
+func (c *DumpConfig) password() string {
+	if c.PasswordFunc != nil {
+		return c.PasswordFunc()
+	}
+	return ""
 }
 
 // dumpExcludedSchemas are the server's system schemas, which are never dumped.
@@ -96,8 +109,9 @@ const (
 // StartDump checks that a dump can run, starts the dump client, and waits for
 // its first output. Every failure up to that point is returned here, so the
 // HTTP layer can still answer with a real status: a missing tool, a dump
-// already running, a missing account, a bad database list, or a client that
-// exits before writing anything (wrong password, unknown extra argument).
+// already running, a password not read from its Secret yet, a missing account,
+// a bad database list, or a client that exits before writing anything (a bad
+// password, an unknown extra argument).
 func (c *Controller) StartDump(ctx context.Context, req webserver.DumpRequest) (webserver.DumpSession, error) {
 	if c.dump == nil || c.dump.Engine == nil {
 		return nil, errors.New("logical dumps are not configured on this instance")
@@ -114,7 +128,14 @@ func (c *Controller) StartDump(ctx context.Context, req webserver.DumpRequest) (
 		return nil, fmt.Errorf("%w: %s is not in this instance image; move the cluster to an image tag "+
 			"that ships it (see the logical backups documentation)", webserver.ErrDumpToolUnavailable, binary)
 	}
-	if strings.ContainsAny(req.Password, "\n\r") {
+	// The dump account's password comes from the <cluster>-dump Secret the
+	// manager watches (design 030); until it has been read, refuse the dump.
+	password := cfg.password()
+	if password == "" {
+		return nil, fmt.Errorf("%w: the dump account password has not been read from its Secret yet",
+			webserver.ErrInvalidDumpRequest)
+	}
+	if strings.ContainsAny(password, "\n\r") {
 		return nil, fmt.Errorf("%w: the dump account password cannot contain a line break",
 			webserver.ErrInvalidDumpRequest)
 	}
@@ -143,7 +164,7 @@ func (c *Controller) StartDump(ctx context.Context, req webserver.DumpRequest) (
 		return nil, fmt.Errorf("dump: creating work directory: %w", err)
 	}
 	defaults := filepath.Join(session.dir, "client.cnf")
-	credentials := clientDefaultsFile(engine.DumpAccountName, req.Password, cfg.Socket)
+	credentials := clientDefaultsFile(engine.DumpAccountName, password, cfg.Socket)
 	if err := os.WriteFile(defaults, credentials, 0o600); err != nil {
 		return nil, fmt.Errorf("dump: writing credentials file: %w", err)
 	}

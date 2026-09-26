@@ -177,7 +177,7 @@ func dumpFromNewerSeries(source, target string) bool {
 
 // importArgs builds the import init container's command.
 func importArgs(plan clusterPlan) []string {
-	args := make([]string, 0, 9+len(plan.Import.Databases)+len(plan.Import.PostImportSQL))
+	args := make([]string, 0, 10+len(plan.Import.Databases)+len(plan.Import.PostImportSQL))
 	args = append(args,
 		managerInstanceCmd, "import",
 		"--mysqld="+mysqldBinary,
@@ -187,6 +187,9 @@ func importArgs(plan clusterPlan) []string {
 		"--bucket="+plan.Import.Bucket,
 		"--dump-key="+plan.Import.DumpKey,
 		"--manifest-key="+plan.Import.ManifestKey,
+		// import reads the temporary server's root password from the cluster's
+		// credential Secrets through the Kubernetes API.
+		"--cluster-name="+plan.ClusterName,
 	)
 	for _, db := range plan.Import.Databases {
 		args = append(args, "--database="+escapeArgVars(db))

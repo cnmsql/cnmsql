@@ -38,6 +38,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 | 026 | [MariaDB Support (Engine Flavors)](026-mariadb-support.md) | proposed | M-MDB | Second database engine behind an immutable `spec.flavor` (`mysql`\|`mariadb`). Introduces a `pkg/engine` abstraction owning every engine-divergent decision (versioning/series chains, replication SQL dialect, GTID model, semi-sync, bootstrap commands, physical-backup tool). MariaDB async/semi-sync clusters get the full feature set; Group Replication stays MySQL-only (MariaDB Galera is out of scope). Two-commit refactor keeps MySQL byte-identical, then adds MariaDB additively. |
 | 028 | [Logical Backups](028-logical-backups.md) | accepted | M-LB | `Backup.spec.method: logical`: a consistent `mysqldump`/`mariadb-dump` of the application schemas, run by the source instance manager as a read-only `cnmsql_dump@localhost` account (created on existing clusters by the reconcile loop, no Pod restart) and streamed over mTLS to the worker, zstd-compressed to `dump.sql.zst` + `logical.json` (a distinct manifest, so raw-S3 recovery and PITR retention never see dumps). Restore via `bootstrap.initdb.import` (fresh cluster on any supported series, optional database filter), then a `LogicalRestore` CR for partial restores into a running cluster. Phase 0 changes the `cnmsql/containers` images to keep the dump tools they strip today. Issue #47. |
 | 029 | [Logical Restore](029-logical-restore.md) | accepted | M-LB.3 | Phase 3 sub-design of 028: a one-shot `LogicalRestore` CR loads selected databases from a logical backup into a running cluster. A worker Job streams the dump to the primary's instance manager (`POST /cluster/load`, mTLS, `Expect: 100-continue`), which checks it is a writable primary, applies `FailIfExists`/`DropAndRecreate` and loads over the socket as the control account: a least-privilege account cannot load definers through the binlog (needs `SUPER`). Through the binlog, not atomic, one attempt, progress in the worker logs. |
+| 030 | [Instance Credentials from the API](030-instance-credentials-from-api.md) | accepted | — | The instance manager reads its MySQL account passwords from the cluster's credential Secrets through the Kubernetes API (`get`/`watch` by name, no `list`) instead of `MYSQL_*_PASSWORD` env vars. Secret names come from the Cluster object, a watch plus a 5-minute re-get follows rotation, and long-lived consumers read the current value per connection. Dropping the env vars rolls every instance once (accepted, in the upgrade notes). The manager reads the dump Secret itself, so the worker and `POST /cluster/dump` carry no password, and the unused replication password path is removed (X.509-only). Issue #128. |
 
 ## Quick Navigation by Topic
 
@@ -45,7 +46,7 @@ Quick-reference index of every design document. Use this to find relevant plans 
 
 **Replication & HA:** 006 (switchover/failover) → 007 (dynamic role) → 017 (primary lease) → 022 (group replication)
 
-**Status Authorization & Security:** 020 (status authz webhook) → 026 (instance Pod webhook)
+**Status Authorization & Security:** 020 (status authz webhook) → 026 (instance Pod webhook) → 030 (credentials from the API)
 
 **Deployment Topology:** 021 (cluster-wide vs namespaced)
 

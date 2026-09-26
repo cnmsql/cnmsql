@@ -130,15 +130,13 @@ func TestLogicalBackupCreatesDumpWorkerJob(t *testing.T) {
 	if !strings.Contains(args, "/dump.sql.zst") || !strings.Contains(args, "/logical.json") {
 		t.Fatalf("worker keys are not the logical ones: %s", args)
 	}
-	var password *corev1.EnvVar
-	for i := range container.Env {
-		if container.Env[i].Name == backupworker.EnvDumpPassword {
-			password = &container.Env[i]
+	// The worker carries no dump password any more (design 030): the instance
+	// manager reads the <cluster>-dump Secret itself, so no env var may
+	// reference it.
+	for _, env := range container.Env {
+		if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && env.ValueFrom.SecretKeyRef.Name == "demo-dump" {
+			t.Fatalf("the dump password Secret must not reach the worker: %+v", env)
 		}
-	}
-	if password == nil || password.ValueFrom == nil || password.ValueFrom.SecretKeyRef == nil ||
-		password.ValueFrom.SecretKeyRef.Name != "demo-dump" || password.ValueFrom.SecretKeyRef.Key != "password" {
-		t.Fatalf("dump password env = %+v", password)
 	}
 
 	updated := getBackup(t, r)
@@ -155,24 +153,6 @@ func TestLogicalBackupFallsBackToClusterLogicalOptions(t *testing.T) {
 	args := logicalWorkerArgs(logicalBackup(), cluster)
 	if !slices.Equal(args, []string{"--method=logical", "--dump-arg=--skip-extended-insert"}) {
 		t.Fatalf("args = %v", args)
-	}
-}
-
-func TestPhysicalBackupJobHasNoDumpPassword(t *testing.T) {
-	t.Parallel()
-	r := backupReconcilerWith(t, dumpAccountReady(baseBackupCluster()), baseBackup(), readyReplicaPod())
-	reconcileBackup(t, r, baseBackup())
-	job := &batchv1.Job{}
-	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample-backup"}, job); err != nil {
-		t.Fatal(err)
-	}
-	for _, env := range job.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == backupworker.EnvDumpPassword {
-			t.Fatal("a physical backup Job must not carry the dump password")
-		}
-	}
-	if slices.Contains(job.Spec.Template.Spec.Containers[0].Args, "--method=logical") {
-		t.Fatal("physical Job runs the logical worker")
 	}
 }
 

@@ -236,6 +236,31 @@ once during the operator upgrade. Multi-instance clusters already carry the hook
 and are not rolled for this change. Plan the operator upgrade for a window in
 which a brief outage of your single-instance clusters is acceptable.
 
+### Instances roll once: passwords move from env vars to the API
+
+Instance managers now read their MySQL account passwords from the cluster's
+credential Secrets through the Kubernetes API, instead of from `MYSQL_*_PASSWORD`
+environment variables. The instance Pods no longer carry those variables, so the
+Pod template changes once: after upgrading the operator, every instance restarts
+once through the normal rolling update (replicas first, then a switchover, then
+the primary), even with `inPlaceInstanceManagerUpdates` enabled.
+
+Each instance's ServiceAccount can `get` and `watch` only its own cluster's
+credential Secrets, by name, and cannot `list` Secrets.
+
+A changed credential Secret is now picked up without a restart. Changing the
+Secret does not change the MySQL account: run `ALTER USER` first, then update the
+Secret.
+
+Logical backups whose source instance has not rolled yet fail during the
+rollout, because the backup worker no longer sends the dump account's password.
+Avoid taking logical backups until every instance has restarted. Scheduled ones
+simply run again at their next slot.
+
+The replication account is now X.509-only: the unused replication password code
+path is gone. Clusters managed by the operator already replicate over mTLS, so
+this needs no action.
+
 ## Troubleshooting
 
 **The rollout is stuck in `WaitingForUser`.** The primary is stale and
