@@ -324,7 +324,7 @@ func TestResolveImportWarnsOnNewerSeries(t *testing.T) {
 
 func importTestPlan(t *testing.T, cluster *mysqlv1alpha1.Cluster, dumpKey string) clusterPlan {
 	t.Helper()
-	r := &ClusterReconciler{}
+	r := &ClusterReconciler{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).Build()}
 	plan, err := r.buildPlan(context.Background(), cluster)
 	if err != nil {
 		t.Fatal(err)
@@ -347,20 +347,25 @@ func TestImportContainerOnlyOnTheBootstrapPrimary(t *testing.T) {
 	cluster := baseCluster()
 	cluster.Spec.Instances = 2
 	plan := importTestPlan(t, cluster, importDumpKey)
-	r := &ClusterReconciler{}
+	r := &ClusterReconciler{Scheme: testScheme(t)}
 
 	primary := r.podSpec(cluster, plan, plan.instanceFor(cluster, 1))
-	names := func(spec corev1.PodSpec) []string {
-		out := make([]string, 0, len(spec.InitContainers))
-		for _, c := range spec.InitContainers {
-			out = append(out, c.Name)
-		}
-		return out
+	if got := containerNames(primary.InitContainers); !slices.Equal(got, []string{bootstrapControllerName}) {
+		t.Fatalf("primary init containers = %v, want only %s", got, bootstrapControllerName)
 	}
-	if got := names(primary); !slices.Equal(got, []string{"bootstrap-controller", "bootstrap", importContainerName}) {
-		t.Fatalf("primary init containers = %v", got)
+	inst := plan.instanceFor(cluster, 1)
+	job, err := r.bootstrapJob(cluster, plan, inst, r.bootstrapModeFor(cluster, plan, inst), instancePVC(cluster, inst.PVCName))
+	if err != nil {
+		t.Fatal(err)
 	}
-	imp := primary.InitContainers[2]
+	jobSpec := job.Spec.Template.Spec
+	if got := containerNames(jobSpec.InitContainers); !slices.Equal(got, []string{"bootstrap-controller", "initdb"}) {
+		t.Fatalf("import job init containers = %v", got)
+	}
+	imp := jobSpec.Containers[0]
+	if imp.Name != "import" {
+		t.Fatalf("import job main container = %q, want import", imp.Name)
+	}
 	for _, want := range []string{
 		"import", "--dump-key=" + importDumpKey, "--database=shop",
 		// $ is escaped so the kubelet does not expand it.
@@ -380,42 +385,20 @@ func TestImportContainerOnlyOnTheBootstrapPrimary(t *testing.T) {
 		}
 	}
 
-	replica := r.podSpec(cluster, plan, plan.instanceFor(cluster, 2))
-	if got := names(replica); slices.Contains(got, importContainerName) {
-		t.Errorf("a replica must not import: %v", got)
-	}
-}
-
-// The import container never moves the Pod template hash: the primary is
-// not rolled when the cluster becomes established and the container goes,
-// nor when a newer dump shows up under the source.
-func TestImportContainerDoesNotMoveTheTemplateHash(t *testing.T) {
-	t.Parallel()
-	cluster := baseCluster()
-	r := &ClusterReconciler{}
-	hash := func(plan clusterPlan) string {
-		inst := plan.instanceFor(cluster, 1)
-		labels := labelsFor(cluster, inst.Name, roleOf(inst))
-		annotations, err := r.podAnnotations(cluster, plan, inst, labels, r.podSpec(cluster, plan, inst))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return annotations[podTemplateHashAnnotation]
-	}
-	without := hash(importTestPlan(t, cluster, ""))
-	with := hash(importTestPlan(t, cluster, importDumpKey))
-	newer := hash(importTestPlan(t, cluster, "clusters/prod/nightly/b-2/dump.sql.zst"))
-	if with != without || newer != without {
-		t.Errorf("template hash moved: without=%s with=%s newer=%s", without, with, newer)
+	replica := plan.instanceFor(cluster, 2)
+	if mode := r.bootstrapModeFor(cluster, plan, replica); mode != bootstrapModeJoin {
+		t.Errorf("replica bootstrap mode = %q, want join", mode)
 	}
 }
 
 func TestImportPhaseReason(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()
-	o := observedCluster{}
+	o := observedCluster{BootstrapJobs: []bootstrapJobState{
+		{Instance: "demo-1", Job: "demo-1-import", Mode: bootstrapModeImport},
+	}}
 	o.computeClusterPhase(cluster, clusterPlan{Instances: 1, Import: &importPlan{}})
-	if !strings.Contains(o.PhaseReason, "import the logical backup") {
+	if !strings.Contains(o.PhaseReason, "bootstrap Job demo-1-import (import) of demo-1") {
 		t.Errorf("phase reason = %q", o.PhaseReason)
 	}
 }

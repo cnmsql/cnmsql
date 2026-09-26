@@ -24,11 +24,11 @@ flowchart LR
         Secrets["Generated/User Secrets"]
         TLS["cert-manager TLS"]
         PVCs["PVC per instance"]
+        Jobs["Bootstrap Job per instance"]
         Pods["Pod per instance"]
         Services["Instance + role Services"]
     end
     subgraph Pod["Instance Pod"]
-        Init["initdb / restore / join"]
         Manager["Instance Manager"]
         MySQL["mysqld"]
     end
@@ -37,10 +37,11 @@ flowchart LR
     Operator --> Secrets
     Operator --> TLS
     Operator --> PVCs
+    Operator --> Jobs
     Operator --> Pods
     Operator --> Services
+    Jobs --> Pods
     Pods --> Pod
-    Init --> MySQL
     Manager <--> MySQL
     Manager -->|"mTLS /status"| Operator
     Operator -->|"status + conditions"| Cluster
@@ -82,6 +83,8 @@ predictable names:
 - Pod: `<cluster>-1`, `<cluster>-2`, and so on.
 - PVC: one data volume per instance, retained during scale-down. See
   [Storage](./storage.md) for configuration and resizing.
+- Bootstrap Job: one `<instance>-<mode>` Job per instance volume, which runs
+  before the instance Pod exists (see [Instance bootstrap](#instance-bootstrap)).
 - Headless per-instance Service: stable DNS for instance-to-instance traffic.
 - Secrets: root, application, replication, backup, and control credentials when
   the user does not provide them.
@@ -91,6 +94,42 @@ predictable names:
 The operator labels owned resources with the cluster and instance identity.
 Role labels are dynamic: the current primary receives `role=primary`, and the
 other ready instances receive `role=replica`.
+
+## Instance bootstrap
+
+An instance's data volume comes up in a fixed order: the operator creates the
+PVC, bootstraps it with a one-shot Job, and only then creates the instance Pod.
+The Job is named `<instance>-<mode>` — `initdb` (fresh data directory),
+`restore` (physical recovery and PITR), `join` (replica clone), or `import`
+(initdb then logical load) — mounts the volume, and runs the same
+`manager instance …` command under the instance's ServiceAccount. It follows
+the instance's scheduling so the volume binds where the Pod can run, and the
+Job and the Pod never run at the same time.
+
+The PVC annotation `mysql.cnmsql.co/pvc-status` records the volume's state:
+`initializing` on creation, `ready` once the Job succeeded and the operator
+deleted it. The cluster waits for a running Job in phase `Pending`, with a
+reason like "Waiting for bootstrap Job cluster-1 (restore) of cluster-1".
+
+A failed Job stays for inspection and is surfaced on the Cluster:
+
+- the `BootstrapFailed` condition turns True with the Job's own reason (for
+  example `BackoffLimitExceeded` or `DeadlineExceeded`);
+- the phase becomes `Blocked` (or `Degraded` when a replica's join fails on an
+  established cluster), with a reason naming every failed Job;
+- a `BootstrapJobFailed` Warning Event records the transition.
+
+The Job is replaced only when the spec it was built from changes — a different
+recovery source, a longer deadline. To retry with the same spec, delete it by
+hand:
+
+```bash
+kubectl logs job/<instance>-<mode>
+kubectl delete job <instance>-<mode>
+```
+
+Re-initialising an instance or scaling it down deletes its bootstrap Jobs
+together with its Pod and PVC.
 
 ## Bootstrap modes
 
@@ -118,7 +157,8 @@ Each Pod runs a cnmsql instance manager as PID 1. It is responsible for:
 
 - rendering version-aware MySQL configuration;
 - starting and stopping mysqld cleanly;
-- initializing or restoring the data directory in init containers;
+- bootstrapping the data directory (initdb, restore, join, import) in the
+  instance's one-shot bootstrap Job;
 - exposing an mTLS control API for status and backup streaming;
 - running an in-pod role reconciler that promotes or follows based on Cluster
   status;

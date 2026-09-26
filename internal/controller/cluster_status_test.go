@@ -77,15 +77,24 @@ func TestClusterEstablished(t *testing.T) {
 
 func TestEstablishedPhase(t *testing.T) {
 	t.Parallel()
+	// Only phases a cluster can hold once its initial provisioning has
+	// completed may backfill EstablishedAt. Degraded is reachable only after
+	// the cluster was Ready; every other phase — Blocked (exactly what a failed
+	// FIRST bootstrap persists), FullOutage, Switchover, FailingOver, Upgrading,
+	// WaitingForUser, and unknown values — must never imply establishment.
 	tests := map[string]bool{
-		"":                         false,
-		topology.PhasePending:      false,
-		topology.PhaseProvisioning: false,
-		topology.PhaseReady:        true,
-		topology.PhaseDegraded:     true,
-		topology.PhaseSwitchover:   true,
-		topology.PhaseFailingOver:  true,
-		topology.PhaseBlocked:      true,
+		"":                           false,
+		topology.PhasePending:        false,
+		topology.PhaseProvisioning:   false,
+		topology.PhaseReady:          true,
+		topology.PhaseDegraded:       true,
+		topology.PhaseBlocked:        false,
+		topology.PhaseFullOutage:     false,
+		topology.PhaseSwitchover:     false,
+		topology.PhaseFailingOver:    false,
+		topology.PhaseUpgrading:      false,
+		topology.PhaseWaitingForUser: false,
+		"SomethingUnheardOf":         false,
 	}
 	for phase, want := range tests {
 		if got := establishedPhase(phase); got != want {
@@ -626,6 +635,63 @@ func TestPatchStatusEstablishedAtIsSticky(t *testing.T) {
 	}
 }
 
+// TestPatchStatusBackfillsEstablishedAtFromPersistedPhase drives patchStatus
+// the way the upgrade backfill runs: the observation is not Ready, so the only
+// evidence that the cluster had completed initial provisioning is its persisted
+// phase. Only phases that can exist solely after a cluster was once Ready (Ready
+// itself, and Degraded) may backfill EstablishedAt; a persisted Blocked is
+// exactly what a failed FIRST bootstrap looks like, and stamping it would make
+// the bootstrap-Job retry refuse to run after the user fixes the spec.
+func TestPatchStatusBackfillsEstablishedAtFromPersistedPhase(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		previousPhase   string
+		wantEstablished bool
+	}{
+		{"blocked first bootstrap stays unestablished", topology.PhaseBlocked, false},
+		{"unknown phase stays unestablished", "SomethingUnheardOf", false},
+		{"ready phase is backfilled", topology.PhaseReady, true},
+		{"degraded phase is backfilled", topology.PhaseDegraded, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			cluster := baseCluster()
+			cluster.Spec.Instances = 1
+			cluster.Status.Phase = tc.previousPhase
+			scheme := testScheme(t)
+			c := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+				WithObjects(cluster).
+				Build()
+			reconciler := &ClusterReconciler{Client: c, Scheme: scheme}
+
+			// Observed not Ready: only the persisted phase may imply the
+			// cluster had completed initial provisioning.
+			if err := reconciler.patchStatus(ctx, cluster, observedCluster{
+				Plan:           testPlan(),
+				Phase:          topology.PhaseProvisioning,
+				Ready:          false,
+				ReadyInstances: 0,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := &mysqlv1alpha1.Cluster{}
+			if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantEstablished && got.Status.EstablishedAt == nil {
+				t.Fatalf("EstablishedAt not backfilled from persisted phase %q", tc.previousPhase)
+			}
+			if !tc.wantEstablished && got.Status.EstablishedAt != nil {
+				t.Fatalf("EstablishedAt = %v backfilled from persisted phase %q, want nil", got.Status.EstablishedAt, tc.previousPhase)
+			}
+		})
+	}
+}
+
 // TestPatchStatusPublishesLabelSelector verifies the scale sub-resource
 // selector is published on every status patch so autoscalers (VPA/HPA) can
 // discover the cluster's instance Pods. The selector is derived from the
@@ -906,6 +972,72 @@ func TestPatchStatusEmitsObservedGroupFailover(t *testing.T) {
 	default:
 		t.Fatal("expected a FailoverObserved event")
 	}
+}
+
+func TestComputeClusterPhaseReportsBootstrapJobs(t *testing.T) {
+	t.Parallel()
+	failed := bootstrapJobState{Instance: "demo-1", Job: "demo-1-restore", Mode: bootstrapModeRestore,
+		Failed: true, Reason: "DeadlineExceeded", Message: "Bootstrap Job failed: DeadlineExceeded"}
+	running := bootstrapJobState{Instance: "demo-1", Job: "demo-1-restore", Mode: bootstrapModeRestore}
+	now := metav1.Now()
+
+	for _, tc := range []struct {
+		name            string
+		jobs            []bootstrapJobState
+		established     bool
+		wantPhase       string
+		wantReason      string
+		wantProgressing bool
+	}{
+		{"failed before established", []bootstrapJobState{failed}, false, topology.PhaseBlocked, "demo-1-restore", false},
+		{"failed after established", []bootstrapJobState{failed}, true, topology.PhaseDegraded, "DeadlineExceeded", true},
+		{"running", []bootstrapJobState{running}, false, topology.PhasePending, "Waiting for bootstrap Job demo-1-restore", true},
+	} {
+		cluster := baseCluster()
+		if tc.established {
+			cluster.Status.EstablishedAt = &now
+		}
+		o := observedCluster{BootstrapJobs: tc.jobs, Progressing: true}
+		o.computeClusterPhase(cluster, testPlan())
+		if o.Phase != tc.wantPhase || !strings.Contains(o.PhaseReason, tc.wantReason) {
+			t.Errorf("%s: phase %q reason %q, want %q containing %q", tc.name, o.Phase, o.PhaseReason, tc.wantPhase, tc.wantReason)
+		}
+		if o.Progressing != tc.wantProgressing {
+			t.Errorf("%s: progressing %t, want %t", tc.name, o.Progressing, tc.wantProgressing)
+		}
+	}
+}
+
+func TestPatchStatusSetsBootstrapFailedCondition(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	recorder := record.NewFakeRecorder(10)
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&mysqlv1alpha1.Cluster{}).WithObjects(cluster).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme, Recorder: recorder}
+	observed := observedCluster{
+		Plan:          testPlan(),
+		InstanceNames: []string{"demo-1"},
+		Phase:         topology.PhaseBlocked,
+		BootstrapJobs: []bootstrapJobState{{Instance: "demo-1", Job: "demo-1-restore", Failed: true,
+			Reason: "DeadlineExceeded", Message: "Bootstrap Job failed: DeadlineExceeded"}},
+	}
+
+	if err := r.patchStatus(ctx, cluster, observed); err != nil {
+		t.Fatal(err)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "DeadlineExceeded" {
+		t.Fatalf("BootstrapFailed condition = %+v", cond)
+	}
+	// patchStatus may emit a phase-transition event before the bootstrap one, so
+	// drain the recorder until the BootstrapJobFailed event or the buffer is empty.
+	assertEvent(t, recorder, "BootstrapJobFailed")
 }
 
 func TestObservedGroupFailoverExcludesPlannedAndBootstrapChanges(t *testing.T) {

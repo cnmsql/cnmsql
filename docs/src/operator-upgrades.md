@@ -245,12 +245,55 @@ Pod template changes once: after upgrading the operator, every instance restarts
 once through the normal rolling update (replicas first, then a switchover, then
 the primary), even with `inPlaceInstanceManagerUpdates` enabled.
 
+The same roll removes the `bootstrap` and `import` init containers from the Pod
+template: an instance's data volume is now bootstrapped by a one-shot Job
+(`<instance>-initdb`, `<instance>-restore`, `<instance>-join`,
+`<instance>-import`) that runs before the Pod exists (see
+[Cluster lifecycle](./cluster-lifecycle.md#instance-bootstrap)). Both changes
+land in the same single restart per instance.
+
 Each instance's ServiceAccount can `get` and `watch` only its own cluster's
 credential Secrets, by name, and cannot `list` Secrets.
 
 A changed credential Secret is now picked up without a restart. Changing the
 Secret does not change the MySQL account: run `ALTER USER` first, then update the
 Secret.
+
+**Upgrade when no instance is initialising.** An instance whose old Pod is
+still running its `bootstrap` init container when the operator upgrades keeps a
+volume without the bootstrap annotation, which counts as bootstrapped. If the
+roll recreates that Pod before the init container has finished, the new Pod
+starts mysqld on an unfinished data directory. On an established cluster
+auto-reinit re-clones a replica that ends up there; a primary must be
+re-initialised by hand.
+
+**Recovered clusters no longer need their source Backup.** A recovery source is
+resolved only until the bootstrap primary's volume is bootstrapped. Clusters
+that were blocked on every reconcile because their source Backup was deleted
+recover by themselves after the upgrade, and the Backup, its object store and
+its Secrets can go.
+
+**`spec.backup.jobTemplate` now reaches the bootstrap Jobs.** Its
+`priorityClassName` (over the instance's) and `tolerations` (added to the
+instance's) also apply to bootstrap Jobs; `resources` keep sizing the restore
+only; the template's `nodeSelector` and `affinity` are not applied, because
+bootstrap Jobs follow the instance's scheduling so the data volume binds where
+the instance Pod can run.
+
+**Alerts on `Init:CrashLoopBackOff` must move.** A failing bootstrap no longer
+shows as `Init:CrashLoopBackOff` on the instance Pod. Alert on the
+`BootstrapFailed` condition or the `BootstrapJobFailed` event instead (see
+[Troubleshooting](./troubleshooting.md#a-bootstrap-job-failed)).
+
+**Never downgrade below 0.8.0 while a bootstrap Job is active.** The old
+operator ignores the bootstrap Jobs and the volume annotation: it would create
+the instance Pod while the Job still mounts the volume, and on an RWO volume
+both can land on the same node, so two processes would write one data
+directory. Before downgrading, this must show no active Job:
+
+```bash
+kubectl get jobs -A -l mysql.cnmsql.co/bootstrap-instance
+```
 
 Logical backups whose source instance has not rolled yet fail during the
 rollout, because the backup worker no longer sends the dump account's password.

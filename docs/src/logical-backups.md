@@ -38,7 +38,7 @@ flowchart LR
     Job["Backup Worker Job"]
     Source["Source Instance\ninstance-manager\nmysqldump / mariadb-dump"]
     Store["S3-compatible Object Store"]
-    Import["Import Init Container\n(new cluster)"]
+    Import["Import Bootstrap Job\n(new cluster)"]
 
     BackupCR --> Operator
     Operator --> Job
@@ -260,8 +260,8 @@ spec:
 - `databases` is optional. When set, only those databases are loaded from the
   dump. Each one must be in the Backup's `status.databases`.
 - `postImportSQL` is optional. The statements run as `root`, in order, after the
-  load. They are passed to the init container as arguments, so they show in the
-  Pod spec: don't put passwords in them.
+  load. They are passed to the import bootstrap Job as arguments, so they show
+  in the Job spec: don't put passwords in them.
 - `initdb` still creates its application database and owner. A dump that holds
   a database of the same name is loaded into it.
 
@@ -291,8 +291,10 @@ data directory, and an import loads SQL.
 
 ### How an import runs
 
-The first instance gets an extra init container, `import`, which runs after
-`initdb`. It:
+The first instance's data volume is bootstrapped by a one-shot Job named
+`<instance>-import`, which runs before the instance Pod exists. It initialises
+the data directory with `initdb` as an init container, then loads the dump in
+its `import` main container. It:
 
 1. starts a temporary server over the new data directory, with networking and
    binary logging off, and the event scheduler stopped;
@@ -305,17 +307,17 @@ The first instance gets an extra init container, `import`, which runs after
 Replicas then clone the loaded primary as usual. The load is not in the binlog
 and records no GTID, so the new cluster's replication history starts after it.
 
-If the Pod restarts half-way, the import starts over: the dump drops and
+If the Job is interrupted, the import starts over: the dump drops and
 recreates every table it loads, so a second run overwrites the first. Once the
 marker is written, a restart skips the import.
 
-The `import` container uses the cluster's `resources`, not the backup Job's: the
-temporary server has the same buffer pool as the real one. Large dumps take a
-while to load, and the instance stays in `Init` until the load is done. Follow
-it with:
+The `import` container uses the cluster's `resources`, not the backup job
+template's: the temporary server has the same buffer pool as the real one.
+Large dumps take a while to load, and the cluster stays `Pending` until the
+load is done. Follow it with:
 
 ```bash
-kubectl logs shop-84-1 -c import -f
+kubectl logs job/shop-84-1-import -f
 ```
 
 While the Backup is still running, or while the object store can't be read, the

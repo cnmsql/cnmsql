@@ -129,7 +129,7 @@ _Appears in:_
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take backups from, defaults to a standby if available. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `xtrabackupOptions` _string array_ | XtrabackupOptions are extra flags passed to xtrabackup. |  | Optional: \{\} <br /> |
 | `logicalOptions` _string array_ | LogicalOptions are extra flags passed to the dump client (mysqldump /<br />mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs<br />replaces them. The operator does not validate them: flags that change the<br />output format or GTID handling break restore. |  | Optional: \{\} <br /> |
-| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is the default shaping applied to backup worker Jobs created for<br />this cluster: resources, scheduling (nodeSelector/tolerations/affinity/<br />priorityClassName), extra labels/annotations, and the finished-Job TTL. A<br />per-Backup spec.jobTemplate overrides it field by field. During recovery the<br />resources from this template are also applied to the restore init container. |  | Optional: \{\} <br /> |
+| `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is the default shaping applied to backup worker Jobs created for<br />this cluster: resources, scheduling (nodeSelector/tolerations/affinity/<br />priorityClassName), extra labels/annotations, and the finished-Job TTL. A<br />per-Backup spec.jobTemplate overrides it field by field. During recovery the<br />resources from this template are also applied to the restore Job. |  | Optional: \{\} <br /> |
 | `continuousArchiving` _[ContinuousArchivingConfiguration](#continuousarchivingconfiguration)_ | ContinuousArchiving configures continuous binary-log archiving to the<br />object store, the foundation for point-in-time recovery. Disabled by<br />default. |  | Optional: \{\} <br /> |
 
 
@@ -137,12 +137,12 @@ _Appears in:_
 
 
 
-BackupJobTemplate is a curated subset of the pod configuration operators may
-set on the backup worker Job. It deliberately does not expose a full
-PodTemplateSpec: the operator owns the bootstrap init container, the
-scratch/TLS volumes and mounts, the worker command and args, and the
-object-store credential env, and a free-form template would let those be
-broken. Every field is optional; a per-Backup template overrides the
+BackupJobTemplate is a curated subset of the pod configuration applied to
+the backup, restore and instance bootstrap worker Jobs. It deliberately does
+not expose a full PodTemplateSpec: the operator owns the bootstrap init
+container, the scratch/TLS volumes and mounts, the worker command and args,
+and the object-store credential env, and a free-form template would let
+those be broken. Every field is optional; a per-Backup template overrides the
 cluster-wide spec.backup.jobTemplate field by field.
 
 
@@ -157,11 +157,11 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `ttl` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | TTL is how long the finished backup worker Job is kept before Kubernetes<br />garbage-collects it (its ttlSecondsAfterFinished). When unset on both the<br />Backup and the cluster, the operator keeps the Job for 24h. A zero duration<br />deletes the Job as soon as it finishes. |  | Optional: \{\} <br /> |
 | `activeDeadline` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | ActiveDeadline bounds how long the backup worker Job may run (its<br />activeDeadlineSeconds). A worker still running past it is killed and the<br />Backup fails with reason DeadlineExceeded, so a stalled upload or source<br />stream surfaces as a failure instead of a Backup left running forever. When<br />unset on both the Backup and the cluster, the operator uses 24h. A zero<br />duration disables the deadline. |  | Optional: \{\} <br /> |
-| `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#resourcerequirements-v1-core)_ | Resources sets the resource requests and limits on the backup worker<br />container. Streaming xbstream can be memory-hungry, so operators often want<br />explicit limits. During recovery the same requests/limits from the<br />cluster-level template are applied to the restore init container. |  | Optional: \{\} <br /> |
-| `nodeSelector` _object (keys:string, values:string)_ | NodeSelector constrains the backup worker Job's pod to nodes with matching<br />labels, e.g. to keep backups off the critical nodes. |  | Optional: \{\} <br /> |
-| `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#toleration-v1-core) array_ | Tolerations allow the backup worker Job's pod to schedule onto tainted<br />nodes. |  | Optional: \{\} <br /> |
-| `affinity` _[Affinity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#affinity-v1-core)_ | Affinity sets the affinity/anti-affinity rules for the backup worker Job's<br />pod. |  | Optional: \{\} <br /> |
-| `priorityClassName` _string_ | PriorityClassName sets the pod priority for the backup worker Job. |  | Optional: \{\} <br /> |
+| `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#resourcerequirements-v1-core)_ | Resources sets the resource requests and limits on the backup worker<br />container. Streaming xbstream can be memory-hungry, so operators often want<br />explicit limits. During recovery the cluster-level template's<br />requests/limits also apply to the restore Job. The other instance<br />bootstrap Jobs (initdb, join, import) always use `spec.resources`. |  | Optional: \{\} <br /> |
+| `nodeSelector` _object (keys:string, values:string)_ | NodeSelector constrains the backup worker Job's pod to nodes with matching<br />labels, e.g. to keep backups off the critical nodes. Not applied to<br />instance bootstrap Jobs: they follow the instance's scheduling so the<br />data volume binds where the instance can run. |  | Optional: \{\} <br /> |
+| `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#toleration-v1-core) array_ | Tolerations allow the backup worker Job's pod to schedule onto tainted<br />nodes. Added to the instance's tolerations on instance bootstrap Jobs. |  | Optional: \{\} <br /> |
+| `affinity` _[Affinity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#affinity-v1-core)_ | Affinity sets the affinity/anti-affinity rules for the backup worker Job's<br />pod. Not applied to instance bootstrap Jobs: they follow the instance's<br />scheduling so the data volume binds where the instance can run. |  | Optional: \{\} <br /> |
+| `priorityClassName` _string_ | PriorityClassName sets the pod priority for the backup worker Job. Also<br />applies to instance bootstrap Jobs, over `spec.priorityClassName`. |  | Optional: \{\} <br /> |
 | `labels` _object (keys:string, values:string)_ | Labels are merged onto the generated Job and its pod template. Operator<br />labels take precedence on conflict. |  | Optional: \{\} <br /> |
 | `annotations` _object (keys:string, values:string)_ | Annotations are merged onto the generated Job and its pod template. |  | Optional: \{\} <br /> |
 
@@ -2521,5 +2521,6 @@ CNMSQL - CloudNative for MySQL resources use Kubernetes `metav1.Condition` entri
 | `Ready` | Resource is fully functional. |
 | `Progressing` | Resource is being created, updated, backed up, restored, or changed. |
 | `Degraded` | Resource failed to reach or maintain the desired state. |
+| `BootstrapFailed` | On a Cluster: an instance bootstrap Job (initdb, restore, join, import) has failed and was not replaced. Delete the Job, or change the spec it was built from, to retry. |
 
 

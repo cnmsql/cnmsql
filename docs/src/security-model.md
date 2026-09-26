@@ -152,10 +152,13 @@ RoleBinding. The Role grants:
   `<cluster>-control`, `<cluster>-backup` and `<cluster>-dump`, or the
   user-provided names. The rule never grants `list`, and it never names
   object-store or replication Secrets: object-store credentials stay in worker
-  Jobs, and replication is X.509-only.
+  Jobs and in the bootstrap Jobs that restore or import a data directory, and
+  replication is X.509-only.
 
 The instance manager reads its MySQL account passwords from these Secrets
-through the Kubernetes API (see [Database accounts](#database-accounts)).
+through the Kubernetes API (see [Database accounts](#database-accounts)). An
+instance's bootstrap Job runs under the same ServiceAccount, so the bootstrap
+commands the Job executes are bound by the same scoped Secret rule.
 
 Under Group Replication each instance additionally gets its own
 `<cluster>-<ordinal>-gr-doorbell` Role granting `get`/`patch` on **only its
@@ -225,6 +228,12 @@ or forge operator-trusted annotations. A second validating webhook at
 One-shot backup workers receive object-store credentials as environment
 variables sourced from Kubernetes Secrets. The controller-manager does not
 stream backup payload bytes.
+
+The bootstrap Jobs that restore a physical backup or import a logical one
+(`<instance>-restore`, `<instance>-import`) receive read-only object-store
+credentials for the length of the bootstrap. Once the primary's volume is
+bootstrapped the source is never resolved again, so the credentials are not a
+runtime dependency of instance Pods.
 
 Continuous archiving is different: the primary instance manager writes binlog
 segments to the object store, so instance Pods need the archive destination and
@@ -355,7 +364,4 @@ mapping.
   themselves.
 - Backup object deletion through a finalizer is not implemented and should be
   opt-in or guarded.
-- If bootstrapping moves to Jobs
-  ([#127](https://github.com/cnmsql/cnmsql/issues/127)), those Jobs need the
-  same scoped Secret rule.
 - NetworkPolicy examples are not shipped yet.

@@ -260,11 +260,26 @@ func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha
 			return false, err
 		}
 		pvc.Labels = labelsFor(cluster, inst.Name, roleOf(inst))
+		pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
 		pvc.Spec = spec
 		if err := controllerutil.SetControllerReference(cluster, pvc, r.Scheme); err != nil {
 			return false, err
 		}
 		return false, r.Create(ctx, pvc)
+	}
+
+	// A volume from before bootstrap Jobs was bootstrapped by its Pod's init
+	// container. Record that, so the state no longer depends on the annotation
+	// being absent.
+	if _, ok := pvc.Annotations[pvcStatusAnnotation]; !ok {
+		before := pvc.DeepCopy()
+		if pvc.Annotations == nil {
+			pvc.Annotations = map[string]string{}
+		}
+		pvc.Annotations[pvcStatusAnnotation] = pvcStatusReady
+		if err := r.Patch(ctx, pvc, client.MergeFrom(before)); err != nil {
+			return false, err
+		}
 	}
 
 	if cluster.Spec.Storage.Size == "" {
@@ -529,8 +544,6 @@ func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan 
 func restartTriggeringPodSpec(cluster *mysqlv1alpha1.Cluster, stablePlan clusterPlan, stableInst instancePlan, actual corev1.PodSpec) corev1.PodSpec {
 	stable := actual.DeepCopy()
 	stableTemplate := (&ClusterReconciler{}).podSpec(cluster, stablePlan, stableInst)
-	withoutImportContainer(stable)
-	withoutImportContainer(&stableTemplate)
 	if len(stable.InitContainers) == len(stableTemplate.InitContainers) {
 		for i := range stable.InitContainers {
 			stable.InitContainers[i].Args = stableTemplate.InitContainers[i].Args
