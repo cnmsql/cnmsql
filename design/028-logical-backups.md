@@ -665,10 +665,13 @@ the primary through the instance manager (`/user/list`, `/user/create`,
    `cnmsql_dump@localhost` is missing, create it with the Secret's password and
    the facet's grants. If it exists, set its password and grants to what the
    Secret and facet say.
-3. Record the result in status: condition `DumpAccountReady` and
+3. Record the result in status: condition `DumpAccountReady`,
    `status.dumpAccountSecretVersion` (the Secret's `resourceVersion` that was
-   applied). Step 2 runs again only when that version changes or the condition
-   isn't true, so the steady state costs one Secret read per reconcile and no SQL.
+   applied) and `status.dumpAccountServerVersion` (the primary's server
+   version). Step 2 runs again only when either changes or the condition isn't
+   true, so the steady state costs one Secret read per reconcile and no SQL. The
+   grants depend on the series, so an in-place upgrade of the primary (MariaDB
+   10.11 → 11.4 gains `SHOW CREATE ROUTINE`) re-applies them.
 4. Replicas (async and Group Replication) get the account through replication,
    so nothing talks to them directly.
 
@@ -810,7 +813,7 @@ command, controller, kubectl, docs.
   503 + `DumpAccountMissing` when the account is absent.
 - Dump account: create when missing, reset password and grants when present,
   no SQL when `dumpAccountSecretVersion` matches, re-apply after a Secret
-  change, condition false and Backup `Pending` without a primary; grants per
+  change or a primary server upgrade, condition false and Backup `Pending` without a primary; grants per
   flavor and series.
 
 **Integration** (testcontainers, version matrix D12)

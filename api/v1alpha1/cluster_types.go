@@ -1415,6 +1415,13 @@ type ClusterStatus struct {
 	// +optional
 	DumpAccountSecretVersion string `json:"dumpAccountSecretVersion,omitempty"`
 
+	// DumpAccountServerVersion is the server version of the primary the
+	// cnmsql_dump account was last applied on. Its grants depend on the
+	// version, so the operator re-applies the account when the primary's
+	// version changes, after an in-place upgrade. Written only by the operator.
+	// +optional
+	DumpAccountServerVersion string `json:"dumpAccountServerVersion,omitempty"`
+
 	// ObservedGeneration is the generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

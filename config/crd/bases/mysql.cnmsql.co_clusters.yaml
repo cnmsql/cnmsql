@@ -5149,6 +5149,13 @@ spec:
                   operator re-applies the account when the Secret changes. Written only by
                   the operator.
                 type: string
+              dumpAccountServerVersion:
+                description: |-
+                  DumpAccountServerVersion is the server version of the primary the
+                  cnmsql_dump account was last applied on. Its grants depend on the
+                  version, so the operator re-applies the account when the primary's
+                  version changes, after an in-place upgrade. Written only by the operator.
+                type: string
               establishedAt:
                 description: |-
                   EstablishedAt records the first time the cluster reached full readiness

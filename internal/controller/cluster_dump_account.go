@@ -72,23 +72,27 @@ func (r *ClusterReconciler) reconcileDumpAccount(
 		}
 		return err
 	}
+	primary := observed.PrimaryName
+	primaryStatus := observed.StatusByInstance[primary]
+	// The grants depend on the server version, so an in-place upgrade of the
+	// primary re-applies them. An unobserved primary is no reason to.
 	if cluster.Status.DumpAccountSecretVersion == secret.ResourceVersion &&
-		apimeta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlv1alpha1.ConditionDumpAccountReady) {
+		apimeta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlv1alpha1.ConditionDumpAccountReady) &&
+		(primaryStatus == nil || primaryStatus.Version == "" ||
+			primaryStatus.Version == cluster.Status.DumpAccountServerVersion) {
 		return nil
 	}
 
-	primary := observed.PrimaryName
-	primaryStatus := observed.StatusByInstance[primary]
 	if primary == "" || primaryStatus == nil || !primaryStatus.IsReady || primaryStatus.Role != webserver.RolePrimary {
 		return r.setDumpAccountCondition(ctx, cluster, metav1.ConditionFalse, dumpAccountReasonPrimaryNotReady,
-			"Waiting for a ready primary to create the cnmsql_dump account", "")
+			"Waiting for a ready primary to create the cnmsql_dump account", nil)
 	}
 	password := string(secret.Data["password"])
 	if password == "" {
 		// Demote the condition before returning, so a stale True from an
 		// earlier apply cannot hide that every dump would fail.
 		if err := r.setDumpAccountCondition(ctx, cluster, metav1.ConditionFalse, dumpAccountReasonInvalidSecret,
-			fmt.Sprintf("The %s Secret has no password", key.Name), ""); err != nil {
+			fmt.Sprintf("The %s Secret has no password", key.Name), nil); err != nil {
 			return err
 		}
 		return fmt.Errorf("secret %s has no password", key.Name)
@@ -124,19 +128,21 @@ func (r *ClusterReconciler) reconcileDumpAccount(
 	}
 	if applyErr != nil {
 		msg := fmt.Sprintf("Could not apply the cnmsql_dump account on %s: %v", primary, applyErr)
-		if err := r.setDumpAccountCondition(ctx, cluster, metav1.ConditionFalse, dumpAccountReasonApplyFailed, msg, ""); err != nil {
+		if err := r.setDumpAccountCondition(ctx, cluster, metav1.ConditionFalse, dumpAccountReasonApplyFailed, msg, nil); err != nil {
 			return err
 		}
 		return applyErr
 	}
 
-	logf.FromContext(ctx).Info("Applied the dump account", "primary", primary, "secretVersion", secret.ResourceVersion)
+	logf.FromContext(ctx).Info("Applied the dump account", "primary", primary,
+		"secretVersion", secret.ResourceVersion, "serverVersion", primaryStatus.Version)
 	if r.Recorder != nil {
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "DumpAccountReady",
 			fmt.Sprintf("Applied the cnmsql_dump account on %s", primary))
 	}
 	return r.setDumpAccountCondition(ctx, cluster, metav1.ConditionTrue, dumpAccountReasonApplied,
-		"The cnmsql_dump account matches the "+key.Name+" Secret", secret.ResourceVersion)
+		"The cnmsql_dump account matches the "+key.Name+" Secret",
+		&appliedDumpAccount{secretVersion: secret.ResourceVersion, serverVersion: primaryStatus.Version})
 }
 
 // reconcileDumpAccountBestEffort runs reconcileDumpAccount and reports a
@@ -154,22 +160,32 @@ func (r *ClusterReconciler) reconcileDumpAccountBestEffort(
 	}
 }
 
+// appliedDumpAccount is what the dump account was last applied from.
+type appliedDumpAccount struct {
+	secretVersion string
+	serverVersion string
+}
+
 // setDumpAccountCondition writes the DumpAccountReady condition, and on success
-// the applied Secret version. It skips the write when nothing would change.
+// what the account was applied from. It skips the write when nothing would
+// change.
 func (r *ClusterReconciler) setDumpAccountCondition(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	status metav1.ConditionStatus,
-	reason, message, secretVersion string,
+	reason, message string,
+	applied *appliedDumpAccount,
 ) error {
 	current := apimeta.FindStatusCondition(cluster.Status.Conditions, mysqlv1alpha1.ConditionDumpAccountReady)
 	if current != nil && current.Status == status && current.Reason == reason && current.Message == message &&
-		(secretVersion == "" || cluster.Status.DumpAccountSecretVersion == secretVersion) {
+		(applied == nil || (cluster.Status.DumpAccountSecretVersion == applied.secretVersion &&
+			cluster.Status.DumpAccountServerVersion == applied.serverVersion)) {
 		return nil
 	}
 	return r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
-		if secretVersion != "" {
-			s.DumpAccountSecretVersion = secretVersion
+		if applied != nil {
+			s.DumpAccountSecretVersion = applied.secretVersion
+			s.DumpAccountServerVersion = applied.serverVersion
 		}
 		apimeta.SetStatusCondition(&s.Conditions, metav1.Condition{
 			Type:               mysqlv1alpha1.ConditionDumpAccountReady,

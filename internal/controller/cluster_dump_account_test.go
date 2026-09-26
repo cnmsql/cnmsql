@@ -319,6 +319,44 @@ func TestReconcileDumpAccountMariaDBGrants(t *testing.T) {
 	}
 }
 
+// The grants depend on the server version: an in-place upgrade of the primary
+// re-applies them, and an unobserved primary does not.
+func TestReconcileDumpAccountReappliesAfterAnUpgrade(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	control := &recordingControlClient{}
+	cluster := baseCluster()
+	cluster.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+	r := dumpAccountReconciler(t, control, cluster, dumpSecret(cluster, "pw"))
+	if err := r.reconcileDumpAccount(ctx, cluster, observedWithPrimary(true, "10.11.14-MariaDB-log")); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(control.created[0].Privileges[0].Privileges, "SHOW CREATE ROUTINE") {
+		t.Fatalf("10.11 grants = %v", control.created[0].Privileges[0].Privileges)
+	}
+
+	if err := r.reconcileDumpAccount(ctx, cluster, observedCluster{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.created) != 1 {
+		t.Fatalf("an unobserved primary re-applied the account: created=%d", len(control.created))
+	}
+
+	if err := r.reconcileDumpAccount(ctx, cluster, observedWithPrimary(true, "11.4.13-MariaDB-log")); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.created) != 2 || !slices.Contains(control.created[1].Privileges[0].Privileges, "SHOW CREATE ROUTINE") {
+		t.Fatalf("grants not re-applied after the upgrade: %+v", control.created)
+	}
+	latest := &mysqlv1alpha1.Cluster{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, latest); err != nil {
+		t.Fatal(err)
+	}
+	if latest.Status.DumpAccountServerVersion != "11.4.13-MariaDB-log" {
+		t.Errorf("dumpAccountServerVersion = %q", latest.Status.DumpAccountServerVersion)
+	}
+}
+
 func TestReconcileDumpAccountWithoutSecretIsANoOp(t *testing.T) {
 	t.Parallel()
 	control := &recordingControlClient{}
