@@ -281,7 +281,14 @@ func resolveBackupJobTemplate(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alph
 	if cluster.Spec.Backup != nil {
 		levels = append(levels, cluster.Spec.Backup.JobTemplate)
 	}
+	return mergeJobTemplates(levels...)
+}
 
+// mergeJobTemplates merges worker Job templates field by field, highest
+// priority first: the first level that sets a field wins. Labels and
+// annotations are merged across every level, earlier levels winning on
+// conflict.
+func mergeJobTemplates(levels ...*mysqlv1alpha1.BackupJobTemplate) mysqlv1alpha1.BackupJobTemplate {
 	var out mysqlv1alpha1.BackupJobTemplate
 	for _, t := range levels {
 		if t == nil {
@@ -309,8 +316,8 @@ func resolveBackupJobTemplate(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alph
 			out.PriorityClassName = t.PriorityClassName
 		}
 		// Overlay the already-resolved (higher-priority) keys on top of this
-		// level's keys so the Backup's values win on conflict while lower-level
-		// keys are still carried through.
+		// level's keys so the earlier level's values win on conflict while
+		// lower-level keys are still carried through.
 		out.Labels = combineStringMaps(t.Labels, out.Labels)
 		out.Annotations = combineStringMaps(t.Annotations, out.Annotations)
 	}
@@ -462,13 +469,7 @@ func backupJob(
 
 	// Operator-owned labels take precedence over the template's, so a user can
 	// add labels but not clobber the ones the operator selects on.
-	operatorLabels := map[string]string{
-		"app.kubernetes.io/name":       appLabelValue,
-		"app.kubernetes.io/managed-by": appLabelValue,
-		clusterLabel:                   cluster.Name,
-		"mysql.cnmsql.co/backup":       backup.Name,
-	}
-	jobLabels := combineStringMaps(tpl.Labels, operatorLabels)
+	jobLabels := combineStringMaps(tpl.Labels, workerJobLabels(cluster.Name, "mysql.cnmsql.co/backup", backup.Name))
 	jobAnnotations := combineStringMaps(tpl.Annotations, nil)
 	podLabels := combineStringMaps(tpl.Labels, map[string]string{clusterLabel: cluster.Name})
 
@@ -494,16 +495,7 @@ func backupJob(
 					Tolerations:       tpl.Tolerations,
 					Affinity:          tpl.Affinity,
 					PriorityClassName: tpl.PriorityClassName,
-					InitContainers: []corev1.Container{{
-						// Copy the manager binary out of the operator image into
-						// the shared scratch volume; the instance image no longer
-						// ships it, so the worker runs /controller/manager.
-						Name:         "bootstrap-controller",
-						Image:        operatorImage,
-						Command:      []string{"/manager"},
-						Args:         []string{managerBootstrapCmd, managerBinary},
-						VolumeMounts: backupWorkerVolumeMounts(),
-					}},
+					InitContainers:    []corev1.Container{workerBootstrapContainer(operatorImage)},
 					Containers: []corev1.Container{{
 						Name:         backupWorkerContainer,
 						Image:        image,
@@ -517,6 +509,32 @@ func backupJob(
 				},
 			},
 		},
+	}
+}
+
+// workerJobLabels are the operator's labels on a worker Job: the app labels,
+// the cluster, and ownerKey naming the object the Job works for. They take
+// precedence over a job template's labels, so a user can add labels but not
+// clobber the ones the operator selects on.
+func workerJobLabels(clusterName, ownerKey, ownerName string) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       appLabelValue,
+		"app.kubernetes.io/managed-by": appLabelValue,
+		clusterLabel:                   clusterName,
+		ownerKey:                       ownerName,
+	}
+}
+
+// workerBootstrapContainer copies the manager binary out of the operator image
+// into a worker's shared scratch volume; the instance image no longer ships
+// it, so the worker runs /controller/manager.
+func workerBootstrapContainer(operatorImage string) corev1.Container {
+	return corev1.Container{
+		Name:         "bootstrap-controller",
+		Image:        operatorImage,
+		Command:      []string{"/manager"},
+		Args:         []string{managerBootstrapCmd, managerBinary},
+		VolumeMounts: backupWorkerVolumeMounts(),
 	}
 }
 
@@ -739,6 +757,12 @@ func setBackupCondition(status *mysqlv1alpha1.BackupStatus, conditionType string
 // Failed condition (e.g. DeadlineExceeded, BackoffLimitExceeded), so the Backup
 // says why the worker gave up rather than only that it did.
 func jobFailure(job *batchv1.Job) (string, string) {
+	return workerJobFailure(job, "Backup worker")
+}
+
+// workerJobFailure is jobFailure for any worker Job, named worker in the
+// message.
+func workerJobFailure(job *batchv1.Job, worker string) (string, string) {
 	for _, condition := range job.Status.Conditions {
 		if condition.Type != batchv1.JobFailed || condition.Status != corev1.ConditionTrue {
 			continue
@@ -746,13 +770,13 @@ func jobFailure(job *batchv1.Job) (string, string) {
 		if condition.Reason == "" {
 			break
 		}
-		message := "Backup worker Job failed: " + condition.Reason
+		message := worker + " Job failed: " + condition.Reason
 		if condition.Message != "" {
 			message += ": " + condition.Message
 		}
 		return condition.Reason, message
 	}
-	return "JobFailed", "Backup worker Job failed"
+	return "JobFailed", worker + " Job failed"
 }
 
 func jobFinished(job *batchv1.Job, conditionType batchv1.JobConditionType) bool {

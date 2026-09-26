@@ -154,15 +154,24 @@ func applyLogicalManifest(status *mysqlv1alpha1.BackupStatus, meta *objectstore.
 // killed, or failed without a known reason), so the caller keeps the Job's own
 // failure reason.
 func (r *BackupReconciler) workerFailure(ctx context.Context, job *batchv1.Job) (string, string, bool) {
+	msg, ok := readWorkerTermination(ctx, r.Client, job, backupWorkerContainer)
+	return msg.Reason, msg.Message, ok
+}
+
+// readWorkerTermination reads the termination message a failed worker
+// container left in one of the Job's Pods. It reports false when there is none.
+func readWorkerTermination(
+	ctx context.Context, c client.Client, job *batchv1.Job, container string,
+) (backupworker.TerminationMessage, bool) {
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods,
+	if err := c.List(ctx, &pods,
 		client.InNamespace(job.Namespace),
 		client.MatchingLabels{batchv1.JobNameLabel: job.Name},
 	); err != nil {
-		// Without the pods the Backup falls back to the Job's generic reason;
+		// Without the pods the caller falls back to the Job's generic reason;
 		// losing the worker's precise one is not worth failing the reconcile.
-		logf.FromContext(ctx).Info("Could not list backup worker Pods", "job", job.Name, "error", err.Error())
-		return "", "", false
+		logf.FromContext(ctx).Info("Could not list worker Pods", "job", job.Name, "error", err.Error())
+		return backupworker.TerminationMessage{}, false
 	}
 	// Newest attempt first, names breaking same-second ties, so the reported
 	// attempt does not depend on the List order. The newest attempt that left a
@@ -178,15 +187,15 @@ func (r *BackupReconciler) workerFailure(ctx context.Context, job *batchv1.Job) 
 	})
 	for i := range pods.Items {
 		for _, cs := range pods.Items[i].Status.ContainerStatuses {
-			if cs.Name != backupWorkerContainer || cs.State.Terminated == nil || cs.State.Terminated.Message == "" {
+			if cs.Name != container || cs.State.Terminated == nil || cs.State.Terminated.Message == "" {
 				continue
 			}
 			var msg backupworker.TerminationMessage
 			if err := json.Unmarshal([]byte(cs.State.Terminated.Message), &msg); err != nil || msg.Reason == "" {
 				continue
 			}
-			return msg.Reason, msg.Message, true
+			return msg, true
 		}
 	}
-	return "", "", false
+	return backupworker.TerminationMessage{}, false
 }

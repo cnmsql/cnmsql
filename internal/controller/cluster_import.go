@@ -18,13 +18,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -67,10 +66,6 @@ type importNotReadyError struct{ msg string }
 
 func (e *importNotReadyError) Error() string { return reasonImportSourceNotReady + ": " + e.msg }
 
-func importNotReady(format string, args ...any) error {
-	return &importNotReadyError{msg: fmt.Sprintf(format, args...)}
-}
-
 // resolveImport locates the dump the bootstrap primary loads when
 // spec.bootstrap.initdb.import is set, and checks that this cluster can load
 // it. It returns nil when there is no import, and once the cluster is
@@ -88,30 +83,39 @@ func (r *ClusterReconciler) resolveImport(
 	}
 	imp := cluster.Spec.Bootstrap.InitDB.Import
 
+	resolver := logicalDumpResolver{
+		client:     r.Client,
+		backupNoun: "import backup",
+		sourceNoun: "import source",
+		target:     "this cluster",
+	}
 	var (
-		store       *mysqlv1alpha1.S3ObjectStore
-		dumpKey     string
-		manifestKey string
-		meta        *objectstore.LogicalBackupMetadata
-		err         error
+		dump *logicalDump
+		err  error
 	)
 	if imp.Source != "" {
-		store, dumpKey, manifestKey, meta, err = r.resolveImportSource(ctx, cluster, imp)
+		dump, err = resolver.fromSource(ctx, cluster.Namespace, imp.Source,
+			cluster.Spec.FindExternalCluster(imp.Source), imp.BackupID)
 	} else {
-		store, dumpKey, manifestKey, meta, err = r.resolveImportBackup(ctx, cluster, imp)
+		var fallback *mysqlv1alpha1.S3ObjectStore
+		if cluster.Spec.Backup != nil {
+			fallback = cluster.Spec.Backup.ObjectStore
+		}
+		dump, err = resolver.fromBackup(ctx, cluster.Namespace, imp.Backup.Name, fallback)
 	}
 	if err != nil {
-		return nil, err
+		return nil, importDumpError(err)
 	}
-	if err := meta.CheckImportable(string(cluster.ResolvedFlavor()), imp.Databases); err != nil {
+	if err := dump.Meta.CheckImportable(string(cluster.ResolvedFlavor()), imp.Databases); err != nil {
 		return nil, fmt.Errorf("%s: %w", reasonImportIncompatible, err)
 	}
-	r.warnImportFromNewerSeries(cluster, meta.ServerVersion, serverVersion)
+	r.warnImportFromNewerSeries(cluster, dump.Meta.ServerVersion, serverVersion)
 
+	store := dump.Store
 	return &importPlan{
 		Bucket:      store.Bucket,
-		DumpKey:     dumpKey,
-		ManifestKey: manifestKey,
+		DumpKey:     dump.DumpKey,
+		ManifestKey: dump.ManifestKey,
 		StoreEnv: append(backupObjectStoreEnv(*store),
 			corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
 			corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
@@ -121,167 +125,54 @@ func (r *ClusterReconciler) resolveImport(
 	}, nil
 }
 
-// resolveImportBackup locates the dump of a logical Backup in this namespace.
-func (r *ClusterReconciler) resolveImportBackup(
-	ctx context.Context,
-	cluster *mysqlv1alpha1.Cluster,
-	imp *mysqlv1alpha1.BootstrapImport,
-) (*mysqlv1alpha1.S3ObjectStore, string, string, *objectstore.LogicalBackupMetadata, error) {
-	backup := &mysqlv1alpha1.Backup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: imp.Backup.Name}, backup); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, "", "", nil, importNotReady("import backup %q does not exist", imp.Backup.Name)
-		}
-		return nil, "", "", nil, importNotReady("reading import backup %q: %v", imp.Backup.Name, err)
+// importDumpError gives a resolver error the reason prefix of the cluster
+// phase it ends in.
+func importDumpError(err error) error {
+	var de *dumpError
+	if !errors.As(err, &de) {
+		return err
 	}
-	if backup.Spec.Method != mysqlv1alpha1.BackupMethodLogical {
-		return nil, "", "", nil, fmt.Errorf("%s: import backup %q is a %s backup, and initdb.import loads a "+
-			"logical backup; restore a physical backup with bootstrap.recovery instead",
-			reasonPhysicalBackupNotImportable, backup.Name, backup.Spec.Method)
-	}
-	switch backup.Status.Phase {
-	case mysqlv1alpha1.BackupPhaseCompleted:
-	case mysqlv1alpha1.BackupPhaseFailed:
-		return nil, "", "", nil, fmt.Errorf("%s: import backup %q failed", reasonImportIncompatible, backup.Name)
+	switch de.kind {
+	case dumpNotReady:
+		return &importNotReadyError{msg: de.msg}
+	case dumpPhysical:
+		return fmt.Errorf("%s: %s, and initdb.import loads a logical backup; restore a physical backup "+
+			"with bootstrap.recovery instead", reasonPhysicalBackupNotImportable, de.msg)
 	default:
-		return nil, "", "", nil, importNotReady("import backup %q is not completed yet", backup.Name)
+		return fmt.Errorf("%s: %s", reasonImportIncompatible, de.msg)
 	}
-	if backup.Status.BackupID == "" {
-		return nil, "", "", nil, fmt.Errorf("%s: import backup %q has no backupID", reasonImportIncompatible, backup.Name)
-	}
-
-	store, err := r.importObjectStore(ctx, cluster, backup)
-	if err != nil {
-		return nil, "", "", nil, err
-	}
-	keys, err := objectstore.BuildLogicalBackupKeys(*store, backup.Spec.Cluster.Name, backup.Name, backup.Status.BackupID)
-	if err != nil {
-		return nil, "", "", nil, fmt.Errorf("%s: %w", reasonImportIncompatible, err)
-	}
-	osClient, err := r.importStoreClient(ctx, cluster.Namespace, store)
-	if err != nil {
-		return nil, "", "", nil, err
-	}
-	var meta objectstore.LogicalBackupMetadata
-	if err := osClient.GetJSON(ctx, store.Bucket, keys.MetadataKey, &meta); err != nil {
-		if objectstore.IsNotFound(err) {
-			return nil, "", "", nil, fmt.Errorf("%s: import backup %q has no manifest at s3://%s/%s",
-				reasonImportIncompatible, backup.Name, store.Bucket, keys.MetadataKey)
-		}
-		return nil, "", "", nil, importNotReady("reading the manifest of import backup %q: %v", backup.Name, err)
-	}
-	return store, keys.ArchiveKey, keys.MetadataKey, &meta, nil
-}
-
-// importObjectStore picks the object store an import Backup was written to:
-// the Backup's own override, else the store of the cluster it was taken from,
-// else this cluster's store (the source cluster was deleted and this one was
-// created in its place).
-func (r *ClusterReconciler) importObjectStore(
-	ctx context.Context,
-	cluster *mysqlv1alpha1.Cluster,
-	backup *mysqlv1alpha1.Backup,
-) (*mysqlv1alpha1.S3ObjectStore, error) {
-	var store *mysqlv1alpha1.S3ObjectStore
-	if backup.Spec.ObjectStore != nil {
-		store = backup.Spec.ObjectStore.DeepCopy()
-	} else {
-		source := &mysqlv1alpha1.Cluster{}
-		err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: backup.Spec.Cluster.Name}, source)
-		switch {
-		case err == nil && source.Spec.Backup != nil && source.Spec.Backup.ObjectStore != nil:
-			store = source.Spec.Backup.ObjectStore.DeepCopy()
-		case err != nil && !apierrors.IsNotFound(err):
-			return nil, importNotReady("reading cluster %q of import backup %q: %v",
-				backup.Spec.Cluster.Name, backup.Name, err)
-		case cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil:
-			store = cluster.Spec.Backup.ObjectStore.DeepCopy()
-		default:
-			return nil, fmt.Errorf("%s: import backup %q has no object store, and neither its cluster %q nor "+
-				"this cluster has spec.backup.objectStore", reasonImportIncompatible, backup.Name, backup.Spec.Cluster.Name)
-		}
-	}
-	store.SetDefaults()
-	return store, nil
-}
-
-// resolveImportSource locates a dump under an externalClusters entry's object
-// store: the one with the requested backupID, or the latest.
-func (r *ClusterReconciler) resolveImportSource(
-	ctx context.Context,
-	cluster *mysqlv1alpha1.Cluster,
-	imp *mysqlv1alpha1.BootstrapImport,
-) (*mysqlv1alpha1.S3ObjectStore, string, string, *objectstore.LogicalBackupMetadata, error) {
-	ext := cluster.Spec.FindExternalCluster(imp.Source)
-	if ext == nil || ext.ObjectStore == nil {
-		// Admission rejects both; this covers objects admitted before it did.
-		return nil, "", "", nil, fmt.Errorf("%s: import source %q is not an externalClusters entry with an objectStore",
-			reasonImportIncompatible, imp.Source)
-	}
-	store := ext.ObjectStore.DeepCopy()
-	store.SetDefaults()
-
-	osClient, err := r.importStoreClient(ctx, cluster.Namespace, store)
-	if err != nil {
-		return nil, "", "", nil, err
-	}
-	// The external cluster name is the key prefix the dumps were stored under.
-	entries, err := objectstore.ListLogicalBackups(ctx, osClient, *store, ext.Name)
-	if err != nil {
-		return nil, "", "", nil, importNotReady("listing logical backups of source %q: %v", imp.Source, err)
-	}
-	var entry objectstore.LogicalBackupEntry
-	if imp.BackupID != "" {
-		entry, err = objectstore.FindLogicalBackupByID(entries, imp.BackupID)
-	} else {
-		entry, err = objectstore.SelectLatestLogicalBackup(entries)
-	}
-	if err != nil {
-		// A dump can still land there (a schedule, a Backup running now).
-		return nil, "", "", nil, importNotReady("source %q: %v", imp.Source, err)
-	}
-	// entry.Prefix already ends with a slash.
-	return store, entry.Prefix + objectstore.LogicalArchiveName, entry.Prefix + objectstore.LogicalMetadataName,
-		&entry.Meta, nil
-}
-
-// importStoreClient builds an object-store client for resolving an import.
-// Failures are retried: a Secret can be created after the Cluster.
-func (r *ClusterReconciler) importStoreClient(
-	ctx context.Context, namespace string, store *mysqlv1alpha1.S3ObjectStore,
-) (*objectstore.Client, error) {
-	cfg, err := r.objectStoreConfig(ctx, namespace, store)
-	if err != nil {
-		return nil, importNotReady("%v", err)
-	}
-	osClient, err := objectstore.NewClient(cfg)
-	if err != nil {
-		return nil, importNotReady("%v", err)
-	}
-	return osClient, nil
 }
 
 // warnImportFromNewerSeries emits a Warning when the dump comes from a newer
 // server series than this cluster runs. Loading into an older series through
 // SQL usually works, but it is not tested.
 func (r *ClusterReconciler) warnImportFromNewerSeries(cluster *mysqlv1alpha1.Cluster, source, target string) {
-	if r.Recorder == nil || source == "" || target == "" {
+	if r.Recorder == nil {
 		return
 	}
-	src, err := version.Parse(source)
-	if err != nil {
-		return
-	}
-	tgt, err := version.Parse(target)
-	if err != nil {
-		return
-	}
-	s, t := src.Series(), tgt.Series()
-	if s.Major > t.Major || (s.Major == t.Major && s.Minor > t.Minor) {
+	if dumpFromNewerSeries(source, target) {
 		r.Recorder.Eventf(cluster, corev1.EventTypeWarning, "ImportFromNewerServer",
 			"The dump was taken on %s, a newer series than this cluster's %s. Loading it is allowed but not tested",
 			source, target)
 	}
+}
+
+// dumpFromNewerSeries reports whether a dump taken on source comes from a
+// newer server series than target. Unparsable versions report false.
+func dumpFromNewerSeries(source, target string) bool {
+	if source == "" || target == "" {
+		return false
+	}
+	src, err := version.Parse(source)
+	if err != nil {
+		return false
+	}
+	tgt, err := version.Parse(target)
+	if err != nil {
+		return false
+	}
+	s, t := src.Series(), tgt.Series()
+	return s.Major > t.Major || (s.Major == t.Major && s.Minor > t.Minor)
 }
 
 // importArgs builds the import init container's command.
