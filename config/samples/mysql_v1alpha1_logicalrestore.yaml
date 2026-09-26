@@ -1,0 +1,20 @@
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: LogicalRestore
+metadata:
+  labels:
+    app.kubernetes.io/name: cnmsql
+    app.kubernetes.io/managed-by: kustomize
+  name: logicalrestore-sample
+spec:
+  # The running cluster to load into.
+  cluster:
+    name: cluster-sample
+  # A completed logical Backup in this namespace.
+  backup:
+    name: backup-sample
+  # The databases to load from the dump.
+  databases:
+    - app
+  # FailIfExists refuses a database that already holds objects;
+  # DropAndRecreate drops it first.
+  policy: FailIfExists

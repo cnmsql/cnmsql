@@ -9,6 +9,7 @@ resources:
 - bases/mysql.cnmsql.co_databaseusers.yaml
 - bases/mysql.cnmsql.co_imagecatalogs.yaml
 - bases/mysql.cnmsql.co_clusterimagecatalogs.yaml
+- bases/mysql.cnmsql.co_logicalrestores.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

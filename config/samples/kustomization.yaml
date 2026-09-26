@@ -6,4 +6,5 @@ resources:
 - mysql_v1alpha1_database.yaml
 - mysql_v1alpha1_imagecatalog.yaml
 - mysql_v1alpha1_clusterimagecatalog.yaml
+- mysql_v1alpha1_logicalrestore.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

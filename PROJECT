@@ -61,4 +61,13 @@ resources:
   kind: ClusterImageCatalog
   path: github.com/cnmsql/cnmsql/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cnmsql.co
+  group: mysql
+  kind: LogicalRestore
+  path: github.com/cnmsql/cnmsql/api/v1alpha1
+  version: v1alpha1
 version: "3"
