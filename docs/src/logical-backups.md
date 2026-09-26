@@ -494,6 +494,11 @@ one got part of the way).
 Deleting a running `LogicalRestore` deletes its Job, which stops the load
 part-way.
 
+Finished `LogicalRestore` objects stay until you delete them; they are the
+record of what was loaded. Their worker Jobs are removed after the backup Job
+TTL (`jobTemplate.ttl`, 24 hours by default).
+Deleting a finished restore changes nothing on the cluster.
+
 ## Downloading a dump
 
 To get a dump out of the object store, for a developer or another tool:

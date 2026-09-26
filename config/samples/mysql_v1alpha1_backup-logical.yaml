@@ -1,0 +1,16 @@
+apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Backup
+metadata:
+  labels:
+    app.kubernetes.io/name: cnmsql
+    app.kubernetes.io/managed-by: kustomize
+  name: cluster-sample-logical
+spec:
+  cluster:
+    name: cluster-sample
+  # A SQL dump of the application databases, which a LogicalRestore or a
+  # bootstrap import can load.
+  method: logical
+  logical:
+    databases:
+      - app

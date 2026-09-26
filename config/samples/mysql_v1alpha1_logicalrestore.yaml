@@ -9,9 +9,9 @@ spec:
   # The running cluster to load into.
   cluster:
     name: cluster-sample
-  # A completed logical Backup in this namespace.
+  # A completed logical Backup in this namespace (mysql_v1alpha1_backup-logical.yaml).
   backup:
-    name: backup-sample
+    name: cluster-sample-logical
   # The databases to load from the dump.
   databases:
     - app
