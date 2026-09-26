@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -247,8 +248,9 @@ func TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Client: c,
 		Scheme: scheme,
 	}
 	plan := testPlan()
@@ -258,6 +260,7 @@ func TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary(t *testing.T) {
 	// expected template hash; ensureInstance then treats it as stable instead of
 	// rolling it. Mark it Ready so the previous-instance ramp-up gate passes.
 	primary := plan.instanceFor(cluster, 1)
+	markVolumeBootstrapped(t, ctx, c, cluster, primary)
 	if _, err := reconciler.ensureInstance(ctx, cluster, plan, primary, true); err != nil {
 		t.Fatal(err)
 	}
@@ -284,15 +287,21 @@ func TestReconcileInstancesGuardsReplicaOnUnhealthyPrimary(t *testing.T) {
 	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("replica pod get = %v, want not created while primary unhealthy", err)
 	}
+	if err := reconciler.Get(ctx, replicaKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("replica bootstrap Job get = %v, want not created while primary unhealthy", err)
+	}
 
 	// Once the primary reports as a healthy primary, the guard lets the replica
-	// through and its Pod is created.
+	// through and its volume is bootstrapped: the replica's Pod comes up only
+	// after its bootstrap Job finishes (design 031), so the Job is what
+	// "provisioned" means here.
 	observed.StatusByInstance[primary.Name] = &webserver.Status{Role: webserver.RolePrimary, IsReady: true}
 	if _, err := reconciler.reconcileInstances(ctx, cluster, plan, observed); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); err != nil {
-		t.Fatalf("replica pod should be created once primary is healthy: %v", err)
+	replicaJob := types.NamespacedName{Namespace: cluster.Namespace, Name: instanceName(cluster, 2) + "-join"}
+	if err := reconciler.Get(ctx, replicaJob, &batchv1.Job{}); err != nil {
+		t.Fatalf("replica bootstrap Job should be created once primary is healthy: %v", err)
 	}
 }
 
@@ -308,8 +317,9 @@ func TestReconcileInstancesRollsReplicasBeforePrimary(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Client: c,
 		Scheme: scheme,
 	}
 	plan := testPlan()
@@ -326,6 +336,7 @@ func TestReconcileInstancesRollsReplicasBeforePrimary(t *testing.T) {
 	}
 	for i := 1; i <= plan.Instances; i++ {
 		inst := plan.instanceFor(cluster, i)
+		markVolumeBootstrapped(t, ctx, c, cluster, inst)
 		if _, err := reconciler.ensureInstance(ctx, cluster, plan, inst, true); err != nil {
 			t.Fatal(err)
 		}
@@ -363,8 +374,9 @@ func TestReconcileInstancesRollsPrimaryLast(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Client: c,
 		Scheme: scheme,
 	}
 	plan := testPlan()
@@ -385,6 +397,7 @@ func TestReconcileInstancesRollsPrimaryLast(t *testing.T) {
 	// replicas with the post-change hash (restart token set). With the token set as
 	// the desired state, only the primary is left needing a roll.
 	primary := plan.instanceFor(cluster, 1)
+	markVolumeBootstrapped(t, ctx, c, cluster, primary)
 	if _, err := reconciler.ensureInstance(ctx, cluster, plan, primary, true); err != nil {
 		t.Fatal(err)
 	}
@@ -392,6 +405,7 @@ func TestReconcileInstancesRollsPrimaryLast(t *testing.T) {
 	cluster.Annotations = map[string]string{restartAnnotation: "1"}
 	for i := 2; i <= plan.Instances; i++ {
 		inst := plan.instanceFor(cluster, i)
+		markVolumeBootstrapped(t, ctx, c, cluster, inst)
 		if _, err := reconciler.ensureInstance(ctx, cluster, plan, inst, true); err != nil {
 			t.Fatal(err)
 		}
@@ -512,8 +526,9 @@ func TestReconcileInstancesGatesBrandNewMemberWithoutDonor(t *testing.T) {
 	ctx := context.Background()
 	cluster := grCluster(&mysqlv1alpha1.GroupReplicationStatus{GroupName: "group-uuid", Bootstrapped: true})
 	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Client: c,
 		Scheme: scheme,
 	}
 	plan := testPlan()
@@ -523,6 +538,7 @@ func TestReconcileInstancesGatesBrandNewMemberWithoutDonor(t *testing.T) {
 	// Bootstrap the primary so it is fully ready, then drive reconcile with no
 	// quorum so no donor is available for the brand-new replica (no PVC).
 	primary := plan.instanceFor(cluster, 1)
+	markVolumeBootstrapped(t, ctx, c, cluster, primary)
 	if _, err := reconciler.ensureInstance(ctx, cluster, plan, primary, true); err != nil {
 		t.Fatal(err)
 	}
@@ -543,6 +559,9 @@ func TestReconcileInstancesGatesBrandNewMemberWithoutDonor(t *testing.T) {
 	if err := reconciler.Get(ctx, replicaKey, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("brand-new replica pod get = %v, want not created without a donor", err)
 	}
+	if err := reconciler.Get(ctx, replicaKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("brand-new replica bootstrap Job get = %v, want not created without a donor", err)
+	}
 }
 
 // TestReconcileInstancesHoldsPrimaryWhileReplicaTerminating reproduces the quorum-
@@ -555,8 +574,9 @@ func TestReconcileInstancesHoldsPrimaryWhileReplicaTerminating(t *testing.T) {
 	ctx := context.Background()
 	cluster := baseCluster()
 	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Client: c,
 		Scheme: scheme,
 	}
 	plan := testPlan()
@@ -576,6 +596,7 @@ func TestReconcileInstancesHoldsPrimaryWhileReplicaTerminating(t *testing.T) {
 	// Primary on the pre-change hash, replicas on the post-change hash: only the
 	// primary is left needing a roll (same setup as TestReconcileInstancesRollsPrimaryLast).
 	primary := plan.instanceFor(cluster, 1)
+	markVolumeBootstrapped(t, ctx, c, cluster, primary)
 	if _, err := reconciler.ensureInstance(ctx, cluster, plan, primary, true); err != nil {
 		t.Fatal(err)
 	}
@@ -583,6 +604,7 @@ func TestReconcileInstancesHoldsPrimaryWhileReplicaTerminating(t *testing.T) {
 	cluster.Annotations = map[string]string{restartAnnotation: "1"}
 	for i := 2; i <= plan.Instances; i++ {
 		inst := plan.instanceFor(cluster, i)
+		markVolumeBootstrapped(t, ctx, c, cluster, inst)
 		if _, err := reconciler.ensureInstance(ctx, cluster, plan, inst, true); err != nil {
 			t.Fatal(err)
 		}

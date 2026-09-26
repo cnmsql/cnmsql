@@ -7,10 +7,14 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -327,5 +331,289 @@ func TestBootstrapJobHashFollowsSpec(t *testing.T) {
 	}
 	if changed.Annotations[bootstrapSpecHashAnnotation] == first.Annotations[bootstrapSpecHashAnnotation] {
 		t.Fatal("spec hash did not change with the restore source")
+	}
+}
+
+// bootstrapFixture returns a reconciler over a fake client holding cluster and
+// objs. The fake client treats Jobs as a status subresource, so finishJob
+// writes their status through the status writer.
+func bootstrapFixture(t *testing.T, cluster *mysqlv1alpha1.Cluster, objs ...client.Object) (*ClusterReconciler, client.Client) {
+	t.Helper()
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(append([]client.Object{cluster}, objs...)...).
+		Build()
+	return &ClusterReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(20)}, c
+}
+
+func initializingPVC(cluster *mysqlv1alpha1.Cluster, name, uid string) *corev1.PersistentVolumeClaim {
+	pvc := instancePVC(cluster, name)
+	pvc.UID = types.UID(uid)
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
+	return pvc
+}
+
+func finishJob(t *testing.T, ctx context.Context, c client.Client, cluster *mysqlv1alpha1.Cluster, name string, cond batchv1.JobConditionType) {
+	t.Helper()
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, job); err != nil {
+		t.Fatal(err)
+	}
+	job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{
+		Type: cond, Status: corev1.ConditionTrue, Reason: "DeadlineExceeded", Message: "Job was active longer than specified deadline",
+	})
+	if err := c.Status().Update(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func jobExists(t *testing.T, ctx context.Context, c client.Client, cluster *mysqlv1alpha1.Cluster, name string) bool {
+	t.Helper()
+	err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &batchv1.Job{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+	return err == nil
+}
+
+func TestEnsureBootstrappedCreatesJobForNewVolume(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+
+	done, err := r.ensureBootstrapped(ctx, cluster, plan, inst)
+	if err != nil || done {
+		t.Fatalf("ensureBootstrapped = %v, %v; want false, nil", done, err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name + "-initdb"}, job); err != nil {
+		t.Fatalf("initdb Job not created: %v", err)
+	}
+	if job.Annotations[bootstrapPVCUIDAnnotation] != "uid-1" {
+		t.Fatalf("job pvc-uid = %q", job.Annotations[bootstrapPVCUIDAnnotation])
+	}
+}
+
+func TestEnsureBootstrappedMarksVolumeAndDeletesJobOnSuccess(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	finishJob(t, ctx, c, cluster, inst.Name+"-initdb", batchv1.JobComplete)
+
+	done, err := r.ensureBootstrapped(ctx, cluster, plan, inst)
+	if err != nil || done {
+		t.Fatalf("pass after success = %v, %v; want false (the Job is still being deleted)", done, err)
+	}
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if !pvcBootstrapped(pvc) {
+		t.Fatal("volume not marked bootstrapped after the Job succeeded")
+	}
+	if jobExists(t, ctx, c, cluster, inst.Name+"-initdb") {
+		t.Fatal("succeeded Job not deleted")
+	}
+	if done, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || !done {
+		t.Fatalf("pass after deletion = %v, %v; want true", done, err)
+	}
+}
+
+func TestEnsureBootstrappedKeepsFailedJobWithSameSpec(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	finishJob(t, ctx, c, cluster, inst.Name+"-initdb", batchv1.JobFailed)
+	for range 3 {
+		if done, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || done {
+			t.Fatalf("ensureBootstrapped = %v, %v; want false, nil", done, err)
+		}
+	}
+	if !jobExists(t, ctx, c, cluster, inst.Name+"-initdb") {
+		t.Fatal("failed Job with an unchanged spec was deleted")
+	}
+}
+
+func TestEnsureBootstrappedReplacesFailedJobWhenSpecChanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	old := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name + "-initdb"}, old); err != nil {
+		t.Fatal(err)
+	}
+	finishJob(t, ctx, c, cluster, inst.Name+"-initdb", batchv1.JobFailed)
+
+	plan.Image = "ghcr.io/cnmsql/cnmsql-instance:8.0.99"
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	if jobExists(t, ctx, c, cluster, inst.Name+"-initdb") {
+		t.Fatal("failed Job not deleted after the spec changed")
+	}
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name + "-initdb"}, fresh); err != nil {
+		t.Fatalf("replacement Job not created: %v", err)
+	}
+	if fresh.Annotations[bootstrapSpecHashAnnotation] == old.Annotations[bootstrapSpecHashAnnotation] {
+		t.Fatal("replacement Job carries the old spec hash")
+	}
+}
+
+func TestEnsureBootstrappedDeletesJobForOtherVolume(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	plan := testPlan()
+	plan.Instances = 2
+	inst := plan.instanceFor(cluster, 2)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-old"))
+
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	finishJob(t, ctx, c, cluster, inst.Name+"-join", batchv1.JobComplete)
+
+	// The instance is re-initialised: a new, empty PVC with the same name.
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(ctx, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, initializingPVC(cluster, inst.PVCName, "uid-new")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if pvcBootstrapped(pvc) {
+		t.Fatal("a Job for the previous volume marked the new volume bootstrapped")
+	}
+	if jobExists(t, ctx, c, cluster, inst.Name+"-join") {
+		t.Fatal("Job for the previous volume not deleted")
+	}
+}
+
+func TestEnsureBootstrappedWaitsForInstancePod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster,
+		initializingPVC(cluster, inst.PVCName, "uid-1"),
+		readyPod(cluster, inst.Name, rolePrimary))
+
+	if done, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || done {
+		t.Fatalf("ensureBootstrapped = %v, %v; want false, nil", done, err)
+	}
+	if jobExists(t, ctx, c, cluster, inst.Name+"-initdb") {
+		t.Fatal("bootstrap Job created while the instance Pod exists")
+	}
+}
+
+func TestEnsureBootstrappedRemovesLeftoverJobBeforePod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	pvc := initializingPVC(cluster, inst.PVCName, "uid-1")
+	pvc.Annotations[pvcStatusAnnotation] = pvcStatusReady
+	leftover := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: inst.Name + "-initdb", Namespace: cluster.Namespace,
+		Labels: map[string]string{clusterLabel: cluster.Name, bootstrapInstanceLabel: inst.Name},
+	}}
+	r, c := bootstrapFixture(t, cluster, pvc, leftover)
+
+	if done, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || done {
+		t.Fatalf("first pass = %v, %v; want false while the leftover Job exists", done, err)
+	}
+	if jobExists(t, ctx, c, cluster, inst.Name+"-initdb") {
+		t.Fatal("leftover Job not deleted")
+	}
+	if done, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || !done {
+		t.Fatalf("second pass = %v, %v; want true", done, err)
+	}
+}
+
+func TestEnsureBootstrappedRefusesPrimaryOnEstablishedCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	now := metav1.Now()
+	cluster.Status.EstablishedAt = &now
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+
+	if done, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || done {
+		t.Fatalf("ensureBootstrapped = %v, %v; want false, nil", done, err)
+	}
+	if jobExists(t, ctx, c, cluster, inst.Name+"-initdb") {
+		t.Fatal("established cluster got a Job that would re-initialise its primary")
+	}
+}
+
+// markVolumeBootstrapped creates or marks inst's PVC as bootstrapped, so a test
+// about Pod handling skips the bootstrap Job.
+func markVolumeBootstrapped(t *testing.T, ctx context.Context, c client.Client, cluster *mysqlv1alpha1.Cluster, inst instancePlan) {
+	t.Helper()
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc)
+	if apierrors.IsNotFound(err) {
+		pvc = instancePVC(cluster, inst.PVCName)
+		pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusReady}
+		if err := c.Create(ctx, pvc); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := pvc.DeepCopy()
+	if pvc.Annotations == nil {
+		pvc.Annotations = map[string]string{}
+	}
+	pvc.Annotations[pvcStatusAnnotation] = pvcStatusReady
+	if err := c.Patch(ctx, pvc, client.MergeFrom(before)); err != nil {
+		t.Fatal(err)
 	}
 }

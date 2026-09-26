@@ -18,12 +18,18 @@ package controller
 
 import (
 	"cmp"
+	"context"
 	"slices"
+	"sort"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -240,4 +246,131 @@ func (r *ClusterReconciler) bootstrapJob(
 		return nil, err
 	}
 	return job, nil
+}
+
+// bootstrapJobs lists the instance's bootstrap Jobs, sorted by name.
+func (r *ClusterReconciler) bootstrapJobs(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instance string) ([]batchv1.Job, error) {
+	list := &batchv1.JobList{}
+	if err := r.List(ctx, list, client.InNamespace(cluster.Namespace), client.MatchingLabels{
+		clusterLabel:           cluster.Name,
+		bootstrapInstanceLabel: instance,
+	}); err != nil {
+		return nil, err
+	}
+	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
+	return list.Items, nil
+}
+
+// deleteBootstrapJobs deletes the instance's bootstrap Jobs and their Pods and
+// returns how many still exist. Foreground propagation keeps a Job until its
+// Pods are gone, so "none left" means nothing mounts the volume any more.
+func (r *ClusterReconciler) deleteBootstrapJobs(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instance string) (int, error) {
+	jobs, err := r.bootstrapJobs(ctx, cluster, instance)
+	if err != nil {
+		return 0, err
+	}
+	for i := range jobs {
+		if err := r.deleteBootstrapJob(ctx, &jobs[i]); err != nil {
+			return 0, err
+		}
+	}
+	return len(jobs), nil
+}
+
+func (r *ClusterReconciler) deleteBootstrapJob(ctx context.Context, job *batchv1.Job) error {
+	if job.DeletionTimestamp != nil {
+		return nil
+	}
+	err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationForeground))
+	return client.IgnoreNotFound(err)
+}
+
+// ensureBootstrapped drives inst's volume through its one-shot bootstrap Job
+// (design 031). It returns true once the volume is marked bootstrapped and no
+// bootstrap Job for the instance is left, so the caller may create the Pod.
+// The Job and the Pod never run at the same time: the volume is RWO.
+func (r *ClusterReconciler) ensureBootstrapped(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) (bool, error) {
+	log := logf.FromContext(ctx).WithValues("instance", inst.Name)
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
+		// ensurePVC just created it; the cache has not caught up yet.
+		return false, client.IgnoreNotFound(err)
+	}
+	if pvcBootstrapped(pvc) {
+		left, err := r.deleteBootstrapJobs(ctx, cluster, inst.Name)
+		return left == 0, err
+	}
+
+	podExists, err := r.instancePodExists(ctx, cluster, inst)
+	if err != nil || podExists {
+		if podExists {
+			log.Info("Waiting for the instance Pod to go before bootstrapping its volume")
+		}
+		return false, err
+	}
+	// On an established cluster the plan no longer carries the bootstrap
+	// source, so a primary Job would initialise an empty primary over a live
+	// cluster. Leave the instance down for an operator to act on.
+	if inst.IsPrimary && cluster.IsEstablished() {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(cluster, corev1.EventTypeWarning, "BootstrapRefused",
+				"Refusing to bootstrap the volume of primary %s on an established cluster; restore it by hand or fail over", inst.Name)
+		}
+		return false, nil
+	}
+
+	desired, err := r.bootstrapJob(cluster, plan, inst, r.bootstrapModeFor(cluster, plan, inst), pvc)
+	if err != nil {
+		return false, err
+	}
+	jobs, err := r.bootstrapJobs(ctx, cluster, inst.Name)
+	if err != nil {
+		return false, err
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		switch {
+		case job.DeletionTimestamp != nil:
+			return false, nil
+		case job.Annotations[bootstrapPVCUIDAnnotation] != string(pvc.UID):
+			log.Info("Deleting bootstrap Job for a previous volume", "job", job.Name)
+			return false, r.deleteBootstrapJob(ctx, job)
+		case jobFinished(job, batchv1.JobComplete):
+			before := pvc.DeepCopy()
+			pvc.Annotations[pvcStatusAnnotation] = pvcStatusReady
+			if err := r.Patch(ctx, pvc, client.MergeFrom(before)); err != nil {
+				return false, err
+			}
+			log.Info("Bootstrapped instance volume", "job", job.Name)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "InstanceBootstrapped",
+					"Bootstrap Job %s bootstrapped the volume of %s", job.Name, inst.Name)
+			}
+			return false, r.deleteBootstrapJob(ctx, job)
+		case jobFinished(job, batchv1.JobFailed):
+			if job.Annotations[bootstrapSpecHashAnnotation] != desired.Annotations[bootstrapSpecHashAnnotation] {
+				log.Info("Replacing failed bootstrap Job after a spec change", "job", job.Name)
+				return false, r.deleteBootstrapJob(ctx, job)
+			}
+			return false, nil
+		default:
+			return false, nil
+		}
+	}
+	log.Info("Created bootstrap Job", "job", desired.Name)
+	return false, client.IgnoreAlreadyExists(r.Create(ctx, desired))
+}
+
+// instancePVCBootstrapped reports whether the instance's volume exists and
+// holds a bootstrapped data directory: the member has its own copy of the
+// data and needs no donor to come back up.
+func (r *ClusterReconciler) instancePVCBootstrapped(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) (bool, error) {
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return pvcBootstrapped(pvc), nil
 }

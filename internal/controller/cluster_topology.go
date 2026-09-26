@@ -144,17 +144,20 @@ func (r *ClusterReconciler) reconcileInstances(ctx context.Context, cluster *mys
 //
 //   - Rolling an existing Pod (a template change): gate on the previous member
 //     being fully ready so a cluster-wide change rolls one member at a time.
-//   - Provisioning a brand-new member (no Pod and no PVC): gate on the previous
-//     member being ready AND a healthy donor existing, since the member must be
-//     cloned from a live source.
+//   - Provisioning a brand-new member (no Pod and no bootstrapped PVC): gate on
+//     the previous member being ready AND a healthy donor existing, since the
+//     member must be cloned from a live source.
 //
-// A member whose Pod is missing but whose PVC survives is neither: it already
-// holds the group's data, so it is brought up unconditionally — a roll recreate
-// or a total-outage restart. Bringing it up needs no donor and is what lets the
-// group re-form and every member's GTID become observable; data-loss safety is
-// enforced downstream (the re-bootstrap survivor must GTID-dominate all others),
-// not here. Gating that restart on "previous ONLINE" would deadlock a total
-// outage, where no member can be ONLINE until enough members are back up.
+// A member whose Pod is missing but whose PVC holds a bootstrapped data
+// directory is neither: it already holds the group's data, so it is brought up
+// unconditionally — a roll recreate or a total-outage restart. A PVC still
+// marked initializing is a member being provisioned (its bootstrap Job owns the
+// volume), gated like a brand-new one. Bringing an established member up needs
+// no donor and is what lets the group re-form and every member's GTID become
+// observable; data-loss safety is enforced downstream (the re-bootstrap survivor
+// must GTID-dominate all others), not here. Gating that restart on "previous
+// ONLINE" would deadlock a total outage, where no member can be ONLINE until
+// enough members are back up.
 func (r *ClusterReconciler) gateInstance(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
@@ -178,11 +181,11 @@ func (r *ClusterReconciler) gateInstance(
 		cluster.Status.GroupReplication.Bootstrapped &&
 		!cluster.Status.GroupReplication.HasQuorum
 	if !podExists || quorumRecoveryBlocked {
-		hasData, err := r.instancePVCExists(ctx, cluster, inst)
+		bootstrapped, err := r.instancePVCBootstrapped(ctx, cluster, inst)
 		if err != nil {
 			return false, err
 		}
-		if hasData {
+		if bootstrapped {
 			// Existing member restarting from its own data: bring it up, no donor.
 			return true, nil
 		}
@@ -240,6 +243,11 @@ func (r *ClusterReconciler) ensureInstance(ctx context.Context, cluster *mysqlv1
 		return false, err
 	}
 	if err := r.ensureInstanceService(ctx, cluster, inst); err != nil {
+		return false, err
+	}
+	// The Pod only comes up on a bootstrapped volume. Until then the instance's
+	// bootstrap Job owns the volume (design 031).
+	if bootstrapped, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil || !bootstrapped {
 		return false, err
 	}
 	// A volume whose backend cannot expand in use only finishes resizing once the
@@ -356,21 +364,6 @@ func memberOnline(gr *mysqlv1alpha1.GroupReplicationStatus, instance string) boo
 func (r *ClusterReconciler) instancePodExists(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) (bool, error) {
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-// instancePVCExists reports whether the instance's data PVC is present. A member
-// whose PVC survives holds its own copy of the data and is restarting (a roll
-// recreate or a total-outage restart), not being freshly provisioned, so it needs
-// no donor to come back up.
-func (r *ClusterReconciler) instancePVCExists(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) (bool, error) {
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
