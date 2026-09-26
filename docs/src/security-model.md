@@ -114,6 +114,16 @@ The backup account is dedicated to XtraBackup and receives only the privileges
 needed for physical backup on the target Percona version. On modern versions
 that includes `BACKUP_ADMIN`; older versions use the compatible static grants.
 
+Instance Pods carry no password environment variables. Each instance manager
+reads its accounts' passwords from the cluster's credential Secrets through the
+Kubernetes API, keeping the values current through a watch, so a rotated Secret
+applies to new connections without a restart.
+
+Changing a credential Secret does not change the MySQL account: for `root`,
+`control` and `backup`, nothing runs `ALTER USER` when the Secret changes. Run
+`ALTER USER` in MySQL first, then update the Secret. Only the dump account is
+re-applied by the operator on its next reconcile.
+
 Generated Secrets are not overwritten when the user provides their own
 credentials. Recovery currently reconciles internal account passwords to the
 recovery cluster Secrets after restore.
@@ -136,7 +146,16 @@ RoleBinding. The Role grants:
 
 - `get`, `list`, `watch` on the Cluster;
 - `get`, `update`, `patch` on the Cluster status;
-- lease operations for the primary lease.
+- lease operations for the primary lease;
+- `get`, `watch` on the cluster's credential Secrets, by name only:
+  `<cluster>-root`, `<cluster>-app` (initdb bootstraps only),
+  `<cluster>-control`, `<cluster>-backup` and `<cluster>-dump`, or the
+  user-provided names. The rule never grants `list`, and it never names
+  object-store or replication Secrets: object-store credentials stay in worker
+  Jobs, and replication is X.509-only.
+
+The instance manager reads its MySQL account passwords from these Secrets
+through the Kubernetes API (see [Database accounts](#database-accounts)).
 
 Under Group Replication each instance additionally gets its own
 `<cluster>-<ordinal>-gr-doorbell` Role granting `get`/`patch` on **only its
@@ -336,4 +355,7 @@ mapping.
   themselves.
 - Backup object deletion through a finalizer is not implemented and should be
   opt-in or guarded.
+- If bootstrapping moves to Jobs
+  ([#127](https://github.com/cnmsql/cnmsql/issues/127)), those Jobs need the
+  same scoped Secret rule.
 - NetworkPolicy examples are not shipped yet.
