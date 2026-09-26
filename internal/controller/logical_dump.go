@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -128,33 +129,21 @@ func (d logicalDumpResolver) fromBackup(
 	return &logicalDump{Store: store, DumpKey: keys.ArchiveKey, ManifestKey: keys.MetadataKey, Meta: &meta}, nil
 }
 
-// backupStore picks the object store a Backup was written to: the Backup's own
-// override, else the store of the cluster it was taken from, else fallback.
+// backupStore picks the object store a Backup was written to (see
+// objectstore.BackupStore); fallback is the target cluster's own store.
 func (d logicalDumpResolver) backupStore(
 	ctx context.Context,
 	backup *mysqlv1alpha1.Backup,
 	fallback *mysqlv1alpha1.S3ObjectStore,
 ) (*mysqlv1alpha1.S3ObjectStore, error) {
-	var store *mysqlv1alpha1.S3ObjectStore
-	if backup.Spec.ObjectStore != nil {
-		store = backup.Spec.ObjectStore.DeepCopy()
-	} else {
-		source := &mysqlv1alpha1.Cluster{}
-		err := d.client.Get(ctx, types.NamespacedName{Namespace: backup.Namespace, Name: backup.Spec.Cluster.Name}, source)
-		switch {
-		case err == nil && source.Spec.Backup != nil && source.Spec.Backup.ObjectStore != nil:
-			store = source.Spec.Backup.ObjectStore.DeepCopy()
-		case err != nil && !apierrors.IsNotFound(err):
-			return nil, dumpErrorf(dumpNotReady, "reading cluster %q of %s %q: %v",
-				backup.Spec.Cluster.Name, d.backupNoun, backup.Name, err)
-		case fallback != nil:
-			store = fallback.DeepCopy()
-		default:
-			return nil, dumpErrorf(dumpUnusable, "%s %q has no object store, and neither its cluster %q nor "+
-				"%s has spec.backup.objectStore", d.backupNoun, backup.Name, backup.Spec.Cluster.Name, d.target)
-		}
+	store, err := objectstore.BackupStore(ctx, d.client, backup, fallback)
+	switch {
+	case errors.Is(err, objectstore.ErrNoBackupStore):
+		return nil, dumpErrorf(dumpUnusable, "%s %q has no object store, and neither its cluster %q nor "+
+			"%s has spec.backup.objectStore", d.backupNoun, backup.Name, backup.Spec.Cluster.Name, d.target)
+	case err != nil:
+		return nil, dumpErrorf(dumpNotReady, "%v", err)
 	}
-	store.SetDefaults()
 	return store, nil
 }
 

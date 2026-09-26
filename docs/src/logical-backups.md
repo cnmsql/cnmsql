@@ -251,9 +251,11 @@ spec:
 ```
 
 - `backup` names a completed logical Backup in the same namespace. The dump is
-  read from the object store the Backup was written to: the Backup's own
-  `objectStore`, else its cluster's `spec.backup.objectStore`, else (when that
-  cluster is gone) the new cluster's.
+  read from the object store the Backup was written to, as recorded in its
+  status, so a source cluster that moved to another store since does not
+  matter. A Backup without that record falls back to its own `objectStore`,
+  else its cluster's `spec.backup.objectStore`, else (when that cluster is
+  gone) the new cluster's.
 - `databases` is optional. When set, only those databases are loaded from the
   dump. Each one must be in the Backup's `status.databases`.
 - `postImportSQL` is optional. The statements run as `root`, in order, after the

@@ -470,9 +470,10 @@ failed Backup or an unreadable manifest blocks it with `ImportIncompatible`; a
 physical Backup blocks it with `PhysicalBackupNotImportable`. The import command
 repeats the manifest checks before it starts the temporary server.
 
-An import Backup's dump is read from the Backup's own `objectStore`, else from
-the store of the cluster it was taken from, else from the new cluster's (the
-source cluster was deleted and replaced). `postImportSQL` and `databases` are
+An import Backup's dump is read from the store recorded in the Backup's status
+when it ran, else from the Backup's own `objectStore`, else from the store of
+the cluster it was taken from, else from the new cluster's (the source
+cluster was deleted and replaced). `postImportSQL` and `databases` are
 passed as container arguments with `$` escaped, so the kubelet does not expand
 `$(VAR)` in them.
 

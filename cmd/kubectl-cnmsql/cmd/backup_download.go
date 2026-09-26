@@ -115,7 +115,7 @@ func downloadLogicalBackup(
 	if backup.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || backup.Status.BackupID == "" {
 		return "", fmt.Errorf("backup %q is not completed (phase %q)", backup.Name, backup.Status.Phase)
 	}
-	store, err := downloadObjectStore(ctx, c, backup)
+	store, err := objectstore.BackupStore(ctx, c, backup, nil)
 	if err != nil {
 		return "", err
 	}
@@ -230,27 +230,3 @@ func streamDump(
 // errDownloadStopped closes the download pipe when decompression stopped
 // reading it, so the download's own error can be told apart from it.
 var errDownloadStopped = errors.New("download stopped")
-
-// downloadObjectStore picks the store a Backup was written to: its own
-// override, else its cluster's.
-func downloadObjectStore(
-	ctx context.Context, c client.Reader, backup *mysqlv1alpha1.Backup,
-) (*mysqlv1alpha1.S3ObjectStore, error) {
-	var store *mysqlv1alpha1.S3ObjectStore
-	if backup.Spec.ObjectStore != nil {
-		store = backup.Spec.ObjectStore.DeepCopy()
-	} else {
-		cluster := &mysqlv1alpha1.Cluster{}
-		key := types.NamespacedName{Namespace: backup.Namespace, Name: backup.Spec.Cluster.Name}
-		if err := c.Get(ctx, key, cluster); err != nil {
-			return nil, fmt.Errorf("backup %q has no object store of its own and its cluster could not be read: %w",
-				backup.Name, err)
-		}
-		if cluster.Spec.Backup == nil || cluster.Spec.Backup.ObjectStore == nil {
-			return nil, fmt.Errorf("neither backup %q nor cluster %q has an object store", backup.Name, cluster.Name)
-		}
-		store = cluster.Spec.Backup.ObjectStore.DeepCopy()
-	}
-	store.SetDefaults()
-	return store, nil
-}

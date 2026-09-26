@@ -660,7 +660,7 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 		return nil
 	}
 
-	store, err := r.resolveBackupStore(ctx, backup)
+	store, err := objectstore.BackupStore(ctx, r.Client, backup, nil)
 	if err != nil {
 		log.Info("Skipping backup object-store cleanup: object store not resolvable",
 			"backup", backup.Name, "reason", err.Error())
@@ -692,28 +692,6 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 			fmt.Sprintf("Removed object-store artifacts under s3://%s/%s", store.Bucket, prefix))
 	}
 	return nil
-}
-
-// resolveBackupStore resolves the Backup's destination object store. It prefers
-// the destination snapshotted onto status at backup time (which survives the
-// referenced Cluster being deleted), then the spec override, and finally reads
-// it from the referenced Cluster.
-func (r *BackupReconciler) resolveBackupStore(
-	ctx context.Context,
-	backup *mysqlv1alpha1.Backup,
-) (*mysqlv1alpha1.S3ObjectStore, error) {
-	if backup.Status.ObjectStore != nil {
-		return backup.Status.ObjectStore, nil
-	}
-	if backup.Spec.ObjectStore != nil {
-		return backup.Spec.ObjectStore, nil
-	}
-	cluster := &mysqlv1alpha1.Cluster{}
-	key := types.NamespacedName{Namespace: backup.Namespace, Name: backup.Spec.Cluster.Name}
-	if err := r.Get(ctx, key, cluster); err != nil {
-		return nil, err
-	}
-	return backupObjectStore(backup, cluster)
 }
 
 func (r *BackupReconciler) failBackup(ctx context.Context, backup *mysqlv1alpha1.Backup, reason, message string) error {
