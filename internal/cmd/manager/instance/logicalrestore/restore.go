@@ -17,7 +17,6 @@ limitations under the License.
 package logicalrestore
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -37,6 +36,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqldump"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -82,13 +82,6 @@ type store interface {
 	GetJSON(ctx context.Context, bucket, key string, v any) error
 	Download(ctx context.Context, bucket, key string, writer io.Writer) (int64, error)
 }
-
-// dumpFooter is the last comment both dump clients write. A dump without it
-// was cut short.
-var dumpFooter = []byte("-- Dump completed on")
-
-// dumpFooterWindow is how much of the stream's end is kept to find the footer.
-const dumpFooterWindow = 512
 
 // progressInterval is how often the worker logs how far the restore got.
 var progressInterval = 30 * time.Second
@@ -167,17 +160,17 @@ func run(ctx context.Context, opts options, st store, client *http.Client) error
 
 	// A refusal decides the outcome even when the stream failed too: the
 	// instance changed nothing, whatever happened to the download meanwhile.
-	switch resp.StatusCode {
-	case http.StatusOK:
+	switch {
+	case resp.StatusCode == http.StatusOK:
 		if streamErr := stream.failure(); streamErr != nil {
 			return streamErr
 		}
-	case http.StatusNotFound, http.StatusMethodNotAllowed:
+	case backupworker.ManagerPredatesEndpoint(resp.StatusCode):
 		return unchanged(backupworker.ReasonInstanceManagerOutdated,
 			fmt.Errorf("instance %s does not serve logical loads yet: its instance manager predates them; "+
 				"retry once the operator upgrade has reached it", opts.InstanceName))
 	default:
-		refusal := readRefusal(resp)
+		refusal := backupworker.ReadRefusal(resp)
 		reason := refusal.Reason
 		if reason == "" {
 			reason = webserver.LoadReasonFailed
@@ -233,15 +226,6 @@ func loadURL(opts options) (string, error) {
 	return u.String(), nil
 }
 
-func readRefusal(resp *http.Response) webserver.DumpErrorBody {
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	var body webserver.DumpErrorBody
-	if json.Unmarshal(raw, &body) != nil || body.Error == "" {
-		body.Error = string(bytes.TrimSpace(raw))
-	}
-	return body
-}
-
 // errBodyDone ends the request body once the transport returned. It is a
 // routing marker, never a reported failure.
 var errBodyDone = errors.New("request finished")
@@ -274,7 +258,7 @@ func (s *restoreStream) run(ctx context.Context, w *io.PipeWriter) {
 		downloadDone <- err
 	}()
 
-	footer := &tailBuffer{n: dumpFooterWindow}
+	footer := tail.NewWriter(sqldump.FooterWindow)
 	copyErr := func() error {
 		dec, err := objectstore.NewZstdReader(dr)
 		if err != nil {
@@ -295,7 +279,8 @@ func (s *restoreStream) run(ctx context.Context, w *io.PipeWriter) {
 	switch {
 	case errors.Is(copyErr, io.ErrClosedPipe), errors.Is(copyErr, errBodyDone):
 		// The request ended first: the instance answered (a refusal, or a
-		// failed load). Its answer is the outcome.
+		// failed load). Its answer is the outcome. This relies on
+		// FilterDatabases returning the body writer's error as it came.
 	case downloadErr != nil:
 		fail = changed(backupworker.ReasonDownloadFailed,
 			fmt.Errorf("downloading s3://%s/%s: %w", s.opts.Bucket, s.opts.DumpKey, downloadErr))
@@ -304,7 +289,7 @@ func (s *restoreStream) run(ctx context.Context, w *io.PipeWriter) {
 	case s.meta.SHA256 != "" && hash.SumHex() != s.meta.SHA256:
 		fail = changed(backupworker.ReasonDumpCorrupt, fmt.Errorf("the dump's checksum is %s and the manifest has %s",
 			hash.SumHex(), s.meta.SHA256))
-	case !bytes.Contains(footer.buf, dumpFooter):
+	case !sqldump.HasFooter(footer.Bytes()):
 		fail = changed(backupworker.ReasonDumpCorrupt, errors.New("the dump has no completion footer; it was cut short"))
 	}
 	if fail != nil {
@@ -364,18 +349,4 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n.Add(int64(n))
 	return n, err
-}
-
-// tailBuffer keeps the last n bytes written to it.
-type tailBuffer struct {
-	n   int
-	buf []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.n {
-		t.buf = t.buf[len(t.buf)-t.n:]
-	}
-	return len(p), nil
 }

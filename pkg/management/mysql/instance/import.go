@@ -35,6 +35,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqldump"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 )
 
 // ImportMarkerName is written into the data directory once an import has
@@ -44,11 +45,6 @@ const ImportMarkerName = ".cnmsql-import-done"
 // maxImportStderrTailBytes bounds the SQL client output kept for the error
 // message when a load fails.
 const maxImportStderrTailBytes = 4 << 10
-
-// importMaxPacketBytes lets the temporary server accept the largest
-// statement the SQL client sends, the protocol's 1 GiB ceiling: a single large
-// row is dumped as one statement.
-const importMaxPacketBytes = 1 << 30
 
 // ImportOptions configures loading a logical backup into a freshly initialised
 // data directory.
@@ -186,7 +182,8 @@ func Import(ctx context.Context, opts ImportOptions) error {
 		"--skip-log-bin",
 		// Imported events must not fire against a half-loaded schema.
 		"--event-scheduler=OFF",
-		fmt.Sprintf("--max-allowed-packet=%d", importMaxPacketBytes),
+		// Accept the largest statement the SQL client sends.
+		fmt.Sprintf("--max-allowed-packet=%d", engine.MaxLoadPacketBytes),
 	)
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))
 	sup := NewProcessSupervisor(opts.MysqldPath, args,
@@ -272,10 +269,10 @@ func (o *ImportOptions) load(ctx context.Context, clientPath string, meta object
 	clientCtx, killClient := context.WithCancel(ctx)
 	defer killClient()
 	tool := filepath.Base(clientPath)
-	tail := newTailWriter(maxImportStderrTailBytes)
+	stderrTail := tail.NewWriter(maxImportStderrTailBytes)
 	cmd := exec.CommandContext(clientCtx, clientPath, o.Engine.Logical().LoadArgs(defaults)...)
 	cmd.Stdout = newProcessLogWriter(log.WithName(tool), "stdout")
-	cmd.Stderr = io.MultiWriter(newProcessLogWriter(log.WithName(tool), "stderr"), tail)
+	cmd.Stderr = io.MultiWriter(newProcessLogWriter(log.WithName(tool), "stderr"), stderrTail)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -284,7 +281,7 @@ func (o *ImportOptions) load(ctx context.Context, clientPath string, meta object
 		return fmt.Errorf("import: starting %s: %w", tool, err)
 	}
 	clientFailed := func(waitErr error) error {
-		return fmt.Errorf("import: %s failed: %v: %s", tool, waitErr, strings.TrimSpace(tail.String()))
+		return fmt.Errorf("import: %s failed: %v: %s", tool, waitErr, strings.TrimSpace(stderrTail.String()))
 	}
 
 	pr, pw := io.Pipe()

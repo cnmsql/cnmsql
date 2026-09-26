@@ -35,6 +35,7 @@ import (
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqldump"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -131,7 +132,7 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 		return nil, fmt.Errorf("load: writing credentials file: %w", err)
 	}
 
-	session.stderr = newTailWriter(maxLoadStderrTailBytes)
+	session.stderr = tail.NewWriter(maxLoadStderrTailBytes)
 	session.cmd = exec.CommandContext(ctx, path, cfg.Engine.Logical().LoadArgs(defaults)...)
 	session.cmd.Stdout = newProcessLogWriter(log, "stdout")
 	session.cmd.Stderr = io.MultiWriter(newProcessLogWriter(log, "stderr"), session.stderr)
@@ -247,7 +248,7 @@ type loadSession struct {
 	log        logr.Logger
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
-	stderr     *tailWriter
+	stderr     *tail.Writer
 	dir        string
 	running    bool
 	closeOnce  sync.Once

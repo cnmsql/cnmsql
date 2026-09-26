@@ -118,9 +118,9 @@ const (
 	DumpErrorTrailer          = "X-Cnmsql-Dump-Error"
 )
 
-// DumpErrorBody is the JSON body of a refused dump, and of a refused or failed
-// load.
-type DumpErrorBody struct {
+// ReasonErrorBody is the JSON body of an error with a reason a worker can act
+// on: a refused dump, or a refused or failed load.
+type ReasonErrorBody struct {
 	Reason string `json:"reason"`
 	Error  string `json:"error"`
 }
@@ -185,9 +185,7 @@ func dumpHandler(streamer DumpStreamer) http.HandlerFunc {
 		session, err := streamer.StartDump(r.Context(), req)
 		if err != nil {
 			status, reason := dumpRefusal(err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			_ = json.NewEncoder(w).Encode(DumpErrorBody{Reason: reason, Error: err.Error()})
+			writeReasonError(w, status, reason, err)
 			return
 		}
 		defer session.Close()

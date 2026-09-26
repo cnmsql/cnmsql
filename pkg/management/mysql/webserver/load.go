@@ -163,5 +163,5 @@ func loadHandler(streamer LoadStreamer) http.HandlerFunc {
 func writeReasonError(w http.ResponseWriter, status int, reason string, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(DumpErrorBody{Reason: reason, Error: err.Error()})
+	_ = json.NewEncoder(w).Encode(ReasonErrorBody{Reason: reason, Error: err.Error()})
 }

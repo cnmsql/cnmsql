@@ -18,8 +18,6 @@ package backup
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
@@ -188,26 +186,11 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 // instance manager. The transfer is unbounded: large datasets can take a long
 // time to stream.
 func mtlsClient(opts uploadOptions) (*http.Client, error) {
-	cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
+	cfg, err := webserver.ClientTLSConfig(webserver.ClientTLSOptions{
+		CertFile: opts.TLSCert, KeyFile: opts.TLSKey, CAFile: opts.TLSCA, ServerName: opts.SourceManagerServerName,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("loading client certificate: %w", err)
+		return nil, err
 	}
-	caPEM, err := os.ReadFile(opts.TLSCA)
-	if err != nil {
-		return nil, fmt.Errorf("reading CA: %w", err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("CA file %s contains no certificates", opts.TLSCA)
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion:   tls.VersionTLS12,
-				ServerName:   opts.SourceManagerServerName,
-				Certificates: []tls.Certificate{cert},
-				RootCAs:      roots,
-			},
-		},
-	}, nil
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}, nil
 }

@@ -398,7 +398,7 @@ type dumpResponse struct {
 	header    http.Header
 	trailer   http.Header
 	body      string
-	errorBody webserver.DumpErrorBody
+	errorBody webserver.ReasonErrorBody
 }
 
 func (n *logicalNode) dump(ctx context.Context, t *testing.T, req webserver.DumpRequest) dumpResponse {

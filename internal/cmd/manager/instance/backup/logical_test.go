@@ -116,7 +116,7 @@ func (s *sourceServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.StatusUnprocessableEntity: webserver.DumpReasonInvalidRequest,
 		}
 		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(webserver.DumpErrorBody{Reason: reasons[status], Error: "refused " + reasons[status]})
+		_ = json.NewEncoder(w).Encode(webserver.ReasonErrorBody{Reason: reasons[status], Error: "refused " + reasons[status]})
 		return
 	}
 	w.Header().Set(webserver.DumpToolHeader, "mysqldump")
@@ -261,8 +261,8 @@ func TestLogicalUploadRefusalReasons(t *testing.T) {
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
 			store, err := runAgainst(t, &sourceServer{refusals: tc.refusals, body: sampleDump})
-			var f *failure
-			if !errors.As(err, &f) || f.reason != tc.reason {
+			var f *backupworker.Failure
+			if !errors.As(err, &f) || f.Reason != tc.reason {
 				t.Fatalf("err = %v, want reason %s", err, tc.reason)
 			}
 			if !strings.Contains(err.Error(), "shop-2") {
@@ -287,8 +287,8 @@ func TestLogicalUploadRejectsIncompleteDumps(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, err := runAgainst(t, tc.src)
-			var f *failure
-			if !errors.As(err, &f) || f.reason != backupworker.ReasonDumpFailed {
+			var f *backupworker.Failure
+			if !errors.As(err, &f) || f.Reason != backupworker.ReasonDumpFailed {
 				t.Fatalf("err = %v, want DumpFailed", err)
 			}
 			if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
@@ -305,8 +305,8 @@ func TestLogicalUploadStoreFailureIsNotADumpFailure(t *testing.T) {
 	store := newMemStore()
 	store.uploadErr = errors.New("s3 is down")
 	err := runWithStore(t, store, &sourceServer{body: sampleDump})
-	var f *failure
-	if !errors.As(err, &f) || f.reason != "" {
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != "" {
 		t.Fatalf("err = %v, want an upload failure without a reason", err)
 	}
 	if strings.Contains(err.Error(), "upload finished") {
@@ -327,8 +327,8 @@ func TestLogicalUploadManifestFailureRemovesArchive(t *testing.T) {
 	store := newMemStore()
 	store.putJSONErr = errors.New("manifest upload failed")
 	err := runWithStore(t, store, &sourceServer{body: sampleDump})
-	var f *failure
-	if !errors.As(err, &f) || f.reason != "" {
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != "" {
 		t.Fatalf("err = %v, want a manifest failure without a reason", err)
 	}
 	if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
@@ -357,8 +357,8 @@ func TestLogicalUploadLargeDumpKeepsFooter(t *testing.T) {
 
 func TestLogicalUploadCutStreamIsDumpFailed(t *testing.T) {
 	store, err := runAgainst(t, &sourceServer{body: sampleDump, abort: true})
-	var f *failure
-	if !errors.As(err, &f) || f.reason != backupworker.ReasonDumpFailed {
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonDumpFailed {
 		t.Fatalf("err = %v, want DumpFailed", err)
 	}
 	if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
@@ -377,7 +377,7 @@ func TestReportFailureWritesTerminationMessage(t *testing.T) {
 		t.Fatal("an error without a reason must not write a termination message")
 	}
 
-	reportFailure(&failure{reason: webserver.DumpReasonToolUnavailable, err: errors.New(strings.Repeat("x", 10000))})
+	reportFailure(&backupworker.Failure{Reason: webserver.DumpReasonToolUnavailable, Err: errors.New(strings.Repeat("x", 10000))})
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

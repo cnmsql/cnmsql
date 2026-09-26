@@ -14,13 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package backup
+package tail
 
-import "github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
+import "testing"
 
-// terminationLogPath is where the termination message goes; tests override it.
-var terminationLogPath = backupworker.TerminationLogPath
-
-// reportFailure publishes err's reason, if it has one, as the container's
-// termination message.
-func reportFailure(err error) { backupworker.ReportFailure(terminationLogPath, err) }
+func TestWriterKeepsTheLastBytes(t *testing.T) {
+	w := NewWriter(10)
+	// More than the cap across several writes: only the last 10 bytes stay.
+	for _, chunk := range []string{"aaaa", "bbbb", "cccc", "dddd"} {
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := w.String(), "bbccccdddd"; got != want {
+		t.Fatalf("tail = %q, want %q", got, want)
+	}
+	if _, _ = w.Write([]byte("0123456789ABC")); string(w.Bytes()) != "3456789ABC" {
+		t.Fatalf("tail = %q after a write longer than the cap", w.Bytes())
+	}
+}

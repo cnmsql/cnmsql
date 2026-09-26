@@ -120,11 +120,11 @@ func buildDumpArgs(opts DumpOpts, engineArgs ...string) ([]string, error) {
 	return append(args, opts.Databases...), nil
 }
 
-// maxLoadPacketBytes is the largest statement the SQL client sends while
+// MaxLoadPacketBytes is the largest statement the SQL client sends while
 // loading a dump: the protocol's 1 GiB ceiling. mysqldump keeps its extended
 // INSERTs near --net-buffer-length, but a single large row is written as one
-// statement whatever its size.
-const maxLoadPacketBytes = 1 << 30
+// statement whatever its size. A server that loads a dump must accept it too.
+const MaxLoadPacketBytes = 1 << 30
 
 // buildLoadArgs is shared by both engines: both clients load a dump the same
 // way. The dump sets its own session character set, but the client must read
@@ -134,7 +134,7 @@ func buildLoadArgs(defaultsFile string) []string {
 	return []string{
 		"--defaults-extra-file=" + defaultsFile,
 		"--default-character-set=utf8mb4",
-		fmt.Sprintf("--max-allowed-packet=%d", maxLoadPacketBytes),
+		fmt.Sprintf("--max-allowed-packet=%d", MaxLoadPacketBytes),
 	}
 }
 

@@ -136,14 +136,14 @@ func (f *fakeTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.refuseStatus != 0 {
 		w.WriteHeader(f.refuseStatus)
 		if f.refuseReason != "" {
-			_ = json.NewEncoder(w).Encode(webserver.DumpErrorBody{Reason: f.refuseReason, Error: "refused"})
+			_ = json.NewEncoder(w).Encode(webserver.ReasonErrorBody{Reason: f.refuseReason, Error: "refused"})
 		}
 		return
 	}
 	f.body, f.bodyErr = io.ReadAll(r.Body)
 	if f.bodyErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(webserver.DumpErrorBody{Reason: webserver.LoadReasonFailed, Error: f.bodyErr.Error()})
+		_ = json.NewEncoder(w).Encode(webserver.ReasonErrorBody{Reason: webserver.LoadReasonFailed, Error: f.bodyErr.Error()})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(webserver.LoadResult{Databases: f.query[webserver.LoadDatabaseParam], Bytes: int64(len(f.body))})
@@ -176,12 +176,12 @@ func runAgainst(t *testing.T, target *fakeTarget, st store, mutate func(*options
 
 func assertFailure(t *testing.T, err error, reason string, wantUnchanged bool) {
 	t.Helper()
-	var f *failure
+	var f *backupworker.Failure
 	if !errors.As(err, &f) {
 		t.Fatalf("err = %v, want a failure with reason %s", err, reason)
 	}
-	if f.reason != reason || f.unchanged != wantUnchanged {
-		t.Fatalf("failure = %s (unchanged %v): %v; want %s (unchanged %v)", f.reason, f.unchanged, f.err, reason, wantUnchanged)
+	if f.Reason != reason || f.Unchanged != wantUnchanged {
+		t.Fatalf("failure = %s (unchanged %v): %v; want %s (unchanged %v)", f.Reason, f.Unchanged, f.Err, reason, wantUnchanged)
 	}
 }
 

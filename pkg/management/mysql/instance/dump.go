@@ -35,6 +35,7 @@ import (
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/heartbeat"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -167,7 +168,7 @@ func (c *Controller) StartDump(ctx context.Context, req webserver.DumpRequest) (
 		ServerVersion: c.versionStr,
 		Databases:     databases,
 	}
-	session.stderr = newTailWriter(maxDumpStderrTailBytes)
+	session.stderr = tail.NewWriter(maxDumpStderrTailBytes)
 	session.cmd = exec.CommandContext(ctx, path, args...)
 	session.cmd.Stderr = io.MultiWriter(newProcessLogWriter(log, "stderr"), session.stderr)
 	stdout, err := session.cmd.StdoutPipe()
@@ -285,7 +286,7 @@ type dumpSession struct {
 	info       webserver.DumpInfo
 	cmd        *exec.Cmd
 	out        *bufio.Reader
-	stderr     *tailWriter
+	stderr     *tail.Writer
 	dir        string
 	running    bool
 	closeOnce  sync.Once

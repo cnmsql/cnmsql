@@ -14,13 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package backup
+package sqldump
 
-import "github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
+import "bytes"
 
-// terminationLogPath is where the termination message goes; tests override it.
-var terminationLogPath = backupworker.TerminationLogPath
+// footer is the last comment both dump clients write. A dump without it was
+// cut short.
+var footer = []byte("-- Dump completed on")
 
-// reportFailure publishes err's reason, if it has one, as the container's
-// termination message.
-func reportFailure(err error) { backupworker.ReportFailure(terminationLogPath, err) }
+// FooterWindow is how much of a dump's end to keep to find its footer.
+const FooterWindow = 512
+
+// HasFooter reports whether end, the last FooterWindow bytes of a dump, holds
+// the completion footer.
+func HasFooter(end []byte) bool { return bytes.Contains(end, footer) }

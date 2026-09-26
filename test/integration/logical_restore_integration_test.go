@@ -48,7 +48,7 @@ CREATE DEFINER='app'@'%' EVENT shop.weekly ON SCHEDULE EVERY 1 WEEK DISABLE DO D
 type loadResponse struct {
 	status  int
 	result  webserver.LoadResult
-	refusal webserver.DumpErrorBody
+	refusal webserver.ReasonErrorBody
 }
 
 // load posts body to POST /cluster/load, as the restore worker does.

@@ -53,7 +53,8 @@ const readBufferBytes = 1 << 20
 // values, so a line can only start with a marker when the client wrote it.
 //
 // It returns the databases whose sections it kept, in the order they first
-// appeared.
+// appeared. An error from w or r is returned as it came, so a caller can tell
+// its own writer's errors apart from the dump's.
 func FilterDatabases(w io.Writer, r io.Reader, selected []string) ([]string, error) {
 	if len(selected) == 0 {
 		_, err := io.Copy(w, r)

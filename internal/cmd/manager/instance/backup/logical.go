@@ -30,15 +30,10 @@ import (
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqldump"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
-
-// dumpFooter is the last comment both dump clients write. A dump without it
-// was cut short.
-var dumpFooter = []byte("-- Dump completed on")
-
-// dumpFooterWindow is how much of the stream's end is kept to find the footer.
-const dumpFooterWindow = 512
 
 // errUploadClosed is the error the copy sees when the upload has ended the
 // pipe. It is a routing marker, never a reported failure. It relies on the
@@ -96,7 +91,7 @@ func runLogicalUpload(
 
 	// Source → footer window + byte count → zstd → pipe → SHA256 → object store.
 	pr, pw := io.Pipe()
-	footer := newTailBuffer(dumpFooterWindow)
+	footer := tail.NewWriter(sqldump.FooterWindow)
 	var uncompressed int64
 	copyDone := make(chan error, 1)
 	go func() {
@@ -129,7 +124,7 @@ func runLogicalUpload(
 		if rmErr := store.Remove(context.WithoutCancel(ctx), opts.Bucket, opts.ArchiveKey); rmErr != nil {
 			log.Info("Could not remove the incomplete dump", "error", rmErr.Error())
 		}
-		return &failure{reason: reason, err: err}
+		return &backupworker.Failure{Reason: reason, Err: err}
 	}
 	switch {
 	case copyErr != nil && !errors.Is(copyErr, errUploadClosed):
@@ -141,7 +136,7 @@ func runLogicalUpload(
 	if dumpErr := resp.Trailer.Get(webserver.DumpErrorTrailer); dumpErr != "" {
 		return fail(backupworker.ReasonDumpFailed, fmt.Errorf("backup: the source failed the dump: %s", dumpErr))
 	}
-	if !bytes.Contains(footer.Bytes(), dumpFooter) {
+	if !sqldump.HasFooter(footer.Bytes()) {
 		return fail(backupworker.ReasonDumpFailed, errors.New("backup: the dump has no completion footer; it was cut short"))
 	}
 
@@ -207,7 +202,8 @@ func requestDump(
 		if resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}
-		refusal := readRefusal(resp)
+		refusal := backupworker.ReadRefusal(resp)
+		_ = resp.Body.Close()
 		retryable := resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusConflict
 		if retryable && time.Now().Before(deadline) {
 			log.Info("Source refused the dump, will retry", "status", resp.Status, "reason", refusal.Reason,
@@ -223,21 +219,11 @@ func requestDump(
 	}
 }
 
-func readRefusal(resp *http.Response) webserver.DumpErrorBody {
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	var body webserver.DumpErrorBody
-	if json.Unmarshal(raw, &body) != nil || body.Error == "" {
-		body.Error = string(bytes.TrimSpace(raw))
-	}
-	return body
-}
-
-func refusalFailure(status int, instance string, refusal webserver.DumpErrorBody) error {
-	if status == http.StatusNotFound {
-		return &failure{
-			reason: backupworker.ReasonInstanceManagerOutdated,
-			err: fmt.Errorf("instance %s does not serve logical dumps yet: its instance manager predates them; "+
+func refusalFailure(status int, instance string, refusal webserver.ReasonErrorBody) error {
+	if backupworker.ManagerPredatesEndpoint(status) {
+		return &backupworker.Failure{
+			Reason: backupworker.ReasonInstanceManagerOutdated,
+			Err: fmt.Errorf("instance %s does not serve logical dumps yet: its instance manager predates them; "+
 				"retry once the operator upgrade has reached it", instance),
 		}
 	}
@@ -245,27 +231,6 @@ func refusalFailure(status int, instance string, refusal webserver.DumpErrorBody
 	if reason == "" {
 		reason = backupworker.ReasonDumpFailed
 	}
-	msg := refusal.Error
-	if msg == "" {
-		msg = http.StatusText(status)
-	}
-	return &failure{reason: reason, err: fmt.Errorf("instance %s refused the dump (%d): %s", instance, status, msg)}
+	return &backupworker.Failure{Reason: reason,
+		Err: fmt.Errorf("instance %s refused the dump (%d): %s", instance, status, refusal.Error)}
 }
-
-// tailBuffer keeps the last n bytes written to it.
-type tailBuffer struct {
-	n   int
-	buf []byte
-}
-
-func newTailBuffer(n int) *tailBuffer { return &tailBuffer{n: n} }
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.n {
-		t.buf = t.buf[len(t.buf)-t.n:]
-	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) Bytes() []byte { return t.buf }

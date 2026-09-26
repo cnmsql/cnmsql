@@ -143,7 +143,7 @@ func TestDumpHandlerRefusals(t *testing.T) {
 			if resp.StatusCode != tc.status {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.status)
 			}
-			var body DumpErrorBody
+			var body ReasonErrorBody
 			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}

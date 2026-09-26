@@ -20,16 +20,13 @@ limitations under the License.
 package logicalrestore
 
 import (
-	"crypto/tls"
-	"crypto/x509"
-	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 // NewCommand builds the `instance logical-restore` command.
@@ -89,27 +86,14 @@ const expectContinueTimeout = 5 * time.Minute
 // mtlsClient builds an HTTP client that mutually authenticates to the target
 // instance manager. The transfer is unbounded: a large restore can take hours.
 func mtlsClient(opts options) (*http.Client, error) {
-	cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
+	cfg, err := webserver.ClientTLSConfig(webserver.ClientTLSOptions{
+		CertFile: opts.TLSCert, KeyFile: opts.TLSKey, CAFile: opts.TLSCA, ServerName: opts.ServerName,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("loading client certificate: %w", err)
+		return nil, err
 	}
-	caPEM, err := os.ReadFile(opts.TLSCA)
-	if err != nil {
-		return nil, fmt.Errorf("reading CA: %w", err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("CA file %s contains no certificates", opts.TLSCA)
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			ExpectContinueTimeout: expectContinueTimeout,
-			TLSClientConfig: &tls.Config{
-				MinVersion:   tls.VersionTLS12,
-				ServerName:   opts.ServerName,
-				Certificates: []tls.Certificate{cert},
-				RootCAs:      roots,
-			},
-		},
-	}, nil
+	return &http.Client{Transport: &http.Transport{
+		ExpectContinueTimeout: expectContinueTimeout,
+		TLSClientConfig:       cfg,
+	}}, nil
 }

@@ -25,6 +25,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -86,7 +87,7 @@ func logicalWorkerArgs(backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Clus
 // markBackupPending records why a Backup has not started yet.
 func (r *BackupReconciler) markBackupPending(ctx context.Context, backup *mysqlv1alpha1.Backup, reason, message string) error {
 	if backup.Status.Phase == mysqlv1alpha1.BackupPhasePending && backup.Status.Error == "" {
-		if c := findBackupCondition(backup.Status.Conditions, mysqlv1alpha1.ConditionProgressing); c != nil &&
+		if c := apimeta.FindStatusCondition(backup.Status.Conditions, mysqlv1alpha1.ConditionProgressing); c != nil &&
 			c.Reason == reason && c.Message == message {
 			return nil
 		}
@@ -97,15 +98,6 @@ func (r *BackupReconciler) markBackupPending(ctx context.Context, backup *mysqlv
 		setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, reason, message, backup.Generation)
 		setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionFalse, reason, message, backup.Generation)
 	})
-}
-
-func findBackupCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == conditionType {
-			return &conditions[i]
-		}
-	}
-	return nil
 }
 
 // readLogicalManifest reads a finished logical backup's logical.json.

@@ -127,7 +127,7 @@ func TestLoadHandlerRefusesBeforeReadingTheBody(t *testing.T) {
 			if resp.StatusCode != tc.status {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tc.status)
 			}
-			var refusal DumpErrorBody
+			var refusal ReasonErrorBody
 			if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +150,7 @@ func TestLoadHandlerReportsAFailedLoad(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var refusal DumpErrorBody
+	var refusal ReasonErrorBody
 	if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
 		t.Fatal(err)
 	}

@@ -16,31 +16,16 @@ limitations under the License.
 
 package logicalrestore
 
-import (
-	"errors"
-
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
-)
-
-// failure is a worker error with a reason the operator can put on the
-// LogicalRestore, and whether the target was left unchanged.
-type failure struct {
-	reason    string
-	unchanged bool
-	err       error
-}
-
-func (f *failure) Error() string { return f.err.Error() }
-func (f *failure) Unwrap() error { return f.err }
+import "github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 
 // unchanged is a failure that happened before the target changed anything.
 func unchanged(reason string, err error) error {
-	return &failure{reason: reason, unchanged: true, err: err}
+	return &backupworker.Failure{Reason: reason, Unchanged: true, Err: err}
 }
 
 // changed is a failure after the target may have dropped or loaded data.
 func changed(reason string, err error) error {
-	return &failure{reason: reason, err: err}
+	return &backupworker.Failure{Reason: reason, Err: err}
 }
 
 // terminationLogPath is where the termination message goes; tests override it.
@@ -48,14 +33,4 @@ var terminationLogPath = backupworker.TerminationLogPath
 
 // reportFailure publishes err's reason, if it has one, as the container's
 // termination message.
-func reportFailure(err error) {
-	var f *failure
-	if !errors.As(err, &f) || f.reason == "" {
-		return
-	}
-	backupworker.WriteTerminationMessage(terminationLogPath, backupworker.TerminationMessage{
-		Reason:    f.reason,
-		Message:   f.Error(),
-		Unchanged: f.unchanged,
-	})
-}
+func reportFailure(err error) { backupworker.ReportFailure(terminationLogPath, err) }
