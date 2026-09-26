@@ -126,10 +126,9 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 	if err := c.checkWritable(ctx); err != nil {
 		return nil, err
 	}
-	if err := c.applyLoadPolicy(ctx, req.Policy, databases); err != nil {
-		return nil, err
-	}
 
+	// Everything that can fail is prepared before the policy runs: once
+	// DropAndRecreate has dropped a database, only starting the client is left.
 	session.dir, err = os.MkdirTemp(cfg.WorkDir, "cnmsql-load-")
 	if err != nil {
 		return nil, fmt.Errorf("load: creating work directory: %w", err)
@@ -145,6 +144,9 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 	session.cmd.Stderr = io.MultiWriter(newProcessLogWriter(log, "stderr"), session.stderr)
 	stdin, err := session.cmd.StdinPipe()
 	if err != nil {
+		return nil, err
+	}
+	if err := c.applyLoadPolicy(ctx, req.Policy, databases); err != nil {
 		return nil, err
 	}
 	log.Info("Starting logical load", "databases", databases, "policy", req.Policy)
