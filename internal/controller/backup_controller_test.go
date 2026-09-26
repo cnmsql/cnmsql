@@ -351,9 +351,8 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 		t.Fatalf("recovery init container missing S3 env (endpoint=%t accessKey=%t)", hasEndpoint, hasAccessKey)
 	}
 
-	// Recovery generates no app Secret, so the init container must not reference
-	// one; a non-optional secretKeyRef would wedge the Pod in
-	// CreateContainerConfigError.
+	// Instance containers read no passwords at all: the init container must not
+	// reference the app password Secret, whatever the bootstrap mode.
 	for _, env := range spec.InitContainers[1].Env {
 		if env.Name == "MYSQL_APP_PASSWORD" {
 			t.Fatal("recovery init container must not reference the app password secret")

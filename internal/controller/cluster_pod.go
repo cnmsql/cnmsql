@@ -401,24 +401,19 @@ func bootstrapEnv(plan clusterPlan, inst instancePlan) []corev1.EnvVar {
 }
 
 // initEnv is the environment for the init container, which may run initdb (on
-// the primary) or join (on a replica). Replication uses mTLS-only auth, so the
-// generated replication password is deliberately not exposed to pods.
+// the primary) or join (on a replica). It reads no passwords: the instance
+// commands fetch the credentials from the cluster's Secrets through the
+// Kubernetes API, and replication uses mTLS-only auth.
 func initEnv(plan clusterPlan) []corev1.EnvVar {
-	env := runEnv(nil, plan)
-	env = append(env, secretEnv("MYSQL_ROOT_PASSWORD", plan.RootSecretName))
-	// On recovery the application user comes from the restored data, so no app
-	// secret is generated (see ensureCredentials) and the non-optional secret
-	// reference would otherwise wedge the Pod in CreateContainerConfigError.
-	if plan.Recovery == nil {
-		env = append(env, secretEnv("MYSQL_APP_PASSWORD", plan.AppSecretName))
-	}
-	return env
+	return runEnv(nil, plan)
 }
 
-// runEnv is the environment for the run container. When cluster has continuous
-// archiving enabled, the object-store credentials and destination (bucket/path)
-// are appended so the in-Pod archiver can ship binlogs. cluster may be nil for
-// the init container, which never archives.
+// runEnv is the environment for the run container. It reads no passwords: the
+// instance manager reads the credentials from the cluster's Secrets through
+// the Kubernetes API. When cluster has continuous archiving enabled, the
+// object-store credentials and destination (bucket/path) are appended so the
+// in-Pod archiver can ship binlogs. cluster may be nil for the init container,
+// which never archives.
 func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 	// The flavor rides on the plan (not the cluster arg) so the init container —
 	// which passes cluster=nil to keep archiving env out — still selects the
@@ -432,8 +427,6 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 		{Name: "CNMSQL_FLAVOR", Value: flavor},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
-		secretEnv("MYSQL_CONTROL_PASSWORD", plan.ControlSecretName),
-		secretEnv("MYSQL_BACKUP_PASSWORD", plan.BackupSecretName),
 	}
 	if cluster != nil && cluster.IsArchivingEnabled() {
 		store := *cluster.Spec.Backup.ObjectStore
@@ -444,16 +437,6 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 		)
 	}
 	return env
-}
-
-func secretEnv(name, secretName string) corev1.EnvVar {
-	return corev1.EnvVar{
-		Name: name,
-		ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-			Key:                  "password",
-		}},
-	}
 }
 
 func volumeMounts() []corev1.VolumeMount {
