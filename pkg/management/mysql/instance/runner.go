@@ -426,7 +426,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// delay readiness. Skipped when adopting (the replaced image already upgraded
 	// the running server).
 	if !adopting && needsUpgrade(opts.DataDir, ver) {
-		if err := runUpgrade(ctx, eng, opts.Socket, opts.Control.User, opts.Control.Password); err != nil {
+		if err := runUpgrade(ctx, eng, opts.Socket, opts.Control.User, opts.Control.CurrentPassword()); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
@@ -532,7 +532,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		Engine:   eng,
 		Socket:   opts.Socket,
 		User:     opts.Control.User,
-		Password: opts.Control.Password,
+		Password: opts.Control.CurrentPassword(),
 		WorkDir:  ScratchWorkDir(),
 	})
 

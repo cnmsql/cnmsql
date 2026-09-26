@@ -26,6 +26,10 @@ type ControlParams struct {
 	// are exhausted.
 	User     string
 	Password string
+	// PasswordFunc, when set, is called before every new connection and wins
+	// over Password, so a rotated credential Secret reaches the next connection
+	// without closing the ones already open.
+	PasswordFunc func() string
 	// Socket is the local unix socket, used on servers without the admin
 	// interface.
 	Socket string
@@ -45,6 +49,7 @@ func ControlConfig(hasAdminInterface bool, p ControlParams) Config {
 	cfg := Config{
 		User:         p.User,
 		Password:     p.Password,
+		PasswordFunc: p.PasswordFunc,
 		MaxOpenConns: 1,
 	}
 
@@ -64,4 +69,12 @@ func ControlConfig(hasAdminInterface bool, p ControlParams) Config {
 
 	cfg.Socket = p.Socket
 	return cfg
+}
+
+// CurrentPassword is the control password to use now.
+func (p ControlParams) CurrentPassword() string {
+	if p.PasswordFunc != nil {
+		return p.PasswordFunc()
+	}
+	return p.Password
 }

@@ -17,8 +17,11 @@ limitations under the License.
 package pool
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 func TestDSNSocket(t *testing.T) {
@@ -102,5 +105,18 @@ func TestDSNValidation(t *testing.T) {
 	}
 	if _, err := (Config{User: "root"}).DSN(); err == nil {
 		t.Error("expected error when neither socket nor host is set")
+	}
+}
+
+func TestPasswordHookSetsCurrentPassword(t *testing.T) {
+	current := "old"
+	hook := passwordHook(func() string { return current })
+	cfg := mysql.NewConfig()
+	current = "new"
+	if err := hook(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Passwd != "new" {
+		t.Fatalf("Passwd = %q, want the value at connect time", cfg.Passwd)
 	}
 }

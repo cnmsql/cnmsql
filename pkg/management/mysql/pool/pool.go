@@ -30,8 +30,7 @@ import (
 	"strings"
 	"time"
 
-	// Register the MySQL driver for database/sql.
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 // Connection is the subset of *sql.DB used across the management packages. It
@@ -63,6 +62,10 @@ type Config struct {
 	// SUPER/CONNECTION_ADMIN slot that survives max_connections exhaustion,
 	// instead of wasting it across idle connections. Defaults to 2.
 	MaxOpenConns int
+	// PasswordFunc, when set, is called before every new connection and wins
+	// over Password, so a rotated credential Secret reaches the next connection
+	// without closing the ones already open.
+	PasswordFunc func() string
 }
 
 // DefaultMaxOpenConns is used when Config.MaxOpenConns is zero.
@@ -135,11 +138,20 @@ func Open(ctx context.Context, c Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	db, err := sql.Open("mysql", dsn)
+	mc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("pool: parsing dsn: %w", err)
+	}
+	if c.PasswordFunc != nil {
+		if err := mc.Apply(mysql.BeforeConnect(passwordHook(c.PasswordFunc))); err != nil {
+			return nil, fmt.Errorf("pool: %w", err)
+		}
+	}
+	connector, err := mysql.NewConnector(mc)
 	if err != nil {
 		return nil, fmt.Errorf("pool: opening connection: %w", err)
 	}
+	db := sql.OpenDB(connector)
 
 	maxOpen := c.MaxOpenConns
 	if maxOpen <= 0 {
@@ -155,6 +167,13 @@ func Open(ctx context.Context, c Config) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func passwordHook(f func() string) func(context.Context, *mysql.Config) error {
+	return func(_ context.Context, cfg *mysql.Config) error {
+		cfg.Passwd = f()
+		return nil
+	}
 }
 
 func sortedKeys(m map[string]string) []string {
