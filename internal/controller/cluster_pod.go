@@ -239,6 +239,9 @@ func restoreArgs(plan clusterPlan) []string {
 		serverVersionArg,
 		"--control-user=" + controlUser,
 		"--backup-user=" + backupUser,
+		// restore reads the control and backup passwords from the cluster's
+		// credential Secrets through the Kubernetes API.
+		"--cluster-name=" + plan.ClusterName,
 	}
 	// Point-in-time recovery: replay archived binlogs after the base restore.
 	// --source-cluster enables the replay; bucket/path come from cnmsql_S3_* env.
@@ -270,6 +273,9 @@ func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *m
 		"--backup-user=" + backupUser,
 		"--control-user=" + controlUser,
 		"--metrics-user=" + metricsUser,
+		// initdb reads the bootstrap passwords from the cluster's credential
+		// Secrets through the Kubernetes API.
+		"--cluster-name=" + cluster.Name,
 	}
 	args = append(args, r.topologyReconciler(cluster).PodPolicy(cluster).InitDBArgs...)
 	// initdb is nil for a GR joining member: it initialises an empty server (no
@@ -312,6 +318,9 @@ func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 		"--source-ssl-key=" + topology.ServerTLSPath + "/tls.key",
 		"--source-manager-url=https://" + primaryFQDN + ":8080/cluster/backup",
 		"--source-manager-server-name=" + primaryFQDN,
+		// join reads the temporary server's root password from the cluster's
+		// credential Secrets through the Kubernetes API.
+		"--cluster-name=" + cluster.Name,
 	}
 }
 

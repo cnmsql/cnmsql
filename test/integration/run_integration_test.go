@@ -53,10 +53,10 @@ cat > /tmp/my.cnf <<'CFG'
 %sCFG
 manager instance initdb --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock \
-  --database=app --owner=appuser --control-user=control --server-version=%s
+  --database=app --owner=appuser --control-user=control --server-version=%s --credentials-source=env
 exec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock --server-version=%s \
-  --instance-name=test-0 --control-user=control --web-addr=:8080
+  --instance-name=test-0 --control-user=control --web-addr=:8080 --credentials-source=env
 `, f.myCnf(t, 1), f.version, f.version)
 
 	req := testcontainers.ContainerRequest{

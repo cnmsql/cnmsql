@@ -35,3 +35,28 @@ func TestPrestopHookNamesCluster(t *testing.T) {
 		t.Fatalf("prestop command %v lacks --cluster-name", cmd)
 	}
 }
+
+// TestBootstrapArgsNameCluster asserts every bootstrap command's args carry the
+// owning Cluster's name: initdb, join, restore and import read their passwords
+// from the cluster's credential Secrets through the Kubernetes API, and need
+// --cluster-name to locate them.
+func TestBootstrapArgsNameCluster(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	plan := testPlan()
+	plan.ClusterName = cluster.Name
+	plan.Recovery = &recoveryPlan{Bucket: "backups", ArchiveKey: "a", MetadataKey: "m"}
+	plan.Import = &importPlan{Bucket: "backups", DumpKey: "d", ManifestKey: "m"}
+	r := &ClusterReconciler{}
+	want := "--cluster-name=" + cluster.Name
+	for name, args := range map[string][]string{
+		"initdb":  r.initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB),
+		"join":    joinArgs(cluster, plan),
+		"restore": restoreArgs(plan),
+		"import":  importArgs(plan),
+	} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("%s args %v lack %s", name, args, want)
+		}
+	}
+}

@@ -65,7 +65,7 @@ SRC=/tmp/source REP=/tmp/replica BK=/tmp/backup
 GA="%s"
 manager instance initdb --mysqld=/usr/sbin/mysqld --config='' \
   --data-dir=$SRC --socket=/tmp/src.sock \
-  --database=app --owner=%s --replication-user=repl --server-version=%s
+  --database=app --owner=%s --replication-user=repl --server-version=%s --credentials-source=env
 /usr/sbin/mysqld --datadir=$SRC --socket=/tmp/src.sock --port=3306 --server-id=1 $GA >/tmp/src.log 2>&1 &
 until mysqladmin --socket=/tmp/src.sock -uroot -prootpass ping >/dev/null 2>&1; do sleep 1; done
 mysql --socket=/tmp/src.sock -uroot -prootpass app -e "CREATE TABLE t (id INT PRIMARY KEY); INSERT INTO t VALUES (1);"
@@ -73,7 +73,7 @@ xtrabackup --backup --target-dir=$BK --datadir=$SRC --socket=/tmp/src.sock --use
 manager instance join --xtrabackup=xtrabackup --mysqld=/usr/sbin/mysqld --config='' \
   --backup-dir=$BK --data-dir=$REP --socket=/tmp/reptemp.sock \
   --server-version=%s --source-host=127.0.0.1 --source-port=3306 \
-  --replication-user=repl --source-get-public-key
+  --replication-user=repl --source-get-public-key --credentials-source=env
 exec /usr/sbin/mysqld --datadir=$REP --socket=/tmp/rep.sock --port=3307 --server-id=2 $GA
 `, appPass, f.gtidArgs(t), appUser, f.version, f.version)
 

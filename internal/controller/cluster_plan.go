@@ -45,6 +45,9 @@ type clusterPlan struct {
 	Instances int
 	// PrimaryName is the instance currently expected to be primary.
 	PrimaryName string
+	// ClusterName is the owning Cluster's name. The bootstrap commands carry
+	// it as --cluster-name to locate the cluster's credential Secrets.
+	ClusterName string
 
 	// Cluster-wide secret names.
 	RootSecretName    string
@@ -238,6 +241,7 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		Flavor:             cluster.ResolvedFlavor(),
 		Instances:          cluster.Spec.Instances,
 		PrimaryName:        cluster.Status.CurrentPrimary,
+		ClusterName:        cluster.Name,
 		OperatorImage:      r.OperatorImageName,
 		RootSecretName:     cluster.RootSecretName(),
 		AppSecretName:      cluster.Name + "-app",
