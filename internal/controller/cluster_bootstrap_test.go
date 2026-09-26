@@ -657,6 +657,38 @@ func TestBuildPlanResolvesRecoveryWhileInitializing(t *testing.T) {
 	}
 }
 
+func TestObserveBootstrapJobs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	plan := testPlan()
+	plan.Instances = 2
+	primary, replica := plan.instanceFor(cluster, 1), plan.instanceFor(cluster, 2)
+	r, c := bootstrapFixture(t, cluster,
+		initializingPVC(cluster, primary.PVCName, "uid-1"),
+		initializingPVC(cluster, replica.PVCName, "uid-2"))
+	for _, inst := range []instancePlan{primary, replica} {
+		if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finishJob(t, ctx, c, cluster, primary.Name+"-initdb", batchv1.JobFailed)
+	finishJob(t, ctx, c, cluster, replica.Name+"-join", batchv1.JobComplete)
+
+	states, err := r.observeBootstrapJobs(ctx, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("states = %+v, want only the failed initdb (completed Jobs are skipped)", states)
+	}
+	got := states[0]
+	if got.Instance != primary.Name || got.Mode != bootstrapModeInitDB || !got.Failed || got.Reason != "DeadlineExceeded" {
+		t.Fatalf("state = %+v", got)
+	}
+}
+
 // markVolumeBootstrapped creates or marks inst's PVC as bootstrapped, so a test
 // about Pod handling skips the bootstrap Job.
 func markVolumeBootstrapped(t *testing.T, ctx context.Context, c client.Client, cluster *mysqlv1alpha1.Cluster, inst instancePlan) {

@@ -394,9 +394,11 @@ func TestImportContainerOnlyOnTheBootstrapPrimary(t *testing.T) {
 func TestImportPhaseReason(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()
-	o := observedCluster{}
+	o := observedCluster{BootstrapJobs: []bootstrapJobState{
+		{Instance: "demo-1", Job: "demo-1-import", Mode: bootstrapModeImport},
+	}}
 	o.computeClusterPhase(cluster, clusterPlan{Instances: 1, Import: &importPlan{}})
-	if !strings.Contains(o.PhaseReason, "import the logical backup") {
+	if !strings.Contains(o.PhaseReason, "bootstrap Job demo-1-import (import) of demo-1") {
 		t.Errorf("phase reason = %q", o.PhaseReason)
 	}
 }
