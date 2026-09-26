@@ -98,7 +98,7 @@ const (
 // already running, a missing account, a bad database list, or a client that
 // exits before writing anything (wrong password, unknown extra argument).
 func (c *Controller) StartDump(ctx context.Context, req webserver.DumpRequest) (webserver.DumpSession, error) {
-	if c.dump == nil {
+	if c.dump == nil || c.dump.Engine == nil {
 		return nil, errors.New("logical dumps are not configured on this instance")
 	}
 	cfg := c.dump

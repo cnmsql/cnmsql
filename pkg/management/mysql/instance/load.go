@@ -79,7 +79,7 @@ const maxLoadStderrTailBytes = 8 << 10
 // FailIfExists) a selected database that holds objects. DropAndRecreate drops
 // the selected databases here, before the stream is read.
 func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (webserver.LoadSession, error) {
-	if c.load == nil {
+	if c.load == nil || c.load.Engine == nil {
 		return nil, errors.New("loads are not configured on this instance")
 	}
 	cfg := c.load

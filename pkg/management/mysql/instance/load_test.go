@@ -367,3 +367,17 @@ func TestLoadRefusesWhenTheClientIsMissing(t *testing.T) {
 type iotestErrReader struct{ err error }
 
 func (r iotestErrReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestLoadAndDumpWithoutAnEngineAreRefused(t *testing.T) {
+	c := &Controller{}
+	c.SetLoadConfig(LoadConfig{User: "u", Password: "p"})
+	c.SetDumpConfig(DumpConfig{})
+	if _, err := c.StartLoad(context.Background(), webserver.LoadRequest{
+		Databases: []string{"shop"}, Policy: webserver.LoadPolicyFailIfExists,
+	}); err == nil {
+		t.Error("a load without an engine was accepted")
+	}
+	if _, err := c.StartDump(context.Background(), webserver.DumpRequest{Password: "pw"}); err == nil {
+		t.Error("a dump without an engine was accepted")
+	}
+}
