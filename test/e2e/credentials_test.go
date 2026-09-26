@@ -94,21 +94,28 @@ var _ = Describe("Instance credentials", Ordered, Label("core"), func() {
 
 	It("scopes the instance Role to its own credential Secrets", func() {
 		as := "--as=system:serviceaccount:" + testNamespace + ":" + instanceSA
+		// kubectl auth can-i exits 1 when the verdict is "no", so the printed
+		// verdict — "yes", "no", or "no - <reason>" — is the authoritative
+		// answer and the non-zero exit is expected exactly there. The error is
+		// only fatal when the output is not a verdict line at all.
 		cani := func(verb, resource string) string {
 			out, err := kubectl("auth", "can-i", verb, resource, "-n", testNamespace, as)
-			Expect(err).NotTo(HaveOccurred(), "auth can-i %s %s", verb, resource)
-			return strings.TrimSpace(out)
+			verdict := strings.TrimSpace(out)
+			if !strings.HasPrefix(verdict, "yes") && !strings.HasPrefix(verdict, "no") {
+				Expect(err).NotTo(HaveOccurred(), "auth can-i %s %s: %s", verb, resource, verdict)
+			}
+			return verdict
 		}
 
-		Expect(cani("get", "secret/"+cluster+"-control")).To(Equal("yes"),
+		Expect(cani("get", "secret/"+cluster+"-control")).To(HavePrefix("yes"),
 			"the instance manager reads its control account by name")
-		Expect(cani("watch", "secret/"+dumpSecret)).To(Equal("yes"),
+		Expect(cani("watch", "secret/"+dumpSecret)).To(HavePrefix("yes"),
 			"the instance manager follows dump password rotations through a watch")
-		Expect(cani("list", "secrets")).To(Equal("no"),
+		Expect(cani("list", "secrets")).To(HavePrefix("no"),
 			"list would expose every Secret in the namespace")
-		Expect(cani("get", "secret/"+cluster+"-replication")).To(Equal("no"),
+		Expect(cani("get", "secret/"+cluster+"-replication")).To(HavePrefix("no"),
 			"replication authenticates with mTLS only; its Secret is not for instances")
-		Expect(cani("get", "secret/"+objectStoreCredsSecret)).To(Equal("no"),
+		Expect(cani("get", "secret/"+objectStoreCredsSecret)).To(HavePrefix("no"),
 			"object-store credentials never enter the instance Pods")
 	})
 
@@ -140,9 +147,10 @@ var _ = Describe("Instance credentials", Ordered, Label("core"), func() {
 		applyManifest(rotatedBackup, logicalBackupManifest(rotatedBackup, cluster, nil))
 		expectBackupCompleted(rotatedBackup, 8*time.Minute)
 
-		Expect(instanceRestarts(cluster)).To(Equal(before),
+		after := instanceRestarts(cluster)
+		Expect(after).To(Equal(before),
 			"the rotation must not restart or recreate an instance\nbefore: %s\nafter:  %s",
-			before, instanceRestarts(cluster))
+			before, after)
 
 		By("checking the source manager picked the rotation up through its watch")
 		// The worker carries no dump password (design 030 C5), so a completed
