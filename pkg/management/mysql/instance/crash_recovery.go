@@ -69,6 +69,11 @@ var innodbCorruptionPatterns = []string{
 	"your database may be corrupt",
 	"table is corrupt",
 	"tablespace is corrupt",
+	// MySQL 8.4 reports a deleted or unreadable data file (ibdata1, redo, undo)
+	// as an InnoDB file operation failing with OS error 2 (ENOENT) rather than
+	// any of the wording above. Scoped to errno 2 on purpose: errno 13 (EACCES)
+	// is an environment problem a re-clone cannot fix.
+	"operating system error number 2 in a file operation",
 }
 
 // indicatesInnoDBCorruption reports whether mysqld's output shows InnoDB data

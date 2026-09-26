@@ -58,6 +58,18 @@ func TestIndicatesInnoDBCorruption(t *testing.T) {
 			want: true,
 		},
 		{
+			// Observed on a live 8.4 replica whose system tablespace was deleted:
+			// the data directory is unusable and only a re-clone recovers it.
+			name: "MySQL 8.4 missing system tablespace",
+			output: "2026-09-26T20:15:14.821432Z 1 [ERROR] [MY-012592] [InnoDB] " +
+				"Operating system error number 2 in a file operation.\n" +
+				"2026-09-26T20:15:14.821457Z 1 [ERROR] [MY-012593] [InnoDB] " +
+				"The error means the system cannot find the path specified.\n" +
+				"2026-09-26T20:15:14.821466Z 1 [ERROR] [MY-012646] [InnoDB] " +
+				"File ./ibdata1: 'open' returned OS error 71. Cannot continue operation",
+			want: true,
+		},
+		{
 			name:   "checksum mismatch",
 			output: "[ERROR] [MY-012558] [InnoDB] Page checksum mismatch in file space",
 			want:   true,
@@ -108,6 +120,14 @@ func TestIndicatesInnoDBCorruption(t *testing.T) {
 		{
 			name:   "permission denied on the data directory",
 			output: "mysqld: Can't create/write to file '/var/lib/mysql/x' (Errcode: 13 - Permission denied)",
+			want:   false,
+		},
+		{
+			// Same InnoDB line as the missing-tablespace case but with errno 13:
+			// the file exists and is merely unreadable, an environment problem a
+			// re-clone cannot fix. Only the errno 2 wording diagnoses data loss.
+			name:   "InnoDB denied opening the system tablespace",
+			output: "[ERROR] [MY-012646] [InnoDB] File ./ibdata1: 'open' returned OS error 13. Cannot continue operation",
 			want:   false,
 		},
 	}
