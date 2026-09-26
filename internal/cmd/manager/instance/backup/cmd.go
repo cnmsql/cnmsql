@@ -63,8 +63,10 @@ func newUploadCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.TLSCert, "tls-cert", "", "Client TLS certificate")
 	cmd.Flags().StringVar(&opts.TLSKey, "tls-key", "", "Client TLS key")
 	cmd.Flags().StringVar(&opts.TLSCA, "tls-ca", "", "Client TLS CA bundle")
-	cmd.Flags().BoolVar(&opts.Compress, "compress", false, "The stream is compressed and recovery must decompress it")
-	cmd.Flags().BoolVar(&opts.SHA256, "sha256", true, "Compute SHA256 while uploading")
+	cmd.Flags().BoolVar(&opts.Compress, "compress", false,
+		"XtraBackup: the stream is compressed and recovery must decompress it (a logical dump always is)")
+	cmd.Flags().BoolVar(&opts.SHA256, "sha256", true,
+		"XtraBackup: compute SHA256 while uploading (a logical dump always does)")
 
 	return cmd
 }

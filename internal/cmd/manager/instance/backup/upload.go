@@ -18,6 +18,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -80,7 +81,12 @@ func (o uploadOptions) validate() error {
 		}
 	}
 	switch o.Method {
-	case "", methodXtrabackup, methodLogical:
+	case "", methodXtrabackup:
+	case methodLogical:
+		// The worker compresses and checksums a dump itself, always.
+		if o.Compress {
+			return errors.New("backup upload: --compress applies to xtrabackup; a logical dump is always compressed")
+		}
 	default:
 		return fmt.Errorf("backup upload: unknown --method %q", o.Method)
 	}

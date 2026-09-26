@@ -402,3 +402,12 @@ func TestUploadOptionsRejectUnknownMethod(t *testing.T) {
 		t.Fatal("expected an unknown method to be rejected")
 	}
 }
+
+func TestUploadOptionsRejectCompressForALogicalBackup(t *testing.T) {
+	opts := logicalOpts("https://x")
+	opts.TLSCert, opts.TLSKey, opts.TLSCA = "c", "k", "ca"
+	opts.Compress = true
+	if err := opts.validate(); err == nil || !strings.Contains(err.Error(), "--compress") {
+		t.Errorf("err = %v, want --compress rejected", err)
+	}
+}
