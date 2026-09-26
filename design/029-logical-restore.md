@@ -244,7 +244,10 @@ LogicalRestore
   Job's condition. A Job that disappears under a running restore fails it with
   `JobMissing`, after the API server (not the cache) confirms it is gone. A
   Job of the same name that the restore does not control is never adopted
-  (`JobConflict`).
+  (`JobConflict`). Before resolving anything, a restore with no recorded Job
+  looks for its own (read past the cache): a Job created on a pass whose status
+  write was lost is recorded from its annotations, so a dump that can no longer
+  be resolved never strands a load that is already running.
 
 ## 6. Behaviour on a live primary
 

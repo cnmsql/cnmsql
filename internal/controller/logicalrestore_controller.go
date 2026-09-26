@@ -105,7 +105,35 @@ func (r *LogicalRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if restore.Status.JobName != "" {
 		return r.trackJob(ctx, restore)
 	}
+	// A Job from an earlier pass whose status write failed may be loading
+	// already: record it before anything that could fail the restore for good
+	// (its Backup deleted, say) while the load still runs.
+	job, err := r.ownedJob(ctx, restore)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if job != nil {
+		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markRunning(ctx, restore, job)
+	}
 	return r.start(ctx, restore)
+}
+
+// ownedJob returns the restore's worker Job if it exists and belongs to it. It
+// reads past the cache: a Job created just before a failed status write may
+// not be in it yet.
+func (r *LogicalRestoreReconciler) ownedJob(
+	ctx context.Context,
+	restore *mysqlv1alpha1.LogicalRestore,
+) (*batchv1.Job, error) {
+	job := &batchv1.Job{}
+	key := types.NamespacedName{Namespace: restore.Namespace, Name: logicalRestoreJobName(restore)}
+	if err := r.reader().Get(ctx, key, job); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(job, restore) {
+		return nil, nil
+	}
+	return job, nil
 }
 
 // start resolves the dump and the target primary and creates the worker Job.
@@ -187,6 +215,7 @@ func (r *LogicalRestoreReconciler) start(ctx context.Context, restore *mysqlv1al
 			return ctrl.Result{}, r.fail(ctx, restore, restoreReasonJobConflict,
 				fmt.Sprintf("A Job named %s already exists and does not belong to this restore", job.Name), true)
 		}
+		job = existing
 	}
 	log.Info("Started logical restore worker Job", "job", job.Name, "target", primary,
 		"backupID", dump.Meta.BackupID, "databases", restore.Spec.Databases, "policy", restore.Spec.Policy)
@@ -194,16 +223,27 @@ func (r *LogicalRestoreReconciler) start(ctx context.Context, restore *mysqlv1al
 		r.Recorder.Eventf(restore, corev1.EventTypeNormal, "Started",
 			"Loading %v into %s with policy %s", restore.Spec.Databases, primary, restore.Spec.Policy)
 	}
+	return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markRunning(ctx, restore, job)
+}
 
-	message := fmt.Sprintf("Loading into %s", primary)
-	return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, restore, func(s *mysqlv1alpha1.LogicalRestoreStatus) {
+// markRunning records a started worker Job. What the Job was started with is
+// read back from its annotations, so a Job found on a later pass is recorded
+// the same way.
+func (r *LogicalRestoreReconciler) markRunning(
+	ctx context.Context,
+	restore *mysqlv1alpha1.LogicalRestore,
+	job *batchv1.Job,
+) error {
+	target := job.Annotations[restoreTargetAnnotation]
+	message := fmt.Sprintf("Loading into %s", target)
+	return r.patchStatus(ctx, restore, func(s *mysqlv1alpha1.LogicalRestoreStatus) {
 		now := metav1.Now()
 		s.Phase = mysqlv1alpha1.LogicalRestorePhaseRunning
 		s.StartedAt = &now
-		s.TargetInstance = primary
+		s.TargetInstance = target
 		s.JobName = job.Name
-		s.BackupID = dump.Meta.BackupID
-		s.SourcePath = fmt.Sprintf("s3://%s/%s", dump.Store.Bucket, dump.DumpKey)
+		s.BackupID = job.Annotations[restoreBackupIDAnnotation]
+		s.SourcePath = job.Annotations[restoreSourceAnnotation]
 		s.Databases = slices.Clone(restore.Spec.Databases)
 		s.Error = ""
 		setRestoreCondition(s, mysqlv1alpha1.ConditionProgressing, metav1.ConditionTrue, restoreReasonRestoreInProgress, message, restore.Generation)
@@ -339,6 +379,13 @@ func (r *LogicalRestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// Annotations on a restore worker Job recording what it was started with.
+const (
+	restoreTargetAnnotation   = "mysql.cnmsql.co/restore-target"
+	restoreBackupIDAnnotation = "mysql.cnmsql.co/restore-backup-id"
+	restoreSourceAnnotation   = "mysql.cnmsql.co/restore-source"
+)
+
 func logicalRestoreJobName(restore *mysqlv1alpha1.LogicalRestore) string {
 	return restore.Name + "-restore"
 }
@@ -392,7 +439,11 @@ func logicalRestoreJob(
 	}
 
 	jobLabels := combineStringMaps(tpl.Labels, workerJobLabels(cluster.Name, logicalRestoreLabel, restore.Name))
-	jobAnnotations := combineStringMaps(tpl.Annotations, nil)
+	jobAnnotations := combineStringMaps(tpl.Annotations, map[string]string{
+		restoreTargetAnnotation:   primary,
+		restoreBackupIDAnnotation: dump.Meta.BackupID,
+		restoreSourceAnnotation:   fmt.Sprintf("s3://%s/%s", dump.Store.Bucket, dump.DumpKey),
+	})
 	podLabels := combineStringMaps(tpl.Labels, map[string]string{clusterLabel: cluster.Name})
 
 	return &batchv1.Job{

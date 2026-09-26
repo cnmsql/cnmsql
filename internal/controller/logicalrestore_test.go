@@ -198,7 +198,7 @@ func TestLogicalRestoreEscapesDatabaseArgs(t *testing.T) {
 	t.Parallel()
 	restore := newLogicalRestore(func(s *mysqlv1alpha1.LogicalRestoreSpec) { s.Databases = []string{"a$(HOME)"} })
 	job := logicalRestoreJob(restore, restoreTarget("http://s3"), &logicalDump{
-		Store: importStore("http://s3"), DumpKey: "k", ManifestKey: "m",
+		Store: importStore("http://s3"), DumpKey: "k", ManifestKey: "m", Meta: &objectstore.LogicalBackupMetadata{BackupID: "b-1"},
 	}, "prod-1", "img", "op", mysqlv1alpha1.BackupJobTemplate{})
 	if args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " "); !strings.Contains(args, "--database=a$$(HOME)") {
 		t.Errorf("args = %s", args)
@@ -518,5 +518,34 @@ func TestLogicalRestoreWarnsWhilePending(t *testing.T) {
 		}
 	default:
 		t.Error("want a RestoreFromNewerServer warning while pending")
+	}
+}
+
+// A Job created on a pass whose status write was lost is recorded on the next
+// pass, even when the dump can no longer be resolved: the load may be running.
+func TestLogicalRestoreRecordsItsJobAfterALostStatusWrite(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	endpoint := manifestStore(t)
+	restore := newLogicalRestore(nil)
+	backup := importBackup(mysqlv1alpha1.BackupPhaseCompleted)
+	r, _ := restoreReconciler(t, restoreTarget(endpoint), restorePod(true), backup, restore)
+	_, started := reconcileRestore(t, r, restore)
+	if started.Status.Phase != mysqlv1alpha1.LogicalRestorePhaseRunning {
+		t.Fatalf("status = %+v", started.Status)
+	}
+
+	started.Status = mysqlv1alpha1.LogicalRestoreStatus{}
+	if err := r.Status().Update(ctx, started); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Delete(ctx, backup); err != nil {
+		t.Fatal(err)
+	}
+	_, updated := reconcileRestore(t, r, restore)
+	if updated.Status.Phase != mysqlv1alpha1.LogicalRestorePhaseRunning ||
+		updated.Status.JobName != "restore-shop-restore" || updated.Status.TargetInstance != "prod-1" ||
+		updated.Status.BackupID != "b-1" || updated.Status.SourcePath != "s3://backups/"+importDumpKey {
+		t.Fatalf("status = %+v", updated.Status)
 	}
 }
