@@ -377,12 +377,21 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 // already completed initial provisioning. It exists only to backfill
 // EstablishedAt for clusters last reconciled before that field existed; new
 // establishment is recorded directly when the cluster first becomes Ready.
+//
+// The backfill is an explicit allowlist: only Ready and Degraded qualify,
+// because Degraded is reachable only after the cluster was once Ready, so a
+// cluster last reconciled in either of them can only be one that predates the
+// field. Every other phase must not count — since design 031 a failed FIRST
+// bootstrap persists Blocked, and stamping it established would make
+// IsEstablished refuse the bootstrap-Job retry after the user fixes the spec.
+// A cluster in any other phase gets EstablishedAt stamped directly by a Ready
+// observation on its next healthy reconcile, so the backfill stays self-healing.
 func establishedPhase(phase string) bool {
 	switch phase {
-	case "", topology.PhasePending, topology.PhaseProvisioning:
-		return false
-	default:
+	case topology.PhaseReady, topology.PhaseDegraded:
 		return true
+	default:
+		return false
 	}
 }
 
