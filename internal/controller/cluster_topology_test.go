@@ -135,6 +135,29 @@ func TestScaleDownRemovesPodRetainsPVC(t *testing.T) {
 	}
 }
 
+func TestRemoveInstanceResourcesDeletesBootstrapJob(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	scheme := testScheme(t)
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: testReplica2 + "-join", Namespace: cluster.Namespace,
+		Labels: map[string]string{clusterLabel: cluster.Name, bootstrapInstanceLabel: testReplica2},
+	}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, job).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan()
+	plan.Instances = 2
+
+	if err := r.removeInstanceResources(ctx, cluster, plan.instanceFor(cluster, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: job.Name}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("bootstrap Job get = %v, want deleted on scale-down", err)
+	}
+}
+
 func TestScaleDownKeepsCurrentPrimaryByName(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
