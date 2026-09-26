@@ -361,6 +361,25 @@ func (r *ClusterReconciler) ensureBootstrapped(ctx context.Context, cluster *mys
 	return false, client.IgnoreAlreadyExists(r.Create(ctx, desired))
 }
 
+// primaryBootstrapped reports whether the bootstrap primary's data exists, so
+// the recovery or import source is never needed again: the cluster is
+// established, or the current (else first) instance's volume is bootstrapped.
+// A volume from before design 031 counts as bootstrapped.
+func (r *ClusterReconciler) primaryBootstrapped(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (bool, error) {
+	if cluster.IsEstablished() {
+		return true, nil
+	}
+	name := cmp.Or(cluster.Status.CurrentPrimary, instanceName(cluster, 1))
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, pvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return pvcBootstrapped(pvc), nil
+}
+
 // instancePVCBootstrapped reports whether the instance's volume exists and
 // holds a bootstrapped data directory: the member has its own copy of the
 // data and needs no donor to come back up.

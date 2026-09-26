@@ -287,17 +287,25 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		}
 	}
 
-	recovery, err := r.resolveRecovery(ctx, cluster)
+	// The bootstrap source is only read until the primary's data exists: after
+	// that the source Backup, its object store and its Secrets may go away.
+	bootstrapped, err := r.primaryBootstrapped(ctx, cluster)
 	if err != nil {
 		return clusterPlan{}, err
 	}
-	plan.Recovery = recovery
+	if !bootstrapped {
+		recovery, err := r.resolveRecovery(ctx, cluster)
+		if err != nil {
+			return clusterPlan{}, err
+		}
+		plan.Recovery = recovery
 
-	imp, err := r.resolveImport(ctx, cluster, serverVersion)
-	if err != nil {
-		return clusterPlan{}, err
+		imp, err := r.resolveImport(ctx, cluster, serverVersion)
+		if err != nil {
+			return clusterPlan{}, err
+		}
+		plan.Import = imp
 	}
-	plan.Import = imp
 	return plan, nil
 }
 
@@ -305,9 +313,10 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 // primary restores from when spec.bootstrap.recovery is set. It returns nil when
 // recovery is not configured.
 //
-// The referenced Backup must stay present and completed for as long as the
-// Cluster references it: its status carries the backupID the archive keys are
-// derived from, and the recovery init-container's spec depends on those keys.
+// The referenced Backup must stay present and completed only until the
+// bootstrap primary's volume is bootstrapped: its status carries the backupID
+// the archive keys are derived from, and the recovery init-container's spec
+// depends on those keys.
 // reasonLogicalBackupNotRecoverable prefixes the Blocked reason of a cluster
 // whose bootstrap.recovery.backup names a logical Backup.
 const reasonLogicalBackupNotRecoverable = "LogicalBackupNotRecoverable"
