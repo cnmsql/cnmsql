@@ -61,9 +61,14 @@ func Open(ctx context.Context, o Options, required ...Account) (Source, error) {
 	case ModeEnv:
 		s := FromEnv()
 		for _, a := range required {
-			if _, ok := s[a]; !ok {
-				return nil, fmt.Errorf("credentials: %s must be set", envNames[a])
+			if _, ok := s[a]; ok {
+				continue
 			}
+			name, ok := envNames[a]
+			if !ok {
+				return nil, fmt.Errorf("credentials: %s has no environment variable source", a)
+			}
+			return nil, fmt.Errorf("credentials: %s must be set", name)
 		}
 		return s, nil
 	case ModeSecrets, "":

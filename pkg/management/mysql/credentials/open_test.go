@@ -69,3 +69,11 @@ func TestOpenSecretsModeNeedsCluster(t *testing.T) {
 		t.Fatal("secrets mode without --cluster-name must fail")
 	}
 }
+
+func TestOpenEnvModeDumpHasNoSource(t *testing.T) {
+	_, err := Open(context.Background(), Options{Mode: ModeEnv}, Dump)
+	const want = "credentials: dump has no environment variable source"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
