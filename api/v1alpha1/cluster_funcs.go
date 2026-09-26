@@ -1098,3 +1098,33 @@ func (cluster *Cluster) IsPurgeAfterArchiveEnabled() bool {
 	ca := cluster.ContinuousArchiving()
 	return ca != nil && ca.PurgeAfterArchive != nil && *ca.PurgeAfterArchive
 }
+
+// RootSecretName is the Secret holding root@localhost's password.
+func (cluster *Cluster) RootSecretName() string {
+	if ref := cluster.Spec.RootPasswordSecret; ref != nil && ref.Name != "" {
+		return ref.Name
+	}
+	return cluster.Name + "-root"
+}
+
+// AppSecretName is the Secret holding the application owner's password. It is
+// empty when the cluster is not bootstrapped with initdb: a recovered cluster
+// takes its application user from the restored data and has no such Secret.
+func (cluster *Cluster) AppSecretName() string {
+	if cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.InitDB == nil {
+		return ""
+	}
+	if ref := cluster.Spec.Bootstrap.InitDB.Secret; ref != nil && ref.Name != "" {
+		return ref.Name
+	}
+	return cluster.Name + "-app"
+}
+
+// ControlSecretName is the Secret holding the instance manager's control account password.
+func (cluster *Cluster) ControlSecretName() string { return cluster.Name + "-control" }
+
+// BackupSecretName is the Secret holding the physical backup account's password.
+func (cluster *Cluster) BackupSecretName() string { return cluster.Name + "-backup" }
+
+// DumpSecretName is the Secret holding the cnmsql_dump account's password.
+func (cluster *Cluster) DumpSecretName() string { return cluster.Name + "-dump" }

@@ -239,11 +239,11 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		Instances:          cluster.Spec.Instances,
 		PrimaryName:        cluster.Status.CurrentPrimary,
 		OperatorImage:      r.OperatorImageName,
-		RootSecretName:     cluster.Name + "-root",
+		RootSecretName:     cluster.RootSecretName(),
 		AppSecretName:      cluster.Name + "-app",
 		ReplicationSecret:  cluster.Name + "-replication",
-		ControlSecretName:  cluster.Name + "-control",
-		BackupSecretName:   cluster.Name + "-backup",
+		ControlSecretName:  cluster.ControlSecretName(),
+		BackupSecretName:   cluster.BackupSecretName(),
 		SelfSignedIssuer:   cluster.Name + "-selfsigned",
 		CAIssuer:           cluster.Name + "-ca",
 		ServerCASecretName: cluster.Name + "-ca",
@@ -264,11 +264,8 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 	if plan.PrimaryName == "" {
 		plan.PrimaryName = instanceName(cluster, 1)
 	}
-	if cluster.Spec.RootPasswordSecret != nil && cluster.Spec.RootPasswordSecret.Name != "" {
-		plan.RootSecretName = cluster.Spec.RootPasswordSecret.Name
-	}
-	if initdb := cluster.Spec.Bootstrap.InitDB; initdb != nil && initdb.Secret != nil && initdb.Secret.Name != "" {
-		plan.AppSecretName = initdb.Secret.Name
+	if name := cluster.AppSecretName(); name != "" {
+		plan.AppSecretName = name
 	}
 	if certs != nil {
 		if certs.ServerCASecret != "" {
