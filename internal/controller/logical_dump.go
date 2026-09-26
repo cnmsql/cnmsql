@@ -56,6 +56,9 @@ const (
 type dumpError struct {
 	kind dumpErrorKind
 	msg  string
+	// missing marks a referenced Backup that does not exist: retried, since
+	// it may be created later, but more likely a typo worth a warning.
+	missing bool
 }
 
 func (e *dumpError) Error() string { return e.msg }
@@ -88,7 +91,8 @@ func (d logicalDumpResolver) fromBackup(
 	backup := &mysqlv1alpha1.Backup{}
 	if err := d.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, backup); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, dumpErrorf(dumpNotReady, "%s %q does not exist", d.backupNoun, name)
+			return nil, &dumpError{kind: dumpNotReady, missing: true,
+				msg: fmt.Sprintf("%s %q does not exist", d.backupNoun, name)}
 		}
 		return nil, dumpErrorf(dumpNotReady, "reading %s %q: %v", d.backupNoun, name, err)
 	}

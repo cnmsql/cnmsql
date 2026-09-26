@@ -476,7 +476,7 @@ one got part of the way).
 
 | Reason | Changed data | Meaning |
 |---|---|---|
-| `SourceNotReady` | no | Not a failure: the restore waits in `pending` while its Backup is still running or the store can't be read. |
+| `SourceNotReady` | no | Not a failure: the restore waits in `pending` while its Backup is still running or the store can't be read. A Backup that does not exist also keeps it pending, in case it is created later, with a `BackupNotFound` warning event; `kubectl cnmsql restore` refuses it up front. |
 | `PrimaryNotReady` | no | Not a failure: the restore waits in `pending` for a ready primary, or for a switchover to finish. |
 | `DatabaseNotEmpty` | no | `FailIfExists` found a selected database holding objects. |
 | `NotPrimary` | no | The target instance was read-only when the load started (the primary moved). |

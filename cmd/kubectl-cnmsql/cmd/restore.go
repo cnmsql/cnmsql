@@ -17,12 +17,16 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -72,6 +76,15 @@ func newRestoreCommand() *cobra.Command {
 			restore, err := buildLogicalRestore(cluster, opts)
 			if err != nil {
 				return err
+			}
+			if opts.backup != "" {
+				note, err := checkRestoreBackup(ctx, env.Client, cluster.Namespace, opts.backup)
+				if err != nil {
+					return err
+				}
+				if note != "" {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), note)
+				}
 			}
 			if err := env.Client.Create(ctx, restore); err != nil {
 				return fmt.Errorf("creating logical restore: %w", err)
@@ -136,4 +149,26 @@ func buildLogicalRestore(cluster *mysqlv1alpha1.Cluster, opts restoreOptions) (*
 		restore.Spec.Backup = &mysqlv1alpha1.LocalObjectReference{Name: opts.backup}
 	}
 	return restore, nil
+}
+
+// checkRestoreBackup catches a --backup the restore could never load before
+// creating it: the controller keeps a restore of a missing Backup pending, in
+// case it is created later. A Backup still running is fine, with a note.
+func checkRestoreBackup(ctx context.Context, c client.Reader, namespace, name string) (string, error) {
+	backup := &mysqlv1alpha1.Backup{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, backup); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("backup %q not found in namespace %q", name, namespace)
+		}
+		return "", fmt.Errorf("reading backup %q: %w", name, err)
+	}
+	switch {
+	case backup.Spec.Method != mysqlv1alpha1.BackupMethodLogical:
+		return "", fmt.Errorf("backup %q is a %s backup; a restore loads a logical backup", name, backup.Spec.Method)
+	case backup.Status.Phase == mysqlv1alpha1.BackupPhaseFailed:
+		return "", fmt.Errorf("backup %q failed", name)
+	case backup.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted:
+		return fmt.Sprintf("backup %q is not completed yet; the restore waits for it", name), nil
+	}
+	return "", nil
 }

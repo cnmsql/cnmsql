@@ -549,3 +549,25 @@ func TestLogicalRestoreRecordsItsJobAfterALostStatusWrite(t *testing.T) {
 		t.Fatalf("status = %+v", updated.Status)
 	}
 }
+
+// A Backup that does not exist keeps the restore pending, since it may be
+// created later, but warns: it is more likely a typo.
+func TestLogicalRestoreWarnsOnAMissingBackup(t *testing.T) {
+	t.Parallel()
+	restore := newLogicalRestore(nil)
+	r, recorder := restoreReconciler(t, restoreTarget(manifestStore(t)), restorePod(true), restore)
+	_, updated := reconcileRestore(t, r, restore)
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, mysqlv1alpha1.ConditionProgressing)
+	if updated.Status.Phase != mysqlv1alpha1.LogicalRestorePhasePending || cond == nil ||
+		cond.Reason != restoreReasonSourceNotReady || !strings.Contains(cond.Message, "does not exist") {
+		t.Fatalf("status = %+v", updated.Status)
+	}
+	select {
+	case e := <-recorder.Events:
+		if !strings.HasPrefix(e, "Warning "+restoreReasonBackupNotFound) {
+			t.Errorf("event = %q", e)
+		}
+	default:
+		t.Error("want a BackupNotFound warning")
+	}
+}

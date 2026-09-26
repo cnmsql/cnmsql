@@ -234,7 +234,9 @@ LogicalRestore
   (`Incompatible`: flavor, format, databases).
 - Stays `Pending` and requeues while the source is not ready
   (`SourceNotReady`: Backup not completed yet, store unreachable) or there is no
-  ready primary (`PrimaryNotReady`).
+  ready primary (`PrimaryNotReady`). A Backup that does not exist is waited for
+  too, with a `BackupNotFound` warning event; the CLI refuses it before
+  creating the restore.
 - Renders the Job like the backup worker's (D11: the cluster's instance image
   with the manager copied in from the operator image; the client TLS Secret and
   CA), with the object-store env of the resolved store, `backoffLimit: 0`, and

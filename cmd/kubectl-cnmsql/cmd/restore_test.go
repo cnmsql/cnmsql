@@ -17,13 +17,16 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/cmd/kubectl-cnmsql/plugin"
 )
 
 func TestBuildLogicalRestore(t *testing.T) {
@@ -75,5 +78,40 @@ func TestBuildLogicalRestoreRejects(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestCheckRestoreBackup(t *testing.T) {
+	backup := func(name string, method mysqlv1alpha1.BackupMethod, phase mysqlv1alpha1.BackupPhase) *mysqlv1alpha1.Backup {
+		return &mysqlv1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec:       mysqlv1alpha1.BackupSpec{Method: method},
+			Status:     mysqlv1alpha1.BackupStatus{Phase: phase},
+		}
+	}
+	c := clientfake.NewClientBuilder().WithScheme(plugin.Scheme).WithObjects(
+		backup("done", mysqlv1alpha1.BackupMethodLogical, mysqlv1alpha1.BackupPhaseCompleted),
+		backup("running", mysqlv1alpha1.BackupMethodLogical, mysqlv1alpha1.BackupPhaseRunning),
+		backup("failed", mysqlv1alpha1.BackupMethodLogical, mysqlv1alpha1.BackupPhaseFailed),
+		backup("physical", mysqlv1alpha1.BackupMethodXtrabackup, mysqlv1alpha1.BackupPhaseCompleted),
+	).Build()
+	for _, tc := range []struct {
+		name, note, err string
+	}{
+		{name: "done"},
+		{name: "running", note: "not completed yet"},
+		{name: "failed", err: "failed"},
+		{name: "physical", err: "logical backup"},
+		{name: "nightyl", err: "not found"},
+	} {
+		note, err := checkRestoreBackup(context.Background(), c, "default", tc.name)
+		switch {
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.err)
+		case tc.err == "" && err != nil:
+			t.Errorf("%s: err = %v", tc.name, err)
+		case !strings.Contains(note, tc.note) || (tc.note == "" && note != ""):
+			t.Errorf("%s: note = %q, want %q", tc.name, note, tc.note)
+		}
 	}
 }

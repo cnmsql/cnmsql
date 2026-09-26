@@ -55,6 +55,7 @@ const (
 	restoreReasonPrimaryNotReady   = "PrimaryNotReady"
 	restoreReasonJobMissing        = "JobMissing"
 	restoreReasonJobConflict       = "JobConflict"
+	restoreReasonBackupNotFound    = "BackupNotFound"
 	restoreReasonRestoreCompleted  = "Completed"
 	restoreReasonRestoreInProgress = "Running"
 )
@@ -167,6 +168,10 @@ func (r *LogicalRestoreReconciler) start(ctx context.Context, restore *mysqlv1al
 		}
 		switch de.kind {
 		case dumpNotReady:
+			if de.missing && r.Recorder != nil {
+				r.Recorder.Event(restore, corev1.EventTypeWarning, restoreReasonBackupNotFound,
+					de.msg+"; the restore waits for it to be created")
+			}
 			return ctrl.Result{RequeueAfter: provisioningRequeue},
 				r.markPending(ctx, restore, restoreReasonSourceNotReady, de.msg)
 		case dumpPhysical:
