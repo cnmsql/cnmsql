@@ -42,6 +42,7 @@ func NewCommand() *cobra.Command {
 		groupRepl     bool
 		charset       string
 		collation     string
+		postInitSQL   []string
 		controlUser   string
 		backupUser    string
 		metricsUser   string
@@ -131,6 +132,7 @@ func NewCommand() *cobra.Command {
 					MetricsUser:               metricsUser,
 					SupportsDynamicPrivileges: dynamicPrivileges,
 					GroupReplication:          groupRepl,
+					PostInitSQL:               postInitSQL,
 				},
 			})
 		},
@@ -147,6 +149,9 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&groupRepl, "group-replication", false, "Grant the replication user the privileges Group Replication distributed recovery needs")
 	cmd.Flags().StringVar(&charset, "character-set", "", "Character set for the application database")
 	cmd.Flags().StringVar(&collation, "collation", "", "Collation for the application database")
+	// StringArray, not StringSlice: a statement may hold a comma, and each flag
+	// is one value.
+	cmd.Flags().StringArrayVar(&postInitSQL, "post-init-sql", nil, "SQL statement run as root after the managed statements (repeatable, in order)")
 	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from the control credential Secret)")
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup user for cloning replicas (password from the backup credential Secret)")
 	cmd.Flags().StringVar(&metricsUser, "metrics-user", "", "Local metrics exporter user to create")
