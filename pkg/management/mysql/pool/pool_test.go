@@ -18,6 +18,8 @@ package pool
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -118,5 +120,25 @@ func TestPasswordHookSetsCurrentPassword(t *testing.T) {
 	}
 	if cfg.Passwd != "new" {
 		t.Fatalf("Passwd = %q, want the value at connect time", cfg.Passwd)
+	}
+}
+
+func TestIsAccessDenied(t *testing.T) {
+	denied := &mysql.MySQLError{
+		Number:   1045,
+		SQLState: [5]byte{'2', '8', '0', '0', '0'},
+		Message:  "Access denied for user 'cnmsql_control'@'localhost' (using password: YES)",
+	}
+	if !IsAccessDenied(denied) {
+		t.Fatal("error 1045 must be classified as access denied")
+	}
+	if !IsAccessDenied(fmt.Errorf("pinging mysqld: %w", denied)) {
+		t.Fatal("a wrapped 1045 must still be classified")
+	}
+	if IsAccessDenied(&mysql.MySQLError{Number: 1044, Message: "privilege error"}) {
+		t.Fatal("error 1044 is a privilege error, not a credential mismatch")
+	}
+	if IsAccessDenied(errors.New("connection refused")) {
+		t.Fatal("a transport error must not be classified as access denied")
 	}
 }
