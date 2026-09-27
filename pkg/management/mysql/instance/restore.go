@@ -31,6 +31,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // RestoreOptions configures bootstrapping a primary's data directory from a
@@ -157,7 +158,7 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 	// own sentinel below.
 	if IsInitialized(opts.DataDir) {
 		log.Info("Data directory already initialized; skipping base restore")
-	} else if err := opts.restoreBase(ctx, bt); err != nil {
+	} else if err := opts.restoreBase(ctx, bt, eng); err != nil {
 		return err
 	} else if err := os.WriteFile(filepath.Join(opts.DataDir, bootstrapSentinel), nil, 0o600); err != nil {
 		return fmt.Errorf("marking restored data directory as bootstrapped: %w", err)
@@ -184,9 +185,10 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 }
 
 // restoreBase extracts, prepares and copy-backs the base backup into the data
-// directory, then resets the restored internal accounts to this cluster's
+// directory, then reconciles the restored server: it clears the inherited
+// replication metadata and resets the internal accounts to this cluster's
 // credentials. It runs only when the data directory is not yet initialised.
-func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool) error {
+func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("instance-restore")
 
 	compress := opts.Compress
@@ -274,63 +276,77 @@ func (opts RestoreOptions) restoreBase(ctx context.Context, bt engine.BackupTool
 		return fmt.Errorf("persisting backup binlog info: %w", err)
 	}
 
-	// 5. Reset the restored internal accounts to this cluster's credentials so the
-	// instance manager (and the backup tool) can authenticate against the recovered
-	// data. Skipped when no root password is provided.
-	if opts.RootPassword != "" {
-		if err := opts.reconcileCredentials(ctx); err != nil {
-			return fmt.Errorf("reconciling restored credentials: %w", err)
-		}
+	// 5. Reconcile the restored server on a temporary --skip-grant-tables
+	// instance: clear the inherited replication metadata (issue 138) and reset
+	// the internal accounts to this cluster's credentials so the instance
+	// manager (and the backup tool) can authenticate against the recovered data.
+	if err := opts.reconcileRestoredServer(ctx, eng); err != nil {
+		return fmt.Errorf("reconciling restored server: %w", err)
 	}
 	return nil
 }
 
-// credentialReconcileStatements returns the SQL that resets the restored
-// internal accounts to the recovery cluster's generated passwords. The
-// replication account is intentionally left untouched: it authenticates with
-// mTLS (REQUIRE X509), so no password is exposed to the Pod.
-func credentialReconcileStatements(
-	version, rootPassword, controlUser, controlPassword, backupUser, backupPassword string,
-) []string {
-	if rootPassword == "" && controlPassword == "" && backupPassword == "" {
-		return nil
-	}
-	d := newBootstrapDialect(version)
-	// FLUSH PRIVILEGES re-enables the grant system after --skip-grant-tables so
-	// the subsequent ALTER USER statements take effect.
-	stmts := []string{"FLUSH PRIVILEGES"}
-	if rootPassword != "" {
-		stmts = append(stmts, d.setUserPassword("root", "localhost", rootPassword))
-	}
-	if controlUser != "" && controlPassword != "" {
-		stmts = append(stmts, d.setUserPassword(controlUser, "%", controlPassword))
-	}
-	if backupUser != "" && backupPassword != "" {
-		stmts = append(stmts, d.setUserPassword(backupUser, "%", backupPassword))
-	}
-	return stmts
+// restoredReplicaResetStatement returns the RESET REPLICA ALL statement in the
+// restored server's own dialect. Unknown versions get the modern syntax, like
+// the bootstrap dialect does.
+func restoredReplicaResetStatement(eng engine.Engine, versionStr string) string {
+	return eng.Repl().ResetReplica(restoredServerVersion(versionStr), true)
 }
 
-// reconcileCredentials starts a temporary socket-only, --skip-grant-tables
-// server over the restored data directory and resets the internal accounts to
-// this cluster's passwords, then shuts it down.
-func (o *RestoreOptions) reconcileCredentials(ctx context.Context) error {
-	log := logf.FromContext(ctx).WithName("instance-restore")
-	stmts := credentialReconcileStatements(
-		o.Version, o.RootPassword, o.ControlUser, o.ControlPassword, o.BackupUser, o.BackupPassword)
-	if len(stmts) == 0 {
-		return nil
+// restoredServerVersion parses the restored server's version, falling back to a
+// modern one when it is missing or malformed. The flavor's dialect decides how
+// the version is used, so MariaDB is unaffected by the fallback.
+func restoredServerVersion(versionStr string) version.Version {
+	if v, err := version.Parse(versionStr); err == nil {
+		return v
 	}
+	return version.Version{Major: 8, Minor: 4}
+}
+
+// restoredServerStatements returns the ordered SQL run against the temporary
+// --skip-grant-tables server over a restored data directory. The backup source's
+// replication metadata must go first: a restored instance is a new primary,
+// never a replica of the source, and START REPLICA against the metadata's
+// missing relay logs fails with Error 1872 and crash-loops the instance (issue
+// 138). The credential resets follow.
+func restoredServerStatements(
+	eng engine.Engine, versionStr, rootPassword, controlUser, controlPassword, backupUser, backupPassword string,
+) []string {
+	creds := credentialReconcileStatements(
+		versionStr, rootPassword, controlUser, controlPassword, backupUser, backupPassword)
+	stmts := make([]string, 0, 1+len(creds))
+	stmts = append(stmts, restoredReplicaResetStatement(eng, versionStr))
+	return append(stmts, creds...)
+}
+
+// reconcileRestoredServer starts a temporary socket-only, --skip-grant-tables
+// server over the restored data directory, clears the restored replication
+// metadata (RESET REPLICA ALL: a restored instance is a new primary, never a
+// replica of the backup source), and resets the internal accounts to this
+// cluster's passwords, then shuts it down. It runs on every restore, with or
+// without credentials to reconcile.
+func (o *RestoreOptions) reconcileRestoredServer(ctx context.Context, eng engine.Engine) error {
+	log := logf.FromContext(ctx).WithName("instance-restore")
+	stmts := restoredServerStatements(
+		eng, o.Version, o.RootPassword, o.ControlUser, o.ControlPassword, o.BackupUser, o.BackupPassword)
 
 	args := []string{}
 	if o.ConfigFile != "" {
 		args = append(args, "--defaults-file="+o.ConfigFile)
+	}
+	// Do not start replication on the temporary server: the restored metadata is
+	// about to be reset, and starting from it would reach for the backup source's
+	// host. The option was renamed slave→replica in 8.0.26.
+	skipStart := "--skip-slave-start"
+	if eng.UsesReplicaTerminology(restoredServerVersion(o.Version)) {
+		skipStart = "--skip-replica-start"
 	}
 	args = append(args,
 		"--datadir="+o.DataDir,
 		"--socket="+o.Socket,
 		"--skip-networking",
 		"--skip-grant-tables",
+		skipStart,
 		// Suppress the binary log for the credential reset. The config file enables
 		// log_bin, so without this the ALTER USER / FLUSH statements would be written
 		// to the binlog and advance the restored server's GTID state past the base
@@ -346,7 +362,7 @@ func (o *RestoreOptions) reconcileCredentials(ctx context.Context) error {
 	sup := NewProcessSupervisor(o.MysqldPath, args,
 		WithShutdownTimeout(o.ReadyTimeout),
 		WithOutput(stdout, stderr))
-	log.Info("Starting temporary mysqld to reconcile restored credentials", "socket", o.Socket)
+	log.Info("Starting temporary mysqld to reconcile restored data", "socket", o.Socket)
 	if err := sup.Start(ctx); err != nil {
 		return fmt.Errorf("starting temporary server: %w", err)
 	}
@@ -358,13 +374,39 @@ func (o *RestoreOptions) reconcileCredentials(ctx context.Context) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	log.Info("Reconciling restored credentials", "statements", len(stmts))
+	log.Info("Reconciling restored data", "statements", len(stmts))
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("credential reconcile statement failed: %w", err)
+			return fmt.Errorf("reconcile statement failed: %w", err)
 		}
 	}
 	return nil
+}
+
+// credentialReconcileStatements returns the SQL that resets the restored
+// internal accounts to the recovery cluster's generated passwords. The
+// replication account is intentionally left untouched: it authenticates with
+// mTLS (REQUIRE X509), so no password is exposed to the Pod.
+func credentialReconcileStatements(
+	versionStr, rootPassword, controlUser, controlPassword, backupUser, backupPassword string,
+) []string {
+	if rootPassword == "" && controlPassword == "" && backupPassword == "" {
+		return nil
+	}
+	d := newBootstrapDialect(versionStr)
+	// FLUSH PRIVILEGES re-enables the grant system after --skip-grant-tables so
+	// the subsequent ALTER USER statements take effect.
+	stmts := []string{"FLUSH PRIVILEGES"}
+	if rootPassword != "" {
+		stmts = append(stmts, d.setUserPassword("root", "localhost", rootPassword))
+	}
+	if controlUser != "" && controlPassword != "" {
+		stmts = append(stmts, d.setUserPassword(controlUser, "%", controlPassword))
+	}
+	if backupUser != "" && backupPassword != "" {
+		stmts = append(stmts, d.setUserPassword(backupUser, "%", backupPassword))
+	}
+	return stmts
 }
 
 // extract downloads the archive and pipes it into the stream extractor,

@@ -326,11 +326,11 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 	// and later replayed during a point-in-time recovery — polluting the
 	// replication timeline with operator statements instead of user history
 	// (on MariaDB, gtid_strict_mode would also collide them with the real
-	// archived transactions; see reconcileCredentials). Bootstrap must lay down
+	// archived transactions; see reconcileRestoredServer). Bootstrap must lay down
 	// the accounts on disk only, never on the replication timeline. The PITR
 	// replay prologue loads the grant tables, so such statements no longer
 	// hard-fail during replay — but they must stay off the timeline regardless.
-	// (reconcileCredentials guards the same way for the restore-side reset.)
+	// (reconcileRestoredServer guards the same way for the restore-side reset.)
 	//
 	// MariaDB only: MySQL must NOT get this flag: its rendered config always
 	// sets log_replica_updates=ON, which MySQL 8.0 refuses to honor without

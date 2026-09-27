@@ -303,6 +303,10 @@ var replicationMetadataErrorPatterns = []string{
 	"error writing relay log configuration",
 	"Master information file",
 	"replication metadata repository",
+	// Error 1872 (issue 138): a restored backup taken from a replica carries the
+	// source's applier metadata without the relay logs it references, so
+	// START REPLICA cannot initialize the applier metadata structure.
+	"applier metadata structure from the repository",
 	"Error creating relay log file",
 	"Could not open log file",
 }

@@ -50,6 +50,23 @@ func TestIsReplicationMetadataError(t *testing.T) {
 			err:  errors.New("Master information file not found"),
 			want: true,
 		},
+		// Issue 138: a restored backup taken from a replica carries its source's
+		// replication metadata without the relay logs it references, so
+		// START REPLICA fails with Error 1872 and the instance crash-loops. The
+		// applier-metadata failure must be recognized so the role reconciler
+		// repairs it.
+		{
+			name: "applier metadata initialization",
+			err: errors.New("Error 1872 (HY000): Replica failed to initialize " +
+				"applier metadata structure from the repository"),
+			want: true,
+		},
+		{
+			name: "wrapped START REPLICA applier metadata failure",
+			err: errors.New(`executing "START REPLICA": Error 1872 (HY000): Replica failed to ` +
+				`initialize applier metadata structure from the repository`),
+			want: true,
+		},
 		{
 			name: "generic connection error",
 			err:  errors.New("connection refused"),
