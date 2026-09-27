@@ -303,13 +303,21 @@ func hostOnly(endpoint string) string {
 	return endpoint
 }
 
+// uploadPartSize is the multipart part size for streaming uploads. With an
+// unknown object size minio-go defaults to parts of ~537MiB (5TiB/10000) and
+// allocates a buffer that size, which pushed the backup workers to ~550MiB of
+// resident memory. 64MiB keeps the buffer small and still allows ~625GiB
+// objects within the 10000-part limit.
+const uploadPartSize = 64 << 20
+
 // putOptions returns the write options every upload shares: the configured SSE
-// and storage class, plus the content type.
+// and storage class, plus the content type and the bounded multipart part size.
 func (c *Client) putOptions(contentType string) minio.PutObjectOptions {
 	return minio.PutObjectOptions{
 		ContentType:          contentType,
 		ServerSideEncryption: c.sse,
 		StorageClass:         c.storageClass,
+		PartSize:             uploadPartSize,
 	}
 }
 
