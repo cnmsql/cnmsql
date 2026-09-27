@@ -102,7 +102,11 @@ triggered, no Pod is deleted, and the `primaryUpdateMethod` and
 `primaryUpdateStrategy` fields are ignored for in-place upgrades.
 
 The rollout remains serialized: one instance per reconcile, replicas first,
-primary last. Fenced instances are skipped.
+primary last. Fenced instances are skipped, and so are instances whose Pod is
+about to be recreated anyway (its Pod template changed, or it is already
+terminating): they get the new binary from the recreated Pod. An instance
+manager that has started shutting down refuses the swap and cancels one still
+pending, so a Pod deletion's `SIGTERM` is never lost to a re-exec.
 
 **Under the hood.** The operator opens its own executable and streams it over
 mTLS to the instance. The instance manager writes the binary to a temp file,

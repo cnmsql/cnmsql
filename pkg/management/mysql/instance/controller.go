@@ -840,9 +840,14 @@ func (c *Controller) reExecGate(action string) error {
 // pending in-place re-exec, so the shutdown (SIGTERM from a Pod deletion, mysqld
 // exit) is never swallowed by a re-exec replacing the process image. It reports
 // whether a pending re-exec was actually cancelled.
+//
+// The flag is set under pendingReExecMu, which the timer callback also holds
+// while it decides to exec: a shutdown that starts after the timer fired but
+// before the callback committed still cancels it. Only a signal landing inside
+// the execve syscall itself can be lost.
 func (c *Controller) BeginShutdown() bool {
-	c.shuttingDown.Store(true)
 	c.pendingReExecMu.Lock()
+	c.shuttingDown.Store(true)
 	timer := c.pendingReExec
 	c.pendingReExec = nil
 	c.pendingReExecMu.Unlock()
@@ -850,7 +855,8 @@ func (c *Controller) BeginShutdown() bool {
 		return false
 	}
 	if !timer.Stop() {
-		// Already fired; the exec may be in flight and cannot be undone.
+		// Already fired: the callback sees shuttingDown and returns without
+		// exec'ing, unless it had already committed to the exec.
 		return false
 	}
 	ClearInPlaceUpgrading()
@@ -889,6 +895,14 @@ func (c *Controller) scheduleReExec(log logr.Logger, pid int, reExec func(int) e
 	c.pendingReExec = time.AfterFunc(reExecDelay, func() {
 		c.pendingReExecMu.Lock()
 		c.pendingReExec = nil
+		if c.shuttingDown.Load() {
+			// Shutdown began between the timer firing and this callback: the
+			// exec would swallow it.
+			c.pendingReExecMu.Unlock()
+			ClearInPlaceUpgrading()
+			log.Info("Cancelled in-place manager re-exec; shutdown has started", "instance", c.name)
+			return
+		}
 		c.pendingReExecMu.Unlock()
 		if err := reExec(pid); err != nil {
 			// Only reached if execve fails; mysqld keeps running under this manager.
