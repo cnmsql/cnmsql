@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -20,7 +21,10 @@ import (
 // the failure path: a restore Job that misses its activeDeadline surfaces as a
 // BootstrapFailed condition with a BootstrapJobFailed event, and is replaced
 // once the spec that shaped it changes. A final spec re-initialises a replica
-// and watches it re-clone through a fresh join Job.
+// and watches it re-clone through a fresh join Job. Another spec covers the
+// initdb Job's postInitSQL (issue #142): the statements run on the fresh
+// cluster, and invalid SQL fails the bootstrap instead of a Ready empty
+// cluster.
 var _ = Describe("Instance Bootstrap Jobs", Ordered, Label("feature"), func() {
 	const (
 		sourceCluster   = "boot-src"
@@ -186,6 +190,53 @@ var _ = Describe("Instance Bootstrap Jobs", Ordered, Label("feature"), func() {
 		expectClusterReady(sourceCluster, 2, 20*time.Minute)
 	})
 
+	It("runs initdb postInitSQL and fails invalid SQL", func() {
+		const (
+			postInitCluster = "boot-postinit"
+			badSQLCluster   = "boot-postinit-bad"
+		)
+
+		By("creating a cluster whose initdb runs postInitSQL statements")
+		applyManifest(postInitCluster, postInitSQLClusterManifest(postInitCluster, []string{
+			"CREATE TABLE app.postinit (id INT PRIMARY KEY)",
+			"INSERT INTO app.postinit VALUES (42)",
+		}))
+		DeferCleanup(func() {
+			deleteManifest(postInitCluster, postInitSQLClusterManifest(postInitCluster, nil))
+		})
+		expectClusterReady(postInitCluster, 1, 20*time.Minute)
+
+		By("verifying the statements ran")
+		Eventually(func(g Gomega) {
+			out, err := mysqlExec(clusterPrimary(postInitCluster), "root", rootPassword(postInitCluster), "",
+				"SELECT id FROM app.postinit")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(Equal("42"),
+				"the postInitSQL statements must have created and filled app.postinit")
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+
+		By("creating a cluster whose postInitSQL is invalid SQL")
+		applyManifest(badSQLCluster, postInitSQLClusterManifest(badSQLCluster, []string{
+			"THIS IS NOT SQL",
+		}))
+		DeferCleanup(func() {
+			deleteManifest(badSQLCluster, postInitSQLClusterManifest(badSQLCluster, nil))
+		})
+
+		By("waiting for the invalid statement to fail the bootstrap")
+		Eventually(func(g Gomega) {
+			phase, err := clusterField(badSQLCluster, "{.status.phase}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(phase).To(Equal("Blocked"),
+				"a failed postInitSQL statement must block the cluster instead of going Ready")
+
+			status, err := clusterField(badSQLCluster,
+				"{.status.conditions[?(@.type=='BootstrapFailed')].status}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(status).To(Equal("True"), "BootstrapFailed must be True while the initdb Job is failed")
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+	})
+
 	AfterAll(func() {
 		deleteTestNamespace(ns, prevNS)
 	})
@@ -242,6 +293,36 @@ spec:
     jobTemplate:
       activeDeadline: %s
 `, name, testNamespace, instanceImage, e2eInstanceResources, e2eMySQLParameters, backup, objectStoreYAML("    "), deadline)
+}
+
+// postInitSQLClusterManifest builds a single-instance cluster whose initdb
+// runs the given postInitSQL statements after the managed bootstrap SQL.
+func postInitSQLClusterManifest(name string, postInitSQL []string) string {
+	statements := ""
+	for _, stmt := range postInitSQL {
+		statements += "        - " + stmt + "\n"
+	}
+	return fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
+kind: Cluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  instances: 1
+  imageName: %s
+  storage:
+    size: 2Gi
+%s
+  mysql:
+    binlogFormat: ROW
+%s
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      postInitSQL:
+%s
+`, name, testNamespace, instanceImage, e2eInstanceResources, e2eMySQLParameters, statements)
 }
 
 // expectBootstrapJob waits for the named bootstrap Job to exist. Bootstrap Jobs

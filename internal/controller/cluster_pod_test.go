@@ -40,6 +40,42 @@ func TestPrestopHookNamesCluster(t *testing.T) {
 	}
 }
 
+// TestInitdbArgsCarryPostInitSQL asserts initdbArgs passes each
+// spec.bootstrap.initdb.postInitSQL statement to the bootstrap command as a
+// repeatable --post-init-sql flag (issue #142). Without the flag the
+// statements never run, and invalid SQL cannot fail the bootstrap.
+func TestInitdbArgsCarryPostInitSQL(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	cluster.Spec.Bootstrap.InitDB.PostInitSQL = []string{
+		"CREATE TABLE app.t (id INT)",
+		"THIS IS NOT SQL",
+	}
+	args := (&ClusterReconciler{}).initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB)
+	for _, stmt := range cluster.Spec.Bootstrap.InitDB.PostInitSQL {
+		want := "--post-init-sql=" + stmt
+		if !slices.Contains(args, want) {
+			t.Errorf("initdb args %v lack %s", args, want)
+		}
+	}
+}
+
+// TestInitdbArgsEscapesPostInitSQLDollars asserts a user statement cannot let
+// the kubelet expand $(VAR) references in the argument: "$$" is a literal "$",
+// the same escaping importArgs applies to post-import SQL.
+func TestInitdbArgsEscapesPostInitSQLDollars(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	cluster.Spec.Bootstrap.InitDB.PostInitSQL = []string{
+		`SELECT JSON_VALUE('{}', '$(POD_NAME)')`,
+	}
+	args := (&ClusterReconciler{}).initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB)
+	want := "--post-init-sql=SELECT JSON_VALUE('{}', '$$(POD_NAME)')"
+	if !slices.Contains(args, want) {
+		t.Errorf("initdb args %v carry an unescaped $(VAR) reference, want %s", args, want)
+	}
+}
+
 // TestBootstrapArgsNameCluster asserts every bootstrap command's args carry the
 // owning Cluster's name: initdb, join, restore and import read their passwords
 // from the cluster's credential Secrets through the Kubernetes API, and need

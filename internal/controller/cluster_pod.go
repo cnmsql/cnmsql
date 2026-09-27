@@ -248,6 +248,9 @@ func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *m
 		if initdb.Collation != "" {
 			args = append(args, "--collation="+initdb.Collation)
 		}
+		for _, stmt := range initdb.PostInitSQL {
+			args = append(args, "--post-init-sql="+escapeArgVars(stmt))
+		}
 	}
 	return args
 }
