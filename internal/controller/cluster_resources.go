@@ -55,9 +55,35 @@ var (
 	}
 )
 
+// credentialSecretMissingError reports a credential Secret that is missing on
+// a cluster whose instances are already bootstrapped. The MySQL accounts still
+// hold the Secret's previous password, so regenerating it would take every
+// instance out of service within minutes (issue #140); the cluster is blocked
+// until the Secret is restored instead.
+type credentialSecretMissingError struct {
+	Secret string
+}
+
+func (e *credentialSecretMissingError) Error() string {
+	return fmt.Sprintf("credential Secret %s is missing; the bootstrapped MySQL accounts still use its previous password, so it must be restored, not regenerated", e.Secret)
+}
+
 func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
+	// On a cluster with bootstrapped instances the MySQL accounts already hold
+	// the credential Secrets' passwords. A Secret that is missing now was
+	// deleted (by hand, or by a GitOps or External Secrets tool), and a freshly
+	// generated password would match no account: the instance managers lose
+	// their control connection and the whole cluster drops out of service
+	// within minutes (issue #140). Refuse to regenerate and let the caller
+	// block the cluster instead. The dump Secret is exempt — the operator
+	// re-applies that account from its Secret — and the replication Secret is
+	// unused.
+	guarded, err := r.hasBootstrappedInstances(ctx, cluster)
+	if err != nil {
+		return err
+	}
 	if cluster.Spec.RootPasswordSecret == nil {
-		if err := r.ensurePasswordSecret(ctx, cluster, plan.RootSecretName, map[string]string{corev1.BasicAuthUsernameKey: "root"}); err != nil {
+		if err := r.ensureAccountSecret(ctx, cluster, plan.RootSecretName, map[string]string{corev1.BasicAuthUsernameKey: "root"}, guarded); err != nil {
 			return err
 		}
 	}
@@ -68,14 +94,14 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 		if user == "" {
 			user = "app"
 		}
-		if err := r.ensurePasswordSecret(ctx, cluster, plan.AppSecretName, map[string]string{corev1.BasicAuthUsernameKey: user}); err != nil {
+		if err := r.ensureAccountSecret(ctx, cluster, plan.AppSecretName, map[string]string{corev1.BasicAuthUsernameKey: user}, guarded); err != nil {
 			return err
 		}
 	}
 	if err := r.ensurePasswordSecret(ctx, cluster, plan.ReplicationSecret, map[string]string{corev1.BasicAuthUsernameKey: replicationUser}); err != nil {
 		return err
 	}
-	if err := r.ensurePasswordSecret(ctx, cluster, plan.BackupSecretName, map[string]string{corev1.BasicAuthUsernameKey: backupUser}); err != nil {
+	if err := r.ensureAccountSecret(ctx, cluster, plan.BackupSecretName, map[string]string{corev1.BasicAuthUsernameKey: backupUser}, guarded); err != nil {
 		return err
 	}
 	// The logical-backup account's password. It is not mounted in the instance
@@ -84,7 +110,44 @@ func (r *ClusterReconciler) ensureCredentials(ctx context.Context, cluster *mysq
 	if err := r.ensurePasswordSecret(ctx, cluster, dumpAccountSecretName(cluster), map[string]string{corev1.BasicAuthUsernameKey: engine.DumpAccountName}); err != nil {
 		return err
 	}
-	return r.ensurePasswordSecret(ctx, cluster, plan.ControlSecretName, map[string]string{corev1.BasicAuthUsernameKey: controlUser})
+	return r.ensureAccountSecret(ctx, cluster, plan.ControlSecretName, map[string]string{corev1.BasicAuthUsernameKey: controlUser}, guarded)
+}
+
+// hasBootstrappedInstances reports whether any of the cluster's data volumes
+// holds a bootstrapped data directory: the MySQL accounts exist and were
+// seeded with the credential Secrets' passwords. A cluster still initializing
+// its first volume has nothing to lose.
+func (r *ClusterReconciler) hasBootstrappedInstances(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (bool, error) {
+	pvcs := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, pvcs,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
+		return false, err
+	}
+	for i := range pvcs.Items {
+		if pvcBootstrapped(&pvcs.Items[i]) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ensureAccountSecret ensures one of the credential Secrets whose password
+// backs a MySQL account nothing re-applies: root, app, backup or control. With
+// guarded set — a cluster with bootstrapped instances — a missing Secret is a
+// deleted one and is reported instead of regenerated (issue #140).
+func (r *ClusterReconciler) ensureAccountSecret(ctx context.Context, cluster *mysqlv1alpha1.Cluster, name string, data map[string]string, guarded bool) error {
+	if guarded {
+		err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &corev1.Secret{})
+		switch {
+		case err == nil:
+		case apierrors.IsNotFound(err):
+			return &credentialSecretMissingError{Secret: name}
+		default:
+			return err
+		}
+	}
+	return r.ensurePasswordSecret(ctx, cluster, name, data)
 }
 
 // ensurePasswordSecret creates the named credential Secret with a generated
