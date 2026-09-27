@@ -88,6 +88,17 @@ func readinessLagGateSpec(
 				"the delayed replica's heartbeat lag must exceed the %s bound", maxReadyLag)
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
+		// The status lag can cross the bound before the Pod leaves the Services:
+		// the kubelet needs the readiness probe's failureThreshold of consecutive
+		// failures, then the EndpointSlice controller has to drop the endpoint.
+		By("waiting for the kubelet to take the behind replica out of -ro/-r")
+		Eventually(func(g Gomega) {
+			g.Expect(serviceEndpoints(cluster + "-ro")).NotTo(ContainElement(replica),
+				"a replica over maxReadyLag must leave the ro Service")
+			g.Expect(serviceEndpoints(cluster + "-r")).NotTo(ContainElement(replica),
+				"a replica over maxReadyLag must leave the r Service")
+		}, e2eTimeout(time.Minute), 2*time.Second).Should(Succeed())
+
 		By("holding the behind replica out of -ro/-r while its threads are nominally healthy")
 		Consistently(func(g Gomega) {
 			g.Expect(serviceEndpoints(cluster + "-ro")).NotTo(ContainElement(replica),
