@@ -140,7 +140,8 @@ func (r *Reconciler) ReconcileFailover(
 	}
 
 	logf.FromContext(ctx).Info("Failing over primary",
-		"from", observed.PrimaryName, "to", candidate, "transactionsBehind", elected.TransactionsBehind)
+		"from", observed.PrimaryName, "to", candidate, "transactionsBehind", elected.TransactionsBehind,
+		"reason", primaryUnhealthyReason(observed))
 	message := fmt.Sprintf("Failing over from %s to %s", observed.PrimaryName, candidate)
 	if elected.TransactionsBehind > 0 {
 		message += fmt.Sprintf(", which is %d transactions behind it", elected.TransactionsBehind)
@@ -176,6 +177,28 @@ func maxTransactionsBehind(cluster *mysqlv1alpha1.Cluster) *int64 {
 		return nil
 	}
 	return cluster.Spec.FailoverPolicy.MaxTransactionsBehind
+}
+
+// primaryUnhealthyReason explains what made the primary fail PrimaryHealthy, so
+// the failover log line records the trigger and not just the action. A primary
+// whose status the instance manager cannot deliver, a Pod that is not ready, a
+// Pod on its way out, and an instance that stopped acting as primary are
+// different incidents with different runbooks.
+func primaryUnhealthyReason(observed topology.FailoverState) string {
+	status, ok := observed.Instances[observed.PrimaryName]
+	if !ok {
+		return "instance manager status is unreachable"
+	}
+	if slices.Contains(observed.Terminating, observed.PrimaryName) {
+		return "pod is terminating"
+	}
+	if !status.Ready {
+		return "pod is not ready"
+	}
+	if !status.Primary {
+		return fmt.Sprintf("instance reports role %s, not primary", status.Role)
+	}
+	return "primary is unhealthy"
 }
 
 func phaseResult(requeueAfter time.Duration, phase, reason string) topology.FailoverResult {
