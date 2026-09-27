@@ -32,10 +32,17 @@ const (
 	ReasonInstanceManagerOutdated = "InstanceManagerOutdated"
 	// ReasonDumpFailed: the dump client failed, or the stream was cut short.
 	ReasonDumpFailed = "DumpFailed"
-	// ReasonObjectStoreStalled: the upload saw no bytes move for the stall
-	// deadline, from the source or the object store, and gave up instead of
-	// hanging until the Job's active deadline.
+	// ReasonObjectStoreStalled: the object store accepted no bytes for the
+	// stall deadline, and the upload gave up instead of hanging until the Job's
+	// active deadline.
 	ReasonObjectStoreStalled = "ObjectStoreStalled"
+	// ReasonSourceStalled: the source instance sent no bytes for the stall
+	// deadline (the backup tool hung, for example behind a lock), and the
+	// upload gave up instead of hanging until the Job's active deadline.
+	ReasonSourceStalled = "SourceStalled"
+	// ReasonArchiveTooLarge: the stream outgrew the largest object its
+	// multipart part size allows. The short object is removed.
+	ReasonArchiveTooLarge = "ArchiveTooLarge"
 )
 
 // Failure reasons a logical restore worker reports on top of the ones the

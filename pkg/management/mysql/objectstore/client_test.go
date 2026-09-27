@@ -17,11 +17,15 @@ limitations under the License.
 package objectstore
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseEndpoint(t *testing.T) {
@@ -123,13 +127,128 @@ func TestSHA256Reader(t *testing.T) {
 
 // Streaming uploads of unknown length must not let the SDK size multipart
 // parts from a 5TiB default: that allocates ~550MiB per part buffer in the
-// backup workers. A 64MiB part size keeps the buffer bounded while still
-// allowing ~625GiB objects within the 10000-part limit.
+// backup workers. The default 64MiB part size keeps the buffer bounded; a
+// client sized for a larger stream uses its own part size.
 func TestPutOptionsSetsPartSize(t *testing.T) {
 	t.Parallel()
 
+	client := newTestClient(t, "http://minio.svc:9000")
+	if opts := client.putOptions("application/zstd"); opts.PartSize != 64<<20 {
+		t.Fatalf("PartSize = %d, want %d", opts.PartSize, 64<<20)
+	}
+	client.SetUploadPartSize(256 << 20)
+	if opts := client.putOptions("application/zstd"); opts.PartSize != 256<<20 {
+		t.Fatalf("PartSize = %d, want %d", opts.PartSize, 256<<20)
+	}
+}
+
+// The part size fits twice the expected stream in the 10000-part limit,
+// within the S3 part-size bounds.
+func TestUploadPartSizeFor(t *testing.T) {
+	t.Parallel()
+
+	const mib, gib, tib = int64(1 << 20), int64(1 << 30), int64(1 << 40)
+	cases := []struct {
+		expected int64
+		want     uint64
+	}{
+		{expected: 0, want: 64 << 20},
+		{expected: 100 * gib, want: 64 << 20},
+		// 1TiB x 2 / 10000 = ~209.7MiB, rounded up to a whole MiB.
+		{expected: tib, want: 210 << 20},
+		{expected: 10 * tib, want: 2098 << 20},
+		{expected: 100 * tib, want: 5 << 30},
+	}
+	for _, tc := range cases {
+		got := UploadPartSizeFor(tc.expected)
+		if got != tc.want {
+			t.Errorf("UploadPartSizeFor(%d MiB) = %d MiB, want %d MiB", tc.expected/mib, got>>20, tc.want>>20)
+		}
+		if tc.expected > 0 && got < uint64(maxUploadPartSize) && got*maxUploadParts < uint64(2*tc.expected) {
+			t.Errorf("UploadPartSizeFor(%d MiB) = %d MiB does not fit twice the stream", tc.expected/mib, got>>20)
+		}
+	}
+}
+
+// minio-go completes a streaming upload that reaches the part-count limit
+// without noticing the reader still has data. The check after the upload must
+// catch it, remove the short object and fail with ErrUploadTooLarge.
+func TestCheckStreamEndedRemovesATruncatedObject(t *testing.T) {
+	t.Parallel()
+
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = append(deleted, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL)
+
+	err := client.checkStreamEnded(context.Background(), "backups", "demo/backup.xbstream", strings.NewReader("more"))
+	if !errors.Is(err, ErrUploadTooLarge) {
+		t.Fatalf("err = %v, want ErrUploadTooLarge", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "/backups/demo/backup.xbstream" {
+		t.Fatalf("deleted = %v, want the truncated object removed", deleted)
+	}
+
+	// A drained reader is a complete upload.
+	deleted = nil
+	if err := client.checkStreamEnded(context.Background(), "backups", "k", strings.NewReader("")); err != nil {
+		t.Fatalf("drained reader: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("a complete upload was removed: %v", deleted)
+	}
+}
+
+// A store that stops sending mid-object fails the download with ErrStalled
+// instead of holding it until the Job's deadline.
+func TestDownloadFailsWhenTheStoreStalls(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+		w.Header().Set("ETag", `"x"`)
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 16))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	client := newTestClient(t, server.URL)
+	client.stallTimeout = 200 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Download(context.Background(), "backups", "dump.sql.zst", io.Discard)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStalled) {
+			t.Fatalf("err = %v, want ErrStalled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a stalled download must fail, not hang")
+	}
+}
+
+func newTestClient(t *testing.T, endpoint string) *Client {
+	t.Helper()
 	client, err := NewClient(Config{
-		Endpoint:        "http://minio.svc:9000",
+		Endpoint:        endpoint,
+		Region:          "us-east-1",
 		AccessKeyID:     "key",
 		SecretAccessKey: "secret",
 		ForcePathStyle:  true,
@@ -137,11 +256,7 @@ func TestPutOptionsSetsPartSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	opts := client.putOptions("application/zstd")
-	if opts.PartSize != 64<<20 {
-		t.Fatalf("PartSize = %d, want %d", opts.PartSize, 64<<20)
-	}
+	return client
 }
 
 func TestIsEmptyPrefix(t *testing.T) {

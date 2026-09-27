@@ -470,6 +470,11 @@ func backupJob(
 	if backup.Spec.Method == mysqlv1alpha1.BackupMethodLogical {
 		args = append(args, logicalWorkerArgs(backup, cluster)...)
 	}
+	// The data volume size bounds the stream, so it sizes the multipart parts:
+	// the worker's default part size caps an upload at ~625GiB.
+	if size := dataVolumeBytes(cluster); size > 0 {
+		args = append(args, fmt.Sprintf("--expected-size-bytes=%d", size))
+	}
 
 	// Operator-owned labels take precedence over the template's, so a user can
 	// add labels but not clobber the ones the operator selects on.
@@ -768,4 +773,15 @@ func jobFinished(job *batchv1.Job, conditionType batchv1.JobConditionType) bool 
 		}
 	}
 	return false
+}
+
+// dataVolumeBytes returns the size of the cluster's data volumes as the spec
+// requests it, or zero when it cannot be resolved. A backup stream is roughly
+// as large as the data on one volume, so this is what its upload is sized for.
+func dataVolumeBytes(cluster *mysqlv1alpha1.Cluster) int64 {
+	spec, err := pvcSpec(cluster.Spec.Storage)
+	if err != nil {
+		return 0
+	}
+	return spec.Resources.Requests.Storage().Value()
 }

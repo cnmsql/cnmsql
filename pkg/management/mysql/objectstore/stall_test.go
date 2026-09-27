@@ -196,3 +196,101 @@ func TestStallWatchReaderCloseStopsWatchdog(t *testing.T) {
 		t.Fatal("a closed watchdog must not report a stall")
 	}
 }
+
+// EOF is sticky: the post-upload probe reads a drained reader again and must
+// get io.EOF straight away, not wait out the stall deadline.
+func TestStallWatchReaderEOFIsSticky(t *testing.T) {
+	t.Parallel()
+
+	watch := NewStallWatchReader(strings.NewReader("abc"), time.Minute, func() { t.Error("watchdog fired") })
+	defer func() { _ = watch.Close() }()
+	if _, err := io.ReadAll(watch); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for range 3 {
+		if n, err := watch.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+			t.Fatalf("read after EOF = %d, %v; want 0, io.EOF", n, err)
+		}
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("reads after EOF waited instead of returning at once")
+	}
+}
+
+// A consumer waiting in Read on a silent source is a source stall; a consumer
+// that stopped reading is a consumer stall. The backup worker reports them as
+// SourceStalled and ObjectStoreStalled.
+func TestStallWatchReaderReportsWhichSideStalled(t *testing.T) {
+	t.Parallel()
+
+	src := newBlockingReader()
+	defer src.Close()
+	watch := NewStallWatchReader(src, 50*time.Millisecond, nil)
+	defer func() { _ = watch.Close() }()
+	if _, err := watch.Read(make([]byte, 8)); !errors.Is(err, ErrStalled) {
+		t.Fatalf("err = %v, want ErrStalled", err)
+	}
+	if side := watch.StalledSide(); side != StallSource {
+		t.Fatalf("side = %q, want %q", side, StallSource)
+	}
+
+	consumer := NewStallWatchReader(strings.NewReader(strings.Repeat("x", 64)), 50*time.Millisecond, nil)
+	defer func() { _ = consumer.Close() }()
+	if _, err := consumer.Read(make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !consumer.Stalled() {
+		if time.Now().After(deadline) {
+			t.Fatal("the consumer watchdog never fired")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if side := consumer.StalledSide(); side != StallConsumer {
+		t.Fatalf("side = %q, want %q", side, StallConsumer)
+	}
+}
+
+// A part upload that takes longer than the deadline on a slow link is not a
+// stall while the store keeps reporting bytes sent through UploadProgress.
+func TestStallWatchReaderUploadProgressKeepsTheConsumerAlive(t *testing.T) {
+	t.Parallel()
+
+	watch := NewStallWatchReader(strings.NewReader(strings.Repeat("x", 64)), 100*time.Millisecond,
+		func() { t.Error("watchdog fired while the upload was progressing") })
+	defer func() { _ = watch.Close() }()
+	if _, err := watch.Read(make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	progress := watch.UploadProgress()
+	for range 10 {
+		time.Sleep(40 * time.Millisecond)
+		if n, err := progress.Read(make([]byte, 4)); n != 4 || err != nil {
+			t.Fatalf("progress read = %d, %v", n, err)
+		}
+	}
+	if watch.Stalled() {
+		t.Fatal("a progressing upload was reported stalled")
+	}
+}
+
+// A download reader has no consumer watchdog: a consumer that is slow to take
+// the next bytes is not a stall.
+func TestSourceStallReaderToleratesASlowConsumer(t *testing.T) {
+	t.Parallel()
+
+	watch := NewSourceStallReader(strings.NewReader(strings.Repeat("x", 64)), 50*time.Millisecond,
+		func() { t.Error("stall fired on a slow consumer") })
+	defer func() { _ = watch.Close() }()
+	if _, err := watch.Read(make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := io.ReadAll(watch); err != nil {
+		t.Fatalf("read after a slow consumer: %v", err)
+	}
+	if watch.Stalled() {
+		t.Fatal("a slow consumer was reported as a stall")
+	}
+}

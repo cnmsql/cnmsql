@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -173,6 +174,12 @@ type Client struct {
 	mc           *minio.Client
 	sse          encrypt.ServerSide
 	storageClass string
+	// partSize is the multipart part size of streaming uploads; zero means
+	// DefaultUploadPartSize. See SetUploadPartSize.
+	partSize uint64
+	// stallTimeout bounds how long a download may receive nothing; zero means
+	// DefaultStallTimeout. Set only in tests.
+	stallTimeout time.Duration
 	// listV1 is set once a ListObjectsV2 call has been rejected by the endpoint,
 	// after which every listing uses the V1 API. See listObjects.
 	listV1 atomic.Bool
@@ -303,12 +310,60 @@ func hostOnly(endpoint string) string {
 	return endpoint
 }
 
-// uploadPartSize is the multipart part size for streaming uploads. With an
-// unknown object size minio-go defaults to parts of ~537MiB (5TiB/10000) and
-// allocates a buffer that size, which pushed the backup workers to ~550MiB of
-// resident memory. 64MiB keeps the buffer small and still allows ~625GiB
-// objects within the 10000-part limit.
-const uploadPartSize = 64 << 20
+// DefaultUploadPartSize is the multipart part size for streaming uploads of an
+// unknown size. With an unknown object size minio-go defaults to parts of
+// ~537MiB (5TiB/10000) and allocates a buffer that size, which pushed the backup
+// workers to ~550MiB of resident memory. 64MiB keeps the buffer small and allows
+// ~625GiB objects within the 10000-part limit; larger streams size their parts
+// with UploadPartSizeFor.
+const DefaultUploadPartSize = 64 << 20
+
+const (
+	// maxUploadParts is the S3 multipart part-count limit.
+	maxUploadParts = 10000
+	// maxUploadPartSize is the S3 multipart part-size limit.
+	maxUploadPartSize = 5 << 30
+	// uploadSizeHeadroom is how much larger than its expected size a stream may
+	// grow and still fit in the part count: a physical stream carries xbstream
+	// framing, and the data volume may have grown since the estimate.
+	uploadSizeHeadroom = 2
+)
+
+// ErrUploadTooLarge reports a streaming upload whose source outgrew the
+// multipart part count (part size x 10000). minio-go completes such an upload
+// silently truncated at the last part, so Upload checks for it and fails
+// instead of leaving a short object that looks complete.
+var ErrUploadTooLarge = errors.New("streaming upload exceeded the maximum object size for its part size")
+
+// UploadPartSizeFor returns the multipart part size for a streaming upload
+// expected to be about expectedBytes: large enough that twice that size fits in
+// the 10000-part limit, never below DefaultUploadPartSize, never above the 5GiB
+// S3 part limit, and rounded up to a whole MiB. A non-positive estimate returns
+// the default.
+func UploadPartSizeFor(expectedBytes int64) uint64 {
+	if expectedBytes <= 0 {
+		return DefaultUploadPartSize
+	}
+	const mib = 1 << 20
+	want := (uint64(expectedBytes)*uploadSizeHeadroom + maxUploadParts - 1) / maxUploadParts
+	want = (want + mib - 1) / mib * mib
+	return min(max(want, DefaultUploadPartSize), maxUploadPartSize)
+}
+
+// SetUploadPartSize sets the multipart part size of this client's streaming
+// uploads (see UploadPartSizeFor). Zero restores the default. The part size is
+// also the per-upload buffer, so it bounds the uploader's memory.
+func (c *Client) SetUploadPartSize(n uint64) {
+	c.partSize = n
+}
+
+// uploadPartSize returns the effective streaming part size.
+func (c *Client) uploadPartSize() uint64 {
+	if c.partSize == 0 {
+		return DefaultUploadPartSize
+	}
+	return c.partSize
+}
 
 // putOptions returns the write options every upload shares: the configured SSE
 // and storage class, plus the content type and the bounded multipart part size.
@@ -317,8 +372,18 @@ func (c *Client) putOptions(contentType string) minio.PutObjectOptions {
 		ContentType:          contentType,
 		ServerSideEncryption: c.sse,
 		StorageClass:         c.storageClass,
-		PartSize:             uploadPartSize,
+		PartSize:             c.uploadPartSize(),
 	}
+}
+
+// ProgressReporter is implemented by upload readers that want to observe the
+// bytes the store actually sends, not only the bytes it reads ahead into a part
+// buffer. The stall watchdog uses it so a slow but moving part upload is not
+// mistaken for a hung store.
+type ProgressReporter interface {
+	// UploadProgress returns a reader whose Read is called with each chunk the
+	// store sends; it must return len(p).
+	UploadProgress() io.Reader
 }
 
 // NewClientFromEnv builds a client from the cnmsql_S3_* environment variables.
@@ -328,6 +393,12 @@ func NewClientFromEnv() (*Client, error) {
 
 // Upload streams reader into bucket/key. A negative size streams with multipart
 // uploads of an unknown total length, which is what backup archives need.
+//
+// A streaming upload is checked for completeness afterwards: minio-go stops at
+// the multipart part-count limit and completes the object without noticing the
+// reader still had data. When the reader is not at EOF the short object is
+// removed and ErrUploadTooLarge returned, so no caller records a truncated
+// archive as complete. The reader must keep returning io.EOF once drained.
 func (c *Client) Upload(
 	ctx context.Context,
 	bucket, key string,
@@ -338,9 +409,36 @@ func (c *Client) Upload(
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	_, err := c.mc.PutObject(ctx, bucket, key, reader, size, c.putOptions(contentType))
+	opts := c.putOptions(contentType)
+	if p, ok := reader.(ProgressReporter); ok {
+		opts.Progress = p.UploadProgress()
+	}
+	_, err := c.mc.PutObject(ctx, bucket, key, reader, size, opts)
 	if err != nil {
 		return fmt.Errorf("uploading s3://%s/%s: %w", bucket, key, err)
+	}
+	if size < 0 {
+		return c.checkStreamEnded(ctx, bucket, key, reader)
+	}
+	return nil
+}
+
+// checkStreamEnded verifies that a streaming upload consumed its whole reader.
+// When the reader still has data the store stopped at the part-count limit:
+// the short object is removed and ErrUploadTooLarge returned.
+func (c *Client) checkStreamEnded(ctx context.Context, bucket, key string, reader io.Reader) error {
+	var probe [1]byte
+	n, readErr := io.ReadFull(reader, probe[:])
+	if n > 0 {
+		if rmErr := c.Remove(context.WithoutCancel(ctx), bucket, key); rmErr != nil {
+			return fmt.Errorf("uploading s3://%s/%s: %w (%d MiB parts); removing the truncated object: %w",
+				bucket, key, ErrUploadTooLarge, c.uploadPartSize()>>20, rmErr)
+		}
+		return fmt.Errorf("uploading s3://%s/%s: %w (%d MiB parts, %d GiB at most)",
+			bucket, key, ErrUploadTooLarge, c.uploadPartSize()>>20, c.uploadPartSize()*maxUploadParts>>30)
+	}
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return fmt.Errorf("uploading s3://%s/%s: checking the stream ended: %w", bucket, key, readErr)
 	}
 	return nil
 }
@@ -361,16 +459,32 @@ func (c *Client) PutJSON(ctx context.Context, bucket, key string, v any) error {
 
 // Download streams bucket/key into writer and returns the number of bytes copied.
 func (c *Client) Download(ctx context.Context, bucket, key string, writer io.Writer) (int64, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	obj, err := c.mc.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return 0, fmt.Errorf("opening s3://%s/%s: %w", bucket, key, err)
 	}
 	defer func() { _ = obj.Close() }()
-	n, err := io.Copy(writer, obj)
+	// A store that stops sending mid-object would otherwise hold the restore
+	// until its Job's deadline; only the source is watched, since a slow writer
+	// (an extractor, a SQL client building an index) is not a stall.
+	body := NewSourceStallReader(obj, c.downloadStallTimeout(), cancel)
+	defer func() { _ = body.Close() }()
+	n, err := io.Copy(writer, body)
 	if err != nil {
 		return n, fmt.Errorf("downloading s3://%s/%s: %w", bucket, key, err)
 	}
 	return n, nil
+}
+
+// downloadStallTimeout is how long a download may receive nothing before it
+// fails with ErrStalled.
+func (c *Client) downloadStallTimeout() time.Duration {
+	if c.stallTimeout > 0 {
+		return c.stallTimeout
+	}
+	return DefaultStallTimeout
 }
 
 // IsEmptyPrefix reports whether no objects exist under bucket/prefix. It is used
