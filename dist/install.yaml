@@ -90,7 +90,8 @@ spec:
                   affinity:
                     description: |-
                       Affinity sets the affinity/anti-affinity rules for the backup worker Job's
-                      pod.
+                      pod. Not applied to instance bootstrap Jobs: they follow the instance's
+                      scheduling so the data volume binds where the instance can run.
                     properties:
                       nodeAffinity:
                         description: Describes node affinity scheduling rules for
@@ -1026,18 +1027,22 @@ spec:
                       type: string
                     description: |-
                       NodeSelector constrains the backup worker Job's pod to nodes with matching
-                      labels, e.g. to keep backups off the critical nodes.
+                      labels, e.g. to keep backups off the critical nodes. Not applied to
+                      instance bootstrap Jobs: they follow the instance's scheduling so the
+                      data volume binds where the instance can run.
                     type: object
                   priorityClassName:
-                    description: PriorityClassName sets the pod priority for the backup
-                      worker Job.
+                    description: |-
+                      PriorityClassName sets the pod priority for the backup worker Job. Also
+                      applies to instance bootstrap Jobs, over `spec.priorityClassName`.
                     type: string
                   resources:
                     description: |-
                       Resources sets the resource requests and limits on the backup worker
                       container. Streaming xbstream can be memory-hungry, so operators often want
-                      explicit limits. During recovery the same requests/limits from the
-                      cluster-level template are applied to the restore init container.
+                      explicit limits. During recovery the cluster-level template's
+                      requests/limits also apply to the restore Job. The other instance
+                      bootstrap Jobs (initdb, join, import) always use `spec.resources`.
                     properties:
                       claims:
                         description: |-
@@ -1098,7 +1103,7 @@ spec:
                   tolerations:
                     description: |-
                       Tolerations allow the backup worker Job's pod to schedule onto tainted
-                      nodes.
+                      nodes. Added to the instance's tolerations on instance bootstrap Jobs.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -2844,7 +2849,8 @@ spec:
                       affinity:
                         description: |-
                           Affinity sets the affinity/anti-affinity rules for the backup worker Job's
-                          pod.
+                          pod. Not applied to instance bootstrap Jobs: they follow the instance's
+                          scheduling so the data volume binds where the instance can run.
                         properties:
                           nodeAffinity:
                             description: Describes node affinity scheduling rules
@@ -3785,18 +3791,22 @@ spec:
                           type: string
                         description: |-
                           NodeSelector constrains the backup worker Job's pod to nodes with matching
-                          labels, e.g. to keep backups off the critical nodes.
+                          labels, e.g. to keep backups off the critical nodes. Not applied to
+                          instance bootstrap Jobs: they follow the instance's scheduling so the
+                          data volume binds where the instance can run.
                         type: object
                       priorityClassName:
-                        description: PriorityClassName sets the pod priority for the
-                          backup worker Job.
+                        description: |-
+                          PriorityClassName sets the pod priority for the backup worker Job. Also
+                          applies to instance bootstrap Jobs, over `spec.priorityClassName`.
                         type: string
                       resources:
                         description: |-
                           Resources sets the resource requests and limits on the backup worker
                           container. Streaming xbstream can be memory-hungry, so operators often want
-                          explicit limits. During recovery the same requests/limits from the
-                          cluster-level template are applied to the restore init container.
+                          explicit limits. During recovery the cluster-level template's
+                          requests/limits also apply to the restore Job. The other instance
+                          bootstrap Jobs (initdb, join, import) always use `spec.resources`.
                         properties:
                           claims:
                             description: |-
@@ -3857,7 +3867,7 @@ spec:
                       tolerations:
                         description: |-
                           Tolerations allow the backup worker Job's pod to schedule onto tainted
-                          nodes.
+                          nodes. Added to the instance's tolerations on instance bootstrap Jobs.
                         items:
                           description: |-
                             The pod this Toleration is attached to tolerates any taint that matches
@@ -5971,6 +5981,46 @@ spec:
                           well under any maxReplicationLag you set. Defaults to 1s.
                         type: string
                     type: object
+                  maxReadyLag:
+                    description: |-
+                      MaxReadyLag is the maximum replication lag a replica may report and still
+                      be Ready. It shapes read traffic, not failover: a replica that is further
+                      behind than this bound keeps failing its readiness probe, so the Kubernetes
+                      endpoints controller holds it out of the -ro and -r Services and the
+                      Cluster reports Degraded until it has caught up. This closes the window in
+                      which a replica returning from a long outage — or scaled up from a volume
+                      cloned hours earlier — serves reads that are hours old while its
+                      replication threads are nominally running.
+
+                      The measurement is the heartbeat lag the instance already computes (see
+                      spec.replication.heartbeat): the age of the newest stamp it has applied,
+                      which grows in wall-clock seconds no matter how fast the applier chases
+                      the primary. The heartbeat must be enabled for the bound to have anything
+                      to read, so setting this bound while explicitly disabling the heartbeat is
+                      rejected. A replica that cannot produce a heartbeat reading at all —
+                      before its first stamp arrives, or while the heartbeat read is failing —
+                      is treated as over the bound rather than assumed caught up, so it stays
+                      out of the read Services until it can prove otherwise. The bound must be
+                      at least three heartbeat intervals: the reading grows by up to one
+                      interval between stamps even on a caught-up replica.
+
+                      The reading compares the primary's clock (the stamp) with the replica's,
+                      so clock skew between their nodes adds to it; keep the bound well above
+                      the skew NTP allows. While the primary is down or stops stamping (a
+                      failover, a primary that cannot write), every replica's reading grows,
+                      so once it passes the bound all replicas leave the read Services until a
+                      primary stamps again.
+
+                      It gates async replicas only. Under Group Replication a member is ready
+                      only once it is ONLINE, which already excludes a member that is still
+                      recovering; leave this unset there. It is also not a failover bound: what
+                      a replica may lose when promoted is governed by
+                      failoverPolicy.maxReplicationLag and failoverPolicy.maxTransactionsBehind.
+
+                      Leave it unset (or zero) to disable the gate, which is the default: a
+                      replica whose replication threads are running is Ready however far behind
+                      it is.
+                    type: string
                   mode:
                     default: async
                     description: Mode is the replication topology. Immutable after
@@ -7983,7 +8033,8 @@ spec:
                   affinity:
                     description: |-
                       Affinity sets the affinity/anti-affinity rules for the backup worker Job's
-                      pod.
+                      pod. Not applied to instance bootstrap Jobs: they follow the instance's
+                      scheduling so the data volume binds where the instance can run.
                     properties:
                       nodeAffinity:
                         description: Describes node affinity scheduling rules for
@@ -8919,18 +8970,22 @@ spec:
                       type: string
                     description: |-
                       NodeSelector constrains the backup worker Job's pod to nodes with matching
-                      labels, e.g. to keep backups off the critical nodes.
+                      labels, e.g. to keep backups off the critical nodes. Not applied to
+                      instance bootstrap Jobs: they follow the instance's scheduling so the
+                      data volume binds where the instance can run.
                     type: object
                   priorityClassName:
-                    description: PriorityClassName sets the pod priority for the backup
-                      worker Job.
+                    description: |-
+                      PriorityClassName sets the pod priority for the backup worker Job. Also
+                      applies to instance bootstrap Jobs, over `spec.priorityClassName`.
                     type: string
                   resources:
                     description: |-
                       Resources sets the resource requests and limits on the backup worker
                       container. Streaming xbstream can be memory-hungry, so operators often want
-                      explicit limits. During recovery the same requests/limits from the
-                      cluster-level template are applied to the restore init container.
+                      explicit limits. During recovery the cluster-level template's
+                      requests/limits also apply to the restore Job. The other instance
+                      bootstrap Jobs (initdb, join, import) always use `spec.resources`.
                     properties:
                       claims:
                         description: |-
@@ -8991,7 +9046,7 @@ spec:
                   tolerations:
                     description: |-
                       Tolerations allow the backup worker Job's pod to schedule onto tainted
-                      nodes.
+                      nodes. Added to the instance's tolerations on instance bootstrap Jobs.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -9277,7 +9332,8 @@ spec:
                   affinity:
                     description: |-
                       Affinity sets the affinity/anti-affinity rules for the backup worker Job's
-                      pod.
+                      pod. Not applied to instance bootstrap Jobs: they follow the instance's
+                      scheduling so the data volume binds where the instance can run.
                     properties:
                       nodeAffinity:
                         description: Describes node affinity scheduling rules for
@@ -10213,18 +10269,22 @@ spec:
                       type: string
                     description: |-
                       NodeSelector constrains the backup worker Job's pod to nodes with matching
-                      labels, e.g. to keep backups off the critical nodes.
+                      labels, e.g. to keep backups off the critical nodes. Not applied to
+                      instance bootstrap Jobs: they follow the instance's scheduling so the
+                      data volume binds where the instance can run.
                     type: object
                   priorityClassName:
-                    description: PriorityClassName sets the pod priority for the backup
-                      worker Job.
+                    description: |-
+                      PriorityClassName sets the pod priority for the backup worker Job. Also
+                      applies to instance bootstrap Jobs, over `spec.priorityClassName`.
                     type: string
                   resources:
                     description: |-
                       Resources sets the resource requests and limits on the backup worker
                       container. Streaming xbstream can be memory-hungry, so operators often want
-                      explicit limits. During recovery the same requests/limits from the
-                      cluster-level template are applied to the restore init container.
+                      explicit limits. During recovery the cluster-level template's
+                      requests/limits also apply to the restore Job. The other instance
+                      bootstrap Jobs (initdb, join, import) always use `spec.resources`.
                     properties:
                       claims:
                         description: |-
@@ -10285,7 +10345,7 @@ spec:
                   tolerations:
                     description: |-
                       Tolerations allow the backup worker Job's pod to schedule onto tainted
-                      nodes.
+                      nodes. Added to the instance's tolerations on instance bootstrap Jobs.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -11313,11 +11373,11 @@ spec:
         - --metrics-bind-address=:8443
         - --leader-elect
         - --health-probe-bind-address=:8081
-        - --operator-image=ghcr.io/cnmsql/cnmsql:0ffee0c
+        - --operator-image=ghcr.io/cnmsql/cnmsql:69a0587
         - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         command:
         - /manager
-        image: ghcr.io/cnmsql/cnmsql:0ffee0c
+        image: ghcr.io/cnmsql/cnmsql:69a0587
         livenessProbe:
           httpGet:
             path: /healthz
