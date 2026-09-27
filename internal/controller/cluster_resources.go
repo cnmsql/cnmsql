@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
@@ -473,6 +474,12 @@ func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha
 		}
 		if err := r.Delete(ctx, pod); err != nil {
 			return false, err
+		}
+		logf.FromContext(ctx).Info("Deleted Pod to apply a template change",
+			"pod", pod.Name, "instance", inst.Name)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "PodTemplateRoll",
+				"Deleted Pod %s to apply a template change", pod.Name)
 		}
 		return true, nil
 	}

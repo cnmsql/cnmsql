@@ -731,6 +731,47 @@ func TestEnsurePodRecreatesWhenTemplateHashChanges(t *testing.T) {
 	}
 }
 
+// TestEnsurePodEventsTemplateRoll pins the observability contract of a
+// template-driven Pod deletion: a rolled Pod must leave a trace on the
+// Cluster (an Event) and not vanish silently while the operator waits for it
+// to come back.
+func TestEnsurePodEventsTemplateRoll(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	stalePod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      inst.Name,
+			Namespace: cluster.Namespace,
+			Annotations: map[string]string{
+				podTemplateHashAnnotation: "stale",
+			},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "mysql",
+			Image: "old",
+		}}},
+	}
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(10)
+	reconciler := &ClusterReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, stalePod).Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+
+	rolled, err := reconciler.ensurePod(ctx, cluster, plan, inst, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rolled {
+		t.Fatal("expected the stale Pod to be rolled")
+	}
+	assertEvent(t, recorder, "PodTemplateRoll")
+}
+
 func TestPodTemplateHashIgnoresOperatorImage(t *testing.T) {
 	t.Parallel()
 	cluster := baseCluster()
