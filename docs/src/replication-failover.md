@@ -147,10 +147,13 @@ spec:
 ```
 
 While a replica is over the bound, its Pod is not Ready and the Cluster reports
-Degraded, with the readiness failure naming the current lag (for example
-`replication lag 8h0m0s exceeds maxReadyLag 30s`), so
-`kubectl describe pod` shows how far behind the instance is and how fast it is
-closing the gap.
+Degraded, naming the replica in `status.phaseReason` (`behind maxReadyLag:
+<instance>`). `status.replicationLagByInstance` shows how far behind the
+instance is and how fast it is closing the gap. The `/readyz` response body
+also names the current lag (for example
+`replication lag 8h0m0s exceeds maxReadyLag 30s`), but the kubelet does not
+copy an HTTP probe's body into the Pod's events, so `kubectl describe pod` only
+shows the 503.
 
 Two consequences worth knowing:
 

@@ -72,7 +72,7 @@ func readinessLagGateSpec(
 		// teardown discards the cluster. Reset the delay anyway so a passing run
 		// ends with the instance in its normal state.
 		DeferCleanup(func() {
-			_, _ = exec(replica, "root", rootPassword(cluster), "", applyDelaySQL(0))
+			_, _ = exec(replica, "root", rootPassword(cluster), "", "STOP REPLICA; "+applyDelaySQL(0)+"; START REPLICA;")
 		})
 
 		By(fmt.Sprintf("delaying %s's applier by %ds while both replication threads keep running", replica, delay))
@@ -109,20 +109,18 @@ func readinessLagGateSpec(
 				"the lag gate must not disturb the rw Service")
 		}, e2eTimeout(45*time.Second), 3*time.Second).Should(Succeed())
 
-		By("naming the current lag in the readiness failure")
+		// The kubelet's probe event carries only the HTTP status code, never the
+		// /readyz body, so the attribution lives in the Cluster status.
+		By("attributing the not-ready replica to the lag gate in the Cluster status")
 		Eventually(func(g Gomega) {
-			events, eerr := kubectl("get", "events", "-n", testNamespace,
-				"--field-selector", "involvedObject.name="+replica,
-				"-o", "jsonpath={range .items[*]}{.message}{\"\\n\"}{end}")
-			g.Expect(eerr).NotTo(HaveOccurred())
-			g.Expect(events).To(ContainSubstring("maxReadyLag"),
-				"the kubelet's readiness failure must attribute itself to the lag gate")
-			g.Expect(events).To(ContainSubstring("replication lag"),
-				"the readiness failure must quantify how far behind the replica is")
+			reason, rerr := clusterField(cluster, "{.status.phaseReason}")
+			g.Expect(rerr).NotTo(HaveOccurred())
+			g.Expect(reason).To(ContainSubstring("behind maxReadyLag: "+replica),
+				"the Cluster must name the replica the lag gate holds back")
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("restoring the replica's applier so it catches up")
-		_, err = exec(replica, "root", rootPassword(cluster), "", applyDelaySQL(0))
+		_, err = exec(replica, "root", rootPassword(cluster), "", "STOP REPLICA; "+applyDelaySQL(0)+"; START REPLICA;")
 		Expect(err).NotTo(HaveOccurred())
 
 		By("letting the caught-up replica back into the read Services")
@@ -183,12 +181,22 @@ spec:
 // serviceEndpoints returns the target Pod names currently routed by the named
 // Service in the test namespace.
 func serviceEndpoints(service string) []string {
+	// An EndpointSlice keeps a not-ready Pod as an endpoint with
+	// conditions.ready=false, and kube-proxy does not route to it. Only ready
+	// endpoints serve the Service; an unset ready condition means ready.
 	out, err := kubectl("get", "endpointslice",
 		"-l", "kubernetes.io/service-name="+service,
 		"-n", testNamespace,
-		"-o", "jsonpath={.items[*].endpoints[*].targetRef.name}")
+		"-o", `jsonpath={range .items[*].endpoints[*]}{.targetRef.name}={.conditions.ready}{"\n"}{end}`)
 	Expect(err).NotTo(HaveOccurred(), "failed to read endpoints for service %s", service)
-	return strings.Fields(out)
+	var ready []string
+	for line := range strings.Lines(out) {
+		name, state, _ := strings.Cut(strings.TrimSpace(line), "=")
+		if name != "" && state != "false" {
+			ready = append(ready, name)
+		}
+	}
+	return ready
 }
 
 // instanceLagMillis reads the heartbeat lag the operator last mirrored into
