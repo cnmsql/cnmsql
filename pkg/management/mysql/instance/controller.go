@@ -87,6 +87,11 @@ type Controller struct {
 	// for inclusion in the instance status. nil leaves status.ReplicationLag unset
 	// (heartbeats disabled, or in tests).
 	replicationLag func() *webserver.ReplicationLagStatus
+	// readyLag is the replica readiness lag bound (spec.replication.maxReadyLag):
+	// a replica whose heartbeat lag exceeds it fails readiness, so the kubelet
+	// holds it out of the read Services until it has caught up. Zero (the
+	// default) disables the gate.
+	readyLag time.Duration
 	// storage, when set, supplies the data volume's space usage for inclusion in
 	// the instance status. nil leaves status.Storage unset (e.g. in tests, or when
 	// no data directory is known).
@@ -181,6 +186,14 @@ func (c *Controller) SetReplicationLagProvider(provider func() *webserver.Replic
 	c.replicationLag = provider
 }
 
+// SetReadyLagGate enables the replica readiness lag gate: a replica whose
+// heartbeat lag exceeds max fails readiness, so the kubelet keeps it out of the
+// routing Services until it has caught up. A value of zero or below disables
+// the gate, which is the default.
+func (c *Controller) SetReadyLagGate(max time.Duration) {
+	c.readyLag = max
+}
+
 // SetStorageProvider registers a callback that supplies the data volume's space
 // usage for inclusion in the instance status. The run loop wires it to a statfs
 // of the data directory; tests may leave it unset.
@@ -249,7 +262,8 @@ func (c *Controller) Startupz(ctx context.Context) error {
 }
 
 // Readyz reports readiness: the server answers a ping and, if it is a replica,
-// both replication threads are running.
+// both replication threads are running and — when the lag gate is configured —
+// the heartbeat lag is within spec.replication.maxReadyLag.
 func (c *Controller) Readyz(ctx context.Context) error {
 	if err := c.conn.PingContext(ctx); err != nil {
 		return err
@@ -273,7 +287,54 @@ func (c *Controller) Readyz(ctx context.Context) error {
 		return fmt.Errorf("replication not healthy (io=%t sql=%t): %s",
 			state.IORunning, state.SQLRunning, state.LastError)
 	}
+	return c.readyLagExceeded()
+}
+
+// readyLagExceeded fails readiness while this replica's heartbeat lag exceeds
+// the configured bound (spec.replication.maxReadyLag). It is a no-op unless the
+// gate is set and this instance is an expected replica: a primary is never
+// lag-gated, and under Group Replication readiness is already bound to the
+// member's ONLINE state.
+//
+// The reading is the heartbeat loop's latest one, so a replica that cannot
+// produce one — nothing has stamped the table it reads yet, or the last read
+// failed — is treated as over the bound rather than assumed caught up: the gate
+// exists to keep a lagging replica out of the read Services, and an
+// unmeasurable replica cannot prove it is not lagging. The failure names the
+// current lag so the kubelet's readiness failure message shows how far behind
+// the replica is.
+func (c *Controller) readyLagExceeded() error {
+	if c.readyLag <= 0 || c.expected != webserver.RoleReplica {
+		return nil
+	}
+	lag, err := c.heartbeatLag()
+	if err != nil {
+		return fmt.Errorf("replication lag gate is set to %s but no heartbeat lag reading is available: %w",
+			c.readyLag, err)
+	}
+	if lag > c.readyLag {
+		return fmt.Errorf("replication lag %s exceeds maxReadyLag %s", lag, c.readyLag)
+	}
 	return nil
+}
+
+// heartbeatLag returns the heartbeat loop's latest lag reading. An error means
+// the reading is unavailable, not that the instance is lagging: the caller
+// decides what an unmeasurable replica reports.
+func (c *Controller) heartbeatLag() (time.Duration, error) {
+	if c.replicationLag == nil {
+		return 0, errors.New("the replication-lag heartbeat is not running")
+	}
+	reading := c.replicationLag()
+	switch {
+	case reading == nil:
+		return 0, errors.New("the replication-lag heartbeat returned no reading")
+	case reading.LagMillis == nil && reading.LastError != "":
+		return 0, fmt.Errorf("last heartbeat read failed: %s", reading.LastError)
+	case reading.LagMillis == nil:
+		return 0, errors.New("no heartbeat stamp has been applied yet")
+	}
+	return time.Duration(*reading.LagMillis) * time.Millisecond, nil
 }
 
 // groupReplicationReady reports readiness for a Group Replication member: the

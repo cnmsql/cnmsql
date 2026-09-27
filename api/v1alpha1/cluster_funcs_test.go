@@ -573,6 +573,86 @@ var _ = Describe("Group Replication validation", func() {
 	})
 })
 
+var _ = Describe("Replica readiness lag gate", func() {
+	newAsyncCluster := func() *Cluster {
+		cluster := &Cluster{
+			Spec: ClusterSpec{
+				ImageName: "percona/percona-server:8.0",
+				Instances: 3,
+				Storage:   StorageConfiguration{Size: "10Gi"},
+			},
+		}
+		cluster.SetDefaults()
+		return cluster
+	}
+
+	It("is disabled by default", func() {
+		cluster := newAsyncCluster()
+		Expect(cluster.MaxReadyLag()).To(BeNil())
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("reads a configured bound and reports it from the accessor", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: 30 * time.Second},
+		}
+		Expect(cluster.MaxReadyLag()).To(HaveValue(Equal(30 * time.Second)))
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("treats an explicit zero bound as disabled", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{},
+		}
+		Expect(cluster.MaxReadyLag()).To(BeNil())
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects a negative bound", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: -time.Second},
+		}
+		errs := cluster.Validate()
+		Expect(errs).NotTo(BeEmpty())
+		Expect(errs.ToAggregate().Error()).To(ContainSubstring("maxReadyLag cannot be negative"))
+	})
+
+	It("rejects a bound on a group replication cluster", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			Mode:        ReplicationModeGroupReplication,
+			MaxReadyLag: &metav1.Duration{Duration: 30 * time.Second},
+		}
+		errs := cluster.Validate()
+		Expect(errs).NotTo(BeEmpty())
+		Expect(errs.ToAggregate().Error()).To(ContainSubstring("maxReadyLag gates async replica readiness"))
+	})
+
+	It("rejects a bound while the heartbeat is explicitly disabled", func() {
+		cluster := newAsyncCluster()
+		disabled := false
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: 30 * time.Second},
+			Heartbeat:   &ReplicationHeartbeat{Enabled: &disabled},
+		}
+		errs := cluster.Validate()
+		Expect(errs).NotTo(BeEmpty())
+		Expect(errs.ToAggregate().Error()).To(ContainSubstring("maxReadyLag reads the replication-lag heartbeat"))
+	})
+
+	It("accepts a bound with the heartbeat left enabled", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: 30 * time.Second},
+			Heartbeat:   &ReplicationHeartbeat{Interval: &metav1.Duration{Duration: time.Second}},
+		}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+})
+
 var _ = Describe("Series upgrade validation", func() {
 	catalogCluster := func(series string) *Cluster {
 		cluster := &Cluster{

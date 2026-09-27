@@ -69,9 +69,19 @@ func (r *Reconciler) PodPolicy(cluster *mysqlv1alpha1.Cluster) topology.PodPolic
 	return policy
 }
 
-// PublishNotReadyAddresses lets async read Services discover catching-up replicas.
-func (r *Reconciler) PublishNotReadyAddresses(role mysqlv1alpha1.ServiceSelectorType) bool {
-	return role != mysqlv1alpha1.ServiceSelectorTypeRW
+// PublishNotReadyAddresses decides whether the routing Services publish pods
+// that are not Ready. The rw Service never does. The async read Services
+// tolerate in-progress members by default, so clients can discover replicas as
+// they catch up. Once the cluster configures a readiness lag bound
+// (spec.replication.maxReadyLag), readiness is what says a replica is fit to
+// serve reads — an unbound lag gate is the one thing holding a catching-up
+// replica out of -ro/-r — so the read Services stop publishing not-ready
+// addresses and Kubernetes endpoint readiness governs membership.
+func (r *Reconciler) PublishNotReadyAddresses(cluster *mysqlv1alpha1.Cluster, role mysqlv1alpha1.ServiceSelectorType) bool {
+	if role == mysqlv1alpha1.ServiceSelectorTypeRW {
+		return false
+	}
+	return cluster.MaxReadyLag() == nil
 }
 
 func initialSemiSyncWaitForReplicaCount(cluster *mysqlv1alpha1.Cluster) int {

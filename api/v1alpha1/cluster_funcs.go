@@ -450,8 +450,7 @@ func (cluster *Cluster) ReplicationMode() string {
 // IsHeartbeatEnabled reports whether the replication-lag heartbeat runs. It is
 // on unless explicitly disabled.
 func (cluster *Cluster) IsHeartbeatEnabled() bool {
-	hb := cluster.heartbeat()
-	return hb == nil || hb.Enabled == nil || *hb.Enabled
+	return clusterHeartbeatEnabled(cluster.heartbeat())
 }
 
 // HeartbeatInterval returns how often the primary stamps the heartbeat table,
@@ -471,6 +470,20 @@ func (cluster *Cluster) MaxReplicationLag() *time.Duration {
 		return nil
 	}
 	return &cluster.Spec.FailoverPolicy.MaxReplicationLag.Duration
+}
+
+// MaxReadyLag returns the replica readiness lag bound, or nil when the cluster
+// sets none (the gate is then disabled: a replica with running replication
+// threads is Ready however far behind it is).
+func (cluster *Cluster) MaxReadyLag() *time.Duration {
+	if cluster.Spec.Replication == nil || cluster.Spec.Replication.MaxReadyLag == nil {
+		return nil
+	}
+	d := cluster.Spec.Replication.MaxReadyLag.Duration
+	if d <= 0 {
+		return nil
+	}
+	return &d
 }
 
 // PreferredPrimary returns the instance names the primary role should sit on,
@@ -586,6 +599,12 @@ func (cluster *Cluster) ResolvedGroupReplicationTunables() ResolvedGroupReplicat
 var groupNameRe = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// clusterHeartbeatEnabled reports whether the replication-lag heartbeat runs for
+// the given heartbeat block: it is on unless explicitly disabled.
+func clusterHeartbeatEnabled(hb *ReplicationHeartbeat) bool {
+	return hb == nil || hb.Enabled == nil || *hb.Enabled
+}
+
 // validateReplication checks the replication topology selection: Group
 // Replication is incompatible with semi-synchronous replication, a pinned group
 // name must be a UUID, MariaDB does not support Group Replication, and the
@@ -599,6 +618,23 @@ func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 	mode := spec.Replication.Mode
 	if mode == "" {
 		mode = ReplicationModeAsync
+	}
+
+	if lag := spec.Replication.MaxReadyLag; lag != nil {
+		switch {
+		case lag.Duration < 0:
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("maxReadyLag"), lag.Duration.String(),
+				"maxReadyLag cannot be negative"))
+		case mode == ReplicationModeGroupReplication:
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("maxReadyLag"), lag.Duration.String(),
+				"maxReadyLag gates async replica readiness; group replication already holds a non-ONLINE member out of the read Services"))
+		case !clusterHeartbeatEnabled(spec.Replication.Heartbeat):
+			allErrs = append(allErrs, field.Forbidden(
+				path.Child("maxReadyLag"),
+				"maxReadyLag reads the replication-lag heartbeat, which is explicitly disabled (replication.heartbeat.enabled)"))
+		}
 	}
 
 	if mode == ReplicationModeGroupReplication && spec.Flavor == FlavorMariaDB {

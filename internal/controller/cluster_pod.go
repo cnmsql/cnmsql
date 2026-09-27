@@ -341,6 +341,13 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 		args = append(args, fmt.Sprintf("--heartbeat-interval-millis=%d",
 			cluster.HeartbeatInterval().Milliseconds()))
 	}
+	// The replica readiness lag gate rides along with the heartbeat it reads.
+	// Passed explicitly rather than left to the flag default so the rendered args
+	// record the effective bound, and so a change to spec.replication.maxReadyLag
+	// rolls the Pod.
+	if lag := cluster.MaxReadyLag(); lag != nil {
+		args = append(args, fmt.Sprintf("--max-ready-lag-millis=%d", lag.Milliseconds()))
+	}
 	args = append(args,
 		fmt.Sprintf("--stop-delay=%d", cluster.GetMaxStopDelay()),
 		fmt.Sprintf("--smart-shutdown-timeout=%d", cluster.GetSmartShutdownTimeout()),

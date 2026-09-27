@@ -127,6 +127,50 @@ the container is considered started only once the server is up. The readiness
 probe (`/readyz`) additionally requires healthy replication on a replica, so a
 replica that is up but not replicating is held out of routing.
 
+### The readiness lag gate
+
+Running replication threads are not the same as being caught up. A replica
+scaled up from a volume cloned hours earlier, or restarted after a long outage,
+starts its IO and SQL threads within seconds and passes readiness immediately —
+while still hours behind, and while the read Services would happily route
+freshness-sensitive reads to it.
+
+`spec.replication.maxReadyLag` turns the heartbeat lag (the same measurement
+[failoverPolicy.maxReplicationLag](#bounding-data-loss-with-maxreplicationlag)
+reads) into part of the answer. A replica whose lag exceeds the bound keeps
+failing `/readyz` until it has caught up:
+
+```yaml
+spec:
+  replication:
+    maxReadyLag: 30s
+```
+
+While a replica is over the bound, its Pod is not Ready and the Cluster reports
+Degraded, with the readiness failure naming the current lag (for example
+`replication lag 8h0m0s exceeds maxReadyLag 30s`), so
+`kubectl describe pod` shows how far behind the instance is and how fast it is
+closing the gap.
+
+Two consequences worth knowing:
+
+- The read Services follow readiness once the bound is set. Without a bound, the
+  async `-ro` and `-r` Services publish not-ready endpoints so a replica stays
+  discoverable while it catches up. With a bound set, a lagging replica must fail
+  readiness to be held back at all, so the read Services stop publishing
+  not-ready addresses and Kubernetes endpoint readiness governs membership.
+- A replica that cannot produce a heartbeat reading at all — before its first
+  stamp arrives, or while the heartbeat read is failing — is treated as over the
+  bound rather than assumed caught up. The gate therefore requires the heartbeat,
+  which is on by default; setting a bound while explicitly disabling the
+  heartbeat is rejected at admission.
+
+The gate shapes read traffic only. It never gates the primary (a promoted
+instance is Ready as soon as it accepts writes), it does not apply under Group
+Replication (readiness there already means the member is ONLINE), and it is not
+a failover bound: what a promotion may lose is governed by
+`failoverPolicy.maxReplicationLag` and `failoverPolicy.maxTransactionsBehind`.
+
 ## Fencing an instance
 
 Fencing takes a single instance out of service without deleting it or its data.
@@ -237,6 +281,13 @@ cnmsql creates three default Services:
 - `<cluster>-rw`: selects the current primary.
 - `<cluster>-ro`: selects ready replicas.
 - `<cluster>-r`: selects any ready instance.
+
+By default the read Services publish not-ready addresses, so a replica that is
+still catching up remains discoverable while it works through its backlog. Set
+[spec.replication.maxReadyLag](#the-readiness-lag-gate) to flip that: with a lag
+bound configured, a replica over the bound fails readiness and leaves `-ro`/`-r`
+until it has caught up, and the Services stop publishing not-ready addresses so
+readiness alone decides membership.
 
 Default Services can be disabled by name (the `rw` service cannot be disabled):
 
@@ -712,4 +763,7 @@ Unit tests cover GTID parsing and containment, candidate selection, switchover
 validation, failover delay, blocked failover, role-label updates, and divergence
 detection. Kind e2e coverage validates planned switchover, automatic failover by
 primary Pod deletion, service rerouting, writes after promotion, and compatible
-former-primary rejoin.
+former-primary rejoin. The readiness lag gate is covered by unit tests on the
+instance-manager readiness path (above and below the bound, unknown heartbeat
+reading, disabled by default, primary exempt) and by a Kind e2e spec asserting a
+far-behind replica stays out of `-ro`/`-r` until it has caught up.

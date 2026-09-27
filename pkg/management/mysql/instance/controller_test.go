@@ -225,6 +225,155 @@ func TestReadyzExpectedReplicaWithoutSource(t *testing.T) {
 	}
 }
 
+// lagProvider builds a replicationLag provider reporting the given millisecond
+// reading. A nil lagMillis models "no reading available".
+func lagProvider(lagMillis *int64, lastErr string) func() *webserver.ReplicationLagStatus {
+	return func() *webserver.ReplicationLagStatus {
+		return &webserver.ReplicationLagStatus{LagMillis: lagMillis, LastError: lastErr}
+	}
+}
+
+// expectHealthyReplicaReadyz registers the queries a healthy replica's Readyz
+// issues: ping, then SHOW REPLICA STATUS with both threads running.
+func expectHealthyReplicaReadyz(mock sqlmock.Sqlmock) {
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}).
+			AddRow("primary.svc", "Yes", "Yes"))
+}
+
+// A replica scaled up from a volume cloned hours earlier, or restarted after a
+// long outage, comes back with both replication threads running and a heartbeat
+// lag of hours. With maxReadyLag configured it must stay not ready, with the
+// current lag named in the failure.
+func TestReadyzLagGateHoldsBackABehindReplica(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	expectHealthyReplicaReadyz(mock)
+	c.SetReadyLagGate(30 * time.Second)
+	c.SetReplicationLagProvider(lagProvider(new(8*time.Hour.Milliseconds()), ""))
+
+	err := c.Readyz(context.Background())
+	if err == nil {
+		t.Fatal("expected Readyz to fail for a replica far behind maxReadyLag")
+	}
+	for _, want := range []string{"8h0m0s", "maxReadyLag", "30s"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("readiness error %q does not mention %q", err.Error(), want)
+		}
+	}
+}
+
+// A replica within the bound is ready.
+func TestReadyzLagGatePassesACaughtUpReplica(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	expectHealthyReplicaReadyz(mock)
+	c.SetReadyLagGate(30 * time.Second)
+	c.SetReplicationLagProvider(lagProvider(new(int64(800)), ""))
+
+	if err := c.Readyz(context.Background()); err != nil {
+		t.Fatalf("expected a replica within maxReadyLag to be ready: %v", err)
+	}
+}
+
+// The bound is exclusive: a replica exactly at maxReadyLag is ready.
+func TestReadyzLagGateAtTheBoundIsReady(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	expectHealthyReplicaReadyz(mock)
+	c.SetReadyLagGate(30 * time.Second)
+	c.SetReplicationLagProvider(lagProvider(new(int64(30_000)), ""))
+
+	if err := c.Readyz(context.Background()); err != nil {
+		t.Fatalf("expected a replica exactly at maxReadyLag to be ready: %v", err)
+	}
+}
+
+// A replica that cannot produce a heartbeat reading cannot prove it is caught
+// up, so with the gate set it stays not ready, with the heartbeat failure named.
+func TestReadyzLagGateTreatsAnUnknownReadingAsOverTheBound(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	expectHealthyReplicaReadyz(mock)
+	c.SetReadyLagGate(30 * time.Second)
+	c.SetReplicationLagProvider(lagProvider(nil, "heartbeat table unreadable"))
+
+	err := c.Readyz(context.Background())
+	if err == nil {
+		t.Fatal("expected Readyz to fail when the heartbeat reading is unavailable")
+	}
+	if !strings.Contains(err.Error(), "no heartbeat lag reading is available") {
+		t.Errorf("readiness error %q does not explain the missing reading", err.Error())
+	}
+	if !strings.Contains(err.Error(), "heartbeat table unreadable") {
+		t.Errorf("readiness error %q does not carry the heartbeat failure", err.Error())
+	}
+}
+
+// Without a heartbeat loop wired at all (heartbeats disabled) the gate fails
+// closed the same way rather than assuming the replica is caught up.
+func TestReadyzLagGateWithoutAHeartbeatFailsClosed(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	expectHealthyReplicaReadyz(mock)
+	c.SetReadyLagGate(30 * time.Second)
+
+	if err := c.Readyz(context.Background()); err == nil {
+		t.Fatal("expected Readyz to fail when the gate is set but no heartbeat provider is wired")
+	}
+}
+
+// Without the gate (the default) a replica whose replication threads run is
+// ready however far behind it is: the gate must be opt-in.
+func TestReadyzLagGateDisabledByDefault(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+	expectHealthyReplicaReadyz(mock)
+	c.SetReplicationLagProvider(lagProvider(new(8*time.Hour.Milliseconds()), ""))
+
+	if err := c.Readyz(context.Background()); err != nil {
+		t.Fatalf("expected a lagging replica to stay ready with the gate disabled: %v", err)
+	}
+}
+
+// The gate shapes replica traffic only: a primary is never lag-gated, so a
+// switchover or failover is not held up by the heartbeat it just inherited.
+func TestReadyzLagGateSkipsThePrimary(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RolePrimary, nil)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host"}))
+	c.SetReadyLagGate(30 * time.Second)
+	c.SetReplicationLagProvider(lagProvider(new(8*time.Hour.Milliseconds()), ""))
+
+	if err := c.Readyz(context.Background()); err != nil {
+		t.Fatalf("expected the primary to be ready regardless of lag: %v", err)
+	}
+}
+
+// The operator reads readiness through the status endpoint, so a gated replica
+// must report IsReady=false there too.
+func TestStatusMarksALaggedReplicaNotReady(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
+
+	expectStatusQueries(mock, true, true, true)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").
+		WillReturnRows(sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"}).
+			AddRow("primary.svc", "Yes", "Yes"))
+	expectBestEffortQueries(mock)
+
+	c.SetReadyLagGate(30 * time.Second)
+	c.SetReplicationLagProvider(lagProvider(new(8*time.Hour.Milliseconds()), ""))
+
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.IsReady {
+		t.Error("a replica over maxReadyLag must report itself not ready")
+	}
+	if status.ReplicationLag == nil || status.ReplicationLag.LagMillis == nil ||
+		*status.ReplicationLag.LagMillis != 8*time.Hour.Milliseconds() {
+		t.Errorf("status should carry the heartbeat reading: %+v", status.ReplicationLag)
+	}
+}
+
 func TestStatusExpectedReplicaWithoutSource(t *testing.T) {
 	c, mock := newControllerWithRole(t, webserver.RoleReplica, nil)
 
