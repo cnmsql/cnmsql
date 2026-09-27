@@ -638,6 +638,35 @@ func TestBeginShutdownCancelsPendingReExec(t *testing.T) {
 	}
 }
 
+// A shutdown that begins after the re-exec timer fired, but before its
+// callback committed to the exec, must still win: the callback re-checks the
+// shutdown flag under the lock BeginShutdown sets it under.
+func TestReExecCallbackYieldsToShutdownStartedAfterTimerFired(t *testing.T) {
+	t.Cleanup(func() { inPlaceUpgrading.Store(false) })
+	c, _ := newController(t, &fakeSupervisor{pid: 777})
+	reExeced := make(chan struct{}, 1)
+	c.reExec = func(int) error { reExeced <- struct{}{}; return nil }
+
+	if err := c.RestartInPlace(context.Background()); err != nil {
+		t.Fatalf("RestartInPlace: %v", err)
+	}
+	// Hold the lock past the delay so the timer fires and its callback waits
+	// on the lock, then record the shutdown before releasing it.
+	c.pendingReExecMu.Lock()
+	time.Sleep(reExecDelay + 100*time.Millisecond)
+	c.shuttingDown.Store(true)
+	c.pendingReExecMu.Unlock()
+
+	select {
+	case <-reExeced:
+		t.Fatal("a re-exec whose callback ran after shutdown started must not exec")
+	case <-time.After(250 * time.Millisecond):
+	}
+	if IsInPlaceUpgrading() {
+		t.Error("a cancelled re-exec must clear the in-place-upgrading flag")
+	}
+}
+
 // A second upgrade request while an earlier one is still scheduled must be
 // refused: two scheduled re-execs race each other and the second POST only
 // produces a failed upload against the dying image (issue #137).
