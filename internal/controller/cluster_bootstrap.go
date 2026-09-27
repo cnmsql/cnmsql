@@ -34,6 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	instancemgr "github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 )
 
 const (
@@ -83,6 +84,24 @@ const (
 // bootstrapJobBackoffLimit is the Kubernetes default: with its exponential
 // backoff it rides out a primary or an object store that is briefly away.
 const bootstrapJobBackoffLimit int32 = 6
+
+// bootstrapPodFailurePolicy fails the Job at once when a bootstrap step exits
+// with instancemgr.ExitCodeNonRetryable (e.g. the server rejected a postInitSQL
+// statement): a retry would fail the same way, and the backoff would hold the
+// cluster Pending for over ten minutes before BootstrapFailed surfaced. The rule
+// names no container, so it also covers the initdb init container that an
+// import bootstrap runs.
+func bootstrapPodFailurePolicy() *batchv1.PodFailurePolicy {
+	return &batchv1.PodFailurePolicy{
+		Rules: []batchv1.PodFailurePolicyRule{{
+			Action: batchv1.PodFailurePolicyActionFailJob,
+			OnExitCodes: &batchv1.PodFailurePolicyOnExitCodesRequirement{
+				Operator: batchv1.PodFailurePolicyOnExitCodesOpIn,
+				Values:   []int32{instancemgr.ExitCodeNonRetryable},
+			},
+		}},
+	}
+}
 
 const (
 	// bootstrapControllerName is the shared init container that copies the
@@ -229,6 +248,7 @@ func (r *ClusterReconciler) bootstrapJob(
 		Spec: batchv1.JobSpec{
 			BackoffLimit:          &backoff,
 			ActiveDeadlineSeconds: backupJobActiveDeadlineSeconds(tpl),
+			PodFailurePolicy:      bootstrapPodFailurePolicy(),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      combineStringMaps(tpl.Labels, podLabels),

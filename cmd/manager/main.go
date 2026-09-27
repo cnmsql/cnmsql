@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/cnmsql/cnmsql/internal/cmd/manager"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 )
 
 func main() {
@@ -38,6 +40,9 @@ func main() {
 	cmd.SetContext(logf.IntoContext(context.Background(), ctrl.Log.WithName("instance-manager")))
 	if err := cmd.Execute(); err != nil {
 		setupLog.Error(err, "Command failed")
+		if errors.Is(err, instance.ErrNonRetryable) {
+			os.Exit(instance.ExitCodeNonRetryable)
+		}
 		os.Exit(1)
 	}
 }

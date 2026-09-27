@@ -364,8 +364,13 @@ func (o *InitOptions) runBootstrap(ctx context.Context) error {
 		return err
 	}
 	log.Info("Applying bootstrap SQL", "statements", len(stmts))
-	for _, stmt := range stmts {
+	// The user's postInitSQL statements come last.
+	firstPostInit := len(stmts) - len(o.Bootstrap.PostInitSQL)
+	for i, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			if i >= firstPostInit {
+				return postInitStatementError(i-firstPostInit+1, err)
+			}
 			return fmt.Errorf("bootstrap statement failed: %w", err)
 		}
 	}

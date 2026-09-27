@@ -234,6 +234,15 @@ var _ = Describe("Instance Bootstrap Jobs", Ordered, Label("feature"), func() {
 				"{.status.conditions[?(@.type=='BootstrapFailed')].status}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(status).To(Equal("True"), "BootstrapFailed must be True while the initdb Job is failed")
+
+			// The rejected statement is non-retryable, so the Job's
+			// podFailurePolicy fails it on the first attempt instead of riding
+			// the backoff limit (which alone outlasts this Eventually).
+			reason, err := clusterField(badSQLCluster,
+				"{.status.conditions[?(@.type=='BootstrapFailed')].reason}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(reason).To(Equal("PodFailurePolicy"),
+				"a rejected postInitSQL statement must fail the Job without retrying")
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 	})
 

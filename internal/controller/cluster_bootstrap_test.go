@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -167,6 +168,28 @@ func containerNames(cs []corev1.Container) []string {
 		names = append(names, c.Name)
 	}
 	return names
+}
+
+// A non-retryable exit (e.g. a rejected postInitSQL statement) fails the Job at
+// once instead of riding the backoff limit, from any container.
+func TestBootstrapJobFailsFastOnNonRetryableExit(t *testing.T) {
+	t.Parallel()
+	r, cluster, plan, inst, pvc := restoreTestFixture(t)
+	job, err := r.bootstrapJob(cluster, plan, inst, bootstrapModeRestore, pvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := job.Spec.PodFailurePolicy
+	if p == nil || len(p.Rules) != 1 {
+		t.Fatalf("pod failure policy = %+v, want one rule", p)
+	}
+	rule := p.Rules[0]
+	if rule.Action != batchv1.PodFailurePolicyActionFailJob || rule.OnExitCodes == nil ||
+		rule.OnExitCodes.ContainerName != nil ||
+		rule.OnExitCodes.Operator != batchv1.PodFailurePolicyOnExitCodesOpIn ||
+		!slices.Equal(rule.OnExitCodes.Values, []int32{instance.ExitCodeNonRetryable}) {
+		t.Fatalf("pod failure policy rule = %+v", rule)
+	}
 }
 
 func TestBootstrapJobRestore(t *testing.T) {
