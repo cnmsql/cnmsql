@@ -224,7 +224,14 @@ func (c *Controller) applyLoadPolicy(
 	ctx context.Context, session *loadSession, policy string, databases []string,
 ) error {
 	if policy == webserver.LoadPolicyDropAndRecreate {
-		session.dropPreamble = dropPreamble(databases)
+		var tables []string
+		if len(databases) > 1 {
+			var err error
+			if tables, err = c.baseTables(ctx, databases); err != nil {
+				return err
+			}
+		}
+		session.dropPreamble = dropPreamble(databases, tables)
 		return nil
 	}
 	nonEmpty, err := c.nonEmptyDatabases(ctx, databases)
@@ -249,14 +256,63 @@ func (c *Controller) applyLoadPolicy(
 // read timeout, the wait is bounded by the session lock_wait_timeout, and a
 // failed drop exits the client (it does not run with --force) with the
 // server's error, so nothing is left pending behind the blocker.
-func dropPreamble(databases []string) string {
+//
+// One DROP DATABASE takes every lock it needs before dropping anything, but
+// several do not: the second one timing out behind an open transaction would
+// leave the first database dropped and nothing loaded. With tables (the
+// selected databases' base tables, qualified and quoted) the drops are
+// preceded by a LOCK TABLES of all of them at once, released straight away:
+// it waits on the same metadata locks the drops would, so a blocker fails the
+// load before any database is gone. Only a transaction that opens in the
+// instant between the UNLOCK and the drops can still split them.
+func dropPreamble(databases, tables []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SET SESSION lock_wait_timeout = %d;\n", int(dropLockWaitTimeout.Seconds()))
+	if len(tables) > 0 {
+		b.WriteString("LOCK TABLES ")
+		for i, table := range tables {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(table + " WRITE")
+		}
+		b.WriteString(";\nUNLOCK TABLES;\n")
+	}
 	for _, db := range databases {
 		fmt.Fprintf(&b, "DROP DATABASE IF EXISTS %s;\n", quoteIdent(db))
 	}
 	b.WriteString("SET SESSION lock_wait_timeout = DEFAULT;\n")
 	return b.String()
+}
+
+// baseTables returns the base tables of the given databases, each qualified
+// and quoted for a statement (`db`.`table`), in a stable order.
+func (c *Controller) baseTables(ctx context.Context, databases []string) ([]string, error) {
+	args := make([]any, len(databases))
+	for i, db := range databases {
+		args[i] = db
+	}
+	rows, err := c.conn.QueryContext(ctx,
+		"SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES "+
+			"WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA IN (?"+strings.Repeat(", ?", len(databases)-1)+") "+
+			"ORDER BY TABLE_SCHEMA, TABLE_NAME",
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("load: listing the tables to drop: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var tables []string
+	for rows.Next() {
+		var schema, name string
+		if err := rows.Scan(&schema, &name); err != nil {
+			return nil, fmt.Errorf("load: listing the tables to drop: %w", err)
+		}
+		tables = append(tables, quoteIdent(schema)+"."+quoteIdent(name))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load: listing the tables to drop: %w", err)
+	}
+	return tables, nil
 }
 
 // nonEmptyDatabases returns the databases that exist and hold a table, a view,
