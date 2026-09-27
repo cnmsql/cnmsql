@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"github.com/cnmsql/cnmsql/internal/controller"
 	webhookv1alpha1 "github.com/cnmsql/cnmsql/internal/webhook/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/executablehash"
+	instancemgr "github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -275,6 +277,10 @@ func main() {
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "command failed:", err)
+		// Bootstrap Jobs fail at once on this code instead of retrying.
+		if errors.Is(err, instancemgr.ErrNonRetryable) {
+			os.Exit(instancemgr.ExitCodeNonRetryable)
+		}
 		os.Exit(1)
 	}
 }
