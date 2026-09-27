@@ -750,6 +750,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 	cancelMgr()
 	cancelArchive()
 
+	// A shutdown must never be swallowed by a scheduled in-place re-exec: the
+	// re-exec would replace the process image mid-shutdown, the SIGTERM would be
+	// lost, and the Pod would hang in Terminating until the kubelet SIGKILLs
+	// mysqld uncleanly (issue #137). Cancel it before anything else tears down.
+	if cancelled := controller.BeginShutdown(); cancelled {
+		log.Info("Cancelled pending in-place manager re-exec")
+	}
+
 	log.Info("Shutting down instance manager")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), opts.ShutdownTimeout)
 	defer cancel()

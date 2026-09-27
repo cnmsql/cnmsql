@@ -21,6 +21,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -343,7 +344,9 @@ const upgradeNewHash = "new"
 // upgradeFixture builds a cluster of the given size with all Pods ready, plus an
 // observedCluster reporting every instance ready. Instance executable hashes are
 // left empty for the caller to set (empty = no reported hash = not a candidate).
-// The reconciler's target hash is upgradeNewHash.
+// The reconciler's target hash is upgradeNewHash. Pods carry the current pod
+// template hash, as ensurePod leaves them in steady state, so an in-place
+// rollout proceeds; a test wanting a Pod rolled instead marks its hash stale.
 func upgradeFixture(
 	t *testing.T,
 	instances int,
@@ -357,7 +360,11 @@ func upgradeFixture(
 	cluster.Spec.PrimaryUpdateStrategy = strategy
 	cluster.Spec.PrimaryUpdateMethod = mysqlv1alpha1.PrimaryUpdateMethodSwitchover
 
+	plan := testPlan()
+	plan.Instances = instances
+
 	scheme := testScheme(t)
+	bare := &ClusterReconciler{}
 	objs := make([]client.Object, 1, 1+len(names))
 	objs[0] = cluster
 	for i, n := range names {
@@ -365,7 +372,14 @@ func upgradeFixture(
 		if i == 0 {
 			role = rolePrimary
 		}
-		objs = append(objs, readyPod(cluster, n, role))
+		pod := readyPod(cluster, n, role)
+		inst := plan.instanceFor(cluster, i+1)
+		annotations, err := bare.podAnnotations(cluster, plan, inst, labelsFor(cluster, n, role), bare.podSpec(cluster, plan, inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pod.Annotations = map[string]string{podTemplateHashAnnotation: annotations[podTemplateHashAnnotation]}
+		objs = append(objs, pod)
 	}
 	reconciler := &ClusterReconciler{
 		Client: fake.NewClientBuilder().
@@ -377,8 +391,6 @@ func upgradeFixture(
 		OperatorExecutableHash: upgradeNewHash,
 	}
 
-	plan := testPlan()
-	plan.Instances = instances
 	observed := observedCluster{
 		Plan:                     plan,
 		PrimaryName:              testPrimary,
@@ -579,6 +591,106 @@ func TestReconcileUpgradeInPlaceIgnoresSupervisedGate(t *testing.T) {
 	}
 	if !equalStrings(rec.upgraded, []string{testPrimary}) {
 		t.Fatalf("upgraded = %v, want [%s]", rec.upgraded, testPrimary)
+	}
+}
+
+// An instance whose Pod template hash is stale is about to be recreated with the
+// new binary anyway (the bootstrap-controller init container copies the
+// operator's /manager), so the operator must not stream the binary to the old
+// Pod: the re-exec it schedules races the SIGTERM the Pod deletion sends, the
+// new image swallows the shutdown, and the Pod hangs in Terminating until
+// SIGKILL kills mysqld uncleanly (issue #137).
+func TestReconcileUpgradeInPlaceSkipsStalePodTemplate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler, observed := upgradeFixture(t, 1, mysqlv1alpha1.PrimaryUpdateStrategyUnsupervised)
+	cluster.Spec.InPlaceInstanceManagerUpdates = true
+	reconciler.openOperatorBinary = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("operator-binary")), nil
+	}
+	rec := &recordingControlClient{statuses: map[string]*webserver.Status{}}
+	reconciler.ControlClient = rec
+	observed.ExecutableHashByInstance[testPrimary] = oldHash
+
+	// Mark the Pod's template hash stale, as a pending template change would.
+	pod := &corev1.Pod{}
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: testPrimary}, pod); err != nil {
+		t.Fatal(err)
+	}
+	before := pod.DeepCopy()
+	pod.Annotations[podTemplateHashAnnotation] = "stale-template-hash"
+	if err := reconciler.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+		t.Fatal(err)
+	}
+
+	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("skipping a stale-template instance must still requeue the rollout")
+	}
+	if len(rec.upgraded) != 0 {
+		t.Fatalf("in-place upgrade streamed to %v; must skip an instance whose Pod template is stale", rec.upgraded)
+	}
+}
+
+// Two in-place upgrade POSTs must not be streamed to the same instance in
+// consecutive reconciles: the first POST schedules the manager re-exec, and a
+// second POST — e.g. triggered by the Pod-deletion event while the re-exec'd
+// image is still booting — only races the shutdown or double-schedules the swap
+// (issue #137). The rollout must wait for the instance to report the new hash,
+// and may retry only once the dedup window has expired.
+func TestReconcileUpgradeInPlaceDoesNotStreamTwiceToSameInstance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, reconciler, observed := upgradeFixture(t, 1, mysqlv1alpha1.PrimaryUpdateStrategyUnsupervised)
+	cluster.Spec.InPlaceInstanceManagerUpdates = true
+	reconciler.openOperatorBinary = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("operator-binary")), nil
+	}
+	rec := &recordingControlClient{statuses: map[string]*webserver.Status{}}
+	reconciler.ControlClient = rec
+	observed.ExecutableHashByInstance[testPrimary] = oldHash
+
+	// First reconcile streams the binary.
+	handled, _, err := reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("first in-place upgrade should be handled")
+	}
+	if !equalStrings(rec.upgraded, []string{testPrimary}) {
+		t.Fatalf("first pass upgraded = %v, want [%s]", rec.upgraded, testPrimary)
+	}
+
+	// The re-exec is still in flight (the hash is unchanged): the next
+	// reconcile must not stream again.
+	handled, _, err = reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("waiting for the re-exec'd manager must still requeue the rollout")
+	}
+	if !equalStrings(rec.upgraded, []string{testPrimary}) {
+		t.Fatalf("second pass streamed to %v; must not stream twice to the same instance", rec.upgraded)
+	}
+
+	// Once the dedup window expires without the hash converging, the rollout
+	// retries the stream.
+	reconciler.inPlaceUpgradeDedupWindow = time.Nanosecond
+	time.Sleep(2 * time.Millisecond)
+	handled, _, err = reconciler.reconcileUpgrade(ctx, cluster, observed.Plan, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("retry after the dedup window expired should be handled")
+	}
+	if !equalStrings(rec.upgraded, []string{testPrimary, testPrimary}) {
+		t.Fatalf("post-window passes streamed to %v, want two attempts on %s", rec.upgraded, testPrimary)
 	}
 }
 
