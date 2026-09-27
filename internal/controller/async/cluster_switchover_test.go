@@ -18,6 +18,7 @@ package async
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,6 +147,61 @@ func TestReconcileSwitchoverTargetAlreadyPromotedReportsProgressing(t *testing.T
 	}
 	if !result.Phase.Progressing {
 		t.Fatal("an in-flight switchover must report Progressing")
+	}
+}
+
+// TestReconcileSwitchoverPromotedTargetEscalatesAfterMaxDelay bounds the wait
+// above: a target that reports primary but never records itself as
+// currentPrimary escalates to Blocked once maxSwitchoverDelay has passed. It
+// must not abort — the target already holds the primary role, and pointing
+// targetPrimary back would hand the role to two instances.
+func TestReconcileSwitchoverPromotedTargetEscalatesAfterMaxDelay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cluster := testCluster()
+	cluster.Status.CurrentPrimary = drainPrimary
+	cluster.Status.TargetPrimary = drainReplica
+	cluster.Spec.MaxSwitchoverDelay = 60
+	started := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	cluster.Status.TargetPrimaryTimestamp = &started
+
+	scheme := testScheme(t)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		Build()
+	r := NewReconciler(client, scheme, nil, record.NewFakeRecorder(8), "")
+
+	observed := topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Instances: map[string]topology.FailoverInstance{
+			drainPrimary: {Ready: true, Primary: true, Role: "primary"},
+			drainReplica: {Ready: true, Primary: true, Role: "primary"},
+		},
+	}
+
+	result, err := r.ReconcileSwitchover(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
+		t.Fatalf("Phase = %+v, want Blocked", result.Phase)
+	}
+	if !strings.Contains(result.Phase.Reason, "maxSwitchoverDelay") {
+		t.Fatalf("reason = %q, want it to name maxSwitchoverDelay", result.Phase.Reason)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary != drainReplica {
+		t.Fatalf("targetPrimary = %q, want it left on %s (no abort)", got.Status.TargetPrimary, drainReplica)
 	}
 }
 
