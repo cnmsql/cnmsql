@@ -18,7 +18,9 @@ package replication
 
 import (
 	"context"
+	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -232,14 +234,40 @@ func TestPromoteWithoutReplicaConfigOnlyClearsReadOnly(t *testing.T) {
 	}
 }
 
+// Demotion runs read_only and super_read_only on a dedicated connection whose
+// metadata-lock wait is bounded: SET GLOBAL read_only pends on the GLOBAL lock
+// behind any queued DDL, and on the unbounded server default a switchover
+// stalled for as long as the blocker held on (issue 136).
 func TestDemoteOrdering(t *testing.T) {
 	m, mock := newManager(t, "8.0.36")
 
+	mock.ExpectExec(regexp.QuoteMeta("SET SESSION lock_wait_timeout = 15")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL read_only = ON")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL super_read_only = ON")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("SET SESSION lock_wait_timeout = DEFAULT")).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	if err := m.Demote(context.Background()); err != nil {
 		t.Fatalf("Demote: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+// A demotion that cannot take the GLOBAL metadata lock inside the bound fails
+// instead of waiting for the server default (about a year): the caller's
+// existing handling — retry, or shutdown and rejoin clean — takes over.
+func TestDemoteFailsWhenTheGlobalLockIsNotAvailable(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectExec(regexp.QuoteMeta("SET SESSION lock_wait_timeout = 15")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("SET GLOBAL read_only = ON")).
+		WillReturnError(errors.New("Error 1205 (HY000): Lock wait timeout exceeded"))
+	mock.ExpectExec(regexp.QuoteMeta("SET SESSION lock_wait_timeout = DEFAULT")).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := m.Demote(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "SET GLOBAL read_only = ON") {
+		t.Fatalf("err = %v, want the failing statement named", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)

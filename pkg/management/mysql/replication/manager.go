@@ -18,10 +18,12 @@ package replication
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
@@ -348,13 +350,30 @@ func (m *Manager) Promote(ctx context.Context) error {
 	return m.SetReadOnly(ctx, false)
 }
 
+// demoteLockWait bounds the metadata-lock wait of the demotion's read_only
+// statements. SET GLOBAL read_only pends on the GLOBAL lock behind any queued
+// DDL, and on the unbounded server default a switchover stalled for exactly as
+// long as the blocker held on. The bound must stay below the control pool's
+// readTimeout (30s) so the server always decides before the client gives up.
+const demoteLockWait = 15 * time.Second
+
 // Demote makes the instance read-only, the first step of turning a primary into
 // a replica. read_only must be set before super_read_only.
+//
+// The statements run on a dedicated connection with the session's
+// metadata-lock wait bounded to demoteLockWait: a demotion that cannot take
+// the GLOBAL lock inside it fails, and the callers' existing handling — retry,
+// or shutdown and rejoin clean — takes over (issue 136).
 func (m *Manager) Demote(ctx context.Context) error {
-	if err := m.SetReadOnly(ctx, true); err != nil {
-		return err
+	stmts := []string{SetReadOnlyStatement(true)}
+	if m.repl.HasSuperReadOnly() && m.version.HasSuperReadOnly() {
+		stmts = append(stmts, SetSuperReadOnlyStatement(true))
 	}
-	return m.SetSuperReadOnly(ctx, true)
+	db, ok := m.conn.(*sql.DB)
+	if !ok {
+		return errors.New("demote: the control connection does not support isolated execution")
+	}
+	return pool.RunIsolated(ctx, db, demoteLockWait, stmts...)
 }
 
 // InstallSemiSyncSource installs the semi-sync source plugin, ignoring the

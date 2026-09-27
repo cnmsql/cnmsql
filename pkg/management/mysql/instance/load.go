@@ -86,11 +86,19 @@ const maxDatabaseNameChars = 64
 // failed load.
 const maxLoadStderrTailBytes = 8 << 10
 
+// dropLockWaitTimeout bounds the metadata-lock wait of the pre-load DROP
+// statements, in the client's own session. A DROP that pends behind an open
+// transaction must fail inside the bound instead of waiting for the server
+// default (about a year) — and must never occupy the instance's single control
+// connection while it waits (issue 136).
+const dropLockWaitTimeout = 10 * time.Second
+
 // StartLoad checks that a load can run, applies its policy and starts the SQL
 // client. Every refusal happens before anything is changed: a missing client,
 // a load already running, a read-only instance, a bad request, or (with
-// FailIfExists) a selected database that holds objects. DropAndRecreate drops
-// the selected databases here, before the stream is read.
+// FailIfExists) a selected database that holds objects. DropAndRecreate queues
+// the selected databases' drop in the client's own session, which runs it
+// before the stream is read.
 func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (webserver.LoadSession, error) {
 	if c.load == nil || c.load.Engine == nil {
 		return nil, errors.New("loads are not configured on this instance")
@@ -155,7 +163,7 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 	if err != nil {
 		return nil, err
 	}
-	if err := c.applyLoadPolicy(ctx, req.Policy, databases); err != nil {
+	if err := c.applyLoadPolicy(ctx, session, req.Policy, databases); err != nil {
 		return nil, err
 	}
 	log.Info("Starting logical load", "databases", databases, "policy", req.Policy)
@@ -210,17 +218,13 @@ func (c *Controller) checkWritable(ctx context.Context) error {
 	return nil
 }
 
-// applyLoadPolicy refuses non-empty databases (FailIfExists) or drops the
-// selected databases (DropAndRecreate).
-func (c *Controller) applyLoadPolicy(ctx context.Context, policy string, databases []string) error {
+// applyLoadPolicy refuses non-empty databases (FailIfExists) or queues the
+// selected databases' drop for the client session (DropAndRecreate).
+func (c *Controller) applyLoadPolicy(
+	ctx context.Context, session *loadSession, policy string, databases []string,
+) error {
 	if policy == webserver.LoadPolicyDropAndRecreate {
-		log := logf.FromContext(ctx).WithValues("instance", c.name)
-		for _, db := range databases {
-			if _, err := c.conn.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(db)); err != nil {
-				return fmt.Errorf("load: dropping database %q: %w", db, err)
-			}
-			log.Info("Dropped database before the load", "database", db)
-		}
+		session.dropPreamble = dropPreamble(databases)
 		return nil
 	}
 	nonEmpty, err := c.nonEmptyDatabases(ctx, databases)
@@ -233,6 +237,26 @@ func (c *Controller) applyLoadPolicy(ctx context.Context, policy string, databas
 			strings.Join(nonEmpty, ", "))
 	}
 	return nil
+}
+
+// dropPreamble is the session setup the client runs before the stream: the
+// selected databases' DROP with a bounded metadata-lock wait.
+//
+// The drops run in the client's own session, not on the control pool. A DROP
+// blocked by an open transaction then neither occupies the instance's single
+// control connection — which starved the heartbeat and health traffic and
+// stalled demotions (issue 136) — nor outlives the load: the client has no
+// read timeout, the wait is bounded by the session lock_wait_timeout, and a
+// failed drop exits the client (it does not run with --force) with the
+// server's error, so nothing is left pending behind the blocker.
+func dropPreamble(databases []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "SET SESSION lock_wait_timeout = %d;\n", int(dropLockWaitTimeout.Seconds()))
+	for _, db := range databases {
+		fmt.Fprintf(&b, "DROP DATABASE IF EXISTS %s;\n", quoteIdent(db))
+	}
+	b.WriteString("SET SESSION lock_wait_timeout = DEFAULT;\n")
+	return b.String()
 }
 
 // nonEmptyDatabases returns the databases that exist and hold a table, a view,
@@ -267,6 +291,10 @@ type loadSession struct {
 	dir        string
 	running    bool
 	closeOnce  sync.Once
+	// dropPreamble, when set, is the DropAndRecreate session setup the client
+	// runs before the stream: the selected databases' drop with a bounded
+	// metadata-lock wait (see dropPreamble).
+	dropPreamble string
 }
 
 // Load streams r through the database filter into the SQL client and waits for
@@ -276,6 +304,15 @@ func (s *loadSession) Load(_ context.Context, r io.Reader) (webserver.LoadResult
 	started := time.Now()
 	body := &countingReader{r: r}
 	in := &stickyErrWriter{w: s.stdin}
+	if s.dropPreamble != "" {
+		if _, err := io.WriteString(in, s.dropPreamble); err != nil || in.err != nil {
+			// The client stopped reading: it exited on an SQL error, which its
+			// own output explains better than the broken pipe.
+			_ = s.stdin.Close()
+			return webserver.LoadResult{}, s.clientFailed(s.wait())
+		}
+		s.log.Info("Dropping databases before the load", "databases", s.databases)
+	}
 	kept, filterErr := sqldump.FilterDatabases(in, body, s.databases)
 	if filterErr != nil {
 		if in.err != nil {

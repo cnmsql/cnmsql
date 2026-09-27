@@ -450,8 +450,10 @@ func TestPromoteDemoteDelegate(t *testing.T) {
 		t.Fatalf("Promote: %v", err)
 	}
 
+	mock.ExpectExec("SET SESSION lock_wait_timeout = 15").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET SESSION lock_wait_timeout = DEFAULT").WillReturnResult(sqlmock.NewResult(0, 0))
 	if err := c.Demote(context.Background()); err != nil {
 		t.Fatalf("Demote: %v", err)
 	}

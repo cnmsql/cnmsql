@@ -35,7 +35,9 @@ import (
 // fakeLoadScript stands in for the mysql / mariadb client. It records its argv
 // and a copy of its credentials file (with the file's mode), copies stdin to
 // FAKE_LOAD_CAPTURE/stdin, and writes "done" only once its input ended. With
-// FAKE_LOAD_MODE=fail it reads its input and fails like an SQL error.
+// FAKE_LOAD_MODE=fail it reads its input and fails like an SQL error. With
+// FAKE_LOAD_MODE=faildrop it fails like a DROP that timed out waiting for its
+// metadata lock.
 const fakeLoadScript = `#!/bin/sh
 cap="$FAKE_LOAD_CAPTURE"
 printf '%s\n' "$@" > "$cap/argv"
@@ -43,6 +45,10 @@ defaults="${1#--defaults-extra-file=}"
 stat -c %a "$defaults" > "$cap/mode" 2>/dev/null
 cat "$defaults" > "$cap/defaults" 2>/dev/null
 cat > "$cap/stdin"
+if [ "$FAKE_LOAD_MODE" = faildrop ] && grep -q '^DROP DATABASE' "$cap/stdin"; then
+	echo "ERROR 1205 (HY000) at line 2: Lock wait timeout exceeded; try restarting transaction" >&2
+	exit 1
+fi
 if [ "$FAKE_LOAD_MODE" = fail ]; then
 	echo "ERROR 1146 (42S02) at line 3: Table 'shop.nope' doesn't exist" >&2
 	exit 1
@@ -240,21 +246,113 @@ func TestLoadFailIfExistsRefusesANonEmptyDatabase(t *testing.T) {
 	}
 }
 
+// The DropAndRecreate drop runs in the client's own session, bounded by a
+// session lock_wait_timeout: a DROP that pends on a metadata lock must never
+// occupy the instance's single control connection (issue 136), so no DROP may
+// reach the control pool at all.
 func TestLoadDropAndRecreateDropsTheSelectedDatabases(t *testing.T) {
 	f := newLoadFixture(t, "")
 	f.expectReadOnly(0)
-	f.mock.ExpectExec("DROP DATABASE IF EXISTS `sh``op`").WillReturnResult(sqlmock.NewResult(0, 0))
-	f.mock.ExpectExec("DROP DATABASE IF EXISTS `billing`").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	session, err := f.controller.StartLoad(context.Background(), webserver.LoadRequest{
-		Databases: []string{"sh`op", "billing"}, Policy: webserver.LoadPolicyDropAndRecreate,
+		Databases: []string{"shop", "billing"}, Policy: webserver.LoadPolicyDropAndRecreate,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	result, err := session.Load(context.Background(), strings.NewReader(loadStream))
 	session.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Databases, []string{"shop", "billing"}) {
+		t.Errorf("result = %+v", result)
+	}
+	stdin := f.read(t, "stdin")
+	wantPreamble := "SET SESSION lock_wait_timeout = 10;\n" +
+		"DROP DATABASE IF EXISTS `shop`;\n" +
+		"DROP DATABASE IF EXISTS `billing`;\n" +
+		"SET SESSION lock_wait_timeout = DEFAULT;\n"
+	if !strings.HasPrefix(stdin, wantPreamble) {
+		t.Errorf("client input does not start with the bounded drop preamble:\n%s", stdin)
+	}
+	if !strings.Contains(stdin, "-- MySQL dump 10.13") {
+		t.Errorf("the dump stream did not follow the preamble:\n%s", stdin)
+	}
+	// The pool saw the read-only probe only: a DROP on the control connection
+	// would be an unexpected sqlmock call and fail the run above.
 	if err := f.mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
+	}
+}
+
+// Database names are backtick-quoted with embedded backticks doubled, as the
+// pool-side drop quoted them before the drop moved into the client session.
+func TestLoadDropPreambleQuotesNames(t *testing.T) {
+	f := newLoadFixture(t, "")
+	f.expectReadOnly(0)
+
+	session, err := f.controller.StartLoad(context.Background(), webserver.LoadRequest{
+		Databases: []string{"sh`op"}, Policy: webserver.LoadPolicyDropAndRecreate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An empty stream holds no section for the database, which fails the load
+	// after the client has recorded its input.
+	_, loadErr := session.Load(context.Background(), strings.NewReader(""))
+	session.Close()
+	if loadErr == nil || !strings.Contains(loadErr.Error(), "no section for sh`op") {
+		t.Fatalf("loadErr = %v, want a missing section error", loadErr)
+	}
+	wantQuoted := "SET SESSION lock_wait_timeout = 10;\n" +
+		"DROP DATABASE IF EXISTS `sh``op`;\n" +
+		"SET SESSION lock_wait_timeout = DEFAULT;\n"
+	if stdin := f.read(t, "stdin"); !strings.HasPrefix(stdin, wantQuoted) {
+		t.Errorf("client input is not the quoted bounded drop preamble:\n%s", stdin)
+	}
+}
+
+// A drop that cannot take its metadata lock fails the load inside the bound
+// instead of leaving the DROP pending server-side behind the blocker (issue
+// 136): the client reports the server's error and exits, nothing is orphaned.
+func TestLoadDropAndRecreateFailsFastWhenADatabaseIsInUse(t *testing.T) {
+	f := newLoadFixture(t, "faildrop")
+	f.expectReadOnly(0)
+
+	session, err := f.controller.StartLoad(context.Background(), webserver.LoadRequest{
+		Databases: []string{"billing"}, Policy: webserver.LoadPolicyDropAndRecreate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.Load(context.Background(), strings.NewReader(loadStream))
+	session.Close()
+	if err == nil || !strings.Contains(err.Error(), "ERROR 1205") {
+		t.Fatalf("err = %v, want the server's lock wait timeout", err)
+	}
+	if err := f.mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestLoadFailIfExistsNeverDrops(t *testing.T) {
+	f := newLoadFixture(t, "")
+	f.expectReadOnly(0)
+	f.expectObjects("shop", 0)
+
+	session, err := f.controller.StartLoad(context.Background(), webserver.LoadRequest{
+		Databases: []string{"shop"}, Policy: webserver.LoadPolicyFailIfExists,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Load(context.Background(), strings.NewReader(loadStream)); err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	if stdin := f.read(t, "stdin"); strings.Contains(stdin, "DROP DATABASE IF EXISTS") {
+		t.Errorf("FailIfExists wrote a drop to the client:\n%s", stdin)
 	}
 }
 
