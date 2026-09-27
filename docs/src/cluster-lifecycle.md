@@ -128,8 +128,10 @@ kubectl logs job/<instance>-<mode>
 kubectl delete job <instance>-<mode>
 ```
 
-Re-initialising an instance or scaling it down deletes its bootstrap Jobs
-together with its Pod and PVC.
+Re-initialising an instance deletes its bootstrap Jobs together with its Pod
+and PVC. Scaling an instance down deletes its bootstrap Jobs — running ones
+included, even when its Pod was never created — and deletes its volume only
+while it is still initializing; a bootstrapped volume is retained.
 
 ## Bootstrap modes
 
@@ -242,9 +244,12 @@ for it to become healthy before adding the next one. This bounds load on the
 primary and makes failures easier to diagnose.
 
 Scale-down removes highest-ordinal replicas first. The Pod is deleted, but the
-PVC is retained so the user can inspect or delete data deliberately. cnmsql
-never scales below one instance and never removes the current primary as part of
-ordinary scale-down. When the primary's ordinal is above the new count, the
+PVC is retained so the user can inspect or delete data deliberately. A volume
+that never finished bootstrapping (annotated `initializing`) holds no data and
+is deleted together with the instance's bootstrap Jobs — running ones included,
+also when the Pod was never created, as when a scale-down races a join Job.
+cnmsql never scales below one instance and never removes the current primary as
+part of ordinary scale-down. When the primary's ordinal is above the new count, the
 operator performs a planned switchover to an in-range replica first and removes
 the former primary afterwards; the cluster is not `Ready` until it has.
 

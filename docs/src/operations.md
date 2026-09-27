@@ -84,8 +84,10 @@ kubectl patch cluster cluster-sample --type merge -p '{"spec":{"instances":1}}'
 ```
 
 Scale-down removes highest-ordinal replicas first. cnmsql deletes replica Pods
-but retains PVCs. It never scales below one instance and does not remove the
-current primary during normal scale-down.
+and stops their bootstrap Jobs — running ones included, even when the Pod was
+never created. Bootstrapped PVCs are retained; volumes that never finished
+bootstrapping are deleted. It never scales below one instance and does not
+remove the current primary during normal scale-down.
 
 If the primary itself sits above the new count (for example a failover promoted
 `cluster-sample-3` and you then scale to 2), cnmsql first switches the primary
