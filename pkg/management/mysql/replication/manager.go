@@ -367,7 +367,9 @@ const demoteLockWait = 15 * time.Second
 // The statements run on a dedicated connection with the session's
 // metadata-lock wait bounded to demoteLockWait: a demotion that cannot take
 // the GLOBAL lock inside it fails, and the callers' existing handling — retry,
-// or shutdown and rejoin clean — takes over (issue 136).
+// or shutdown and rejoin clean — takes over (issue 136). The control pool has
+// one connection, so the heartbeat and status calls wait for the demotion, for
+// demoteLockWait at most.
 func (m *Manager) Demote(ctx context.Context) error {
 	stmts := []string{SetReadOnlyStatement(true)}
 	if m.repl.HasSuperReadOnly() && m.version.HasSuperReadOnly() {
