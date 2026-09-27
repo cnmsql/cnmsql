@@ -114,10 +114,13 @@ The backup account is dedicated to XtraBackup and receives only the privileges
 needed for physical backup on the target Percona version. On modern versions
 that includes `BACKUP_ADMIN`; older versions use the compatible static grants.
 
-Instance Pods carry no password environment variables. Each instance manager
-reads its accounts' passwords from the cluster's credential Secrets through the
-Kubernetes API, keeping the values current through a watch, so a rotated Secret
-applies to new connections without a restart.
+Instance Pods carry no MySQL account password environment variables. Each
+instance manager reads its accounts' passwords from the cluster's credential
+Secrets through the Kubernetes API, keeping the values current through a watch,
+so a rotated Secret applies to new connections without a restart. The one
+deliberate exception is object-store credentials when continuous archiving is
+enabled, described under
+[Object-store credentials](#object-store-credentials).
 
 Changing a credential Secret does not change the MySQL account: for `root`,
 `control` and `backup`, nothing runs `ALTER USER` when the Secret changes. Run
@@ -236,8 +239,21 @@ bootstrapped the source is never resolved again, so the credentials are not a
 runtime dependency of instance Pods.
 
 Continuous archiving is different: the primary instance manager writes binlog
-segments to the object store, so instance Pods need the archive destination and
-credentials when archiving is enabled.
+segments to the object store, so when archiving is enabled the instance Pods
+carry the archive destination and credentials as environment variables
+(`cnmsql_S3_ENDPOINT`, `cnmsql_S3_ACCESS_KEY_ID`, `cnmsql_S3_SECRET_ACCESS_KEY`,
+and the other `cnmsql_S3_*` settings). The credential variables are SecretKeyRef
+references in the Pod spec, and the kubelet materializes the values into the
+instance manager's environment, so the object-store credentials remain visible
+in `/proc/*/environ` of the instance manager and of every process it spawns.
+
+This distinction is deliberate and worth stating precisely. The "no password
+environment variables" property above covers MySQL account passwords only:
+those never enter the Pod environment in any configuration. Static object-store
+credentials are a separate class: they are the credentials already able to
+write the archive destination — not database credentials — and this exposure is
+expected. It can be avoided altogether by using IAM-style workload identity
+instead of static keys.
 
 Credentials may be static Secret references or inherited from IAM-style
 workload identity depending on the object-store configuration.
