@@ -78,7 +78,10 @@ func topologyAvailabilityState(observed observedCluster) topology.AvailabilitySt
 	instances := make(map[string]topology.InstanceAvailability, len(observed.StatusByInstance))
 	for name, status := range observed.StatusByInstance {
 		if status != nil {
-			instances[name] = topology.InstanceAvailability{Ready: status.IsReady}
+			instances[name] = topology.InstanceAvailability{
+				Ready:    status.IsReady,
+				LagGated: status.NotReadyReason == webserver.ReasonReplicationLag,
+			}
 		}
 	}
 	return topology.AvailabilityState{

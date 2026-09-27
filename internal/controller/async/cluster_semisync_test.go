@@ -50,6 +50,7 @@ func TestReconcileAvailabilityAdjustsSemiSync(t *testing.T) {
 		{name: "preferred reduces for fenced replica", durability: mysqlv1alpha1.DataDurabilityPreferred, observed: fencedAvailability("demo-2"), want: 1},
 		{name: "preferred restores configured count", durability: mysqlv1alpha1.DataDurabilityPreferred, observed: availability("demo-2", "demo-3"), want: 2},
 		{name: "preferred floors at one", durability: mysqlv1alpha1.DataDurabilityPreferred, observed: availability(), want: 1},
+		{name: "preferred counts a lag-gated replica", durability: mysqlv1alpha1.DataDurabilityPreferred, observed: lagGatedAvailability("demo-3"), want: 2},
 		{name: "required keeps configured count", durability: mysqlv1alpha1.DataDurabilityRequired, observed: availability("demo-2"), want: 2},
 	}
 	for _, tt := range tests {
@@ -104,5 +105,13 @@ func availability(readyReplicas ...string) topology.AvailabilityState {
 func fencedAvailability(instance string) topology.AvailabilityState {
 	observed := availability("demo-2", "demo-3")
 	observed.FencedInstances = []string{instance}
+	return observed
+}
+
+// lagGatedAvailability has every replica ready except instance, which is held
+// out of reads by the lag gate but still replicates.
+func lagGatedAvailability(instance string) topology.AvailabilityState {
+	observed := availability("demo-2")
+	observed.Instances[instance] = topology.InstanceAvailability{LagGated: true}
 	return observed
 }

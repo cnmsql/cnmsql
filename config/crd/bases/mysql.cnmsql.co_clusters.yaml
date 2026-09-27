@@ -4281,7 +4281,16 @@ spec:
                       rejected. A replica that cannot produce a heartbeat reading at all —
                       before its first stamp arrives, or while the heartbeat read is failing —
                       is treated as over the bound rather than assumed caught up, so it stays
-                      out of the read Services until it can prove otherwise.
+                      out of the read Services until it can prove otherwise. The bound must be
+                      at least three heartbeat intervals: the reading grows by up to one
+                      interval between stamps even on a caught-up replica.
+
+                      The reading compares the primary's clock (the stamp) with the replica's,
+                      so clock skew between their nodes adds to it; keep the bound well above
+                      the skew NTP allows. While the primary is down or stops stamping (a
+                      failover, a primary that cannot write), every replica's reading grows,
+                      so once it passes the bound all replicas leave the read Services until a
+                      primary stamps again.
 
                       It gates async replicas only. Under Group Replication a member is ready
                       only once it is ONLINE, which already excludes a member that is still

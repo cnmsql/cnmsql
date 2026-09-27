@@ -77,7 +77,10 @@ func healthyReplicaCount(observed topology.AvailabilityState) int {
 		if name == observed.PrimaryName {
 			continue
 		}
-		if status.Ready &&
+		// A replica held out of reads by the lag gate still acknowledges
+		// semi-sync transactions, so it counts: lowering the wait count for it
+		// would weaken durability for no reason.
+		if (status.Ready || status.LagGated) &&
 			!slices.Contains(observed.DivergedInstances, name) &&
 			!slices.Contains(observed.FencedInstances, name) {
 			healthy++

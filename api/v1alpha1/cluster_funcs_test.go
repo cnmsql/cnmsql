@@ -651,6 +651,27 @@ var _ = Describe("Replica readiness lag gate", func() {
 		}
 		Expect(cluster.Validate()).To(BeEmpty())
 	})
+
+	It("rejects a bound too close to the heartbeat interval", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: 5 * time.Second},
+			Heartbeat:   &ReplicationHeartbeat{Interval: &metav1.Duration{Duration: 2 * time.Second}},
+		}
+		errs := cluster.Validate()
+		Expect(errs).NotTo(BeEmpty())
+		Expect(errs.ToAggregate().Error()).To(ContainSubstring("at least 3 times the heartbeat interval"))
+	})
+
+	It("measures the floor against the default one-second interval", func() {
+		cluster := newAsyncCluster()
+		cluster.Spec.Replication = &ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: 2 * time.Second},
+		}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+		cluster.Spec.Replication.MaxReadyLag = &metav1.Duration{Duration: 3 * time.Second}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
 })
 
 var _ = Describe("Series upgrade validation", func() {
