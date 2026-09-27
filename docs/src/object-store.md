@@ -152,7 +152,10 @@ of the bootstrap. The credentials stay in those Jobs, never in instance Pods:
 once the primary's volume is bootstrapped the source is not resolved again.
 
 Continuous archiving writes from the primary instance manager, so instance Pods
-need object-store write credentials when archiving is enabled.
+carry the `cnmsql_S3_*` environment — including the access keys — when
+archiving is enabled. The [security model](./security-model.md#object-store-credentials)
+covers what that exposure means and how it differs from the MySQL account
+passwords, which never enter the Pod environment.
 
 ## Integrity
 
