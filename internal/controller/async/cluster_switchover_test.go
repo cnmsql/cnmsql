@@ -93,3 +93,101 @@ func TestReconcileSwitchoverAbortFencesTarget(t *testing.T) {
 		t.Fatalf("Phase = %q, want %q", got.Status.Phase, topology.PhaseBlocked)
 	}
 }
+
+// TestReconcileSwitchoverTargetAlreadyPromotedReportsProgressing pins the
+// no-flap contract for in-flight switchovers: once the target has promoted
+// itself, its status reports the primary role before the operator's snapshot of
+// CurrentPrimary catches up. That window is the switchover succeeding, so the
+// phase must read Switchover (Progressing), not Blocked — an alerts-on-Blocked
+// setup otherwise fires on every planned switchover, including the one a
+// rolling upgrade runs before touching the primary.
+func TestReconcileSwitchoverTargetAlreadyPromotedReportsProgressing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cluster := testCluster()
+	cluster.Status.CurrentPrimary = drainPrimary
+	cluster.Status.TargetPrimary = drainReplica
+
+	scheme := testScheme(t)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		Build()
+	r := NewReconciler(client, scheme, nil, record.NewFakeRecorder(8), "")
+
+	observed := topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Instances: map[string]topology.FailoverInstance{
+			drainPrimary: {Ready: true, Primary: true, Role: "primary"},
+			// The target has taken the primary role; CurrentPrimary has not
+			// been observed to move yet.
+			drainReplica: {Ready: true, Primary: true, Role: "primary"},
+		},
+	}
+
+	result, err := r.ReconcileSwitchover(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected the in-flight switchover to be handled")
+	}
+	if result.Phase == nil {
+		t.Fatal("expected a phase for the in-flight switchover")
+	}
+	if result.Phase.Phase != topology.PhaseSwitchover {
+		t.Fatalf("Phase = %q, want %q", result.Phase.Phase, topology.PhaseSwitchover)
+	}
+	if !result.Phase.Progressing {
+		t.Fatal("an in-flight switchover must report Progressing")
+	}
+}
+
+// TestReconcileSwitchoverStillBlocksOnUnfitTarget keeps the refusal honest: a
+// target that is not a fit replica (here, a broken replication thread) is a
+// real block and must keep reporting Blocked.
+func TestReconcileSwitchoverStillBlocksOnUnfitTarget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cluster := testCluster()
+	cluster.Status.CurrentPrimary = drainPrimary
+	cluster.Status.TargetPrimary = drainReplica
+
+	scheme := testScheme(t)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		Build()
+	r := NewReconciler(client, scheme, nil, record.NewFakeRecorder(8), "")
+
+	observed := topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Instances: map[string]topology.FailoverInstance{
+			drainPrimary: {Ready: true, Primary: true, Role: "primary"},
+			drainReplica: {Ready: true, Replica: true, Role: "replica", IORunning: true, SQLRunning: false},
+		},
+	}
+
+	result, err := r.ReconcileSwitchover(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected the blocked switchover to be handled")
+	}
+	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
+		t.Fatalf("Phase = %+v, want Blocked", result.Phase)
+	}
+}

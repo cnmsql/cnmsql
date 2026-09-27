@@ -44,6 +44,23 @@ func (r *Reconciler) ReconcileSwitchover(
 		return topology.FailoverResult{}, nil
 	}
 	if err := validateSwitchoverTarget(observed, target); err != nil {
+		// The target promoting itself is the switchover succeeding: the in-Pod
+		// reconciler takes the primary role before the operator's snapshot of
+		// CurrentPrimary catches up, and the next pass sees target == current.
+		// Reporting Blocked there made every planned switchover — including the
+		// one a rolling upgrade runs before touching the primary — flap through
+		// a Blocked phase that alerting fires on. An in-flight handoff to a
+		// ready instance that already reports primary is Progressing instead.
+		if status, ok := observed.Instances[target]; ok && status.Ready && status.Primary {
+			return topology.FailoverResult{
+				Handled: true,
+				Phase: &topology.OperationPhase{
+					Phase:       topology.PhaseSwitchover,
+					Reason:      fmt.Sprintf("Switching over to %s: waiting for the promotion to be recorded", target),
+					Progressing: true,
+				},
+			}, nil
+		}
 		return topology.FailoverResult{
 			Handled: true,
 			Phase: &topology.OperationPhase{
