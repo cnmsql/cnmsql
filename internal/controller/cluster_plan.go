@@ -18,11 +18,13 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/engine"
@@ -353,11 +355,10 @@ func (r *ClusterReconciler) resolveRecovery(
 		return nil, fmt.Errorf("recovery backup %q has no backupID", backup.Name)
 	}
 
-	store, err := recoveryObjectStore(cluster, backup)
+	store, err := recoveryObjectStore(ctx, r.Client, cluster, backup)
 	if err != nil {
 		return nil, err
 	}
-	store.SetDefaults()
 
 	keys, err := objectstore.BuildBackupKeys(*store, backup.Spec.Cluster.Name, backup.Name, backup.Status.BackupID)
 	if err != nil {
@@ -389,18 +390,31 @@ func (r *ClusterReconciler) resolveRecovery(
 	return plan, nil
 }
 
-// recoveryObjectStore picks the object store to recover from: the Backup's own
-// override if set, otherwise the recovering cluster's backup object store
-// (same-cluster disaster recovery).
-func recoveryObjectStore(cluster *mysqlv1alpha1.Cluster, backup *mysqlv1alpha1.Backup) (*mysqlv1alpha1.S3ObjectStore, error) {
-	if backup.Spec.ObjectStore != nil {
-		return backup.Spec.ObjectStore.DeepCopy(), nil
+// recoveryObjectStore picks the object store to recover from, resolving where
+// the Backup was actually written the same way the logical import path does:
+// the store recorded in the Backup's status, the Backup's own override, then
+// the source cluster's backup object store. fallback, the recovering cluster's
+// backup object store, covers same-cluster disaster recovery and a source
+// cluster that is gone or no longer names a store.
+func recoveryObjectStore(
+	ctx context.Context,
+	c client.Reader,
+	cluster *mysqlv1alpha1.Cluster,
+	backup *mysqlv1alpha1.Backup,
+) (*mysqlv1alpha1.S3ObjectStore, error) {
+	var fallback *mysqlv1alpha1.S3ObjectStore
+	if cluster.Spec.Backup != nil {
+		fallback = cluster.Spec.Backup.ObjectStore
 	}
-	if cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil {
-		return cluster.Spec.Backup.ObjectStore.DeepCopy(), nil
+	store, err := objectstore.BackupStore(ctx, c, backup, fallback)
+	if errors.Is(err, objectstore.ErrNoBackupStore) {
+		return nil, fmt.Errorf("recovery backup %q has no object store, and neither its cluster %q "+
+			"nor this cluster has spec.backup.objectStore", backup.Name, backup.Spec.Cluster.Name)
 	}
-	return nil, fmt.Errorf(
-		"recovery backup %q has no object store and cluster has no spec.backup.objectStore", backup.Name)
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
 }
 
 // resolveRawS3Recovery bootstraps recovery directly from an object-store bucket
@@ -430,11 +444,11 @@ func (r *ClusterReconciler) resolveRawS3Recovery(
 	if err != nil {
 		return nil, err
 	}
-	client, err := objectstore.NewClient(cfg)
+	osClient, err := objectstore.NewClient(cfg)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := objectstore.ListBaseBackups(ctx, client, *store, sourceCluster)
+	entries, err := objectstore.ListBaseBackups(ctx, osClient, *store, sourceCluster)
 	if err != nil {
 		return nil, fmt.Errorf("listing base backups for source %q: %w", rec.Source, err)
 	}
