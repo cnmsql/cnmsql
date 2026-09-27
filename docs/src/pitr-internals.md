@@ -245,7 +245,7 @@ SQL_LOG_BIN=1`. Two properties of that opening are load-bearing:
 The FLUSH itself runs with the session's binary logging disabled: MySQL writes
 `FLUSH PRIVILEGES` to the binary log as a GTID transaction, and the recovered
 server's timeline must contain only the replayed history, not recovery
-artifacts (reconcileCredentials guards the same way with `--skip-log-bin`).
+artifacts (reconcileRestoredServer guards the same way with `--skip-log-bin`).
 The binlog stream is data and is never logged, while both child processes'
 stderr is captured as structured logs.
 

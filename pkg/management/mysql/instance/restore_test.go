@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -96,6 +97,90 @@ func TestCredentialReconcileStatementsLegacy(t *testing.T) {
 	out := strings.Join(stmts, "\n")
 	if !strings.Contains(out, "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('rootpw')") {
 		t.Fatalf("expected legacy SET PASSWORD syntax:\n%s", out)
+	}
+}
+
+// Issue 138: a physical backup taken from a replica carries the source's
+// replication metadata (mysql.slave_master_info, the applier metadata and the
+// relay-log position it references) but no relay logs. If a restored instance
+// kept that metadata, its runner would run START REPLICA against missing relay
+// logs (Error 1872) and crash-loop — and even usable metadata would make a
+// restored primary replicate from the backup source's host. The restore must
+// therefore clear the inherited metadata with RESET REPLICA ALL in the source's
+// own dialect.
+func TestRestoredReplicaResetStatement(t *testing.T) {
+	tests := []struct {
+		name    string
+		flavor  engine.Flavor
+		version string
+		want    string
+	}{
+		{
+			name:    "modern MySQL uses replica terminology",
+			flavor:  engine.FlavorMySQL,
+			version: "8.4.0",
+			want:    "RESET REPLICA ALL",
+		},
+		{
+			name:    "MySQL before replica terminology",
+			flavor:  engine.FlavorMySQL,
+			version: "8.0.22",
+			want:    "RESET SLAVE ALL",
+		},
+		{
+			name:    "MariaDB keeps slave syntax",
+			flavor:  engine.FlavorMariaDB,
+			version: "11.4.3",
+			want:    "RESET SLAVE ALL",
+		},
+		{
+			name:    "unknown version defaults to modern syntax",
+			flavor:  engine.FlavorMySQL,
+			version: "",
+			want:    "RESET REPLICA ALL",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := restoredReplicaResetStatement(engine.MustForFlavor(tc.flavor), tc.version)
+			if got != tc.want {
+				t.Errorf("restoredReplicaResetStatement(%s, %q) = %q, want %q", tc.flavor, tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRestoredServerStatementsResetReplicaBeforeCredentials(t *testing.T) {
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	stmts := restoredServerStatements(eng, "8.4.0", "rootpw",
+		"cnmsql_control", "ctlpw", "cnmsql_backup", "bkppw")
+	out := strings.Join(stmts, "\n")
+
+	// The first statement must clear the inherited replication metadata: the
+	// restored instance is a new primary, never a replica of the backup source.
+	if stmts[0] != "RESET REPLICA ALL" {
+		t.Fatalf("expected RESET REPLICA ALL first, got: %v", stmts)
+	}
+	// FLUSH PRIVILEGES must precede the ALTER USERs after --skip-grant-tables.
+	if !strings.Contains(out, "FLUSH PRIVILEGES") ||
+		!strings.Contains(out, "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpw'") {
+		t.Fatalf("credential reconcile statements lost:\n%s", out)
+	}
+	// The restore path never starts replication: the instance boots as a
+	// standalone primary and the operator decides any replication later.
+	if strings.Contains(out, "START REPLICA") || strings.Contains(out, "START SLAVE") {
+		t.Fatalf("restore path must never start replication:\n%s", out)
+	}
+}
+
+// Without any passwords to reconcile, the reset alone must still give the
+// temporary server work: the metadata reset runs on every restore, not only
+// when credentials are provided.
+func TestRestoredServerStatementsRunWithoutPasswords(t *testing.T) {
+	eng := engine.MustForFlavor(engine.FlavorMySQL)
+	stmts := restoredServerStatements(eng, "8.4.0", "", "", "", "", "")
+	if len(stmts) != 1 || stmts[0] != "RESET REPLICA ALL" {
+		t.Fatalf("expected only the replica reset without passwords, got: %v", stmts)
 	}
 }
 

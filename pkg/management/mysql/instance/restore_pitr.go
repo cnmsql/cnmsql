@@ -298,7 +298,7 @@ func findAnchorIndex(files []string, anchorFile, anchorServer string) (int, erro
 // applyReplay starts a temporary socket-only mysqld over the restored data
 // directory and pipes the binlog client output into the SQL client, bounded by
 // the recovery target. The temp server runs with --skip-grant-tables (same
-// pattern as reconcileCredentials) so the client connects as root without a
+// pattern as reconcileRestoredServer) so the client connects as root without a
 // password; GTID tracking is independent of the grant system.
 //
 // The whole replay streams through one SQL client session started before the
@@ -493,7 +493,7 @@ func (o *RestoreOptions) replayMariadbPositional(
 // The FLUSH runs with the session's binary logging disabled: on MySQL it would
 // otherwise be written to the temporary server's binary log as a GTID
 // transaction of the restored identity, polluting the replication timeline the
-// recovery just reconstructed (reconcileCredentials guards the same way with
+// recovery just reconstructed (reconcileRestoredServer guards the same way with
 // --skip-log-bin).
 const replayPrologue = "SET @@SESSION.SQL_LOG_BIN=0;\n" +
 	"FLUSH PRIVILEGES;\n" +
