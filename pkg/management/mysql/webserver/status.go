@@ -28,6 +28,13 @@ const (
 	RoleUnknown Role = "unknown"
 )
 
+// ReasonCredentialMismatch is the NotReadyReason token reported when mysqld
+// rejects the credentials the instance manager's control connection presents
+// (MySQL error 1045): the credential Secret and the MySQL account disagree.
+// The operator surfaces it as a credential problem, not an unreachable
+// endpoint.
+const ReasonCredentialMismatch = "CredentialMismatch"
+
 // Status is the JSON document the operator reads from an instance to drive
 // reconciliation, switchover and failover decisions.
 type Status struct {
@@ -47,6 +54,10 @@ type Status struct {
 	UpgradeComplete bool `json:"upgradeComplete,omitempty"`
 	// IsReady reflects whether the instance is ready to serve traffic.
 	IsReady bool `json:"isReady"`
+	// NotReadyReason, when set, is a stable token explaining why the instance
+	// is not ready even though this control endpoint answered. Empty when the
+	// instance is ready or the failure is not classified.
+	NotReadyReason string `json:"notReadyReason,omitempty"`
 	// ReadOnly and SuperReadOnly mirror the server variables.
 	ReadOnly      bool `json:"readOnly"`
 	SuperReadOnly bool `json:"superReadOnly"`

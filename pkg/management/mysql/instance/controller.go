@@ -366,8 +366,31 @@ func (c *Controller) groupReplicationReady(ctx context.Context) error {
 	return errors.New("instance has not joined the group yet")
 }
 
-// Status assembles the full instance status from the server.
+// Status assembles the full instance status from the server. When mysqld
+// rejects the control connection's credentials (error 1045) no query can run,
+// so the report degrades to the minimum the manager itself knows and carries
+// the CredentialMismatch reason, letting the operator tell a credential
+// problem apart from an unreachable endpoint.
 func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
+	status, err := c.collectStatus(ctx)
+	if err == nil {
+		return status, nil
+	}
+	if pool.IsAccessDenied(err) {
+		// Mysqld is up but the control account's password no longer matches it
+		// (the credential Secret changed without a matching ALTER USER, or the
+		// account changed without the Secret). The readiness probe already
+		// shows the raw denial; log it here too, where the manager's own log
+		// lives, so the cause is not invisible (issue #140).
+		logf.FromContext(ctx).WithName("instance-controller").Error(err,
+			"mysqld rejected the control connection credentials", "instance", c.name)
+		return c.credentialMismatchStatus(), nil
+	}
+	return nil, err
+}
+
+// collectStatus reads the full status from the server; see Status.
+func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, error) {
 	roState, err := c.repl.ReadOnly(ctx)
 	if err != nil {
 		return nil, err
@@ -451,6 +474,25 @@ func (c *Controller) Status(ctx context.Context) (*webserver.Status, error) {
 	}
 
 	return status, nil
+}
+
+// credentialMismatchStatus is the minimal status reported while mysqld rejects
+// the control connection's credentials: nothing can be read from the server,
+// so it says what the manager itself knows — its expected role, the configured
+// version, its binary — and classifies the failure.
+func (c *Controller) credentialMismatchStatus() *webserver.Status {
+	status := &webserver.Status{
+		InstanceName:     c.name,
+		Version:          c.versionStr,
+		Role:             c.expected,
+		IsReady:          false,
+		NotReadyReason:   webserver.ReasonCredentialMismatch,
+		InPlaceUpgrading: IsInPlaceUpgrading(),
+	}
+	if hash, err := executablehash.Get(); err == nil {
+		status.ExecutableHash = hash
+	}
+	return status
 }
 
 // EnableGroupReplication turns on the Group Replication status and control paths.

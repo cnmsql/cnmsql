@@ -23,6 +23,7 @@ package pool
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -174,6 +175,20 @@ func passwordHook(f func() string) func(context.Context, *mysql.Config) error {
 		cfg.Passwd = f()
 		return nil
 	}
+}
+
+// mysqlAccessDenied is mysqld's error code for rejected credentials
+// (ER_ACCESS_DENIED_ERROR): the user and password the connection presented do
+// not match any account.
+const mysqlAccessDenied = 1045
+
+// IsAccessDenied reports whether err is mysqld rejecting the connection's
+// credentials (error 1045). It is how the manager tells a credential problem
+// apart from an availability one: mysqld is up and answering, the password is
+// wrong.
+func IsAccessDenied(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlAccessDenied
 }
 
 func sortedKeys(m map[string]string) []string {

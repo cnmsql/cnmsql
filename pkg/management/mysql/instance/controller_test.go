@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
@@ -789,5 +790,46 @@ func TestConfigureSemiSyncNoopForBuiltinEngine(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestStatusReportsCredentialMismatch(t *testing.T) {
+	c, mock := newControllerWithRole(t, webserver.RolePrimary, nil)
+
+	// The first query Status issues fails with mysqld's access-denied error:
+	// the credential Secret and the MySQL account disagree.
+	mock.ExpectQuery("SELECT @@GLOBAL.read_only").
+		WillReturnError(&mysql.MySQLError{
+			Number:   1045,
+			SQLState: [5]byte{'2', '8', '0', '0', '0'},
+			Message:  "Access denied for user 'cnmsql_control'@'localhost' (using password: YES)",
+		})
+
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.IsReady {
+		t.Error("a denied control connection must not report ready")
+	}
+	if status.NotReadyReason != webserver.ReasonCredentialMismatch {
+		t.Fatalf("notReadyReason = %q, want %q", status.NotReadyReason, webserver.ReasonCredentialMismatch)
+	}
+	if status.Role != webserver.RolePrimary {
+		t.Fatalf("role = %q, want the expected role", status.Role)
+	}
+	if status.Version != "8.0.36" {
+		t.Fatalf("version = %q, want the configured version fallback", status.Version)
+	}
+	if status.InstanceName != "cluster-1" {
+		t.Fatalf("instanceName = %q", status.InstanceName)
+	}
+}
+
+func TestStatusStillFailsOnUnclassifiedErrors(t *testing.T) {
+	c, mock := newController(t, nil)
+	mock.ExpectQuery("SELECT @@GLOBAL.read_only").WillReturnError(errors.New("connection refused"))
+	if _, err := c.Status(context.Background()); err == nil {
+		t.Fatal("a failure mysqld did not cause must stay an error")
 	}
 }
