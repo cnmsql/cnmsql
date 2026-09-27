@@ -232,6 +232,11 @@ func TestLoadFailIfExistsRefusesANonEmptyDatabase(t *testing.T) {
 		strings.Contains(err.Error(), "shop") {
 		t.Fatalf("err = %v, want ErrDatabaseNotEmpty naming billing only", err)
 	}
+	// Grammar guard: the subject is the database (singular in kind), so the
+	// message must read "already holds".
+	if !strings.Contains(err.Error(), "billing already holds tables") {
+		t.Fatalf("err = %v, want \"billing already holds tables\"", err)
+	}
 	if f.exists("argv") {
 		t.Error("the client started although the load was refused")
 	}
