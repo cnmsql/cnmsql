@@ -255,12 +255,23 @@ land in the same single restart per instance.
 Each instance's ServiceAccount can `get` and `watch` only its own cluster's
 credential Secrets, by name, and cannot `list` Secrets.
 
-A changed credential Secret is now picked up without a restart. Changing the
-Secret does not change the MySQL account: run `ALTER USER` first, then update the
-Secret. A Secret that no longer matches its MySQL account now fails every
-instance at once instead of waiting for the next restart; see [Upgrade procedure:
+A changed credential Secret is now picked up within minutes, without a restart.
+That includes a Secret regenerated wholesale by a GitOps or External Secrets
+tool: replacing the Secret is a change, and the instance managers follow it.
+Changing the Secret does not change the MySQL account, and no rotation path
+runs `ALTER USER` for you (only the dump account is re-applied from its
+Secret): run `ALTER USER` to the new password first, then update the Secret. A
+Secret that no longer matches its MySQL account now fails every instance at
+once instead of waiting for the next restart, and the instances report a
+credential mismatch rather than looking unreachable; see [Upgrade procedure:
 0.7.x to 0.8.0](#upgrade-procedure-07x-to-080) for the check to run before
 upgrading.
+
+A credential Secret that is deleted on a cluster with bootstrapped instances is
+no longer regenerated: the operator blocks the cluster with a
+`CredentialSecretMissing` event until the Secret is restored, because a fresh
+random password would match no account. Clusters that have not bootstrapped any
+instance yet still get their Secrets generated.
 
 **Upgrade when no instance is initialising.** An instance whose old Pod is
 still running its `bootstrap` init container when the operator upgrades keeps a
@@ -358,9 +369,11 @@ Follow these steps in order.
    Fix any `MISMATCH` before upgrading, with `ALTER USER` to the Secret's value
    or by restoring the Secret to the account's password. If a controller
    regenerates these Secrets, stop it from doing so: the operator does not run
-   `ALTER USER` for `root`, `control` or `backup`, and deleting one of these
-   Secrets makes the operator generate a new random password that no account
-   has.
+   `ALTER USER` for `root`, `control` or `backup`. From this release a deleted
+   credential Secret is no longer regenerated either — on a cluster with
+   bootstrapped instances the operator blocks the cluster with a
+   `CredentialSecretMissing` event until the Secret is restored with its
+   previous password.
 
 4. **Turn off in-place manager updates for the upgrade.** The roll recreates
    every Pod, so an in-place update gains nothing here, and it can race the Pod
