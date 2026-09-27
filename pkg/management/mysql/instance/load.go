@@ -232,7 +232,7 @@ func (c *Controller) applyLoadPolicy(
 		return err
 	}
 	if len(nonEmpty) > 0 {
-		return fmt.Errorf("%w: %s already hold tables, views, routines or events; "+
+		return fmt.Errorf("%w: %s already holds tables, views, routines or events; "+
 			"use the DropAndRecreate policy to replace them", webserver.ErrDatabaseNotEmpty,
 			strings.Join(nonEmpty, ", "))
 	}
