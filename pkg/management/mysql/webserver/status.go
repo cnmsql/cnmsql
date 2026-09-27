@@ -35,6 +35,13 @@ const (
 // endpoint.
 const ReasonCredentialMismatch = "CredentialMismatch"
 
+// ReasonReplicationLag is the NotReadyReason token reported when the only
+// thing failing readiness is the replica readiness lag gate
+// (spec.replication.maxReadyLag): replication is healthy — the replica still
+// receives and acknowledges transactions — but it is further behind than read
+// traffic may be.
+const ReasonReplicationLag = "ReplicationLag"
+
 // Status is the JSON document the operator reads from an instance to drive
 // reconciliation, switchover and failover decisions.
 type Status struct {

@@ -127,6 +127,13 @@ Changing a credential Secret does not change the MySQL account: for `root`,
 `ALTER USER` in MySQL first, then update the Secret. Only the dump account is
 re-applied by the operator on its next reconcile.
 
+A generated `root`, `app`, `control` or `backup` Secret that is deleted once an
+instance has bootstrapped is not regenerated, since a new random password would
+match no account. The running instances keep the password they last read and
+the operator keeps reconciling, failover included. The Cluster reports
+`Degraded` with a `CredentialSecretMissing` warning event until the Secret is
+restored with its previous password.
+
 Generated Secrets are not overwritten when the user provides their own
 credentials. Recovery currently reconciles internal account passwords to the
 recovery cluster Secrets after restore.

@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -117,43 +116,51 @@ func TestHasBootstrappedInstances(t *testing.T) {
 // On a cluster whose instances are already bootstrapped, a deleted credential
 // Secret must not be regenerated: the MySQL accounts still hold its previous
 // password, and a fresh one would take every instance out of service (issue
-// #140). The reconcile blocks instead.
-func TestEnsureCredentialsRefusesDeletedSecretOnBootstrappedCluster(t *testing.T) {
+// #140). It must not stop the reconcile either — the instance managers keep the
+// password they last read, and failover must keep running — so it is skipped
+// with a warning Event while the other Secrets are still ensured.
+func TestEnsureCredentialsSkipsDeletedSecretOnBootstrappedCluster(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster := baseCluster()
 	plan := testPlan()
 	scheme := testScheme(t)
 
+	recorder := record.NewFakeRecorder(10)
 	r := &ClusterReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(blockedClusterObjects(t, cluster, plan, plan.ControlSecretName)...).
+			WithObjects(blockedClusterObjects(t, cluster, plan, plan.ControlSecretName, plan.ReplicationSecret)...).
 			Build(),
-		Scheme: scheme,
+		Scheme:   scheme,
+		Recorder: recorder,
 	}
 
-	err := r.ensureCredentials(ctx, cluster, plan)
-	if err == nil {
-		t.Fatal("ensureCredentials must refuse to run with the control Secret deleted")
-	}
-	var missing *credentialSecretMissingError
-	if !errors.As(err, &missing) {
-		t.Fatalf("err = %v, want a credentialSecretMissingError", err)
-	}
-	if missing.Secret != plan.ControlSecretName {
-		t.Fatalf("missing.Secret = %q, want %q", missing.Secret, plan.ControlSecretName)
+	if err := r.ensureCredentials(ctx, cluster, plan); err != nil {
+		t.Fatalf("ensureCredentials: %v", err)
 	}
 
 	got := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.ControlSecretName}, got); err == nil {
 		t.Fatalf("the deleted Secret was regenerated with data %v", got.Data)
 	}
+	// The unguarded replication Secret is still healed.
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.ReplicationSecret}, got); err != nil {
+		t.Fatalf("replication Secret: %v", err)
+	}
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "CredentialSecretMissing") || !strings.Contains(event, plan.ControlSecretName) {
+			t.Fatalf("event = %q, want a CredentialSecretMissing warning naming %s", event, plan.ControlSecretName)
+		}
+	default:
+		t.Fatal("no event was recorded")
+	}
 }
 
-// Every other guarded Secret behaves the same way; spot-check the backup one,
-// which the issue calls out alongside control and root.
-func TestEnsureCredentialsRefusesDeletedBackupSecretOnBootstrappedCluster(t *testing.T) {
+// Every guarded Secret is reported; spot-check the backup one, which the issue
+// calls out alongside control and root.
+func TestMissingCredentialSecretsReportsDeletedBackupSecret(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cluster := baseCluster()
@@ -168,10 +175,12 @@ func TestEnsureCredentialsRefusesDeletedBackupSecretOnBootstrappedCluster(t *tes
 		Scheme: scheme,
 	}
 
-	var missing *credentialSecretMissingError
-	err := r.ensureCredentials(ctx, cluster, plan)
-	if !errors.As(err, &missing) || missing.Secret != plan.BackupSecretName {
-		t.Fatalf("err = %v, want a credentialSecretMissingError for %s", err, plan.BackupSecretName)
+	missing, err := r.missingCredentialSecrets(ctx, cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(missing, []string{plan.BackupSecretName}) {
+		t.Fatalf("missing = %v, want [%s]", missing, plan.BackupSecretName)
 	}
 }
 
@@ -230,57 +239,15 @@ func TestEnsureCredentialsStillGeneratesDumpSecretOnBootstrappedCluster(t *testi
 	}
 }
 
-// The blocked reconcile surfaces the missing Secret on the Cluster: a Blocked
-// phase naming it and a warning Event, and the Secret stays absent.
-func TestEnsureInfrastructureBlocksOnDeletedCredentialSecret(t *testing.T) {
+// The Cluster reports the missing Secret as Degraded, naming it, even while
+// every instance is still serving.
+func TestComputeClusterPhaseReportsMissingCredentialSecrets(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 	cluster := baseCluster()
 	cluster.Status.EstablishedAt = &metav1.Time{Time: metav1.Now().Time}
-	plan := testPlan()
-	scheme := testScheme(t)
-
-	recorder := record.NewFakeRecorder(10)
-	r := &ClusterReconciler{
-		Client: fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
-			WithObjects(blockedClusterObjects(t, cluster, plan, plan.ControlSecretName)...).
-			Build(),
-		Scheme:   scheme,
-		Recorder: recorder,
-	}
-
-	_, err, handled := r.ensureInfrastructure(ctx, cluster, plan)
-	if err != nil {
-		t.Fatalf("ensureInfrastructure: %v", err)
-	}
-	if !handled {
-		t.Fatal("ensureInfrastructure must stop the reconcile while the Secret is missing")
-	}
-
-	got := &mysqlv1alpha1.Cluster{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Status.Phase != topology.PhaseBlocked {
-		t.Fatalf("phase = %q, want Blocked", got.Status.Phase)
-	}
-	if !strings.Contains(got.Status.PhaseReason, plan.ControlSecretName) {
-		t.Fatalf("phaseReason = %q, want it to name %s", got.Status.PhaseReason, plan.ControlSecretName)
-	}
-
-	select {
-	case event := <-recorder.Events:
-		if !strings.Contains(event, "CredentialSecretMissing") {
-			t.Fatalf("event = %q, want a CredentialSecretMissing warning", event)
-		}
-	default:
-		t.Fatal("no event was recorded")
-	}
-
-	secret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: plan.ControlSecretName}, secret); err == nil {
-		t.Fatalf("the deleted Secret was regenerated with data %v", secret.Data)
+	o := observedCluster{Ready: true, MissingCredentialSecrets: []string{"demo-control"}}
+	o.computeClusterPhase(cluster, testPlan())
+	if o.Phase != topology.PhaseDegraded || !strings.Contains(o.PhaseReason, "demo-control") {
+		t.Fatalf("phase %q reason %q, want Degraded naming demo-control", o.Phase, o.PhaseReason)
 	}
 }
