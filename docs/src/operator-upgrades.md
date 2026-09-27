@@ -272,10 +272,13 @@ credential mismatch rather than looking unreachable; see [Upgrade procedure:
 upgrading.
 
 A credential Secret that is deleted on a cluster with bootstrapped instances is
-no longer regenerated: the operator blocks the cluster with a
-`CredentialSecretMissing` event until the Secret is restored, because a fresh
-random password would match no account. Clusters that have not bootstrapped any
-instance yet still get their Secrets generated.
+no longer regenerated, because a fresh random password would match no account.
+The running instances keep the password they last read and the operator keeps
+reconciling (failover included), but the Cluster reports `Degraded` with a
+`CredentialSecretMissing` warning event until the Secret is restored with its
+previous password: until then no instance can bootstrap, and an instance that
+restarts cannot start. Clusters that have not bootstrapped any instance yet
+still get their Secrets generated.
 
 **Upgrade when no instance is initialising.** An instance whose old Pod is
 still running its `bootstrap` init container when the operator upgrades keeps a
@@ -375,28 +378,17 @@ Follow these steps in order.
    regenerates these Secrets, stop it from doing so: the operator does not run
    `ALTER USER` for `root`, `control` or `backup`. From this release a deleted
    credential Secret is no longer regenerated either — on a cluster with
-   bootstrapped instances the operator blocks the cluster with a
+   bootstrapped instances the Cluster reports `Degraded` with a
    `CredentialSecretMissing` event until the Secret is restored with its
    previous password.
 
-4. **Turn off in-place manager updates for the upgrade.** The roll recreates
-   every Pod, so an in-place update gains nothing here, and it can race the Pod
-   deletion. When it does, the old instance manager misses the Pod's `SIGTERM`:
-   the Pod stays `Terminating` until `spec.maxStopDelay` (1800 seconds by
-   default) runs out and is then killed, or, on a single-instance cluster, the
-   restart takes minutes instead of seconds. On each cluster that sets it:
-
-   ```bash
-   kubectl patch cluster <cluster> --type merge \
-     -p '{"spec":{"inPlaceInstanceManagerUpdates":false}}'
-   ```
-
-5. **Plan for the restarts.** Multi-instance clusters restart their replicas,
+4. **Plan for the restarts.** Multi-instance clusters restart their replicas,
    switch over, then restart the old primary; writes fail for about a second
-   during the switchover. Single-instance clusters are down for as long as their
-   instance takes to restart. The Cluster can show the `Blocked` phase for under
-   a second during the switchover, so silence alerts on that phase for the
-   window.
+   during the switchover, which the Cluster reports as the `Switchover` phase.
+   Single-instance clusters are down for as long as their instance takes to
+   restart. You don't need to turn off `inPlaceInstanceManagerUpdates`: the
+   operator never streams an in-place update to a Pod it is about to recreate,
+   and every Pod is recreated by this roll.
 
 #### Upgrading
 
@@ -424,12 +416,10 @@ Follow the roll with `kubectl get clusters -A`: each cluster goes through
 
    This must print nothing.
 
-2. Turn `inPlaceInstanceManagerUpdates` back on where you turned it off.
-
-3. Move alerts from `Init:CrashLoopBackOff` to the `BootstrapFailed` condition
+2. Move alerts from `Init:CrashLoopBackOff` to the `BootstrapFailed` condition
    (see above).
 
-4. Each cluster now has a `<cluster>-dump` Secret and a `cnmsql_dump` account,
+3. Each cluster now has a `<cluster>-dump` Secret and a `cnmsql_dump` account,
    which [logical backups](./logical-backups.md) use.
 
 #### Downgrading to 0.7.x
