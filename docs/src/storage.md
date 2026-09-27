@@ -40,8 +40,9 @@ spec:
 | `resizeInUseVolumes` | Whether the backend can expand a mounted volume. Defaults to `true`. See [Resizing volumes](#resizing-volumes). |
 
 The data volume name matches the instance: `<cluster>-1`, `<cluster>-2`, and so
-on. PVCs are retained on scale-down — treat a retained PVC as database data, not
-scratch space.
+on. Bootstrapped PVCs are retained on scale-down — treat a retained PVC as
+database data, not scratch space. A volume that never finished bootstrapping is
+deleted together with its instance.
 
 ## Resizing volumes
 

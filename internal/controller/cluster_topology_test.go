@@ -692,3 +692,190 @@ func getService(t *testing.T, ctx context.Context, reconciler *ClusterReconciler
 	}
 	return svc
 }
+
+// joinJobFixture builds a bootstrap Job for the given instance ordinal as the
+// operator's bootstrap Jobs carry them.
+func joinJobFixture(cluster *mysqlv1alpha1.Cluster, ordinal int) *batchv1.Job {
+	name := instanceName(cluster, ordinal)
+	return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name:      name + "-join",
+		Namespace: cluster.Namespace,
+		Labels: map[string]string{
+			clusterLabel:           cluster.Name,
+			bootstrapInstanceLabel: name,
+			bootstrapModeLabel:     string(bootstrapModeJoin),
+		},
+	}}
+}
+
+// A scale-down that races a running join Job must not leak the Job or the
+// instance's not yet bootstrapped volume: the Pod it provisions does not exist
+// yet, so the Pod-driven scale-down pass never visits the instance (issue
+// #143). The Job must be stopped and the half-cloned volume deleted even
+// though no Pod was ever created.
+func TestScaleDownRemovesJoinJobAndInitializingPVCWithoutPod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	primaryPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      instanceName(cluster, 1),
+		Namespace: cluster.Namespace,
+		Labels:    map[string]string{clusterLabel: cluster.Name},
+	}}
+	join := joinJobFixture(cluster, 3)
+	pvc := instancePVC(cluster, instanceName(cluster, 3))
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, primaryPod, join, pvc).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan()
+	plan.Instances = 2
+
+	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: join.Name}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("surplus join Job get = %v, want deleted although its Pod was never created", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pvc.Name}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("surplus initializing PVC get = %v, want deleted although its Pod was never created", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: primaryPod.Name}, &corev1.Pod{}); err != nil {
+		t.Fatalf("primary Pod should be kept: %v", err)
+	}
+}
+
+// The garbage-collect pass removes a surplus instance's not yet bootstrapped
+// volume even when no bootstrap Job is left for it and no Pod ever existed.
+func TestScaleDownGarbageCollectsInitializingPVCBeyondInstances(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	pvc := instancePVC(cluster, instanceName(cluster, 2))
+	pvc.Labels = map[string]string{clusterLabel: cluster.Name}
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pvc).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan() // Instances == 1
+
+	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pvc.Name}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("surplus initializing PVC get = %v, want garbage collected", err)
+	}
+}
+
+// A bootstrapped volume of a removed instance is retained per the M4 policy,
+// even when its Pod is gone or was never created.
+func TestScaleDownRetainsBootstrappedPVCOfRemovedInstance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	pvc := instancePVC(cluster, instanceName(cluster, 3))
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusReady}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pvc).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan()
+	plan.Instances = 2
+
+	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pvc.Name}, &corev1.PersistentVolumeClaim{}); err != nil {
+		t.Fatalf("bootstrapped PVC should be retained: %v", err)
+	}
+}
+
+// Bootstrap resources of in-range instances are never touched by the
+// scale-down garbage collection: a scale-up mid-flight looks exactly like
+// leftover bootstrap state until the new instance count covers the ordinal.
+func TestScaleDownKeepsBootstrapResourcesOfInRangeInstances(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	scheme := testScheme(t)
+	join := joinJobFixture(cluster, 2)
+	pvc := instancePVC(cluster, instanceName(cluster, 2))
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, join, pvc).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan()
+	plan.Instances = 2
+
+	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: join.Name}, &batchv1.Job{}); err != nil {
+		t.Fatalf("in-range bootstrap Job should be kept: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pvc.Name}, &corev1.PersistentVolumeClaim{}); err != nil {
+		t.Fatalf("in-range initializing PVC should be kept: %v", err)
+	}
+}
+
+// Nothing is removed while a primary change is in flight — the surplus
+// bootstrap resources included, since the promotion target may be the highest
+// ordinal.
+func TestScaleDownDefersSurplusBootstrapWhilePrimaryChangeInFlight(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Status.CurrentPrimary = demoPrimaryInstance
+	cluster.Status.TargetPrimary = testReplica2
+	scheme := testScheme(t)
+	join := joinJobFixture(cluster, 3)
+	pvc := instancePVC(cluster, instanceName(cluster, 3))
+	pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, join, pvc).Build()
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	plan := testPlan() // Instances == 1
+
+	if err := r.scaleDownReplicas(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: join.Name}, &batchv1.Job{}); err != nil {
+		t.Fatalf("surplus bootstrap Job should be kept while the primary change is in flight: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pvc.Name}, &corev1.PersistentVolumeClaim{}); err != nil {
+		t.Fatalf("surplus initializing PVC should be kept while the primary change is in flight: %v", err)
+	}
+}
+
+// removeInstanceResources tears down the removed instance's volume only when
+// it never finished bootstrapping: a half-cloned join holds no data and a
+// later scale-up adopting it could never catch up. Bootstrapped volumes keep
+// the M4 retention policy.
+func TestRemoveInstanceResourcesPVCPolicy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 3
+	scheme := testScheme(t)
+	plan := testPlan()
+	plan.Instances = 3
+
+	for tc, wantDeleted := range map[string]bool{
+		pvcStatusInitializing: true,
+		pvcStatusReady:        false,
+	} {
+		pvc := instancePVC(cluster, testReplica2)
+		pvc.Annotations = map[string]string{pvcStatusAnnotation: tc}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pvc).Build()
+		r := &ClusterReconciler{Client: c, Scheme: scheme}
+
+		if err := r.removeInstanceResources(ctx, cluster, plan.instanceFor(cluster, 2)); err != nil {
+			t.Fatal(err)
+		}
+		err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pvc.Name}, &corev1.PersistentVolumeClaim{})
+		switch {
+		case wantDeleted && !apierrors.IsNotFound(err):
+			t.Fatalf("%s: PVC get = %v, want deleted", tc, err)
+		case !wantDeleted && err != nil:
+			t.Fatalf("%s: PVC get = %v, want retained", tc, err)
+		}
+	}
+}

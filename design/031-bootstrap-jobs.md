@@ -142,7 +142,7 @@ The Job's Pod gets no `cluster.Spec.Env`/`EnvFrom`, like the init containers tod
 
 ### 4.5 Re-initialisation and scale-down
 
-`reconcileReinit` deletes the Pod, then the instance's bootstrap Jobs, then the PVC, and reports the teardown complete only when all three are gone. A running `join` Job holds the PVC, so the PVC would stay `Terminating` otherwise. The normal pass then creates a new PVC (`initializing`) and a new `join` Job. `reconcileAutoReinit` goes through the same annotation. `removeInstanceResources` (scale-down) deletes the instance's bootstrap Jobs too, so a `join` for an instance that is no longer wanted stops.
+`reconcileReinit` deletes the Pod, then the instance's bootstrap Jobs, then the PVC, and reports the teardown complete only when all three are gone. A running `join` Job holds the PVC, so the PVC would stay `Terminating` otherwise. The normal pass then creates a new PVC (`initializing`) and a new `join` Job. `reconcileAutoReinit` goes through the same annotation. `removeInstanceResources` (scale-down) deletes the instance's bootstrap Jobs too, so a `join` for an instance that is no longer wanted stops — including when the instance's Pod was never created: a garbage-collect pass cleans up the bootstrap Jobs and initializing PVCs of ordinals beyond `spec.instances` on every reconcile (#143), and a PVC that never finished bootstrapping is deleted with the instance. Bootstrapped volumes keep the M4 retention policy.
 
 `gateInstance` treats "PVC exists and is bootstrapped" as "member has data" (was: "PVC exists"). A PVC that is still `initializing` is a member being provisioned and needs a donor like a brand-new one.
 

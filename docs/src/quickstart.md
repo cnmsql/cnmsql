@@ -176,7 +176,7 @@ Scale down to one instance:
 kubectl patch cluster cluster-sample --type merge -p '{"spec":{"instances":1}}'
 ```
 
-Scale-down removes replica Pods (highest ordinal first) but retains their PVCs. Delete retained PVCs only after confirming the data is no longer needed.
+Scale-down removes replica Pods (highest ordinal first) and retains their bootstrapped PVCs; volumes that never finished bootstrapping are deleted. Delete retained PVCs only after confirming the data is no longer needed.
 
 ## 7. Take a Backup
 

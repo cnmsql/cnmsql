@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -373,19 +374,22 @@ func (r *ClusterReconciler) instancePodExists(ctx context.Context, cluster *mysq
 }
 
 // scaleDownReplicas removes instances whose ordinal exceeds the desired count.
-// Per the M4 retention policy the PVC is left in place for the user to keep or
-// delete; neither the current primary nor a promotion target is ever removed,
-// and nothing is removed while a primary change is in flight, since the target
-// was elected against the instances that exist now. Under Group Replication, a
-// member is first fenced (STOP GROUP_REPLICATION) so it gracefully leaves the
-// group before the Pod is deleted, and removal is refused when it would drop
-// the group below quorum.
+// Per the M4 retention policy a bootstrapped PVC is left in place for the user
+// to keep or delete; neither the current primary nor a promotion target is
+// ever removed, and nothing is removed while a primary change is in flight,
+// since the target was elected against the instances that exist now. Under
+// Group Replication, a member is first fenced (STOP GROUP_REPLICATION) so it
+// gracefully leaves the group before the Pod is deleted, and removal is
+// refused when it would drop the group below quorum.
 func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
 	current, target := cluster.Status.CurrentPrimary, cluster.Status.TargetPrimary
 	if current != "" && target != "" && target != current {
 		logf.FromContext(ctx).Info("Deferring scale down until the primary change completes",
 			"currentPrimary", current, "targetPrimary", target, "desiredInstances", plan.Instances)
 		return nil
+	}
+	if err := r.garbageCollectSurplusBootstrap(ctx, cluster, plan); err != nil {
+		return err
 	}
 	pods := &corev1.PodList{}
 	if err := r.List(ctx, pods, client.InNamespace(cluster.Namespace), client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
@@ -421,6 +425,71 @@ func (r *ClusterReconciler) scaleDownReplicas(ctx context.Context, cluster *mysq
 	return nil
 }
 
+// garbageCollectSurplusBootstrap deletes the bootstrap Jobs and the not yet
+// bootstrapped PVCs of instances beyond the desired count whose Pod is gone or
+// was never created. A scale-down that races a running join Job leaves both
+// behind: the Pod it provisions does not exist yet, so the Pod-driven pass
+// below never visits the instance, the Job runs to completion and the
+// half-cloned volume stays bound until a later scale-up adopts it. The pass is
+// idempotent and safe to run on every reconcile: bootstrapped volumes keep the
+// M4 retention policy, in-range instances are never touched, and the
+// primary-change deferral above keeps it off while a switchover is in flight.
+func (r *ClusterReconciler) garbageCollectSurplusBootstrap(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) error {
+	log := logf.FromContext(ctx)
+
+	// Collect the surplus instance names from their bootstrap Jobs and from
+	// PVCs that never finished bootstrapping.
+	names := map[string]bool{}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs, client.InNamespace(cluster.Namespace),
+		client.MatchingLabels{clusterLabel: cluster.Name}, client.HasLabels{bootstrapInstanceLabel}); err != nil {
+		return err
+	}
+	for i := range jobs.Items {
+		instance := jobs.Items[i].Labels[bootstrapInstanceLabel]
+		if ordinal, ok := instanceOrdinal(cluster, instance); ok && ordinal > plan.Instances {
+			names[instance] = true
+		}
+	}
+	pvcs := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, pvcs, client.InNamespace(cluster.Namespace), client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
+		return err
+	}
+	for i := range pvcs.Items {
+		pvc := &pvcs.Items[i]
+		if pvc.Annotations[pvcStatusAnnotation] != pvcStatusInitializing {
+			continue
+		}
+		if ordinal, ok := instanceOrdinal(cluster, pvc.Name); ok && ordinal > plan.Instances {
+			names[pvc.Name] = true
+		}
+	}
+
+	for name := range names {
+		ordinal, ok := instanceOrdinal(cluster, name)
+		if !ok || ordinal <= plan.Instances {
+			continue
+		}
+		inst := plan.instanceFor(cluster, ordinal)
+		if inst.Name == plan.primaryName(cluster) || inst.Name == cluster.Status.TargetPrimary {
+			continue
+		}
+		// An instance whose Pod still exists is handled by the Pod-driven pass
+		// below, which fences the instance under Group Replication and honours
+		// the quorum guard first.
+		podExists, err := r.instancePodExists(ctx, cluster, inst)
+		if err != nil || podExists {
+			continue
+		}
+		log.Info("Deleting bootstrap resources of removed instance",
+			"instance", inst.Name, "desiredInstances", plan.Instances)
+		if err := r.removeInstanceResources(ctx, cluster, inst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // stampFencingAnnotation sets the fencing annotation on a Pod, triggering the
 // in-Pod reconciler to fence the instance (stop mysqld for async, STOP
 // GROUP_REPLICATION for GR). The routing reconciler picks it up and sets
@@ -438,7 +507,10 @@ func (r *ClusterReconciler) stampFencingAnnotation(ctx context.Context, _ *mysql
 }
 
 // removeInstanceResources deletes the owned Pod, bootstrap Jobs, ConfigMap and
-// Service for a removed instance. The PVC is intentionally retained.
+// Service for a removed instance. A volume that never finished bootstrapping
+// holds no data and is deleted too — a later scale-up would adopt the
+// half-cloned join and it could never catch up once the binlogs were purged.
+// Bootstrapped volumes are retained per the M4 policy.
 func (r *ClusterReconciler) removeInstanceResources(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
 	// A join Job still cloning the volume must not outlive the instance it was
 	// provisioning for.
@@ -458,7 +530,23 @@ func (r *ClusterReconciler) removeInstanceResources(ctx context.Context, cluster
 			return err
 		}
 	}
-	return nil
+	return r.deleteUnbootstrappedPVC(ctx, cluster, inst)
+}
+
+// deleteUnbootstrappedPVC deletes the removed instance's data volume when it
+// never finished bootstrapping, so the stale clone cannot be adopted by a
+// later scale-up. Bootstrapped volumes keep the M4 retention policy.
+func (r *ClusterReconciler) deleteUnbootstrappedPVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) error {
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.PVCName}, pvc); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if pvcBootstrapped(pvc) {
+		return nil
+	}
+	logf.FromContext(ctx).Info("Deleting not yet bootstrapped PVC of removed instance",
+		"instance", inst.Name, "pvc", pvc.Name)
+	return client.IgnoreNotFound(r.Delete(ctx, pvc))
 }
 
 // instanceOrdinal parses the 1-based ordinal from an instance name of the form
