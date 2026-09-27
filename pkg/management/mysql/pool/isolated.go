@@ -32,9 +32,11 @@ import (
 // waiting behind a queued DDL, say — starves the heartbeat, the status and
 // every other control call for exactly as long as the server is willing to
 // wait, which by default is about a year. Statements that can legitimately
-// wait on a lock run here instead: the dedicated connection keeps the pool
-// free, and the session lock_wait_timeout turns the unbounded server-side
-// wait into a lock-wait-timeout failure the caller sees and can surface. The
+// wait on a lock run here instead, and the session lock_wait_timeout turns the
+// unbounded server-side wait into a lock-wait-timeout failure the caller sees
+// and can surface. On a single-connection pool the dedicated connection is
+// that one connection, so other control calls still wait for the run — but
+// only for as long as lockWait, not for as long as the blocker holds on. The
 // bound must stay below the pool's own readTimeout so the server always
 // decides before the client gives up and the statement never outlives the
 // call for longer than the bound.
