@@ -487,6 +487,23 @@ func (r *ClusterReconciler) planFailed(ctx context.Context, cluster *mysqlv1alph
 // cluster is blocked waiting on a valid certificate).
 func (r *ClusterReconciler) ensureInfrastructure(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan) (ctrl.Result, error, bool) {
 	if err := r.ensureCredentials(ctx, cluster, plan); err != nil {
+		if missing, ok := errors.AsType[*credentialSecretMissingError](err); ok {
+			// A credential Secret was deleted on a cluster with bootstrapped
+			// instances. Regenerating it would lock the instance managers out
+			// of mysqld (issue #140), so block until the Secret is restored.
+			logf.FromContext(ctx).Info("Blocking cluster: credential Secret is missing on a bootstrapped cluster",
+				"secret", missing.Secret)
+			if r.Recorder != nil {
+				r.Recorder.Event(cluster, corev1.EventTypeWarning, "CredentialSecretMissing", err.Error())
+			}
+			return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
+				Phase:       topology.PhaseBlocked,
+				PhaseReason: err.Error(),
+				Ready:       false,
+				Progressing: false,
+				Plan:        plan,
+			}), true
+		}
 		return ctrl.Result{}, err, true
 	}
 	if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
