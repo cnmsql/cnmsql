@@ -730,6 +730,146 @@ func TestObserveBootstrapJobs(t *testing.T) {
 	}
 }
 
+// TestBootstrapJobContainersCarryTerminationMessagePolicy pins the plumbing a
+// diagnosable bootstrap failure depends on: without FallbackToLogsOnError the
+// containers exit with nothing in their termination message, and a failed
+// bootstrap can only ever say BackoffLimitExceeded.
+func TestBootstrapJobContainersCarryTerminationMessagePolicy(t *testing.T) {
+	t.Parallel()
+	r, cluster, plan, inst, pvc := restoreTestFixture(t)
+	job, err := r.bootstrapJob(cluster, plan, inst, bootstrapModeRestore, pvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := job.Spec.Template.Spec
+	for _, c := range append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...) {
+		if c.TerminationMessagePolicy != corev1.TerminationMessageFallbackToLogsOnError {
+			t.Errorf("container %s terminationMessagePolicy = %q, want %q",
+				c.Name, c.TerminationMessagePolicy, corev1.TerminationMessageFallbackToLogsOnError)
+		}
+	}
+}
+
+// TestObserveBootstrapJobsReportsContainerCause checks that a bootstrap Job
+// that exhausted its backoff limit carries the terminated container's message
+// — the real cause — into the state that feeds the BootstrapFailed condition.
+func TestObserveBootstrapJobsReportsContainerCause(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name + "-initdb"}, job); err != nil {
+		t.Fatal(err)
+	}
+	job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+		Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit",
+	})
+	if err := c.Status().Update(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      job.Name + "-abcde",
+			Namespace: cluster.Namespace,
+			Labels:    map[string]string{batchv1.JobNameLabel: job.Name},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "initdb",
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					ExitCode: 1, Reason: "Error",
+					Message: "initdb: xtrabackup prepare failed: cannot open backup.xbstream",
+				}},
+			}},
+		},
+	}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := r.observeBootstrapJobs(ctx, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("states = %+v, want the failed initdb only", states)
+	}
+	got := states[0]
+	if got.Reason != "BackoffLimitExceeded" {
+		t.Fatalf("reason = %q, want BackoffLimitExceeded", got.Reason)
+	}
+	if !strings.Contains(got.Message, "xtrabackup prepare failed") {
+		t.Fatalf("message = %q, want the terminated container's cause", got.Message)
+	}
+}
+
+// TestObserveBootstrapJobsDetectsUnschedulablePod checks that a bootstrap Job
+// whose Pod the scheduler refuses (an impossible nodeSelector, say) is
+// surfaced: the state records the scheduling failure, and the Cluster's
+// Pending reason names it instead of an indefinite "Waiting for bootstrap Job".
+func TestObserveBootstrapJobsDetectsUnschedulablePod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	plan := testPlan()
+	inst := plan.instanceFor(cluster, 1)
+	r, c := bootstrapFixture(t, cluster, initializingPVC(cluster, inst.PVCName, "uid-1"))
+	if _, err := r.ensureBootstrapped(ctx, cluster, plan, inst); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name + "-initdb"}, job); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      job.Name + "-abcde",
+			Namespace: cluster.Namespace,
+			Labels:    map[string]string{batchv1.JobNameLabel: job.Name},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{{
+				Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+				Reason:  "Unschedulable",
+				Message: "0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector.",
+			}},
+		},
+	}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := r.observeBootstrapJobs(ctx, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("states = %+v, want the running initdb", states)
+	}
+	got := states[0]
+	if !got.Unschedulable {
+		t.Fatalf("state = %+v, want Unschedulable", got)
+	}
+	if !strings.Contains(got.UnschedulableMessage, "nodes are available") {
+		t.Fatalf("unschedulable message = %q, want the scheduler's", got.UnschedulableMessage)
+	}
+
+	o := observedCluster{BootstrapJobs: states, Progressing: true}
+	o.computeClusterPhase(cluster, testPlan())
+	if !strings.Contains(o.PhaseReason, "cannot schedule") ||
+		!strings.Contains(o.PhaseReason, "nodes are available") {
+		t.Fatalf("phase reason = %q, want the scheduling failure surfaced", o.PhaseReason)
+	}
+}
+
 // markVolumeBootstrapped creates or marks inst's PVC as bootstrapped, so a test
 // about Pod handling skips the bootstrap Job.
 func markVolumeBootstrapped(t *testing.T, ctx context.Context, c client.Client, cluster *mysqlv1alpha1.Cluster, inst instancePlan) {

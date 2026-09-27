@@ -365,6 +365,12 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 			j := o.BootstrapJobs[0]
 			o.Phase = topology.PhasePending
 			o.PhaseReason = fmt.Sprintf("Waiting for bootstrap Job %s (%s) of %s", j.Job, j.Mode, j.Instance)
+			// An unschedulable Job Pod never makes progress on its own, so the
+			// indefinite wait carries the scheduler's refusal: otherwise the only
+			// FailedScheduling evidence sits on the Job's Pod, invisible from here.
+			if j.Unschedulable {
+				o.PhaseReason += fmt.Sprintf("; its Pod cannot schedule: %s", j.UnschedulableMessage)
+			}
 		case o.ReadyInstances == 0:
 			o.Phase = topology.PhasePending
 			o.PhaseReason = "Waiting for the primary instance"

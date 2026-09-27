@@ -137,15 +137,16 @@ func (r *ClusterReconciler) bootstrapContainers(
 ) ([]corev1.Container, corev1.Container) {
 	step := func(name string, args []string, extraEnv []corev1.EnvVar) corev1.Container {
 		return corev1.Container{
-			Name:            name,
-			Image:           plan.Image,
-			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-			Command:         []string{managerBinary},
-			Args:            args,
-			Env:             append(initEnv(plan), extraEnv...),
-			VolumeMounts:    volumeMounts(),
-			Resources:       resources,
-			SecurityContext: cluster.Spec.SecurityContext,
+			Name:                     name,
+			Image:                    plan.Image,
+			ImagePullPolicy:          cluster.Spec.ImagePullPolicy,
+			Command:                  []string{managerBinary},
+			Args:                     args,
+			Env:                      append(initEnv(plan), extraEnv...),
+			VolumeMounts:             volumeMounts(),
+			Resources:                resources,
+			SecurityContext:          cluster.Spec.SecurityContext,
+			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		}
 	}
 	switch mode {
@@ -187,14 +188,15 @@ func (r *ClusterReconciler) bootstrapJob(
 		ServiceAccountName: instanceServiceAccountName(inst),
 		Volumes:            instanceVolumes(plan, inst),
 		InitContainers: append([]corev1.Container{{
-			Name:            bootstrapControllerName,
-			Image:           operatorImage,
-			ImagePullPolicy: cluster.Spec.ImagePullPolicy,
-			Command:         []string{operatorManagerBinary},
-			Args:            []string{managerBootstrapCmd, managerBinary},
-			VolumeMounts:    volumeMounts(),
-			Resources:       resources,
-			SecurityContext: cluster.Spec.SecurityContext,
+			Name:                     bootstrapControllerName,
+			Image:                    operatorImage,
+			ImagePullPolicy:          cluster.Spec.ImagePullPolicy,
+			Command:                  []string{operatorManagerBinary},
+			Args:                     []string{managerBootstrapCmd, managerBinary},
+			VolumeMounts:             volumeMounts(),
+			Resources:                resources,
+			SecurityContext:          cluster.Spec.SecurityContext,
+			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		}}, extraInit...),
 		Containers:                []corev1.Container{main},
 		NodeSelector:              cluster.Spec.Affinity.NodeSelector,
@@ -272,6 +274,13 @@ type bootstrapJobState struct {
 	Failed   bool
 	Reason   string
 	Message  string
+	// Unschedulable is set when the Job's Pod carries a PodScheduled=False
+	// Unschedulable condition: the scheduler refuses it (an impossible
+	// nodeSelector, no matching toleration), so the Job makes no progress no
+	// matter how long it is left. UnschedulableMessage is the scheduler's own
+	// explanation, for the Cluster status.
+	Unschedulable        bool
+	UnschedulableMessage string
 }
 
 // observeBootstrapJobs lists the cluster's running and failed bootstrap Jobs,
@@ -297,6 +306,12 @@ func (r *ClusterReconciler) observeBootstrapJobs(ctx context.Context, cluster *m
 		if jobFinished(job, batchv1.JobFailed) {
 			state.Failed = true
 			state.Reason, state.Message = workerJobFailure(job, "Bootstrap")
+			if cause := bootstrapContainerCause(ctx, r.Client, job); cause != "" {
+				state.Message += ": " + cause
+			}
+		} else if msg, ok := bootstrapPodUnschedulable(ctx, r.Client, job); ok {
+			state.Unschedulable = true
+			state.UnschedulableMessage = msg
 		}
 		states = append(states, state)
 	}
@@ -321,6 +336,88 @@ func bootstrapFailureReason(failed []bootstrapJobState) string {
 		parts = append(parts, fmt.Sprintf("bootstrap Job %s for %s failed (%s): %s", j.Job, j.Instance, j.Reason, j.Message))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// maxBootstrapCauseLen bounds the container log tail folded into the
+// BootstrapFailed condition message, so a pathological log tail cannot bloat
+// the Cluster status. The tail keeps the end of the message, where the failure
+// usually is.
+const maxBootstrapCauseLen = 512
+
+// bootstrapContainerCause reads the terminated container's message from a
+// failed bootstrap Job's Pods. With terminationMessagePolicy
+// FallbackToLogsOnError that message holds the container's last log lines,
+// which is where the actual failure (an xtrabackup exit, a bad dump, a refused
+// connection) is written; without it the caller keeps the Job's generic
+// BackoffLimitExceeded. The newest attempt that left a message wins, following
+// the same order the backup worker's termination reader uses.
+func bootstrapContainerCause(ctx context.Context, c client.Client, job *batchv1.Job) string {
+	pods, ok := bootstrapJobPods(ctx, c, job)
+	if !ok {
+		return ""
+	}
+	for i := range pods {
+		for _, cs := range pods[i].Status.ContainerStatuses {
+			if cs.State.Terminated != nil && cs.State.Terminated.Message != "" {
+				return messageTail(cs.State.Terminated.Message, maxBootstrapCauseLen)
+			}
+		}
+		for _, cs := range pods[i].Status.InitContainerStatuses {
+			if cs.State.Terminated != nil && cs.State.Terminated.Message != "" {
+				return messageTail(cs.State.Terminated.Message, maxBootstrapCauseLen)
+			}
+		}
+	}
+	return ""
+}
+
+// bootstrapPodUnschedulable reports whether the Job's Pod carries
+// PodScheduled=False Unschedulable, and the scheduler's explanation.
+func bootstrapPodUnschedulable(ctx context.Context, c client.Client, job *batchv1.Job) (string, bool) {
+	pods, ok := bootstrapJobPods(ctx, c, job)
+	if !ok {
+		return "", false
+	}
+	for i := range pods {
+		for _, cond := range pods[i].Status.Conditions {
+			if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse &&
+				cond.Reason == corev1.PodReasonUnschedulable {
+				return cond.Message, true
+			}
+		}
+	}
+	return "", false
+}
+
+// bootstrapJobPods lists the Job's Pods, newest attempt first, so the reported
+// cause comes from the most recent try. Listing failures degrade to no cause
+// rather than failing the reconcile.
+func bootstrapJobPods(ctx context.Context, c client.Client, job *batchv1.Job) ([]corev1.Pod, bool) {
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods,
+		client.InNamespace(job.Namespace),
+		client.MatchingLabels{batchv1.JobNameLabel: job.Name},
+	); err != nil {
+		logf.FromContext(ctx).Info("Could not list bootstrap Job Pods", "job", job.Name, "error", err.Error())
+		return nil, false
+	}
+	sort.SliceStable(pods.Items, func(i, j int) bool {
+		ti, tj := pods.Items[i].CreationTimestamp, pods.Items[j].CreationTimestamp
+		if !ti.Equal(&tj) {
+			return tj.Before(&ti)
+		}
+		return pods.Items[i].Name < pods.Items[j].Name
+	})
+	return pods.Items, true
+}
+
+// messageTail keeps the last max characters of a message, prefixing an
+// ellipsis when it truncates.
+func messageTail(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return "..." + s[len(s)-max:]
 }
 
 // deleteBootstrapJobs deletes the instance's bootstrap Jobs and their Pods and
