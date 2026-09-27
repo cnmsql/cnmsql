@@ -51,7 +51,28 @@ func (r *Reconciler) ReconcileSwitchover(
 		// one a rolling upgrade runs before touching the primary — flap through
 		// a Blocked phase that alerting fires on. An in-flight handoff to a
 		// ready instance that already reports primary is Progressing instead.
+		//
+		// The wait is bounded by maxSwitchoverDelay like any other switchover,
+		// but it escalates to Blocked instead of aborting: the target already
+		// took the primary role, and pointing targetPrimary back at the old
+		// primary would hand the role to two instances.
 		if status, ok := observed.Instances[target]; ok && status.Ready && status.Primary {
+			startedAt, err := r.ensureSwitchoverStarted(ctx, cluster)
+			if err != nil {
+				return topology.FailoverResult{}, err
+			}
+			maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second
+			if maxDelay > 0 && time.Since(startedAt) > maxDelay {
+				return topology.FailoverResult{
+					Handled: true,
+					Phase: &topology.OperationPhase{
+						Phase: topology.PhaseBlocked,
+						Reason: fmt.Sprintf("switchover to %s: it reports primary, but the instance has not recorded "+
+							"itself as currentPrimary within maxSwitchoverDelay (%ds); check its instance manager log",
+							target, cluster.Spec.MaxSwitchoverDelay),
+					},
+				}, nil
+			}
 			return topology.FailoverResult{
 				Handled: true,
 				Phase: &topology.OperationPhase{
