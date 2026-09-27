@@ -22,9 +22,12 @@ import (
 	"io"
 	"os"
 	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -155,7 +158,9 @@ func (r *ClusterReconciler) rollInstanceForUpgrade(
 // instance's control API, which validates it against the target hash and
 // re-execs in place — no Pod restart and, for the primary, no switchover. One
 // instance is upgraded per reconcile; the caller requeues and the next reconcile
-// observes the now-current hash and moves on to the next candidate.
+// observes the now-current hash and moves on to the next candidate. Instances
+// whose Pod is not an in-place target (stale template, terminating, or gone) are
+// skipped: their Pod is about to be recreated with the new binary anyway.
 func (r *ClusterReconciler) upgradeInstanceInPlace(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
@@ -166,8 +171,35 @@ func (r *ClusterReconciler) upgradeInstanceInPlace(
 	targetHash string,
 ) (bool, reconcile.Result, error) {
 	log := logf.FromContext(ctx)
+
+	eligible, err := r.inPlaceUpgradeEligible(ctx, cluster, plan, instance.Name)
+	if err != nil {
+		return false, reconcile.Result{}, err
+	}
+	if !eligible {
+		log.Info("Skipping in-place manager upgrade; the instance Pod will be recreated with the new binary",
+			"instance", instance.Name, "reportedHash", instance.ReportedHash, "targetHash", targetHash)
+		reason := upgradeReason("Waiting to upgrade instance manager on", instance.Name, len(candidates))
+		return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster,
+			upgradeProgressStatus(topology.PhaseUpgrading, reason, plan, observed))
+	}
+
 	log.Info("Upgrading instance manager in place",
 		"instance", instance.Name, "reportedHash", instance.ReportedHash, "targetHash", targetHash)
+
+	key := r.inPlaceUpgradeKey(cluster, instance.Name)
+	window := r.inPlaceUpgradeDedupWindow
+	if window == 0 {
+		window = defaultInPlaceUpgradeDedupWindow
+	}
+	if r.inPlaceUpgradeRecentlyAttempted(key, window) {
+		log.Info("In-place manager upgrade was already streamed; waiting for the instance to report the new hash",
+			"instance", instance.Name)
+		reason := upgradeReason("Waiting for instance manager upgrade on", instance.Name, len(candidates))
+		return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster,
+			upgradeProgressStatus(topology.PhaseUpgrading, reason, plan, observed))
+	}
+	r.recordInPlaceUpgradeAttempt(key, window)
 
 	binary, err := r.operatorBinary()
 	if err != nil {
@@ -186,6 +218,73 @@ func (r *ClusterReconciler) upgradeInstanceInPlace(
 	reason := upgradeReason("Upgrading instance manager in place on", instance.Name, len(candidates))
 	return true, reconcile.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster,
 		upgradeProgressStatus(topology.PhaseUpgrading, reason, plan, observed))
+}
+
+// inPlaceUpgradeEligible reports whether the instance Pod is a valid target for
+// an in-place manager upgrade: the Pod exists, is not already terminating, and
+// carries the current pod template hash. Anything else means the Pod is about to
+// be recreated with the new binary (the bootstrap-controller init container
+// copies the operator's /manager), so streaming to the old Pod would race the
+// SIGTERM the recreation sends: the scheduled re-exec would swallow the shutdown
+// and the Pod would hang in Terminating until SIGKILL (issue #137).
+func (r *ClusterReconciler) inPlaceUpgradeEligible(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	plan clusterPlan,
+	instance string,
+) (bool, error) {
+	ordinal, ok := instanceOrdinal(cluster, instance)
+	if !ok {
+		return false, nil
+	}
+	inst := plan.instanceFor(cluster, ordinal)
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if pod.DeletionTimestamp != nil {
+		return false, nil
+	}
+	pending, err := r.instancePendingRoll(ctx, cluster, plan, inst)
+	if err != nil {
+		return false, err
+	}
+	return !pending, nil
+}
+
+// inPlaceUpgradeKey namespaces the dedup record by cluster and instance, so the
+// shared reconciler state cannot collide across clusters.
+func (r *ClusterReconciler) inPlaceUpgradeKey(cluster *mysqlv1alpha1.Cluster, instance string) string {
+	return cluster.Namespace + "/" + cluster.Name + "/" + instance
+}
+
+// inPlaceUpgradeRecentlyAttempted reports whether an in-place manager upgrade
+// was already streamed to the instance within the dedup window.
+func (r *ClusterReconciler) inPlaceUpgradeRecentlyAttempted(key string, window time.Duration) bool {
+	r.inPlaceUpgradeAttemptsMu.Lock()
+	defer r.inPlaceUpgradeAttemptsMu.Unlock()
+	when, ok := r.inPlaceUpgradeAttempts[key]
+	return ok && time.Since(when) < window
+}
+
+// recordInPlaceUpgradeAttempt stamps the attempt time for the instance, pruning
+// expired entries so the map stays bounded.
+func (r *ClusterReconciler) recordInPlaceUpgradeAttempt(key string, window time.Duration) {
+	r.inPlaceUpgradeAttemptsMu.Lock()
+	defer r.inPlaceUpgradeAttemptsMu.Unlock()
+	if r.inPlaceUpgradeAttempts == nil {
+		r.inPlaceUpgradeAttempts = map[string]time.Time{}
+	}
+	now := time.Now()
+	for k, when := range r.inPlaceUpgradeAttempts {
+		if now.Sub(when) >= window {
+			delete(r.inPlaceUpgradeAttempts, k)
+		}
+	}
+	r.inPlaceUpgradeAttempts[key] = now
 }
 
 // operatorBinary opens the operator's own manager binary for streaming to an

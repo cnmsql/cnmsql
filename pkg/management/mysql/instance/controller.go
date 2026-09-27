@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -107,6 +108,19 @@ type Controller struct {
 	// reExecOnDisk re-execs the freshly written on-disk binary (the streamed
 	// upgrade). It defaults to ReExecOnDiskForUpgrade and is overridable in tests.
 	reExecOnDisk func(mysqldPID int) error
+	// shuttingDown reports the run loop has begun tearing the manager down
+	// (SIGTERM/SIGINT, mysqld exit, a server failure). While set, in-place
+	// manager swaps are refused and any pending re-exec is cancelled: a re-exec
+	// firing into a shutdown replaces the process image, the SIGTERM is lost,
+	// and the Pod hangs in Terminating until the kubelet SIGKILLs mysqld
+	// uncleanly (issue #137).
+	shuttingDown atomic.Bool
+	// pendingReExec guards the timer scheduled by scheduleReExec. It is touched
+	// by HTTP handler goroutines (scheduling), the run-loop goroutine
+	// (BeginShutdown) and the timer goroutine (clearing after a failed exec),
+	// so all access holds pendingReExecMu.
+	pendingReExecMu sync.Mutex
+	pendingReExec   *time.Timer
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -648,14 +662,28 @@ func (c *Controller) Restart(ctx context.Context) error {
 // re-exec replaces the process image.
 const reExecDelay = 250 * time.Millisecond
 
+var (
+	// errShuttingDown refuses an in-place manager swap once the manager has
+	// begun shutting down: the swap's re-exec would swallow the shutdown.
+	errShuttingDown = errors.New("instance manager is shutting down")
+	// errUpgradeAlreadyPending refuses a second in-place manager swap while an
+	// earlier one is still scheduled: two re-execs race each other.
+	errUpgradeAlreadyPending = errors.New("an in-place manager upgrade is already pending")
+)
+
 // RestartInPlace re-execs the instance manager in place, handing the running
 // mysqld PID to the new image so it adopts the server instead of restarting it
 // (the zero-restart operator-upgrade path). The re-exec is scheduled shortly after
 // this returns so the caller receives the HTTP acknowledgement before
 // syscall.Exec replaces the process; the caller then confirms the swap by polling
 // status. A failed re-exec leaves the current manager supervising mysqld unharmed.
+// The request is refused once shutdown has started or while another in-place
+// swap is still scheduled.
 func (c *Controller) RestartInPlace(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("instance-controller")
+	if err := c.reExecGate("in-place restart"); err != nil {
+		return err
+	}
 	pid, err := c.adoptablePID("in-place restart")
 	if err != nil {
 		return err
@@ -669,9 +697,15 @@ func (c *Controller) RestartInPlace(ctx context.Context) error {
 // place adopting the running mysqld. The write/validate is synchronous so a bad
 // upload is rejected (the caller gets an error) before anything is swapped; the
 // re-exec of the freshly written binary is scheduled after this returns so the
-// HTTP acknowledgement flushes first.
+// HTTP acknowledgement flushes first. The request is refused once shutdown has
+// started or while another in-place swap is still scheduled, so a retried or
+// event-triggered duplicate POST never races the shutdown it would otherwise
+// swallow (issue #137).
 func (c *Controller) UpgradeInstanceManager(ctx context.Context, r io.Reader, expectedHash string) error {
 	log := logf.FromContext(ctx).WithName("instance-controller")
+	if err := c.reExecGate("in-place upgrade"); err != nil {
+		return err
+	}
 	pid, err := c.adoptablePID("in-place upgrade")
 	if err != nil {
 		return err
@@ -683,6 +717,41 @@ func (c *Controller) UpgradeInstanceManager(ctx context.Context, r io.Reader, ex
 	log.Info("Wrote new instance-manager binary", "instance", c.name)
 	c.scheduleReExec(log, pid, c.reExecOnDisk)
 	return nil
+}
+
+// reExecGate refuses an in-place manager swap once shutdown has started or while
+// another swap is still scheduled.
+func (c *Controller) reExecGate(action string) error {
+	if c.shuttingDown.Load() {
+		return fmt.Errorf("refusing %s: %w", action, errShuttingDown)
+	}
+	c.pendingReExecMu.Lock()
+	defer c.pendingReExecMu.Unlock()
+	if c.pendingReExec != nil {
+		return fmt.Errorf("refusing %s: %w", action, errUpgradeAlreadyPending)
+	}
+	return nil
+}
+
+// BeginShutdown records that the manager is shutting down and cancels any
+// pending in-place re-exec, so the shutdown (SIGTERM from a Pod deletion, mysqld
+// exit) is never swallowed by a re-exec replacing the process image. It reports
+// whether a pending re-exec was actually cancelled.
+func (c *Controller) BeginShutdown() bool {
+	c.shuttingDown.Store(true)
+	c.pendingReExecMu.Lock()
+	timer := c.pendingReExec
+	c.pendingReExec = nil
+	c.pendingReExecMu.Unlock()
+	if timer == nil {
+		return false
+	}
+	if !timer.Stop() {
+		// Already fired; the exec may be in flight and cannot be undone.
+		return false
+	}
+	ClearInPlaceUpgrading()
+	return true
 }
 
 // adoptablePID returns the running mysqld PID that the re-exec'd manager must
@@ -701,16 +770,29 @@ func (c *Controller) adoptablePID(action string) (int, error) {
 // scheduleReExec marks the upgrade in flight (so no concurrent shutdown path
 // tears mysqld down mid-swap) and schedules reExec shortly after, giving the
 // HTTP response time to flush before syscall.Exec replaces the process. A failed
-// re-exec leaves the current manager supervising mysqld unharmed.
+// re-exec leaves the current manager supervising mysqld unharmed. Scheduling is
+// refused once shutdown has started, and the stored timer is what BeginShutdown
+// cancels.
 func (c *Controller) scheduleReExec(log logr.Logger, pid int, reExec func(int) error) {
+	c.pendingReExecMu.Lock()
+	if c.shuttingDown.Load() {
+		c.pendingReExecMu.Unlock()
+		log.Info("Not scheduling in-place manager re-exec; shutdown has started",
+			"instance", c.name, "mysqldPid", pid)
+		return
+	}
 	SetInPlaceUpgrading()
 	log.Info("Scheduling in-place manager re-exec", "instance", c.name, "mysqldPid", pid)
-	time.AfterFunc(reExecDelay, func() {
+	c.pendingReExec = time.AfterFunc(reExecDelay, func() {
+		c.pendingReExecMu.Lock()
+		c.pendingReExec = nil
+		c.pendingReExecMu.Unlock()
 		if err := reExec(pid); err != nil {
 			// Only reached if execve fails; mysqld keeps running under this manager.
 			log.Error(err, "In-place manager re-exec failed; continuing with the current manager")
 		}
 	})
+	c.pendingReExecMu.Unlock()
 }
 
 // validVariableName matches a MySQL system-variable identifier. Variable names

@@ -424,6 +424,104 @@ func TestUpgradeInstanceManagerWithoutRunningMysqld(t *testing.T) {
 	}
 }
 
+// Once the run loop has begun shutting down (SIGTERM from a Pod deletion, mysqld
+// exit), a streamed manager upgrade must be refused: the re-exec it schedules
+// would replace the process image after the shutdown started, swallow the
+// shutdown, and leave the Pod Terminating until SIGKILL kills mysqld uncleanly
+// (issue #137).
+func TestUpgradeInstanceManagerRefusedOnceShutdownStarted(t *testing.T) {
+	t.Cleanup(func() { inPlaceUpgrading.Store(false) })
+	c, _ := newController(t, &fakeSupervisor{pid: 777})
+	wrote := false
+	c.writeManager = func(io.Reader, string) error { wrote = true; return nil }
+	reExeced := false
+	c.reExecOnDisk = func(int) error { reExeced = true; return nil }
+
+	c.BeginShutdown()
+
+	if err := c.UpgradeInstanceManager(context.Background(), strings.NewReader("x"), ""); err == nil {
+		t.Error("expected UpgradeInstanceManager to be refused once shutdown has started")
+	}
+	if wrote {
+		t.Error("must not write a new binary once shutdown has started")
+	}
+	if reExeced {
+		t.Error("must not schedule a re-exec once shutdown has started")
+	}
+}
+
+// Same refusal for the zero-restart restart-inplace endpoint.
+func TestRestartInPlaceRefusedOnceShutdownStarted(t *testing.T) {
+	t.Cleanup(func() { inPlaceUpgrading.Store(false) })
+	c, _ := newController(t, &fakeSupervisor{pid: 777})
+	reExeced := false
+	c.reExec = func(int) error { reExeced = true; return nil }
+
+	c.BeginShutdown()
+
+	if err := c.RestartInPlace(context.Background()); err == nil {
+		t.Error("expected RestartInPlace to be refused once shutdown has started")
+	}
+	if reExeced {
+		t.Error("must not schedule a re-exec once shutdown has started")
+	}
+}
+
+// A re-exec that is already scheduled when shutdown starts must be cancelled, so
+// the SIGTERM shutdown wins over the in-flight upgrade swap.
+func TestBeginShutdownCancelsPendingReExec(t *testing.T) {
+	t.Cleanup(func() { inPlaceUpgrading.Store(false) })
+	c, _ := newController(t, &fakeSupervisor{pid: 777})
+	reExeced := make(chan struct{}, 1)
+	c.reExec = func(int) error { reExeced <- struct{}{}; return nil }
+
+	if err := c.RestartInPlace(context.Background()); err != nil {
+		t.Fatalf("RestartInPlace: %v", err)
+	}
+
+	c.BeginShutdown()
+
+	select {
+	case <-reExeced:
+		t.Fatal("pending re-exec must be cancelled once shutdown has started")
+	case <-time.After(reExecDelay + 250*time.Millisecond):
+	}
+}
+
+// A second upgrade request while an earlier one is still scheduled must be
+// refused: two scheduled re-execs race each other and the second POST only
+// produces a failed upload against the dying image (issue #137).
+func TestUpgradeInstanceManagerRefusedWhileAnotherPending(t *testing.T) {
+	t.Cleanup(func() { inPlaceUpgrading.Store(false) })
+	c, _ := newController(t, &fakeSupervisor{pid: 777})
+	c.writeManager = func(io.Reader, string) error { return nil }
+	reExecs := make(chan int, 2)
+	c.reExecOnDisk = func(pid int) error { reExecs <- pid; return nil }
+
+	if err := c.UpgradeInstanceManager(context.Background(), strings.NewReader("first"), "h1"); err != nil {
+		t.Fatalf("first UpgradeInstanceManager: %v", err)
+	}
+	if err := c.UpgradeInstanceManager(context.Background(), strings.NewReader("second"), "h2"); err == nil {
+		t.Error("expected a second upgrade while one is pending to be refused")
+	}
+
+	// The first scheduled re-exec still fires; the refused request must not have
+	// scheduled a second one.
+	select {
+	case pid := <-reExecs:
+		if pid != 777 {
+			t.Errorf("re-exec pid = %d, want 777", pid)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first re-exec was never scheduled")
+	}
+	select {
+	case pid := <-reExecs:
+		t.Errorf("unexpected second re-exec with pid %d", pid)
+	case <-time.After(reExecDelay + 250*time.Millisecond):
+	}
+}
+
 func TestNewControllerRejectsBadVersion(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {

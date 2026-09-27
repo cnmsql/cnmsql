@@ -67,6 +67,11 @@ func SetInPlaceUpgrading() { inPlaceUpgrading.Store(true) }
 // IsInPlaceUpgrading reports whether an in-place upgrade is in flight.
 func IsInPlaceUpgrading() bool { return inPlaceUpgrading.Load() }
 
+// ClearInPlaceUpgrading records that the scheduled in-place upgrade did not
+// happen (its re-exec was cancelled before the exec), so the flag stops
+// reporting an upgrade that is no longer in flight.
+func ClearInPlaceUpgrading() { inPlaceUpgrading.Store(false) }
+
 // inPlaceUpgradeGrace is how long the in-place-upgrading flag stays set in the
 // re-exec'd manager after it adopts mysqld, giving the operator's failover
 // path a window to see it and extend the grace period.

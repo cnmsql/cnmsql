@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
@@ -188,11 +189,17 @@ const (
 	// provisioningRequeue paces reconciles while the instance is still coming up.
 	provisioningRequeue = 10 * time.Second
 	// readyResync re-polls the instance manager once the cluster is ready so the
-	// reported status (GTID, role, readiness) does not go stale between events.
+	// reported status (GTID, roles, readiness) does not go stale between events.
 	readyResync = 30 * time.Second
 	// deRouteGracePeriod bounds how long an established replica may be unreachable
 	// before the operator pulls it out of the ro/r routing Services.
 	deRouteGracePeriod = 30 * time.Second
+	// defaultInPlaceUpgradeDedupWindow is how long after streaming an in-place
+	// manager upgrade to an instance the same instance is not streamed again:
+	// the re-exec'd manager needs a moment to boot and report the new hash, and
+	// an event-triggered reconcile in between must not POST a second binary
+	// (issue #137).
+	defaultInPlaceUpgradeDedupWindow = 60 * time.Second
 )
 
 // InstanceControlClient reads instance state over the mTLS control API. Role
@@ -247,6 +254,17 @@ type ClusterReconciler struct {
 	// streamed to instances during an in-place upgrade. It defaults to opening
 	// os.Executable() and is overridable in tests.
 	openOperatorBinary func() (io.ReadCloser, error)
+	// inPlaceUpgradeAttempts records when an in-place manager upgrade was last
+	// streamed per cluster/instance, so an event-triggered reconcile landing
+	// while the re-exec'd manager is still booting does not stream a second
+	// binary to the same manager (issue #137). Guarded by its mutex; entries
+	// older than the dedup window are pruned on write.
+	inPlaceUpgradeAttemptsMu sync.Mutex
+	inPlaceUpgradeAttempts   map[string]time.Time
+	// inPlaceUpgradeDedupWindow bounds how long after an in-place upgrade
+	// attempt the same instance is not streamed again. Zero means the default.
+	// Set only in tests.
+	inPlaceUpgradeDedupWindow time.Duration
 	// podMonitorAvailable records whether the Prometheus Operator PodMonitor CRD
 	// is installed. PodMonitor support is fully opt-in: when the CRD is absent we
 	// neither watch nor reconcile PodMonitors, so the operator runs without the
