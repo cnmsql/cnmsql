@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,15 +47,25 @@ type memStore struct {
 	removed    []string
 	uploadErr  error
 	putJSONErr error
+	// hang makes Upload take the first bytes and then stop reading until its
+	// context ends, like an object store that stopped accepting the part.
+	hang bool
 }
 
 func newMemStore() *memStore {
 	return &memStore{objects: map[string][]byte{}, json: map[string]any{}}
 }
 
-func (m *memStore) Upload(_ context.Context, _, key string, r io.Reader, _ int64, _ string) error {
+func (m *memStore) Upload(ctx context.Context, _, key string, r io.Reader, _ int64, _ string) error {
 	if m.uploadErr != nil {
 		return m.uploadErr
+	}
+	if m.hang {
+		if _, err := r.Read(make([]byte, 8)); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
 	}
 	b, err := io.ReadAll(r)
 	if err != nil {
@@ -346,14 +357,14 @@ func TestLogicalUploadStoreFailureIsNotADumpFailure(t *testing.T) {
 	}
 }
 
-// A source or store that stops responding mid-upload must fail the backup
-// with a stall reason instead of hanging until the Job's active deadline.
-func TestLogicalUploadStallIsObjectStoreStalled(t *testing.T) {
+// A source that stops sending mid-dump must fail the backup as SourceStalled
+// instead of hanging until the Job's active deadline.
+func TestLogicalUploadSourceStallIsSourceStalled(t *testing.T) {
 	fastStall(t, 50*time.Millisecond)
 	store, err := runAgainst(t, &sourceServer{body: sampleDump, stall: true})
 	var f *backupworker.Failure
-	if !errors.As(err, &f) || f.Reason != backupworker.ReasonObjectStoreStalled {
-		t.Fatalf("err = %v, want ObjectStoreStalled", err)
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonSourceStalled {
+		t.Fatalf("err = %v, want SourceStalled", err)
 	}
 	if !strings.Contains(err.Error(), "no bytes moved") {
 		t.Fatalf("error does not describe the stall: %v", err)
@@ -363,6 +374,37 @@ func TestLogicalUploadStallIsObjectStoreStalled(t *testing.T) {
 	}
 	if len(store.json) != 0 {
 		t.Fatalf("manifest written for a stalled upload: %v", store.json)
+	}
+}
+
+// An object store that stops accepting bytes fails the backup as
+// ObjectStoreStalled.
+func TestLogicalUploadStoreStallIsObjectStoreStalled(t *testing.T) {
+	fastStall(t, 50*time.Millisecond)
+	store := newMemStore()
+	store.hang = true
+	err := runWithStore(t, store, &sourceServer{body: strings.Repeat("INSERT INTO t VALUES (1);\n", 50000)})
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonObjectStoreStalled {
+		t.Fatalf("err = %v, want ObjectStoreStalled", err)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written for a stalled upload: %v", store.json)
+	}
+}
+
+// A dump that outgrew its multipart part size fails as ArchiveTooLarge, with
+// no manifest: the store removed the short object.
+func TestLogicalUploadTooLargeIsArchiveTooLarge(t *testing.T) {
+	store := newMemStore()
+	store.uploadErr = fmt.Errorf("uploading s3://b/k: %w", objectstore.ErrUploadTooLarge)
+	err := runWithStore(t, store, &sourceServer{body: sampleDump})
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonArchiveTooLarge {
+		t.Fatalf("err = %v, want ArchiveTooLarge", err)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written for a truncated upload: %v", store.json)
 	}
 }
 

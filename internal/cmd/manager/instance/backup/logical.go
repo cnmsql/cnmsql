@@ -137,8 +137,12 @@ func runLogicalUpload(
 		return &backupworker.Failure{Reason: reason, Err: err}
 	}
 	switch {
-	case uploadErr != nil && (uploadReader.Stalled() || errors.Is(uploadErr, objectstore.ErrStalled)):
-		return fail(backupworker.ReasonObjectStoreStalled, stallFailure(uploadErr))
+	case uploadErr != nil && (uploadReader.Stalled() || errors.Is(uploadErr, objectstore.ErrStalled) ||
+		errors.Is(uploadErr, objectstore.ErrUploadTooLarge)):
+		if failure, ok := errors.AsType[*backupworker.Failure](uploadFailure(uploadReader, uploadErr)); ok {
+			return fail(failure.Reason, failure.Err)
+		}
+		return fail("", uploadErr)
 	case copyErr != nil && !errors.Is(copyErr, errUploadClosed):
 		return fail(backupworker.ReasonDumpFailed, fmt.Errorf("backup: %w", copyErr))
 	case uploadErr != nil:

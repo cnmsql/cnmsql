@@ -323,6 +323,18 @@ status, and Events:
 - object-store upload/download failure;
 - checksum mismatch;
 - failed restore prepare or copy-back;
+- a stalled stream: the worker fails the Backup after five minutes without
+  progress instead of waiting for the Job's `activeDeadline`, with reason
+  `SourceStalled` when the source instance stopped sending (XtraBackup hung,
+  for example behind a lock) or `ObjectStoreStalled` when the object store
+  stopped accepting bytes. A restore download that receives nothing for five
+  minutes fails the same way;
+- an archive too large for its upload: the worker sizes its multipart parts so
+  that twice the data volume size (`spec.storage.size`) fits in the 10,000-part
+  S3 limit, with 64MiB parts at least. A stream that still outgrows that fails
+  the Backup with reason `ArchiveTooLarge` and removes the short object, instead
+  of recording a truncated archive as complete. Grow `spec.storage.size` to
+  raise the limit;
 - raw-S3 recovery: `source` does not name an `externalClusters` entry;
 - raw-S3 recovery: the referenced external cluster entry has no `objectStore`;
 - raw-S3 recovery: no base backups found under the source prefix;

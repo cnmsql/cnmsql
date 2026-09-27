@@ -43,12 +43,36 @@ const (
 var uploadStallTimeout = objectstore.DefaultStallTimeout
 
 // stallFailure turns a stall-detected upload error into the failure reason the
-// operator surfaces on the Backup, distinct from BackoffLimitExceeded.
-func stallFailure(err error) error {
+// operator surfaces on the Backup, distinct from BackoffLimitExceeded: which
+// side stopped decides between SourceStalled and ObjectStoreStalled.
+func stallFailure(side objectstore.StallSide, err error) error {
+	if side == objectstore.StallSource {
+		return &backupworker.Failure{
+			Reason: backupworker.ReasonSourceStalled,
+			Err:    fmt.Errorf("backup: the source instance sent nothing for %s: %w", uploadStallTimeout, err),
+		}
+	}
 	return &backupworker.Failure{
 		Reason: backupworker.ReasonObjectStoreStalled,
 		Err:    fmt.Errorf("backup: upload to the object store made no progress for %s: %w", uploadStallTimeout, err),
 	}
+}
+
+// uploadFailure classifies an upload error: a stall by the side that stopped,
+// a stream that outgrew its part size as ArchiveTooLarge, anything else as
+// itself.
+func uploadFailure(watch *objectstore.StallWatchReader, err error) error {
+	switch {
+	case watch.Stalled() || errors.Is(err, objectstore.ErrStalled):
+		return stallFailure(watch.StalledSide(), err)
+	case errors.Is(err, objectstore.ErrUploadTooLarge):
+		return &backupworker.Failure{
+			Reason: backupworker.ReasonArchiveTooLarge,
+			Err: fmt.Errorf("backup: %w; the stream is larger than twice the data volume size "+
+				"the part size was chosen for", err),
+		}
+	}
+	return err
 }
 
 // uploadOptions configures the backup worker that streams a backup from a
@@ -72,6 +96,10 @@ type uploadOptions struct {
 	TLSCA                   string
 	Compress                bool
 	SHA256                  bool
+	// ExpectedSizeBytes estimates the stream size (the data volume size); it
+	// picks the multipart part size so the upload fits the 10000-part limit.
+	// Zero keeps the default part size.
+	ExpectedSizeBytes int64
 	// Databases and DumpArgs configure a logical dump.
 	Databases []string
 	DumpArgs  []string
@@ -111,6 +139,7 @@ func (o uploadOptions) validate() error {
 type archiveStore interface {
 	Upload(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error
 	PutJSON(ctx context.Context, bucket, key string, v any) error
+	Remove(ctx context.Context, bucket, key string) error
 }
 
 // runUpload streams the source instance's XtraBackup archive over mTLS straight
@@ -125,6 +154,9 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	if err != nil {
 		return err
 	}
+	// Size the multipart parts for the data volume: the default 64MiB parts
+	// cap a stream at ~625GiB, and the part size is also the upload buffer.
+	store.SetUploadPartSize(objectstore.UploadPartSizeFor(opts.ExpectedSizeBytes))
 
 	client, err := mtlsClient(opts)
 	if err != nil {
@@ -177,10 +209,7 @@ func runPhysicalUpload(ctx context.Context, opts uploadOptions, store archiveSto
 	defer func() { _ = watch.Close() }()
 	log.Info("Uploading backup archive to object store")
 	if err := store.Upload(uploadCtx, opts.Bucket, opts.ArchiveKey, watch, -1, "application/octet-stream"); err != nil {
-		if watch.Stalled() || errors.Is(err, objectstore.ErrStalled) {
-			return stallFailure(err)
-		}
-		return err
+		return uploadFailure(watch, err)
 	}
 	completedAt := time.Now().UTC()
 

@@ -199,6 +199,9 @@ The Backup's `Degraded` condition carries the reason:
 | `InvalidDumpRequest` | A database in `logical.databases` does not exist, or the cluster has no application database. |
 | `DumpInProgress` | Another dump was still running on the source instance. |
 | `DumpFailed` | The dump tool failed, or the stream ended without its completion footer. No manifest is written and the partial dump is removed. |
+| `SourceStalled` | The source instance sent nothing for five minutes. The partial dump is removed. |
+| `ObjectStoreStalled` | The object store accepted nothing for five minutes. The partial dump is removed. |
+| `ArchiveTooLarge` | The compressed dump outgrew the largest object its multipart part size allows (sized for twice the data volume). The short object is removed; grow `spec.storage.size` to raise the limit. |
 | `ManifestMissing` | The worker Job succeeded, but `logical.json` is missing from the object store or is not a valid manifest. Other errors reading it, such as the store being unreachable, are retried and leave the Backup running. |
 
 ## Object-store layout
@@ -491,7 +494,7 @@ one got part of the way).
 | `JobConflict` | no | A Job with the restore's worker Job name exists and belongs to something else, for example a deleted restore of the same name. |
 | `LoadFailed` | maybe | The SQL client failed (its error is in the message), or the connection dropped mid-load. |
 | `DumpCorrupt` | maybe | The dump does not match its checksum or has no completion footer. The load stopped before its last statement. |
-| `DownloadFailed` | maybe | The object store failed mid-stream. |
+| `DownloadFailed` | maybe | The object store failed mid-stream, or sent nothing for five minutes. |
 | `JobMissing` | maybe | The worker Job was deleted while the restore ran. |
 
 Deleting a running `LogicalRestore` deletes its Job, which stops the load

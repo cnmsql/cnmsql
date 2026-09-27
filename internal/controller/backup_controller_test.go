@@ -187,6 +187,35 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 	}
 }
 
+// The worker sizes its multipart parts for the data volume, so a stream larger
+// than the default part size allows (~625GiB) still uploads whole.
+func TestBackupWorkerJobCarriesTheDataVolumeSize(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	cluster.Spec.Storage.Size = "1Ti"
+	backup := baseBackup()
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod()).
+			Build(),
+		Scheme: scheme,
+	}
+	reconcileBackup(t, reconciler, backup)
+
+	job := &batchv1.Job{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample-backup"}, job); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+	if want := "--expected-size-bytes=1099511627776"; !strings.Contains(args, want) {
+		t.Fatalf("worker args missing %q:\n%s", want, args)
+	}
+}
+
 // The API server creates the worker Job asynchronously, so the read that
 // follows the create can miss it. That must requeue, not error out and flap the
 // Backup back to Failed.

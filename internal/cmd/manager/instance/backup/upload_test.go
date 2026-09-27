@@ -19,6 +19,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,9 +31,9 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
-// A source or store that stops responding mid-upload must fail the backup
-// with a stall reason instead of hanging until the Job's active deadline.
-func TestPhysicalUploadStallIsObjectStoreStalled(t *testing.T) {
+// A source that stops sending mid-upload must fail the backup as
+// SourceStalled instead of hanging until the Job's active deadline.
+func TestPhysicalUploadSourceStallIsSourceStalled(t *testing.T) {
 	fastStall(t, 50*time.Millisecond)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -54,14 +55,61 @@ func TestPhysicalUploadStallIsObjectStoreStalled(t *testing.T) {
 	opts.Method = methodXtrabackup
 	err := runPhysicalUpload(context.Background(), opts, store, srv.Client())
 	var f *backupworker.Failure
-	if !errors.As(err, &f) || f.Reason != backupworker.ReasonObjectStoreStalled {
-		t.Fatalf("err = %v, want ObjectStoreStalled", err)
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonSourceStalled {
+		t.Fatalf("err = %v, want SourceStalled", err)
 	}
 	if !strings.Contains(err.Error(), "no bytes moved") {
 		t.Fatalf("error does not describe the stall: %v", err)
 	}
 	if len(store.json) != 0 {
 		t.Fatalf("manifest written for a stalled upload: %v", store.json)
+	}
+}
+
+// An object store that stops accepting bytes fails the backup as
+// ObjectStoreStalled.
+func TestPhysicalUploadStoreStallIsObjectStoreStalled(t *testing.T) {
+	fastStall(t, 50*time.Millisecond)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("xtrabackup archive chunk\n", 50000))
+	}))
+	t.Cleanup(srv.Close)
+
+	store := newMemStore()
+	store.hang = true
+	opts := logicalOpts(srv.URL)
+	opts.Method = methodXtrabackup
+	err := runPhysicalUpload(context.Background(), opts, store, srv.Client())
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonObjectStoreStalled {
+		t.Fatalf("err = %v, want ObjectStoreStalled", err)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written for a stalled upload: %v", store.json)
+	}
+}
+
+// An archive that outgrew its multipart part size fails as ArchiveTooLarge
+// with no manifest, instead of recording a truncated backup as complete.
+func TestPhysicalUploadTooLargeIsArchiveTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "xtrabackup archive chunk\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	store := newMemStore()
+	store.uploadErr = fmt.Errorf("uploading s3://b/k: %w", objectstore.ErrUploadTooLarge)
+	opts := logicalOpts(srv.URL)
+	opts.Method = methodXtrabackup
+	err := runPhysicalUpload(context.Background(), opts, store, srv.Client())
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonArchiveTooLarge {
+		t.Fatalf("err = %v, want ArchiveTooLarge", err)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written for a truncated upload: %v", store.json)
 	}
 }
 
