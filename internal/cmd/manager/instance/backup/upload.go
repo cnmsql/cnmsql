@@ -20,11 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -34,6 +36,20 @@ const (
 	methodXtrabackup = "xtrabackup"
 	methodLogical    = "logical"
 )
+
+// uploadStallTimeout bounds how long an upload may see no bytes move before it
+// is failed as stalled. Tests shorten it; production uses the objectstore
+// default (5 minutes).
+var uploadStallTimeout = objectstore.DefaultStallTimeout
+
+// stallFailure turns a stall-detected upload error into the failure reason the
+// operator surfaces on the Backup, distinct from BackoffLimitExceeded.
+func stallFailure(err error) error {
+	return &backupworker.Failure{
+		Reason: backupworker.ReasonObjectStoreStalled,
+		Err:    fmt.Errorf("backup: upload to the object store made no progress for %s: %w", uploadStallTimeout, err),
+	}
+}
 
 // uploadOptions configures the backup worker that streams a backup from a
 // source instance to object storage.
@@ -91,6 +107,12 @@ func (o uploadOptions) validate() error {
 	return nil
 }
 
+// archiveStore is the part of the object-store client a physical upload uses.
+type archiveStore interface {
+	Upload(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error
+	PutJSON(ctx context.Context, bucket, key string, v any) error
+}
+
 // runUpload streams the source instance's XtraBackup archive over mTLS straight
 // into object storage, checksumming it in flight, then writes an inspectable
 // metadata manifest alongside it.
@@ -98,12 +120,6 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	if err := opts.validate(); err != nil {
 		return err
 	}
-	log := logf.FromContext(ctx).WithName("backup-upload").WithValues(
-		"sourceURL", opts.SourceManagerURL,
-		"bucket", opts.Bucket,
-		"archiveKey", opts.ArchiveKey,
-		"backupID", opts.BackupID,
-	)
 
 	store, err := objectstore.NewClientFromEnv()
 	if err != nil {
@@ -120,6 +136,19 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 		// 030): the source instance manager reads the dump Secret itself.
 		return runLogicalUpload(ctx, opts, store, client)
 	}
+	return runPhysicalUpload(ctx, opts, store, client)
+}
+
+// runPhysicalUpload pulls the archive stream from the source instance manager
+// and uploads it. It is split from runUpload so tests can run it against a
+// plain HTTP server and a fake store.
+func runPhysicalUpload(ctx context.Context, opts uploadOptions, store archiveStore, client *http.Client) error {
+	log := logf.FromContext(ctx).WithName("backup-upload").WithValues(
+		"sourceURL", opts.SourceManagerURL,
+		"bucket", opts.Bucket,
+		"archiveKey", opts.ArchiveKey,
+		"backupID", opts.BackupID,
+	)
 
 	startedAt := time.Now().UTC()
 	log.Info("Requesting backup stream from source instance")
@@ -137,10 +166,20 @@ func runUpload(ctx context.Context, opts uploadOptions) error {
 	}
 
 	// Stream the archive straight to the object store, checksumming in flight. A
-	// negative size lets the SDK use multipart uploads of an unknown length.
+	// negative size lets the SDK use multipart uploads of an unknown length. The
+	// stall watchdog cancels the upload context when bytes stop moving, so a
+	// hung store or source fails the backup instead of riding out the Job's
+	// active deadline.
 	reader := objectstore.NewSHA256Reader(resp.Body)
+	uploadCtx, cancelUpload := context.WithCancel(ctx)
+	defer cancelUpload()
+	watch := objectstore.NewStallWatchReader(reader, uploadStallTimeout, cancelUpload)
+	defer func() { _ = watch.Close() }()
 	log.Info("Uploading backup archive to object store")
-	if err := store.Upload(ctx, opts.Bucket, opts.ArchiveKey, reader, -1, "application/octet-stream"); err != nil {
+	if err := store.Upload(uploadCtx, opts.Bucket, opts.ArchiveKey, watch, -1, "application/octet-stream"); err != nil {
+		if watch.Stalled() || errors.Is(err, objectstore.ErrStalled) {
+			return stallFailure(err)
+		}
 		return err
 	}
 	completedAt := time.Now().UTC()

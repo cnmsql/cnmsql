@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 )
 
 // listBackupArchive is the S3 LIST response for a single backup's archive
@@ -737,6 +739,72 @@ func TestBackupFailsWithJobFailureReason(t *testing.T) {
 	cond := apimeta.FindStatusCondition(updated.Status.Conditions, mysqlv1alpha1.ConditionDegraded)
 	if cond == nil || cond.Reason != "DeadlineExceeded" {
 		t.Fatalf("degraded condition = %#v, want reason DeadlineExceeded", cond)
+	}
+}
+
+// A worker that gave up because its upload stopped making progress reports
+// ObjectStoreStalled in its termination message; the Backup must surface that
+// reason rather than the Job's generic BackoffLimitExceeded.
+func TestBackupFailsWithObjectStoreStalledReason(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	backup := baseBackup()
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "backup-sample-backup", Namespace: "default"},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+			Type:   batchv1.JobFailed,
+			Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded",
+		}}},
+	}
+	msg, err := json.Marshal(backupworker.TerminationMessage{
+		Reason:  backupworker.ReasonObjectStoreStalled,
+		Message: "backup: upload to the object store made no progress for 5m0s: no bytes moved for 5m0s: context canceled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "backup-sample-backup-attempt",
+			Namespace: "default",
+			Labels:    map[string]string{batchv1.JobNameLabel: "backup-sample-backup"},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: backupWorkerContainer,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Message: string(msg),
+				}},
+			}},
+		},
+	}
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(cluster, backup, readyReplicaPod(), job, workerPod).
+			Build(),
+		Scheme: scheme,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	updated := &mysqlv1alpha1.Backup{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != mysqlv1alpha1.BackupPhaseFailed {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, mysqlv1alpha1.BackupPhaseFailed)
+	}
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, mysqlv1alpha1.ConditionDegraded)
+	if cond == nil || cond.Reason != backupworker.ReasonObjectStoreStalled {
+		t.Fatalf("degraded condition = %#v, want reason %s", cond, backupworker.ReasonObjectStoreStalled)
+	}
+	if !strings.Contains(updated.Status.Error, "no bytes moved") {
+		t.Fatalf("error = %q, want the worker's stall message", updated.Status.Error)
 	}
 }
 
