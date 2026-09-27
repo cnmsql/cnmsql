@@ -102,6 +102,11 @@ type RunOptions struct {
 	// Pod: the writable primary stamps a replicated table, every instance reads it
 	// back to measure how many seconds of writes it is behind by.
 	Heartbeat *HeartbeatConfig
+	// MaxReadyLag, when above zero, is the replica readiness lag bound: a replica
+	// whose heartbeat lag exceeds it fails /readyz, so the kubelet holds it out
+	// of the read Services until it has caught up. Zero leaves readiness exactly
+	// as before: replication threads running is enough.
+	MaxReadyLag time.Duration
 	// SemiSyncEnabled installs and enables the semi-synchronous replication
 	// plugins after mysqld starts. The initial wait/timeout values mirror the
 	// rendered loose- my.cnf values, but are applied explicitly after plugin load.
@@ -586,6 +591,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 		defer cancelHeartbeat()
 		heartbeatLoop = startHeartbeat(heartbeatCtx, *opts.Heartbeat, db)
 		controller.SetReplicationLagProvider(heartbeatStatusProvider(heartbeatLoop))
+	}
+	if opts.MaxReadyLag > 0 {
+		log.Info("Enabling replica readiness lag gate", "maxReadyLag", opts.MaxReadyLag)
+		controller.SetReadyLagGate(opts.MaxReadyLag)
 	}
 
 	var cm *webserver.TLSCertManager

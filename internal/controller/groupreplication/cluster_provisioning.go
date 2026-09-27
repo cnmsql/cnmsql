@@ -110,7 +110,7 @@ func (r *Reconciler) PodPolicy(*mysqlv1alpha1.Cluster) topology.PodPolicy {
 }
 
 // PublishNotReadyAddresses excludes non-ONLINE GR members from every route.
-func (r *Reconciler) PublishNotReadyAddresses(mysqlv1alpha1.ServiceSelectorType) bool {
+func (r *Reconciler) PublishNotReadyAddresses(*mysqlv1alpha1.Cluster, mysqlv1alpha1.ServiceSelectorType) bool {
 	return false
 }
 

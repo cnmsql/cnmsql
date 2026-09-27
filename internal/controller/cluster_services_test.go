@@ -17,9 +17,12 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -46,6 +49,27 @@ var _ = Describe("buildRoutingService", func() {
 		r := (&ClusterReconciler{}).buildRoutingService(cluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
 		Expect(r.Spec.Selector).NotTo(HaveKey(roleLabel))
 		Expect(r.Spec.PublishNotReadyAddresses).To(BeTrue())
+	})
+
+	It("excludes not-ready addresses from ro/r once a readiness lag bound is set", func() {
+		// With spec.replication.maxReadyLag configured, readiness itself decides
+		// which replicas serve reads: a lagging replica fails /readyz and must
+		// leave the read Services until it has caught up.
+		lagCluster := &mysqlv1alpha1.Cluster{}
+		lagCluster.Name = scheduledTestCluster
+		lagCluster.Namespace = "ns"
+		lagCluster.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
+			MaxReadyLag: &metav1.Duration{Duration: 30 * time.Second},
+		}
+
+		ro := (&ClusterReconciler{}).buildRoutingService(lagCluster, scheduledTestCluster+"-ro", mysqlv1alpha1.ServiceSelectorTypeRO, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		Expect(ro.Spec.PublishNotReadyAddresses).To(BeFalse())
+
+		r := (&ClusterReconciler{}).buildRoutingService(lagCluster, scheduledTestCluster+"-r", mysqlv1alpha1.ServiceSelectorTypeR, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		Expect(r.Spec.PublishNotReadyAddresses).To(BeFalse())
+
+		rw := (&ClusterReconciler{}).buildRoutingService(lagCluster, scheduledTestCluster+"-rw", mysqlv1alpha1.ServiceSelectorTypeRW, nil, mysqlv1alpha1.ServiceUpdateStrategyPatch)
+		Expect(rw.Spec.PublishNotReadyAddresses).To(BeFalse())
 	})
 
 	It("excludes not-ready members from ro/r under Group Replication", func() {

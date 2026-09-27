@@ -595,6 +595,37 @@ type ReplicationConfiguration struct {
 	// Heartbeat tunes the replication-lag heartbeat, which is on by default.
 	// +optional
 	Heartbeat *ReplicationHeartbeat `json:"heartbeat,omitempty"`
+
+	// MaxReadyLag is the maximum replication lag a replica may report and still
+	// be Ready. It shapes read traffic, not failover: a replica that is further
+	// behind than this bound keeps failing its readiness probe, so the Kubernetes
+	// endpoints controller holds it out of the -ro and -r Services and the
+	// Cluster reports Degraded until it has caught up. This closes the window in
+	// which a replica returning from a long outage — or scaled up from a volume
+	// cloned hours earlier — serves reads that are hours old while its
+	// replication threads are nominally running.
+	//
+	// The measurement is the heartbeat lag the instance already computes (see
+	// spec.replication.heartbeat): the age of the newest stamp it has applied,
+	// which grows in wall-clock seconds no matter how fast the applier chases
+	// the primary. The heartbeat must be enabled for the bound to have anything
+	// to read, so setting this bound while explicitly disabling the heartbeat is
+	// rejected. A replica that cannot produce a heartbeat reading at all —
+	// before its first stamp arrives, or while the heartbeat read is failing —
+	// is treated as over the bound rather than assumed caught up, so it stays
+	// out of the read Services until it can prove otherwise.
+	//
+	// It gates async replicas only. Under Group Replication a member is ready
+	// only once it is ONLINE, which already excludes a member that is still
+	// recovering; leave this unset there. It is also not a failover bound: what
+	// a replica may lose when promoted is governed by
+	// failoverPolicy.maxReplicationLag and failoverPolicy.maxTransactionsBehind.
+	//
+	// Leave it unset (or zero) to disable the gate, which is the default: a
+	// replica whose replication threads are running is Ready however far behind
+	// it is.
+	// +optional
+	MaxReadyLag *metav1.Duration `json:"maxReadyLag,omitempty"`
 }
 
 // GroupReplicationConfiguration tunes MySQL Group Replication. All fields map to

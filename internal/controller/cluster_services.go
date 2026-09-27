@@ -146,12 +146,14 @@ func (r *ClusterReconciler) buildRoutingService(
 		{Name: mysqlPortName, Port: 3306, TargetPort: intstr.FromString(mysqlPortName)},
 	}
 	// The rw Service must never publish a not-ready primary; under async, ro/r
-	// tolerate in-progress replicas so clients can discover them as they catch up.
-	// Under Group Replication readiness tracks the member's group state (ONLINE),
-	// and a non-ONLINE member (RECOVERING/ERROR/UNREACHABLE) does not serve
+	// tolerate in-progress replicas so clients can discover them as they catch
+	// up — unless the cluster configures a readiness lag bound, in which case
+	// readiness itself decides which replicas serve reads. Under Group
+	// Replication readiness tracks the member's group state (ONLINE), and a
+	// non-ONLINE member (RECOVERING/ERROR/UNREACHABLE) does not serve
 	// consistent reads, so ro/r must exclude not-ready members too — routing by
 	// group role falls out of the readiness bridge.
-	publishNotReady := r.topologyReconciler(cluster).PublishNotReadyAddresses(role)
+	publishNotReady := r.topologyReconciler(cluster).PublishNotReadyAddresses(cluster, role)
 
 	var labels, annotations map[string]string
 	if strategy == mysqlv1alpha1.ServiceUpdateStrategyReplace {

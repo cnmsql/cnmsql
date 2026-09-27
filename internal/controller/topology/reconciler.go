@@ -273,7 +273,7 @@ type Reconciler interface {
 	)
 	DonorAvailable(observed Observation, failover FailoverState) bool
 	PodPolicy(cluster *mysqlv1alpha1.Cluster) PodPolicy
-	PublishNotReadyAddresses(role mysqlv1alpha1.ServiceSelectorType) bool
+	PublishNotReadyAddresses(cluster *mysqlv1alpha1.Cluster, role mysqlv1alpha1.ServiceSelectorType) bool
 	InstancePolicyRules(cluster *mysqlv1alpha1.Cluster) []rbacv1.PolicyRule
 	ReconcileInstanceRBAC(
 		ctx context.Context,

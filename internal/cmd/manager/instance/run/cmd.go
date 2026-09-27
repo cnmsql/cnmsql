@@ -69,6 +69,7 @@ func NewCommand() *cobra.Command {
 		archiveRPOSeconds int
 		archivePurge      bool
 		heartbeatMillis   int
+		maxReadyLagMillis int
 		mysqlbinlogPath   string
 		semiSync          bool
 		semiSyncWait      int
@@ -203,6 +204,7 @@ func NewCommand() *cobra.Command {
 				Backup:                backup,
 				Archiving:             archive,
 				Heartbeat:             beat,
+				MaxReadyLag:           time.Duration(maxReadyLagMillis) * time.Millisecond,
 				SemiSyncEnabled:       semiSync,
 				SemiSyncWaitCount:     semiSyncWait,
 				SemiSyncTimeoutMillis: semiSyncTimeout,
@@ -262,6 +264,8 @@ func NewCommand() *cobra.Command {
 			"governs expiry instead, so binlogs stay on disk long enough for a lagged or returning replica to catch up")
 	cmd.Flags().IntVar(&heartbeatMillis, "heartbeat-interval-millis", 0,
 		"Stamp the replication-lag heartbeat table this often on the primary; 0 disables the heartbeat")
+	cmd.Flags().IntVar(&maxReadyLagMillis, "max-ready-lag-millis", 0,
+		"Fail readiness for a replica whose heartbeat lag exceeds this many milliseconds; 0 disables the lag gate")
 	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Path to the mysqlbinlog binary (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")
 	cmd.Flags().BoolVar(&semiSync, "semi-sync", false, "Install and enable semi-synchronous replication plugins")
 	cmd.Flags().IntVar(&semiSyncWait, "semi-sync-wait-for-replica-count", 0, "Initial semi-sync acknowledgement count")
