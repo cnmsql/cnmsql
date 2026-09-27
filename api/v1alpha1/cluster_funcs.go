@@ -456,7 +456,12 @@ func (cluster *Cluster) IsHeartbeatEnabled() bool {
 // HeartbeatInterval returns how often the primary stamps the heartbeat table,
 // defaulting to one second.
 func (cluster *Cluster) HeartbeatInterval() time.Duration {
-	hb := cluster.heartbeat()
+	return clusterHeartbeatInterval(cluster.heartbeat())
+}
+
+// clusterHeartbeatInterval returns the heartbeat stamping interval of the given
+// heartbeat block, one second when unset.
+func clusterHeartbeatInterval(hb *ReplicationHeartbeat) time.Duration {
 	if hb == nil || hb.Interval == nil || hb.Interval.Duration <= 0 {
 		return time.Second
 	}
@@ -599,6 +604,10 @@ func (cluster *Cluster) ResolvedGroupReplicationTunables() ResolvedGroupReplicat
 var groupNameRe = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// maxReadyLagIntervals is the smallest maxReadyLag, in heartbeat intervals,
+// that does not flap readiness on a caught-up replica.
+const maxReadyLagIntervals = 3
+
 // clusterHeartbeatEnabled reports whether the replication-lag heartbeat runs for
 // the given heartbeat block: it is on unless explicitly disabled.
 func clusterHeartbeatEnabled(hb *ReplicationHeartbeat) bool {
@@ -634,6 +643,15 @@ func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(
 				path.Child("maxReadyLag"),
 				"maxReadyLag reads the replication-lag heartbeat, which is explicitly disabled (replication.heartbeat.enabled)"))
+		case lag.Duration > 0 && lag.Duration < maxReadyLagIntervals*clusterHeartbeatInterval(spec.Replication.Heartbeat):
+			// The lag reading is the age of the newest applied stamp, which reaches
+			// a full interval between two stamps on a replica that is not behind
+			// at all: a bound that close to the interval flaps readiness.
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("maxReadyLag"), lag.Duration.String(),
+				fmt.Sprintf("maxReadyLag must be at least %d times the heartbeat interval (%s): the lag reading "+
+					"grows by up to one interval between stamps even on a caught-up replica",
+					maxReadyLagIntervals, clusterHeartbeatInterval(spec.Replication.Heartbeat))))
 		}
 	}
 

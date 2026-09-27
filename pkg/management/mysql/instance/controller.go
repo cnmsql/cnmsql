@@ -309,14 +309,18 @@ func (c *Controller) readyLagExceeded() error {
 	}
 	lag, err := c.heartbeatLag()
 	if err != nil {
-		return fmt.Errorf("replication lag gate is set to %s but no heartbeat lag reading is available: %w",
-			c.readyLag, err)
+		return fmt.Errorf("%w: the gate is set to %s but no heartbeat lag reading is available: %w",
+			errReadyLagGate, c.readyLag, err)
 	}
 	if lag > c.readyLag {
-		return fmt.Errorf("replication lag %s exceeds maxReadyLag %s", lag, c.readyLag)
+		return fmt.Errorf("%w: replication lag %s exceeds maxReadyLag %s", errReadyLagGate, lag, c.readyLag)
 	}
 	return nil
 }
+
+// errReadyLagGate marks a readiness failure caused only by the replica
+// readiness lag gate, so the status can report it as ReasonReplicationLag.
+var errReadyLagGate = errors.New("replica readiness lag gate")
 
 // heartbeatLag returns the heartbeat loop's latest lag reading. An error means
 // the reading is unavailable, not that the instance is lagging: the caller
@@ -400,7 +404,8 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 		return nil, err
 	}
 
-	ready := c.Readyz(ctx) == nil
+	readyErr := c.Readyz(ctx)
+	ready := readyErr == nil
 
 	// Prefer the live server version (@@GLOBAL.version) so the operator observes
 	// the actual running series during a major upgrade, not the configured image
@@ -418,6 +423,7 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 		ReadOnly:         roState.ReadOnly,
 		SuperReadOnly:    roState.SuperReadOnly,
 		IsReady:          ready,
+		NotReadyReason:   notReadyReason(readyErr),
 		UpgradeComplete:  ready && liveErr == nil && liveVersion != "",
 		InPlaceUpgrading: IsInPlaceUpgrading(),
 	}
@@ -474,6 +480,15 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 	}
 
 	return status, nil
+}
+
+// notReadyReason classifies a readiness failure for the status: the lag gate
+// alone is ReasonReplicationLag; anything else stays unclassified.
+func notReadyReason(readyErr error) string {
+	if errors.Is(readyErr, errReadyLagGate) {
+		return webserver.ReasonReplicationLag
+	}
+	return ""
 }
 
 // credentialMismatchStatus is the minimal status reported while mysqld rejects

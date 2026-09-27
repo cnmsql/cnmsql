@@ -253,6 +253,15 @@ part of ordinary scale-down. When the primary's ordinal is above the new count, 
 operator performs a planned switchover to an in-range replica first and removes
 the former primary afterwards; the cluster is not `Ready` until it has.
 
+A later scale-up reuses a retained PVC as it is: the instance starts from the
+data it held when it was removed and catches up from the primary's binary logs.
+By default it is Ready, and in the `-ro` and `-r` Services, as soon as its
+replication threads run, so it can serve reads that are as old as the volume
+until it has caught up. Set
+[spec.replication.maxReadyLag](./replication-failover.md#the-readiness-lag-gate)
+to hold it out of the read Services until it has, or delete the PVC before
+scaling up to clone the replica afresh.
+
 ## Operational notes
 
 - Use at least three instances when relying on automatic failover.

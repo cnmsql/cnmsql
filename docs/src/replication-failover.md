@@ -164,6 +164,22 @@ Two consequences worth knowing:
   bound rather than assumed caught up. The gate therefore requires the heartbeat,
   which is on by default; setting a bound while explicitly disabling the
   heartbeat is rejected at admission.
+- The bound must be at least three heartbeat intervals (3s with the default 1s
+  interval). The reading is the age of the newest applied stamp, so it grows by
+  up to one interval between stamps even on a replica that is not behind.
+- The reading compares the primary's clock with the replica's, so clock skew
+  between their nodes counts as lag. Keep the bound well above the skew your
+  NTP setup allows.
+- While the primary is down or cannot stamp the heartbeat (during a failover, or
+  a primary that cannot write), every replica's reading grows. Once it passes
+  the bound, every replica leaves `-ro` and `-r` until a primary stamps again,
+  so read traffic stops too. Pick a bound longer than a failover takes if reads
+  must survive one.
+
+A replica held back by the gate still replicates: the Cluster lists it as
+"behind maxReadyLag" in its Degraded reason, and with semi-synchronous
+replication it still counts towards the acknowledgement count, since it keeps
+acknowledging transactions.
 
 The gate shapes read traffic only. It never gates the primary (a promoted
 instance is Ready as soon as it accepts writes), it does not apply under Group

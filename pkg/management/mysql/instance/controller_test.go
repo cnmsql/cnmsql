@@ -369,6 +369,9 @@ func TestStatusMarksALaggedReplicaNotReady(t *testing.T) {
 	if status.IsReady {
 		t.Error("a replica over maxReadyLag must report itself not ready")
 	}
+	if status.NotReadyReason != webserver.ReasonReplicationLag {
+		t.Errorf("notReadyReason = %q, want %q", status.NotReadyReason, webserver.ReasonReplicationLag)
+	}
 	if status.ReplicationLag == nil || status.ReplicationLag.LagMillis == nil ||
 		*status.ReplicationLag.LagMillis != 8*time.Hour.Milliseconds() {
 		t.Errorf("status should carry the heartbeat reading: %+v", status.ReplicationLag)

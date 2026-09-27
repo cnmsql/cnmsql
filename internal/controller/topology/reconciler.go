@@ -93,6 +93,10 @@ type PrimaryLeaseStatus struct {
 // InstanceAvailability is the topology-neutral health view of one instance.
 type InstanceAvailability struct {
 	Ready bool
+	// LagGated is set when the instance is not Ready only because of the
+	// replica readiness lag gate: it replicates (and acknowledges semi-sync
+	// transactions) normally, it is just too far behind to serve reads.
+	LagGated bool
 }
 
 // AvailabilityState contains the observed state needed for topology-specific
