@@ -861,12 +861,15 @@ spec:
         # Reserve headroom so the store is not evicted under node memory pressure
         # mid-suite; a single-replica restart otherwise refuses connections for
         # the whole detach/reattach + boot window and flakes the backup specs.
+        # The limit must cover master, volume, filer and S3 in one process while
+        # parallel specs stream 64MiB multipart parts into it: at 768Mi the store
+        # was OOM-killed mid-upload, failing every backup in flight.
         resources:
           requests:
             cpu: 100m
             memory: 256Mi
           limits:
-            memory: 768Mi
+            memory: 2Gi
         readinessProbe:
           httpGet:
             path: /healthz

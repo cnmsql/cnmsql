@@ -109,6 +109,10 @@ func dumpBackupDiagnostics(backup string) {
 		{name: "backup worker job", args: []string{"describe", "job", job, "-n", testNamespace}},
 		{name: "backup worker pods", args: []string{"describe", "pods", "-n", testNamespace, "-l", "job-name=" + job}},
 		{name: "object store pods", args: []string{"get", "pods", "-n", currentObjectStoreNamespace, "-o", "wide"}},
+		// The describe carries the store container's last termination state, which
+		// tells an OOM kill from a crash or a liveness restart.
+		{name: "object store pod details",
+			args: []string{"describe", "pods", "-n", currentObjectStoreNamespace, "-l", "app=" + objectStoreName}},
 		{name: "object store logs", args: []string{"logs", store, "-n", currentObjectStoreNamespace, "--tail=200"}},
 		{name: "object store previous logs",
 			args: []string{"logs", store, "-n", currentObjectStoreNamespace, "--previous", "--tail=100"}},
