@@ -32,6 +32,10 @@ const (
 	ReasonInstanceManagerOutdated = "InstanceManagerOutdated"
 	// ReasonDumpFailed: the dump client failed, or the stream was cut short.
 	ReasonDumpFailed = "DumpFailed"
+	// ReasonObjectStoreStalled: the upload saw no bytes move for the stall
+	// deadline, from the source or the object store, and gave up instead of
+	// hanging until the Job's active deadline.
+	ReasonObjectStoreStalled = "ObjectStoreStalled"
 )
 
 // Failure reasons a logical restore worker reports on top of the ones the

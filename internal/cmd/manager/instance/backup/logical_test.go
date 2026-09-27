@@ -92,7 +92,10 @@ type sourceServer struct {
 	// refusals are served, in order, before the dump succeeds.
 	refusals []int
 	// abort cuts the stream short right after the response head.
-	abort    bool
+	abort bool
+	// stall sends the head and a first chunk and then stops responding, like a
+	// source that hung mid-dump.
+	stall    bool
 	body     string
 	trailer  map[string]string
 	requests []webserver.DumpRequest
@@ -134,6 +137,19 @@ func (s *sourceServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		panic(http.ErrAbortHandler)
 	}
+	if s.stall {
+		_, _ = io.WriteString(w, "-- MySQL dump 10.13\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Hang until the worker gives up on the stream (its watchdog cancels
+		// the request context) or the test server is torn down.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+		return
+	}
 	_, _ = io.WriteString(w, s.body)
 	for k, v := range s.trailer {
 		w.Header().Set(k, v)
@@ -161,6 +177,13 @@ func fastRetries(t *testing.T, timeout time.Duration) {
 	interval, total := dumpRetryInterval, dumpRetryTimeout
 	dumpRetryInterval, dumpRetryTimeout = 5*time.Millisecond, timeout
 	t.Cleanup(func() { dumpRetryInterval, dumpRetryTimeout = interval, total })
+}
+
+func fastStall(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	prev := uploadStallTimeout
+	uploadStallTimeout = timeout
+	t.Cleanup(func() { uploadStallTimeout = prev })
 }
 
 func runWithStore(t *testing.T, store *memStore, src *sourceServer) error {
@@ -320,6 +343,26 @@ func TestLogicalUploadStoreFailureIsNotADumpFailure(t *testing.T) {
 	}
 	if len(store.json) != 0 {
 		t.Fatalf("manifest written after a failed upload: %v", store.json)
+	}
+}
+
+// A source or store that stops responding mid-upload must fail the backup
+// with a stall reason instead of hanging until the Job's active deadline.
+func TestLogicalUploadStallIsObjectStoreStalled(t *testing.T) {
+	fastStall(t, 50*time.Millisecond)
+	store, err := runAgainst(t, &sourceServer{body: sampleDump, stall: true})
+	var f *backupworker.Failure
+	if !errors.As(err, &f) || f.Reason != backupworker.ReasonObjectStoreStalled {
+		t.Fatalf("err = %v, want ObjectStoreStalled", err)
+	}
+	if !strings.Contains(err.Error(), "no bytes moved") {
+		t.Fatalf("error does not describe the stall: %v", err)
+	}
+	if len(store.objects) != 0 || !slices.Contains(store.removed, "prod/shop/nightly/id/dump.sql.zst") {
+		t.Fatalf("stalled upload left the archive behind: objects=%v removed=%v", store.objects, store.removed)
+	}
+	if len(store.json) != 0 {
+		t.Fatalf("manifest written for a stalled upload: %v", store.json)
 	}
 }
 

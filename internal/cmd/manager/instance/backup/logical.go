@@ -76,7 +76,15 @@ func runLogicalUpload(
 	)
 
 	startedAt := time.Now().UTC()
-	resp, err := requestDump(logf.IntoContext(ctx, log), client, opts)
+
+	// The stall watchdog cancels this context when bytes stop moving through
+	// the upload, which aborts both the store upload and the dump stream
+	// feeding it: without it a hung store or source would hold the worker
+	// until the Job's active deadline.
+	stallCtx, cancelStall := context.WithCancel(ctx)
+	defer cancelStall()
+
+	resp, err := requestDump(logf.IntoContext(stallCtx, log), client, opts)
 	if err != nil {
 		return err
 	}
@@ -112,9 +120,11 @@ func runLogicalUpload(
 		copyDone <- err
 	}()
 	archive := objectstore.NewSHA256Reader(pr)
-	uploadErr := store.Upload(ctx, opts.Bucket, opts.ArchiveKey, archive, -1, "application/zstd")
-	// Unblock the copy if the upload gave up first.
+	uploadReader := objectstore.NewStallWatchReader(archive, uploadStallTimeout, cancelStall)
+	uploadErr := store.Upload(stallCtx, opts.Bucket, opts.ArchiveKey, uploadReader, -1, "application/zstd")
+	// Unblock the copy if the upload gave up first, then stop the watchdog.
 	pr.CloseWithError(errUploadClosed)
+	_ = uploadReader.Close()
 	copyErr := <-copyDone
 	completedAt := time.Now().UTC()
 
@@ -127,6 +137,8 @@ func runLogicalUpload(
 		return &backupworker.Failure{Reason: reason, Err: err}
 	}
 	switch {
+	case uploadErr != nil && (uploadReader.Stalled() || errors.Is(uploadErr, objectstore.ErrStalled)):
+		return fail(backupworker.ReasonObjectStoreStalled, stallFailure(uploadErr))
 	case copyErr != nil && !errors.Is(copyErr, errUploadClosed):
 		return fail(backupworker.ReasonDumpFailed, fmt.Errorf("backup: %w", copyErr))
 	case uploadErr != nil:
