@@ -418,7 +418,11 @@ spec:
     object created, is loaded into.
   - `DropAndRecreate` drops each selected database, then loads it from the dump.
     Grants on the database survive the drop, so `Database` and `DatabaseUser`
-    objects keep working.
+    objects keep working. A drop waits at most 10 seconds for an open
+    transaction on the database, then fails the restore with nothing changed.
+    With several databases, the tables of all of them are locked together
+    before the first drop, so a transaction holding any of them fails the
+    restore before any database is dropped.
 - `backup` names a completed logical Backup in the namespace. Instead, `source`
   (with an optional `backupID`) names an entry of the Cluster's
   `externalClusters`, as for an import.

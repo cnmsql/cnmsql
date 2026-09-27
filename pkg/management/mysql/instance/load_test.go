@@ -255,9 +255,17 @@ func TestLoadFailIfExistsRefusesANonEmptyDatabase(t *testing.T) {
 // session lock_wait_timeout: a DROP that pends on a metadata lock must never
 // occupy the instance's single control connection (issue 136), so no DROP may
 // reach the control pool at all.
+//
+// With several databases, their base tables are locked all at once before the
+// first drop: a blocker on any of them then fails the load before any database
+// is gone, instead of the second drop timing out after the first succeeded.
 func TestLoadDropAndRecreateDropsTheSelectedDatabases(t *testing.T) {
 	f := newLoadFixture(t, "")
 	f.expectReadOnly(0)
+	f.mock.ExpectQuery("SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES").
+		WithArgs("shop", "billing").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_SCHEMA", "TABLE_NAME"}).
+			AddRow("billing", "invoices").AddRow("shop", "orders"))
 
 	session, err := f.controller.StartLoad(context.Background(), webserver.LoadRequest{
 		Databases: []string{"shop", "billing"}, Policy: webserver.LoadPolicyDropAndRecreate,
@@ -275,6 +283,8 @@ func TestLoadDropAndRecreateDropsTheSelectedDatabases(t *testing.T) {
 	}
 	stdin := f.read(t, "stdin")
 	wantPreamble := "SET SESSION lock_wait_timeout = 10;\n" +
+		"LOCK TABLES `billing`.`invoices` WRITE, `shop`.`orders` WRITE;\n" +
+		"UNLOCK TABLES;\n" +
 		"DROP DATABASE IF EXISTS `shop`;\n" +
 		"DROP DATABASE IF EXISTS `billing`;\n" +
 		"SET SESSION lock_wait_timeout = DEFAULT;\n"
