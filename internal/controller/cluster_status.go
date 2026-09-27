@@ -97,6 +97,15 @@ type observedCluster struct {
 	// which a whole-cluster mismatch (a Secret changed without ALTER USER)
 	// would otherwise look like.
 	CredentialMismatchInstances []string
+	// LagGatedInstances are replicas whose only readiness failure is the
+	// replica readiness lag gate (spec.replication.maxReadyLag): replication is
+	// healthy, they are just too far behind to serve reads yet.
+	LagGatedInstances []string
+	// MissingCredentialSecrets are account Secrets deleted from a cluster with
+	// bootstrapped instances. The operator does not regenerate them (a fresh
+	// password would match no account), so the cluster reports Degraded until
+	// they are restored.
+	MissingCredentialSecrets []string
 	// ContinuousArchiving holds the primary's archiving frontier/health when
 	// continuous archiving is enabled; nil otherwise.
 	ContinuousArchiving *mysqlv1alpha1.ContinuousArchivingStatus
@@ -243,14 +252,31 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
 
-	bootstrapJobs, err := r.observeBootstrapJobs(ctx, cluster)
-	if err != nil {
+	if err := r.observeProvisioning(ctx, cluster, plan, &observed); err != nil {
 		return observedCluster{}, err
 	}
-	observed.BootstrapJobs = bootstrapJobs
 
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
+}
+
+// observeProvisioning records what can hold up provisioning instances: the
+// cluster's bootstrap Jobs and any deleted account Secret the operator must
+// not regenerate.
+func (r *ClusterReconciler) observeProvisioning(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed *observedCluster,
+) error {
+	bootstrapJobs, err := r.observeBootstrapJobs(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	observed.BootstrapJobs = bootstrapJobs
+	missingSecrets, err := r.missingCredentialSecrets(ctx, cluster, plan)
+	if err != nil {
+		return err
+	}
+	observed.MissingCredentialSecrets = missingSecrets
+	return nil
 }
 
 // collectCredentialMismatches lists the instances whose manager reported that
@@ -259,8 +285,15 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 // instance the operator cannot reach at all stays a reachability problem.
 func (o *observedCluster) collectCredentialMismatches() {
 	for _, name := range o.InstanceNames {
-		if status, ok := o.StatusByInstance[name]; ok && status.NotReadyReason == webserver.ReasonCredentialMismatch {
+		status, ok := o.StatusByInstance[name]
+		if !ok {
+			continue
+		}
+		switch status.NotReadyReason {
+		case webserver.ReasonCredentialMismatch:
 			o.CredentialMismatchInstances = append(o.CredentialMismatchInstances, name)
+		case webserver.ReasonReplicationLag:
+			o.LagGatedInstances = append(o.LagGatedInstances, name)
 		}
 	}
 }
@@ -367,6 +400,13 @@ func (o *observedCluster) computeClusterPhase(cluster *mysqlv1alpha1.Cluster, pl
 				o.Progressing = false
 			}
 			o.PhaseReason = bootstrapFailureReason(failedBootstrapJobs(o.BootstrapJobs))
+		case len(o.MissingCredentialSecrets) > 0:
+			// The instances keep serving on the password they last read, and the
+			// reconcile (failover included) carries on; what the cluster cannot do
+			// is bootstrap or restart an instance until the Secrets are back.
+			o.Phase = topology.PhaseDegraded
+			o.PhaseReason = fmt.Sprintf("credential Secret(s) missing: %s; %s",
+				strings.Join(o.MissingCredentialSecrets, ", "), missingCredentialAdvice)
 		case o.Ready:
 			o.Phase = topology.PhaseReady
 			o.PhaseReason = "All instances are ready"
@@ -468,6 +508,9 @@ func degradedReason(observed observedCluster, plan clusterPlan) string {
 	for _, name := range observed.CredentialMismatchInstances {
 		explained[name] = true
 	}
+	for _, name := range observed.LagGatedInstances {
+		explained[name] = true
+	}
 	var detail []string
 	if len(observed.FailedInstances) > 0 {
 		detail = append(detail, "failing to start: "+strings.Join(observed.FailedInstances, ", "))
@@ -486,6 +529,9 @@ func degradedReason(observed observedCluster, plan clusterPlan) string {
 	if len(observed.CredentialMismatchInstances) > 0 {
 		detail = append(detail, "credential mismatch: "+strings.Join(observed.CredentialMismatchInstances, ", ")+
 			" (mysqld rejected the control connection credentials; run ALTER USER to the Secret's value or restore the Secret)")
+	}
+	if len(observed.LagGatedInstances) > 0 {
+		detail = append(detail, "behind maxReadyLag: "+strings.Join(observed.LagGatedInstances, ", "))
 	}
 	var notReady []string
 	for _, name := range unreadyInstanceNames(observed) {
