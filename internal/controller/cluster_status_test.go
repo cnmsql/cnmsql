@@ -120,6 +120,114 @@ func TestUnreadyInstanceNames(t *testing.T) {
 	}
 }
 
+// A credential mismatch (mysqld rejected the control connection's credentials,
+// reported by the instance manager as NotReadyReason) must be surfaced as a
+// credential problem, not folded into "unreachable or not ready".
+func TestDegradedReasonNamesCredentialMismatch(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		InstanceNames:  []string{testPrimary, testReplica2},
+		ReadyInstances: 0,
+		StatusByInstance: map[string]*webserver.Status{
+			testPrimary:  {InstanceName: testPrimary, IsReady: false, NotReadyReason: webserver.ReasonCredentialMismatch},
+			testReplica2: {InstanceName: testReplica2, IsReady: false, NotReadyReason: webserver.ReasonCredentialMismatch},
+		},
+		CredentialMismatchInstances: []string{testPrimary, testReplica2},
+	}
+	reason := degradedReason(observed, testPlan())
+	if !strings.Contains(reason, "credential mismatch: "+testPrimary+", "+testReplica2) {
+		t.Fatalf("degradedReason = %q, want it to name the credential mismatch", reason)
+	}
+	if strings.Contains(reason, "unreachable or not ready") {
+		t.Fatalf("degradedReason = %q, must not call a credential mismatch unreachable", reason)
+	}
+}
+
+// An instance the operator cannot reach at all is still "unreachable": the
+// credential reason is reserved for a reported mismatch.
+func TestDegradedReasonKeepsUnreachableForMissingStatus(t *testing.T) {
+	t.Parallel()
+	observed := observedCluster{
+		InstanceNames:  []string{testPrimary, testReplica2},
+		ReadyInstances: 1,
+		StatusByInstance: map[string]*webserver.Status{
+			testPrimary: {InstanceName: testPrimary, IsReady: true},
+		},
+	}
+	reason := degradedReason(observed, testPlan())
+	if !strings.Contains(reason, "unreachable or not ready: "+testReplica2) {
+		t.Fatalf("degradedReason = %q, want the unreachable clause", reason)
+	}
+	if strings.Contains(reason, "credential mismatch") {
+		t.Fatalf("degradedReason = %q, must not claim a credential mismatch without one", reason)
+	}
+}
+
+// observe maps the instance manager's NotReadyReason onto the cluster-level
+// credential-mismatch view and the Degraded phase reason.
+func TestObserveClassifiesCredentialMismatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 2
+	cluster.Status.CurrentPrimary = testPrimary
+	cluster.Status.EstablishedAt = &metav1.Time{Time: time.Now()}
+	scheme := testScheme(t)
+
+	// Both Pods are Running and answer the control endpoint, but mysqld
+	// rejects the control account on both: the Secret and the account
+	// disagree.
+	primaryPod := readyPod(cluster, testPrimary, rolePrimary)
+	replicaPod := readyPod(cluster, testReplica2, roleReplica)
+	control := &recordingControlClient{
+		statuses: map[string]*webserver.Status{
+			testPrimary: {
+				InstanceName:   testPrimary,
+				Role:           webserver.RolePrimary,
+				IsReady:        false,
+				NotReadyReason: webserver.ReasonCredentialMismatch,
+			},
+			testReplica2: {
+				InstanceName:   testReplica2,
+				Role:           webserver.RoleReplica,
+				IsReady:        false,
+				NotReadyReason: webserver.ReasonCredentialMismatch,
+			},
+		},
+	}
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, primaryPod, replicaPod).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	plan := testPlan()
+	plan.Instances = 2
+	observed, err := reconciler.observe(ctx, cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := observed.CredentialMismatchInstances; !slices.Equal(got, []string{testPrimary, testReplica2}) {
+		t.Fatalf("credentialMismatchInstances = %v, want both instances", got)
+	}
+	if observed.ReadyInstances != 0 {
+		t.Fatalf("readyInstances = %d, want 0", observed.ReadyInstances)
+	}
+	if observed.Phase != topology.PhaseDegraded {
+		t.Fatalf("phase = %q, want Degraded", observed.Phase)
+	}
+	if !strings.Contains(observed.PhaseReason, "credential mismatch: "+testPrimary) {
+		t.Fatalf("phaseReason = %q, want it to name the credential mismatch", observed.PhaseReason)
+	}
+	if strings.Contains(observed.PhaseReason, "unreachable or not ready") {
+		t.Fatalf("phaseReason = %q, must not call a credential mismatch unreachable", observed.PhaseReason)
+	}
+}
+
 // observePartitionedReplica builds a two-instance cluster whose primary is ready
 // and whose replica Pod is Ready to Kubernetes but unreachable to the operator,
 // then observes it with the cluster carrying the given previously-persisted phase.

@@ -89,6 +89,14 @@ type observedCluster struct {
 	// error the in-Pod reconciler reports, so a replica that is Running but cannot
 	// replicate is not mistaken for one still finishing provisioning.
 	ReplicationBrokenInstances []string
+	// CredentialMismatchInstances are instances whose control endpoint answered
+	// but mysqld rejected the control connection's credentials (MySQL error
+	// 1045, reported by the instance manager as a NotReadyReason). The endpoint
+	// is reachable; the credential Secret and the MySQL account disagree. They
+	// are surfaced as a credential problem rather than generic unreachability,
+	// which a whole-cluster mismatch (a Secret changed without ALTER USER)
+	// would otherwise look like.
+	CredentialMismatchInstances []string
 	// ContinuousArchiving holds the primary's archiving frontier/health when
 	// continuous archiving is enabled; nil otherwise.
 	ContinuousArchiving *mysqlv1alpha1.ContinuousArchivingStatus
@@ -229,6 +237,8 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
+	observed.collectCredentialMismatches()
+
 	observed.settleReadiness(cluster, plan)
 
 	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
@@ -241,6 +251,18 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.computeClusterPhase(cluster, plan)
 	return observed, nil
+}
+
+// collectCredentialMismatches lists the instances whose manager reported that
+// mysqld rejected the control connection credentials (NotReadyReason), in
+// ordinal order. Only instances that reported a status are considered; an
+// instance the operator cannot reach at all stays a reachability problem.
+func (o *observedCluster) collectCredentialMismatches() {
+	for _, name := range o.InstanceNames {
+		if status, ok := o.StatusByInstance[name]; ok && status.NotReadyReason == webserver.ReasonCredentialMismatch {
+			o.CredentialMismatchInstances = append(o.CredentialMismatchInstances, name)
+		}
+	}
 }
 
 // settleReadiness decides Ready: every desired instance reports ready, none has
@@ -429,8 +451,9 @@ func podFailed(pod *corev1.Pod) bool {
 
 // degradedReason describes which desired instances are keeping the cluster from
 // being fully ready, so the Degraded phase points at the problem. Failed
-// instances (cannot start) are called out separately from instances that are
-// merely unreachable or still not ready.
+// instances (cannot start), instances with a broken replication thread, and
+// instances whose control account mysqld rejects are called out separately from
+// instances that are merely unreachable or still not ready.
 func degradedReason(observed observedCluster, plan clusterPlan) string {
 	base := fmt.Sprintf("%d/%d instances ready", observed.ReadyInstances, plan.Instances)
 	// Instances explained by a more specific clause below are excluded from the
@@ -440,6 +463,9 @@ func degradedReason(observed observedCluster, plan clusterPlan) string {
 		explained[name] = true
 	}
 	for _, name := range observed.ReplicationBrokenInstances {
+		explained[name] = true
+	}
+	for _, name := range observed.CredentialMismatchInstances {
 		explained[name] = true
 	}
 	var detail []string
@@ -456,6 +482,10 @@ func degradedReason(observed observedCluster, plan clusterPlan) string {
 			broken = append(broken, name)
 		}
 		detail = append(detail, "replication broken: "+strings.Join(broken, ", "))
+	}
+	if len(observed.CredentialMismatchInstances) > 0 {
+		detail = append(detail, "credential mismatch: "+strings.Join(observed.CredentialMismatchInstances, ", ")+
+			" (mysqld rejected the control connection credentials; run ALTER USER to the Secret's value or restore the Secret)")
 	}
 	var notReady []string
 	for _, name := range unreadyInstanceNames(observed) {
