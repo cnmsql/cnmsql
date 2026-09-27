@@ -121,6 +121,29 @@ func TestSHA256Reader(t *testing.T) {
 	}
 }
 
+// Streaming uploads of unknown length must not let the SDK size multipart
+// parts from a 5TiB default: that allocates ~550MiB per part buffer in the
+// backup workers. A 64MiB part size keeps the buffer bounded while still
+// allowing ~625GiB objects within the 10000-part limit.
+func TestPutOptionsSetsPartSize(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewClient(Config{
+		Endpoint:        "http://minio.svc:9000",
+		AccessKeyID:     "key",
+		SecretAccessKey: "secret",
+		ForcePathStyle:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opts := client.putOptions("application/zstd")
+	if opts.PartSize != 64<<20 {
+		t.Fatalf("PartSize = %d, want %d", opts.PartSize, 64<<20)
+	}
+}
+
 func TestIsEmptyPrefix(t *testing.T) {
 	t.Parallel()
 
