@@ -6,9 +6,14 @@ import (
 	"io"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func TestReadyWriterStripsMarkerAcrossWrites(t *testing.T) {
@@ -81,6 +86,53 @@ func TestRootClientScriptKeepsSecretsOffArgv(t *testing.T) {
 	}
 	if !strings.Contains(rootClientScript, "7717;cnmsql-password") {
 		t.Error("the script must print the marker the plugin waits for")
+	}
+}
+
+// TestRootClientCommandDefaultsToUTF8MB4 pins the charset the client is told
+// to negotiate: without --default-character-set=utf8mb4 a bare instance image
+// negotiates latin1 and UTF-8 SQL is double-encoded on insert.
+func TestRootClientCommandDefaultsToUTF8MB4(t *testing.T) {
+	t.Parallel()
+
+	const flag = "--default-character-set=utf8mb4"
+	cluster := &mysqlv1alpha1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"}}
+	tests := []struct {
+		name       string
+		cluster    *mysqlv1alpha1.Cluster
+		args       []string
+		wantBinary string
+	}{
+		{
+			name: "mysql", cluster: cluster, wantBinary: "mysql",
+			args: []string{"mydb"},
+		},
+		{
+			name: "mariadb", wantBinary: "mariadb",
+			cluster: &mysqlv1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"},
+				Spec:       mysqlv1alpha1.ClusterSpec{Flavor: mysqlv1alpha1.FlavorMariaDB},
+			},
+			args: []string{"mydb"},
+		},
+		{
+			// The client honours the last occurrence of a flag, so the caller
+			// must be able to override the default.
+			name: "caller can override the default", cluster: cluster, wantBinary: "mysql",
+			args: []string{"--default-character-set=latin1", "mydb"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := rootClientCommand(RootClientOptions{Cluster: tt.cluster, Args: tt.args})
+			prefix := []string{"sh", "-c", rootClientScript, tt.wantBinary,
+				"--socket=" + SocketPath, "--user=root", flag}
+			want := append(slices.Clone(prefix), tt.args...)
+			if !slices.Equal(cmd, want) {
+				t.Errorf("command = %q, want %q", cmd, want)
+			}
+		})
 	}
 }
 

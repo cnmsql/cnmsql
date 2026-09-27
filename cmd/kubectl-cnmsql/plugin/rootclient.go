@@ -95,6 +95,17 @@ type RootClientOptions struct {
 	TTY    bool
 }
 
+// rootClientCommand builds the argv that runs the cluster's database client
+// as root over the local socket. The default character set is pinned before
+// any caller args so a bare instance image cannot negotiate latin1 and
+// double-encode UTF-8; the client honours the last occurrence of a flag, so
+// callers may still override it.
+func rootClientCommand(opts RootClientOptions) []string {
+	return append([]string{"sh", "-c", rootClientScript,
+		ClientBinary(opts.Cluster), "--socket=" + SocketPath, "--user=root",
+		"--default-character-set=utf8mb4"}, opts.Args...)
+}
+
 // RootClient runs the cluster's database client as root on an instance,
 // handing it the root password through the exec stream once the remote side
 // is ready for it.
@@ -103,8 +114,7 @@ func (e *Env) RootClient(ctx context.Context, opts RootClientOptions) error {
 	if err != nil {
 		return err
 	}
-	command := append([]string{"sh", "-c", rootClientScript,
-		ClientBinary(opts.Cluster), "--socket=" + SocketPath, "--user=root"}, opts.Args...)
+	command := rootClientCommand(opts)
 
 	stdout := newReadyWriter(opts.Stdout)
 	defer stdout.Flush()
