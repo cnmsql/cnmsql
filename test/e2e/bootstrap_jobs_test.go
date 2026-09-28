@@ -109,12 +109,24 @@ var _ = Describe("Instance Bootstrap Jobs", Ordered, Label("feature"), func() {
 			"the restored instance Pod must not reference the object-store credentials Secret")
 
 		By("deleting the source Backup and the restored instance Pod")
+		instance := restoredCluster + "-1"
+		uid := podUID(instance)
+		Expect(uid).NotTo(BeEmpty(), "instance Pod %s has no UID", instance)
 		_, err = kubectl("delete", "backup", backupName, "-n", testNamespace)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = kubectl("delete", "pod", restoredCluster+"-1", "-n", testNamespace, "--wait=false")
+		_, err = kubectl("delete", "pod", instance, "-n", testNamespace, "--wait=false")
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the recovered cluster rebuilds the instance without the Backup")
+		// The Cluster status still reads Ready right after the delete, until the
+		// operator observes the Pod is gone. Wait for the replacement Pod (a new
+		// UID) to become Ready so the checks below judge the rebuilt instance
+		// rather than the stale status.
+		Eventually(func() string {
+			return podUID(instance)
+		}, e2eTimeout(5*time.Minute), 2*time.Second).ShouldNot(Or(BeEmpty(), Equal(uid)),
+			"instance Pod %s was not recreated", instance)
+		waitForPodReady(instance, 10*time.Minute)
 		expectClusterReady(restoredCluster, 1, 10*time.Minute)
 
 		phase, err := clusterField(restoredCluster, "{.status.phase}")
