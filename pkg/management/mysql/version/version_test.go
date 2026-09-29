@@ -119,11 +119,14 @@ func TestCheckUpgrade(t *testing.T) {
 	}{
 		{"8.0.36", "8.0.40", false}, // patch bump within a series
 		{"8.0.36", "8.4.3", false},  // single hop forward
-		{"8.4.3", "9.0.1", false},   // single hop forward
-		{"8.4.3", "9.6.0", false},   // 9.x runtime maps to catalog series 9.0
-		{"8.0.36", "9.0.1", true},   // skips 8.4
-		{"8.0.36", "9.6.0", true},   // cannot skip 8.4 for a later 9.x runtime
-		{"9.0.1", "8.4.3", true},    // downgrade
+		{"8.4.3", "9.7.1", false},   // single hop to the 9.7 LTS
+		{"8.4.3", "9.6.0", true},    // 9.x innovation is no longer a supported target
+		{"9.6.0", "9.7.1", true},    // hard cut: legacy 9.x innovation cannot upgrade in place
+		{"9.0.1", "9.7.1", true},    // hard cut: legacy 9.x innovation cannot upgrade in place
+		{"8.0.36", "9.7.1", true},   // skips 8.4
+		{"8.0.36", "9.0.1", true},   // 9.x innovation is not a supported target
+		{"9.7.1", "9.6.0", true},    // downgrade / unsupported target
+		{"9.0.1", "8.4.3", true},    // unsupported source (legacy innovation)
 		{"8.4.3", "8.0.36", true},   // downgrade
 		{"5.7.44", "8.0.36", true},  // source series outside chain
 		{"8.4.3", "10.0.0", true},   // target series outside chain
