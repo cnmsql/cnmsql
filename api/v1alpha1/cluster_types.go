@@ -678,7 +678,7 @@ type ImageCatalogRef struct {
 	corev1.TypedLocalObjectReference `json:",inline"`
 
 	// Series is the MySQL release series to resolve in the catalog, in
-	// "major.minor" form (e.g. "8.0", "8.4", "9.0").
+	// "major.minor" form (e.g. "8.0", "8.4", "9.7").
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
 	// +kubebuilder:validation:Required
 	Series string `json:"series"`

@@ -421,7 +421,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `series` _string_ | Series is the MySQL release series in "major.minor" form (e.g. "8.0",<br />"8.4", "9.0"). It must match the image's server version line. |  | Pattern: `^[0-9]+\.[0-9]+$` <br />Required: \{\} <br /> |
+| `series` _string_ | Series is the MySQL release series in "major.minor" form (e.g. "8.0",<br />"8.4", "9.7"). It must match the image's server version line. |  | Pattern: `^[0-9]+\.[0-9]+$` <br />Required: \{\} <br /> |
 | `image` _string_ | Image is the fully qualified Percona Server for MySQL image reference. |  | Required: \{\} <br /> |
 
 
@@ -736,8 +736,8 @@ spec:
   images:
     - series: "8.4"
       image: ghcr.io/cnmsql/cnmsql-instance:8.4
-    - series: "9.0"
-      image: ghcr.io/cnmsql/cnmsql-instance:9.x
+    - series: "9.7"
+      image: ghcr.io/cnmsql/cnmsql-instance:9.7
 ```
 
 Reference it from a Cluster with `imageCatalogRef` using `kind: ClusterImageCatalog`.
@@ -1452,8 +1452,8 @@ spec:
   images:
     - series: "8.4"
       image: ghcr.io/cnmsql/cnmsql-instance:8.4
-    - series: "9.0"
-      image: ghcr.io/cnmsql/cnmsql-instance:9.x
+    - series: "9.7"
+      image: ghcr.io/cnmsql/cnmsql-instance:9.7
 ```
 
 Each `series` value can appear at most once in the images list (minimum one, maximum eight).
@@ -1512,7 +1512,7 @@ _Appears in:_
 | `apiGroup` _string_ | APIGroup is the group for the resource being referenced.<br />If APIGroup is not specified, the specified Kind must be in the core API group.<br />For any other third-party types, APIGroup is required. |  | Optional: \{\} <br /> |
 | `kind` _string_ | Kind is the type of resource being referenced |  |  |
 | `name` _string_ | Name is the name of resource being referenced |  |  |
-| `series` _string_ | Series is the MySQL release series to resolve in the catalog, in<br />"major.minor" form (e.g. "8.0", "8.4", "9.0"). |  | Pattern: `^[0-9]+\.[0-9]+$` <br />Required: \{\} <br /> |
+| `series` _string_ | Series is the MySQL release series to resolve in the catalog, in<br />"major.minor" form (e.g. "8.0", "8.4", "9.7"). |  | Pattern: `^[0-9]+\.[0-9]+$` <br />Required: \{\} <br /> |
 
 
 #### ImageCatalogSpec
