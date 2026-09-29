@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os/exec"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/rootclient"
 )
 
 func TestReadyWriterStripsMarkerAcrossWrites(t *testing.T) {
@@ -21,7 +20,8 @@ func TestReadyWriterStripsMarkerAcrossWrites(t *testing.T) {
 	var out bytes.Buffer
 	w := newReadyWriter(&out)
 	// The marker arrives split over several writes, surrounded by output.
-	chunks := []string{"hello ", passwordReady[:4], passwordReady[4:9], passwordReady[9:] + "mysql> "}
+	marker := rootclient.PasswordReady
+	chunks := []string{"hello ", marker[:4], marker[4:9], marker[9:] + "mysql> "}
 	for _, c := range chunks {
 		if _, err := w.Write([]byte(c)); err != nil {
 			t.Fatalf("Write() error = %v", err)
@@ -79,16 +79,6 @@ func TestGatedReaderStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestRootClientScriptKeepsSecretsOffArgv(t *testing.T) {
-	t.Parallel()
-	if !strings.Contains(rootClientScript, `exec "$0" "$@"`) {
-		t.Error("client arguments must be passed positionally, not interpolated")
-	}
-	if !strings.Contains(rootClientScript, "7717;cnmsql-password") {
-		t.Error("the script must print the marker the plugin waits for")
-	}
-}
-
 // TestRootClientCommandDefaultsToUTF8MB4 pins the charset the client is told
 // to negotiate: without --default-character-set=utf8mb4 a bare instance image
 // negotiates latin1 and UTF-8 SQL is double-encoded on insert.
@@ -126,7 +116,7 @@ func TestRootClientCommandDefaultsToUTF8MB4(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cmd := rootClientCommand(RootClientOptions{Cluster: tt.cluster, Args: tt.args})
-			prefix := []string{"sh", "-c", rootClientScript, tt.wantBinary,
+			prefix := []string{InstanceManager, "instance", "client", "--", tt.wantBinary,
 				"--socket=" + SocketPath, "--user=root", flag}
 			want := append(slices.Clone(prefix), tt.args...)
 			if !slices.Equal(cmd, want) {
@@ -136,29 +126,27 @@ func TestRootClientCommandDefaultsToUTF8MB4(t *testing.T) {
 	}
 }
 
-// TestRootClientScriptRunsLocally drives the in-pod wrapper through a local
-// shell with the same writer/reader pair RootClient uses, standing in a shell
-// for the database client: it must receive the password in MYSQL_PWD, the
-// client arguments verbatim, and the caller's input after the password line.
-func TestRootClientScriptRunsLocally(t *testing.T) {
+// TestRootClientHandshake drives the in-pod side of the handshake with the
+// same writer/reader pair RootClient uses: the password must only be sent
+// once the marker is printed, arrive whole, and leave the caller's input for
+// the client, with the marker hidden from the user.
+func TestRootClientHandshake(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("needs a POSIX shell")
-	}
-	ctx := context.Background()
 	var out bytes.Buffer
 	stdout := newReadyWriter(&out)
-	client := `printf 'pw=%s args=%s|%s\n' "$MYSQL_PWD" "$1" "$2"; cat`
-	cmd := exec.CommandContext(ctx, "sh", "-c", rootClientScript,
-		"sh", "-c", client, "fake-client", "it's; $(rm -rf /)")
-	cmd.Stdin = newGatedReader(ctx, stdout.ready, "p'a ss$word", strings.NewReader("SELECT 1;\n"))
-	cmd.Stdout = stdout
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("running the wrapper: %v", err)
+	stdin := newGatedReader(context.Background(), stdout.ready, "p'a ss$word", strings.NewReader("SELECT 1;\n"))
+	password, err := rootclient.ReadPassword(stdin, stdout)
+	if err != nil {
+		t.Fatalf("ReadPassword() error = %v", err)
+	}
+	if password != "p'a ss$word" {
+		t.Errorf("password = %q", password)
+	}
+	if rest, _ := io.ReadAll(stdin); string(rest) != "SELECT 1;\n" {
+		t.Errorf("left for the client = %q, want the caller's input", rest)
 	}
 	stdout.Flush()
-	want := "pw=p'a ss$word args=it's; $(rm -rf /)|\nSELECT 1;\n"
-	if got := out.String(); got != want {
-		t.Errorf("output = %q, want %q", got, want)
+	if out.Len() != 0 {
+		t.Errorf("user saw %q, want the marker hidden", out.String())
 	}
 }
