@@ -17,7 +17,7 @@ limitations under the License.
 // Package user builds and executes the SQL that manages MySQL users and
 // databases declaratively. The statement builders here are pure so they can be
 // unit-tested without a running server. cnmsql targets Percona Server 8.0/8.4/
-// 9.x only, so the modern syntax (CREATE USER IF NOT EXISTS, ALTER USER ...
+// 9.7 only, so the modern syntax (CREATE USER IF NOT EXISTS, ALTER USER ...
 // IDENTIFIED BY, REQUIRE X509) is always used; no MySQL 5.x branches exist.
 package user
 
