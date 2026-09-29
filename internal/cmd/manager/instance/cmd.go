@@ -26,6 +26,7 @@ import (
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/join"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/logicalrestore"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/prestop"
+	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/probe"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/restore"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/run"
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance/signal"
@@ -50,6 +51,7 @@ func NewCommand() *cobra.Command {
 		status.NewCommand(),
 		signal.NewCommand(),
 		prestop.NewCommand(),
+		probe.NewCommand(),
 	)
 
 	return cmd
