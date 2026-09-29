@@ -43,7 +43,6 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
-	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
@@ -343,35 +342,6 @@ func TestBuildPlanResolvesNamespacedImageCatalog(t *testing.T) {
 	}
 	if plan.ServerVersion != mysqlDefaultServerVersion {
 		t.Fatalf("server version = %q", plan.ServerVersion)
-	}
-}
-
-func TestResolveServerVersionFromImageTag(t *testing.T) {
-	t.Parallel()
-	mysqlEng := engine.MustForFlavor(engine.FlavorMySQL)
-	tests := map[string]string{
-		"ghcr.io/cnmsql/cnmsql-instance:8.0": "8.0.46",
-		"ghcr.io/cnmsql/cnmsql-instance:8.4": "8.4.0",
-		"ghcr.io/cnmsql/cnmsql-instance:9.x": "9.6.0",
-		"registry/cnmsql:8.0.46-37":          "8.0.46-37",
-	}
-
-	for image, want := range tests {
-		got, err := resolveServerVersion(image, mysqlEng)
-		if err != nil {
-			t.Fatalf("resolveServerVersion(%q): %v", image, err)
-		}
-		if got != want {
-			t.Fatalf("resolveServerVersion(%q) = %q, want %q", image, got, want)
-		}
-	}
-}
-
-func TestResolveServerVersionRejectsMySQL56(t *testing.T) {
-	t.Parallel()
-	mysqlEng := engine.MustForFlavor(engine.FlavorMySQL)
-	if _, err := resolveServerVersion("ghcr.io/cnmsql/cnmsql-instance:5.6", mysqlEng); err == nil {
-		t.Fatal("expected MySQL 5.6 image tag to be unsupported")
 	}
 }
 

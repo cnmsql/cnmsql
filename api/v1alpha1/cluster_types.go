@@ -1390,6 +1390,14 @@ type ClusterStatus struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
+	// TargetImage is what the operator learned about the image it rolls the
+	// instances to, by running it in a probe Pod: the server version and flavor
+	// the image's server binary reports, and the digest the kubelet pulled. A
+	// new image is probed and validated before any instance moves to it; until
+	// then the cluster stays on this one (see the ImageReady condition).
+	// +optional
+	TargetImage *ImageInfo `json:"targetImage,omitempty"`
+
 	// GTIDExecutedByInstance maps an instance name to its gtid_executed set.
 	// +optional
 	GTIDExecutedByInstance map[string]string `json:"gtidExecutedByInstance,omitempty"`
@@ -1634,11 +1642,30 @@ type ContinuousArchivingStatus struct {
 	LastFailureTime *metav1.Time `json:"lastFailureTime,omitempty"`
 }
 
+// ImageInfo describes an instance image as its own server binary reports it.
+type ImageInfo struct {
+	// Image is the image reference that was probed, as resolved from
+	// spec.imageName or the image catalog.
+	Image string `json:"image"`
+
+	// ImageID is the image the kubelet pulled for the probe, as reported in
+	// the probe Pod's container status (typically repository@sha256:digest).
+	// +optional
+	ImageID string `json:"imageID,omitempty"`
+
+	// Flavor is the engine the image contains (mysql or mariadb).
+	Flavor Flavor `json:"flavor"`
+
+	// ServerVersion is the server release the image contains, e.g. "8.4.11".
+	ServerVersion string `json:"serverVersion"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.instances,statuspath=.status.instances,selectorpath=.status.labelSelector
 // +kubebuilder:resource:scope=Namespaced,shortName=mysql;mysqlcluster,categories=all
 // +kubebuilder:printcolumn:name="Flavor",type=string,JSONPath=`.status.flavor`
+// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.targetImage.serverVersion`
 // +kubebuilder:printcolumn:name="Instances",type=integer,JSONPath=`.status.instances`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyInstances`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.phase`

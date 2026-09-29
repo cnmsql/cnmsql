@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -165,7 +166,10 @@ const (
 
 	// Instance Pod volume names; scratch and client CA are shared with the
 	// backup worker Job.
-	scratchVolumeName  = "scratch-data"
+	scratchVolumeName = "scratch-data"
+	// scratchMountPath is where the scratch volume, holding the manager binary
+	// (managerBinary), is mounted.
+	scratchMountPath   = "/controller"
 	clientCAVolumeName = "client-ca"
 	runVolumeName      = "run"
 	backupVolumeName   = "backup"
@@ -239,6 +243,9 @@ type ClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	Recorder      record.EventRecorder
 	ControlClient InstanceControlClient
+	// ImageProber learns what an instance image contains by running it. It
+	// defaults to probe Pods (design 033); tests substitute a fake.
+	ImageProber ImageProber
 	// APIReader bypasses the controller-runtime cache for narrow reads that
 	// should not start informers, such as checking namespace deletion state.
 	APIReader client.Reader
@@ -322,9 +329,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	r.warnDeprecatedParameters(cluster)
 
-	plan, err := r.buildPlan(ctx, cluster)
-	if err != nil {
-		return r.planFailed(ctx, cluster, err)
+	plan, stop, err := r.resolvePlan(ctx, cluster)
+	if stop != nil {
+		return *stop, err
 	}
 
 	// Elect the bootstrap primary by pointing targetPrimary at the first
@@ -476,18 +483,50 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{RequeueAfter: readyResync}, nil
 }
 
+// resolvePlan builds the cluster plan and records what it concluded about the
+// cluster's image (design 033). A non-nil result means reconcile stops there.
+func (r *ClusterReconciler) resolvePlan(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (clusterPlan, *ctrl.Result, error) {
+	plan, err := r.buildPlan(ctx, cluster)
+	if err != nil {
+		result, err := r.planFailed(ctx, cluster, err)
+		return clusterPlan{}, &result, err
+	}
+	if err := r.recordImageDecision(ctx, cluster, plan.imageDecision); err != nil {
+		return clusterPlan{}, &ctrl.Result{}, err
+	}
+	return plan, nil, nil
+}
+
 // planFailed reports a cluster whose plan could not be built. An import
 // source that is not ready yet (a Backup still running, an object store that
 // cannot be read) resolves on its own, so the cluster keeps provisioning and
-// is looked at again; anything else needs a spec change and blocks it.
+// is looked at again; so does a first image probe still running. A rejected
+// image blocks the cluster, and is probed again later in case the cause was
+// transient (a registry outage); anything else needs a spec change and blocks
+// it.
 func (r *ClusterReconciler) planFailed(ctx context.Context, cluster *mysqlv1alpha1.Cluster, err error) (ctrl.Result, error) {
-	if _, ok := errors.AsType[*importNotReadyError](err); ok {
-		logf.FromContext(ctx).Info("Import source is not ready, will retry", "reason", err.Error())
+	if decision, ok := imageDecisionForError(err); ok {
+		if recordErr := r.recordImageDecision(ctx, cluster, decision); recordErr != nil {
+			return ctrl.Result{}, recordErr
+		}
+	}
+	_, importPending := errors.AsType[*importNotReadyError](err)
+	_, imagePending := errors.AsType[*imageProbingError](err)
+	if importPending || imagePending {
+		logf.FromContext(ctx).Info("Plan inputs are not ready, will retry", "reason", err.Error())
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.patchStatus(ctx, cluster, observedCluster{
 			Phase:       topology.PhaseProvisioning,
 			PhaseReason: err.Error(),
 			Ready:       false,
 			Progressing: true,
+		})
+	}
+	if _, ok := errors.AsType[*imageRejectedError](err); ok {
+		return ctrl.Result{RequeueAfter: imageProbeRetry}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       topology.PhaseBlocked,
+			PhaseReason: err.Error(),
+			Ready:       false,
+			Progressing: false,
 		})
 	}
 	return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{
@@ -659,7 +698,9 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
 		Owns(&batchv1.Job{}).
-		Owns(&policyv1.PodDisruptionBudget{})
+		Owns(&policyv1.PodDisruptionBudget{}).
+		Watches(&mysqlv1alpha1.ImageCatalog{}, handler.EnqueueRequestsFromMapFunc(r.clustersUsingCatalog(catalogKindNamespaced))).
+		Watches(&mysqlv1alpha1.ClusterImageCatalog{}, handler.EnqueueRequestsFromMapFunc(r.clustersUsingCatalog(catalogKindCluster)))
 	// Only watch PodMonitors when the Prometheus Operator CRD is installed;
 	// otherwise the informer fails to start with a no-matches error.
 	if r.podMonitorAvailable {

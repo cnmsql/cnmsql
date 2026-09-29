@@ -343,6 +343,13 @@ const (
 	// logical backups can run.
 	ConditionDumpAccountReady = "DumpAccountReady"
 
+	// ConditionImageReady is True when the image the cluster resolves to has
+	// been probed and accepted as status.targetImage. It is False while a new
+	// image is being probed, or when it was rejected (it cannot be pulled, its
+	// flavor or series does not match, or the move is not a supported upgrade);
+	// the cluster then stays on its previous target image.
+	ConditionImageReady = "ImageReady"
+
 	// ConditionBootstrapFailed is True while an instance's bootstrap Job
 	// (initdb, restore, join or import) has failed and was not replaced. Its
 	// reason is the Job's (for example BackoffLimitExceeded or
