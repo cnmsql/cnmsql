@@ -60,8 +60,9 @@ func NewCommand() *cobra.Command {
 			"and takes no password. " +
 			"This command is idempotent: it is a no-op on an already initialised directory.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if serverVersion == "" {
-				serverVersion = os.Getenv("MYSQL_VERSION")
+			var err error
+			if serverVersion, err = version.Resolve(cmd.Context(), serverVersion, mysqldPath); err != nil {
+				return err
 			}
 
 			// The engine (selected from CNMSQL_FLAVOR, set by the controller)
@@ -70,11 +71,11 @@ func NewCommand() *cobra.Command {
 			eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
 
 			// Dynamic privileges (admin interface, super_read_only, BACKUP_ADMIN)
-			// exist on MySQL 8.0+. When the MySQL version is unknown, assume
-			// modern. MariaDB has no equivalent and rejects those GRANTs as a
-			// syntax error, so the engine forces this off regardless of version.
+			// exist on MySQL 8.0+. MariaDB has no equivalent and rejects those
+			// GRANTs as a syntax error, so the engine forces this off regardless
+			// of version.
 			dynamicPrivileges := eng.SupportsDynamicPrivileges()
-			if dynamicPrivileges && serverVersion != "" {
+			if dynamicPrivileges {
 				ver, err := version.Parse(serverVersion)
 				if err != nil {
 					return err
@@ -155,7 +156,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&controlUser, "control-user", "", "Privileged control user for the instance manager (password from the control credential Secret)")
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup user for cloning replicas (password from the backup credential Secret)")
 	cmd.Flags().StringVar(&metricsUser, "metrics-user", "", "Local metrics exporter user to create")
-	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version (e.g. 8.0.36); gates dynamic privilege grants")
+	cmd.Flags().StringVar(&serverVersion, "server-version", "", "Override the server version (default: what the mysqld binary reports); gates dynamic privilege grants")
 	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")
 	credentials.AddFlags(cmd.Flags(), &creds)
 
