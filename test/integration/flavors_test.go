@@ -63,8 +63,8 @@ var flavors = []flavor{
 		joinSupported:     true,
 	},
 	{
-		name:              "9.x",
-		version:           "9.6.0",
+		name:              "9.7",
+		version:           "9.7.1",
 		hasAdminInterface: true,
 		joinSupported:     true,
 	},
