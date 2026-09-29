@@ -79,7 +79,7 @@ primary-replica topology unchanged. Every existing cluster that omits
 
 Group Replication requires MySQL 8.0.22 or later. The validating webhook rejects
 clusters that request `groupReplication` with an older server version. MySQL 8.0,
-8.4, and 9.x are supported.
+8.4, and 9.7 are supported.
 
 ## How Group Replication changes the operator's role
 
@@ -537,7 +537,7 @@ Some features are out of scope for the initial Group Replication support:
 ## Verification coverage
 
 Unit tests cover config rendering for Group Replication across the version matrix
-(8.0/8.4/9.x), exactly-once bootstrap guards (sticky `bootstrapped`, never a
+(8.0/8.4/9.7), exactly-once bootstrap guards (sticky `bootstrapped`, never a
 second bootstrap), quorum arithmetic (PDB `maxUnavailable`, scale-down refusal,
 fence refusal), safe survivor selection for both `force_members` and re-bootstrap
 paths with GTID dominance, group view aggregation and cross-validation across

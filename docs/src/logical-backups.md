@@ -11,7 +11,7 @@ object store as your physical backups. Use it when a physical backup can't help:
 
 - **Partial restore:** bring back one database without touching the others,
   into a new cluster or into the running one.
-- **Moving across server versions:** load an 8.0 dump into a fresh 9.x cluster,
+- **Moving across server versions:** load an 8.0 dump into a fresh 9.7 cluster,
   or go back to an older series.
 - **Exporting a schema** for a developer, a test environment or another tool.
 
@@ -80,7 +80,7 @@ The first pinned tags that include it are:
 
 | Image | First tag with the dump tool |
 |---|---|
-| `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, `9.x-5` |
+| `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, every `9.7` tag |
 | `ghcr.io/cnmsql/cnmsql-mariadb-instance` | `10.11-4`, `11.4-4`, `11.8-4`, `12.3-4` |
 
 Importing or restoring a dump works on any image: loading only needs the SQL
@@ -352,13 +352,13 @@ but it is not tested.
 
 In-place upgrades go one series at a time and never back (see
 [MySQL Version Upgrades](major-version-upgrade.md)). A dump skips both limits.
-To move `shop` from 8.0 to 9.x:
+To move `shop` from 8.0 to 9.7:
 
 1. Take a logical backup of the source and wait for it to complete:
 
    ```bash
-   kubectl cnmsql backup shop --method logical --name shop-to-9x
-   kubectl get backup shop-to-9x -w
+   kubectl cnmsql backup shop --method logical --name shop-to-97
+   kubectl get backup shop-to-97 -w
    ```
 
 2. Declare the application users on the new cluster (as `spec.managed.roles`
@@ -368,26 +368,26 @@ To move `shop` from 8.0 to 9.x:
    apiVersion: mysql.cnmsql.co/v1alpha1
    kind: Cluster
    metadata:
-     name: shop-9x
+     name: shop-97
    spec:
      instances: 3
-     imageName: ghcr.io/cnmsql/cnmsql-instance:9.x
+     imageName: ghcr.io/cnmsql/cnmsql-instance:9.7
      storage:
        size: 20Gi
      bootstrap:
        initdb:
          import:
            backup:
-             name: shop-to-9x
+             name: shop-to-97
      backup:
        objectStore:
          # a new path or bucket: the destination must be empty
    ```
 
-3. Once `shop-9x` is ready, check the data, move the clients to `shop-9x-rw`,
+3. Once `shop-97` is ready, check the data, move the clients to `shop-97-rw`,
    and take a physical backup of the new cluster.
 
-Writes made to `shop` after the dump are not in `shop-9x`. Stop them, or plan to
+Writes made to `shop` after the dump are not in `shop-97`. Stop them, or plan to
 replay them, before you switch.
 
 ## Restoring into a running cluster

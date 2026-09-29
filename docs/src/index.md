@@ -51,7 +51,7 @@ Declare your desired state via Kubernetes custom resources. The operator continu
 | Category | Capabilities |
 |----------|-------------|
 | **Engines** | Percona Server for MySQL or MariaDB, selected per cluster with `spec.flavor` |
-| **MySQL versions** | Percona Server 8.0, 8.4, and 9.x |
+| **MySQL versions** | Percona Server 8.0, 8.4, and 9.7 LTS |
 | **MariaDB versions** | MariaDB 10.11, 11.4, and 12.3 |
 | **Replication** | GTID-based asynchronous and semi-synchronous replication, plus MySQL Group Replication with quorum-based consensus, planned switchover, and automatic failover |
 | **Traffic routing** | Three role-aware Services: read-write, read-only (replicas), and read (any ready) |

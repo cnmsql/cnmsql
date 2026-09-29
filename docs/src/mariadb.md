@@ -220,7 +220,7 @@ MariaDB has its own single-hop upgrade chain:
 ```
 
 In-place major upgrades follow this chain one hop at a time, the same way MySQL
-upgrades follow `8.0 → 8.4 → 9.0`. You cannot skip a series, and you cannot
+upgrades follow `8.0 → 8.4 → 9.7`. You cannot skip a series, and you cannot
 cross flavors. The mechanics and rollout behavior are covered in
 [MySQL Version Upgrades](major-version-upgrade.md), which applies to both engines
 with each following its own chain.
