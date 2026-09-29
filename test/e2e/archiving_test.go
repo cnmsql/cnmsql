@@ -280,7 +280,7 @@ func archivingVersionSpecs(version string) {
 	})
 }
 
-// sanitize turns a version like "9.x" into a DNS-label-safe cluster-name
+// sanitize turns a version like "9.7" into a DNS-label-safe cluster-name
 // fragment.
 func sanitize(version string) string {
 	out := make([]rune, 0, len(version))

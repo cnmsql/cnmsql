@@ -93,7 +93,7 @@ func archiveVersions() []string {
 		}
 		return out
 	}
-	return []string{"8.0", "8.4", "9.x"}
+	return []string{"8.0", "8.4", "9.7"}
 }
 
 // envOr returns the trimmed value of the environment variable, or def when it is

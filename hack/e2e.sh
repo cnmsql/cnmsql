@@ -56,14 +56,14 @@ Flags:
                      Set GINKGO_EXTRA_ARGS for extra ginkgo flags
                      (e.g. --repeat=2, --until-it-fails, --allow-empty).
   --k8s <version>    kindest/node version, e.g. v1.36.1   (sets K8S_VERSION).
-		--mysql <version>  Pin one MySQL flavor: 8.0 | 8.4 | 9.x (sets E2E_MYSQL_VERSION).
+		--mysql <version>  Pin one MySQL flavor: 8.0 | 8.4 | 9.7 (sets E2E_MYSQL_VERSION).
 		--mariadb          Run the MariaDB e2e lane (sets label filter to 'mariadb').
 
 Examples:
 		hack/e2e.sh                              # whole suite, auto-sized, hermetic
 		hack/e2e.sh --tier smoke                 # critical path only, fast
 		hack/e2e.sh --focus 'switchover' --keep  # iterate on one spec, reuse cluster
-		hack/e2e.sh --mysql 9.x --tier flavor    # version-sensitive specs on 9.x
+		hack/e2e.sh --mysql 9.7 --tier flavor    # version-sensitive specs on 9.7
 		hack/e2e.sh --mariadb --tier flavor      # MariaDB e2e specs
 EOF
 }
