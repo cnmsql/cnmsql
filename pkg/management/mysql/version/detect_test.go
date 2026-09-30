@@ -108,3 +108,45 @@ func TestResolve(t *testing.T) {
 		t.Error("Resolve with a missing binary: expected an error")
 	}
 }
+
+// writeServer puts a fake server binary named name in dir that prints out.
+func writeServer(t *testing.T, dir, name, out string) {
+	t.Helper()
+	script := "#!/bin/sh\nprintf '%s\\n' \"" + out + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// MariaDB 11.x warns on the mysqld compat name, ahead of the banner. Detect runs
+// mariadbd itself when the image has it.
+func TestDetectPrefersMariadbd(t *testing.T) {
+	dir := t.TempDir()
+	writeServer(t, dir, "mysqld", "mysqld: Deprecated program name. It will be removed in a future release")
+	writeServer(t, dir, "mariadbd", "mariadbd  Ver 11.4.13-MariaDB-deb12 for debian-linux-gnu on x86_64")
+	t.Setenv("PATH", dir)
+
+	got, err := Detect(context.Background(), "mysqld")
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if got.Version != "11.4.13" || !got.MariaDB {
+		t.Errorf("Detect = %+v, want MariaDB 11.4.13", got)
+	}
+}
+
+// Percona images have no mariadbd, and an explicit path is always run as given.
+func TestDetectKeepsMysqld(t *testing.T) {
+	dir := t.TempDir()
+	writeServer(t, dir, "mysqld", "mysqld  Ver 8.4.11-11 for Linux on x86_64 (Percona Server (GPL))")
+	t.Setenv("PATH", dir)
+
+	if got, err := Detect(context.Background(), "mysqld"); err != nil || got.Version != "8.4.11" || got.MariaDB {
+		t.Errorf("Detect without mariadbd = %+v, %v; want Percona 8.4.11", got, err)
+	}
+
+	writeServer(t, dir, "mariadbd", "mariadbd  Ver 11.4.13-MariaDB-deb12 for debian-linux-gnu on x86_64")
+	if got, err := Detect(context.Background(), filepath.Join(dir, "mysqld")); err != nil || got.Version != "8.4.11" {
+		t.Errorf("Detect with an explicit path = %+v, %v; want the binary at that path", got, err)
+	}
+}
