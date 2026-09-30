@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -172,22 +174,26 @@ func LoadImageToKindClusterWithName(name string) error {
 		return nil
 	}
 
-	// Retry via image-archive: docker save | kind load image-archive. This
+	// Retry via image-archive: docker save, then kind load image-archive. This
 	// bypasses a containerd snapshotter bug where `ctr import` fails to resolve
 	// layer digests on certain images (ghcr.io/cnmsql/cnmsql-mariadb-instance).
-	saveCmd := exec.Command("docker", "save", name)
-	loadCmd := exec.Command(kindBinary, "load", "image-archive", "--name", cluster)
-	loadCmd.Stdin, _ = saveCmd.StdoutPipe()
-	loadCmd.Stdout = os.Stdout
-	loadCmd.Stderr = os.Stderr
-	if startErr := loadCmd.Start(); startErr != nil {
-		return err
+	// kind takes the archive as a file argument and does not read stdin, so it
+	// goes through a temporary file rather than a pipe: with a pipe, kind exits
+	// at once and docker save blocks forever on the unread pipe. Only the Kind
+	// node's platform is saved: for a multi-platform image the containerd image
+	// store holds the other platforms' index entries but not their layers, and
+	// kind imports with --all-platforms, which then fails on the missing content.
+	dir, tmpErr := os.MkdirTemp("", "kind-image-")
+	if tmpErr != nil {
+		return fmt.Errorf("creating image archive dir: %w (original: %w)", tmpErr, err)
 	}
-	if runErr := saveCmd.Run(); runErr != nil {
-		return fmt.Errorf("docker save %s: %w (original: %w)", name, runErr, err)
+	defer func() { _ = os.RemoveAll(dir) }()
+	archive := filepath.Join(dir, "image.tar")
+	if _, saveErr := Run(exec.Command("docker", "save", "--platform", "linux/"+runtime.GOARCH, "-o", archive, name)); saveErr != nil {
+		return fmt.Errorf("docker save %s: %w (original: %w)", name, saveErr, err)
 	}
-	if waitErr := loadCmd.Wait(); waitErr != nil {
-		return fmt.Errorf("kind load image-archive %s: %w (original: %w)", name, waitErr, err)
+	if _, loadErr := Run(exec.Command(kindBinary, "load", "image-archive", archive, "--name", cluster)); loadErr != nil {
+		return fmt.Errorf("kind load image-archive %s: %w (original: %w)", name, loadErr, err)
 	}
 	return nil
 }
