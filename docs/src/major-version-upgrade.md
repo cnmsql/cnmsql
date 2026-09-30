@@ -129,23 +129,27 @@ separate cluster that clients must be moved to. See
 
 ## Legacy 9.x innovation clusters
 
-cnmsql supports LTS series only: 8.0 (while Percona still publishes it; upstream
-MySQL 8.0 reached end of life in April 2026), 8.4, and 9.7. Innovation releases
-are not upgrade targets. Earlier releases shipped the 9.x innovation line under
-the catalog series `9.0` and the `:9.x` image tags; that line is now a hard cut:
+cnmsql supports LTS series only: 8.0 (while Percona still publishes it;
+upstream MySQL 8.0 reached end of life in April 2026), 8.4 and 9.7. Operator
+releases up to 0.8.x ran the 9.x innovation line under the catalog series `9.0`
+and the `:9.x` image tags, which ended at 9.6. The operator now treats 9.6 as a
+series of its own, outside the upgrade chain:
 
-- A cluster on 9.1–9.6 cannot upgrade in place to 9.7. Admission rejects the
-  change with `unsupported source MySQL series`, and the instance manager
-  refuses to start mysqld on a 9.6 data directory with a 9.7 image.
-- A physical backup of 9.6 cannot seed a 9.7 cluster either: XtraBackup 9.7
-  only restores 9.7 servers.
-- The `:9.x` image tags stay published, frozen at their last 9.6 build, so
-  existing clusters keep running and reconciling.
+- A 9.6 cluster cannot upgrade to 9.7 in place. Admission rejects the series
+  change with `unsupported source MySQL series`. A 9.7 image set through
+  `imageName` is refused, and the cluster stays on 9.6 (the `ImageReady`
+  condition says why).
+- A physical backup of 9.6 cannot seed a 9.7 cluster: XtraBackup 9.7 only
+  copies 9.7 servers.
+- A 9.6 cluster whose image is set with `imageName` keeps running and is
+  managed as usual. The `:9.x` tags stay published, frozen at their last 9.6
+  build. A 9.6 cluster that still uses a catalog entry named `9.0` is
+  `Blocked`; switch it to `imageName` to unblock it.
 
-To move a 9.x cluster to 9.7, take a
-[logical backup](logical-backups.md) (`Backup.spec.method: logical`) and load
-it into a fresh 9.7 cluster with `bootstrap.initdb.import` or a
-`LogicalRestore`, as described in
+The simplest way to 9.7 is to move while the operator is still on 0.8.x; see
+[Clusters on MySQL 9.x](operator-upgrades.md#clusters-on-mysql-9x). After the
+operator upgrade, the only way is a [logical backup](logical-backups.md) of the
+9.6 cluster loaded into a new 9.7 cluster; see
 [Moving to another server series](logical-backups.md#moving-to-another-server-series).
 
 Future innovation releases (9.8 onward, 10.x) are not supported until they
@@ -158,6 +162,13 @@ become an LTS series.
   9.x innovation source (`unsupported source MySQL series`, see
   [Legacy 9.x innovation clusters](#legacy-9x-innovation-clusters)), or a series
   change via `imageName` (use `imageCatalogRef` instead).
+- **The new image is not rolled out, or the cluster is `Blocked`.** The
+  operator refused the image: it does not run the series the catalog entry or
+  image tag names, or moving to it is not a supported upgrade. The `ImageReady`
+  condition gives the version it found and the reason. A cluster that already
+  runs an accepted image stays on it. A cluster with no accepted image yet (a
+  new cluster, or any cluster right after the upgrade to operator 0.9.0) is
+  `Blocked`, and the operator does not manage it until you fix the spec.
 - **A Pod crash-loops right after the image change.** The instance manager refused
   an unsupported transition (the data directory's series does not match the
   image). The reason is in the Pod log: `Refusing to start mysqld: unsupported

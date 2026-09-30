@@ -181,113 +181,197 @@ the operator Deployment has been updated to a new image.
 
 ## Version-specific upgrade notes
 
-### Instances roll once: the server version comes from the image
+Newest release first. Each section says what changes when you upgrade the
+operator to that release, and what to do.
 
-The operator no longer derives the server version from the image tag. It runs
-each new image once in a short-lived probe Pod that reports the version its
-`mysqld` binary knows, and the instance manager reads it from `mysqld --version`
-itself (see [How the operator learns the server
+### Upgrading from 0.8.x to 0.9.0
+
+Upgrading to 0.9.0 restarts every instance once. Clusters on MySQL 8.0 and 8.4
+need nothing else. Clusters on MySQL 9.x need a change before you upgrade; see
+[Clusters on MySQL 9.x](#clusters-on-mysql-9x).
+
+#### What changes
+
+The operator now reads the server version from the image itself, not from the
+image tag. The first time a cluster uses an image, the operator runs it in a
+short-lived probe Pod named `<cluster>-image-<hash>` and records the version it
+reports (see [How the operator learns the server
 version](./instance-images.md#how-the-operator-learns-the-server-version)).
-Instance Pods and bootstrap Jobs therefore no longer carry the `MYSQL_VERSION`
-variable or the `--server-version` argument, so the Pod template changes once:
-after upgrading the operator, every instance restarts once through the normal
-rolling update (replicas first, then a switchover, then the primary), even with
-`inPlaceInstanceManagerUpdates` enabled.
+After the upgrade:
 
-What to expect:
+- Each cluster runs one probe Pod. It pulls the image the cluster already
+  uses, exits within seconds, and is deleted once the image is accepted. It
+  requests 10m CPU and 32Mi of memory (limits: 200m and 128Mi) and uses the
+  cluster's pull secrets, node selector, affinity and tolerations. If a
+  `ResourceQuota` or an admission policy restricts Pods in the namespace, make
+  sure it allows this one.
+- Until its probe finishes, a cluster shows `Provisioning` with no ready
+  instances. The instances keep serving, but the operator does not manage the
+  cluster in the meantime: no failover, switchover or rolling update. This
+  takes a few seconds, or as long as the image pull on a slow registry (up to
+  five minutes).
+- The probed version must belong to the series the cluster names: the series
+  of its catalog entry, or the version at the start of its image tag (`:8.4`,
+  `:8.4.11-…`). If it doesn't, the cluster is `Blocked` and the operator stops
+  managing it until you fix the spec. 0.8.x never checked this.
+- Every instance restarts once, because the Pods no longer carry the
+  `MYSQL_VERSION` variable. Replicas restart first. Then the operator switches
+  over, so writes fail for about a second, and restarts the old primary. A
+  single-instance cluster is down while it restarts. This happens even with
+  `inPlaceInstanceManagerUpdates` enabled.
+- my.cnf is rendered for the exact server version. 0.8.x assumed 8.4.0 for
+  every 8.4 image, so settings that depend on a later patch release may now
+  appear.
+- `kubectl get mysql` has a `VERSION` column.
+- The `kubectl cnmsql` plugin opens root sessions through the instance manager
+  instead of a shell, so it works on distroless images. The new plugin fails
+  with `unknown command "client"` on instances that still run the old instance
+  manager, so upgrade it after the operator. The 0.8.x plugin keeps working
+  with the new operator, except on distroless images.
 
-- **A probe Pod per cluster.** Right after the upgrade, each cluster runs one
-  `<cluster>-image-<hash>` Pod that pulls the image the cluster already runs and
-  exits within seconds. It is deleted once read. Namespaces with a
-  `ResourceQuota` need room for it (10m CPU and 32Mi requested, 200m and 128Mi
-  limits); an admission policy that only admits known Pods must allow it.
-- **A more precise configuration.** my.cnf is now rendered for the exact server
-  version instead of a per-series guess (`8.4` used to mean 8.4.0). Settings
-  gated on a patch release may appear in the rendered configuration.
-- **A `VERSION` column** in `kubectl get mysql`, from `status.targetImage`.
+#### Clusters on MySQL 9.x
 
-### Binlogs are retained locally after archiving
+0.8.x ran MySQL 9.x under the catalog series `9.0` and the `:9.x` image tags,
+which ended at 9.6. 0.9.0 replaces them with 9.7 LTS. Under 0.9.0, a 9.6
+cluster cannot upgrade to 9.7 in place, and a cluster that uses a catalog entry
+named `9.0` is blocked, because 9.6 is not series 9.0. Before you upgrade the
+operator, pick one of the options below for each 9.x cluster.
 
-Clusters with `spec.backup.continuousArchiving.enabled: true` change their disk
-profile on upgrade. Previously the archiver purged each binary log from the data
-volume as soon as it reached the object store, so local binlogs stayed near
-zero. They are now kept until `binlogExpireSeconds` (default 604800, seven days)
-so a lagged or returning replica can catch up from the primary instead of being
-re-cloned from a backup.
+##### Option 1: move to 9.7 first (recommended)
 
-**Action required.** The data volume must now hold the dataset plus roughly
-`write throughput × binlogExpireSeconds` of binlogs. Before upgrading, check the
-headroom on your archiving clusters:
+0.8.x can roll a 9.6 cluster onto 9.7 in place, and MySQL supports that
+upgrade. Do this while the operator is still on 0.8.x:
 
-```bash
-kubectl exec <instance> -c mysql -- df -h /var/lib/mysql
-kubectl exec <instance> -c mysql -- \
-  sh -c 'du -sh /var/lib/mysql/binlog.* 2>/dev/null | tail -1'
-```
+1. Add a `9.7` entry to the cluster's image catalog:
 
-Distroless instance images have no shell or `df`. Run the same commands from a
-debug container that shares the instance's processes, through
-`/proc/1/root/var/lib/mysql`:
+   ```yaml
+   spec:
+     images:
+       - series: "9.0"
+         image: ghcr.io/cnmsql/cnmsql-instance:9.x
+       - series: "9.7"
+         image: ghcr.io/cnmsql/cnmsql-instance:9.7
+   ```
 
-```bash
-kubectl debug -it <instance> --image=busybox --target=mysql -- sh
-```
+   Use a tag that contains the version, not a digest, because 0.8.x reads the
+   version from the tag. Use the default images, not the distroless ones,
+   because the 0.8.x plugin needs a shell. Don't point the `9.0` entry at the
+   9.7 image instead: 0.9.0 would block the cluster, because the image runs
+   9.7, not 9.0.
 
-Then pick one:
+2. Change the cluster's series to `9.7`:
 
-- **Grow the volume.** Raise `spec.storage.size`; see
-  [Storage](./storage.md). This is the option that preserves the new
-  catch-up behaviour.
-- **Shorten the window.** Lower
-  `spec.backup.continuousArchiving.binlogExpireSeconds` to fit the disk you
-  have. A shorter window still beats purge-on-archive for replica catch-up.
-- **Keep the old behaviour.** Set
-  `spec.backup.continuousArchiving.purgeAfterArchive: true` to restore
-  purge-on-archive exactly as it worked before.
+   ```yaml
+   spec:
+     imageCatalogRef:
+       apiGroup: mysql.cnmsql.co
+       kind: ImageCatalog
+       name: <catalog>
+       series: "9.7"   # was "9.0"
+   ```
+
+3. Wait for the cluster to be `Ready` again. The operator takes a backup first
+   (unless `spec.upgrade.backupBeforeUpgrade` is `false`), then restarts the
+   replicas on 9.7, switches over, and restarts the old primary. Each instance
+   upgrades its data when it first starts on 9.7, and its log shows `Server
+   upgrade from '90600' to '907xx' completed`. Until the roll is over, don't
+   scale up, rebuild a replica or take a physical backup: XtraBackup 9.7
+   cannot copy a 9.6 server.
+
+4. Take a new backup. Backups taken before the roll can only be restored onto
+   9.6.
+
+You can then upgrade the operator.
+
+##### Option 2: stay on 9.6
+
+Replace the cluster's `imageCatalogRef` with an `imageName` set to the image of
+its `9.0` entry:
 
 ```yaml
 spec:
-  backup:
-    continuousArchiving:
-      enabled: true
-      purgeAfterArchive: true # pre-upgrade behaviour
+  imageName: ghcr.io/cnmsql/cnmsql-instance:9.x
 ```
 
-PITR is unaffected either way: recovery replays from the object store, not from
-local binlogs. See [Local binlog
-retention](./pitr.md#local-binlog-retention) for the sizing model and the
-trade-off in full.
+The image stays the same, so nothing restarts. After the operator upgrade, the
+cluster keeps running 9.6 and the operator manages it as before. To move it to
+9.7 later, load a logical backup into a new 9.7 cluster; see [Moving to another
+server series](./logical-backups.md#moving-to-another-server-series).
 
-### Single-instance clusters restart once
+##### If you already upgraded the operator
 
-Instance Pods now carry the switchover-on-drain `preStop` hook whatever the
-instance count. Previously a single-instance cluster's Pod had no hook, so its
-Pod template changed whenever the cluster was scaled to or from one instance.
-That rolled the primary without a handoff and, on a scale-up, failed it over
-instead of switching over. The hook now returns immediately when no replica is
-streaming from the primary, so a single-instance teardown is not delayed.
+A cluster still on the `9.0` catalog entry is `Blocked`, with a message like
+`Image ghcr.io/cnmsql/cnmsql-instance:9.x runs 9.6.0, which is not series 9.0
+named by the ImageCatalog "9.0" entry`. Its instances keep serving, but the
+operator doesn't manage it, not even to fail over. Switch it to `imageName` as
+in option 2. The operator accepts the image right away and restarts the
+instances once. From there, only a logical backup takes it to 9.7.
 
-**Expect one restart.** Each single-instance cluster with switchover-on-drain
-enabled (the default) gets a new Pod template, so its only instance is restarted
-once during the operator upgrade. Multi-instance clusters already carry the hook
-and are not rolled for this change. Plan the operator upgrade for a window in
-which a brief outage of your single-instance clusters is acceptable.
+#### Before upgrading {#before-upgrading-to-090}
 
-### Upgrade the operator before the kubectl plugin
+1. If you apply CRDs yourself rather than through `helm upgrade`, apply the
+   0.9.0 CRDs first.
 
-The `kubectl cnmsql` commands that run SQL as root now start the database
-client through `manager instance client`, the instance manager already in
-every instance container, instead of a `sh -c` wrapper. The password
-handshake is unchanged, and instance images no longer need a shell, which the
-distroless images do not have.
+2. Check that every cluster is `Ready`:
 
-**Order matters.** A new plugin against instances that still run an older
-instance manager fails with `unknown command "client"`. Upgrade the operator
-first, and wait until its instances run the new instance manager (after the
-rolling or in-place upgrade), then the plugin. An older plugin keeps working
-against the new operator on images that have a shell, not on distroless ones.
+   ```bash
+   kubectl get clusters -A
+   ```
 
-### Instances roll once: passwords move from env vars to the API
+3. Handle each 9.x cluster (see [above](#clusters-on-mysql-9x)).
+
+4. Check that each cluster runs the series it names. List the clusters, then
+   check the version on each primary:
+
+   ```bash
+   kubectl get clusters -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SERIES:.spec.imageCatalogRef.series,IMAGE:.spec.imageName,PRIMARY:.status.currentPrimary
+   kubectl exec -n <namespace> <primary> -c mysql -- mysqld --version
+   ```
+
+   A cluster on catalog series `8.4`, or on an image tagged `:8.4`, must run
+   8.4.x. If it doesn't, fix the catalog entry or the tag. Clusters whose image
+   tag has no version (`:latest`, a digest) are not checked.
+
+#### Upgrading {#upgrading-to-090}
+
+```bash
+helm upgrade cnmsql cnmsql/cnmsql -n <operator-namespace> --version 0.9.0
+```
+
+Watch `kubectl get clusters -A`. Each cluster shows `Provisioning`, then
+`Upgrading` while its instances restart, then `Ready` with a `VERSION`.
+
+#### After upgrading {#after-upgrading-to-090}
+
+1. If a cluster is `Blocked`, read the reason:
+
+   ```bash
+   kubectl get cluster <name> -n <namespace> \
+     -o jsonpath='{.status.conditions[?(@.type=="ImageReady")].message}'
+   ```
+
+2. Upgrade the `kubectl cnmsql` plugin.
+
+3. You can now use the
+   [published catalogs](./instance-images.md#published-catalogs), digest
+   references and the distroless images.
+
+#### Downgrading to 0.8.x {#downgrading-to-08x}
+
+A downgrade restarts every instance again. 0.8.x reads the version from the
+image tag, so first move any cluster whose tag has no version (a digest,
+`:latest`) back to a tag like `:8.4`. The 0.8.x plugin cannot open root
+sessions on distroless images.
+
+### Upgrading from 0.7.x to 0.8.0
+
+The upgrade keeps your data: checksums, archived binlogs and point-in-time
+recovery from backups taken before the upgrade are unaffected. What it costs is
+one restart of every instance, and a few settings behave differently afterwards.
+Read the notes below, then follow the steps from
+[Before upgrading](#before-upgrading-to-080) in order.
+
+#### Instances roll once: passwords move from env vars to the API
 
 Instance managers now read their MySQL account passwords from the cluster's
 credential Secrets through the Kubernetes API, instead of from `MYSQL_*_PASSWORD`
@@ -315,7 +399,7 @@ Secret): run `ALTER USER` to the new password first, then update the Secret. A
 Secret that no longer matches its MySQL account now fails every instance at
 once instead of waiting for the next restart, and the instances report a
 credential mismatch rather than looking unreachable; see [Upgrade procedure:
-0.7.x to 0.8.0](#upgrade-procedure-07x-to-080) for the check to run before
+0.7.x to 0.8.0](#upgrading-from-07x-to-080) for the check to run before
 upgrading.
 
 A credential Secret that is deleted on a cluster with bootstrapped instances is
@@ -372,14 +456,7 @@ The replication account is now X.509-only: the unused replication password code
 path is gone. Clusters managed by the operator already replicate over mTLS, so
 this needs no action.
 
-### Upgrade procedure: 0.7.x to 0.8.0
-
-The upgrade keeps your data: checksums, archived binlogs and point-in-time
-recovery from backups taken before the upgrade are unaffected. What it costs is
-one restart of every instance, and a few settings behave differently afterwards.
-Follow these steps in order.
-
-#### Before upgrading
+#### Before upgrading {#before-upgrading-to-080}
 
 1. **Use a chart that ships the 0.8.0 CRDs.** 0.8.0 adds the `LogicalRestore`
    CRD and new fields on `Backup` and `ScheduledBackup`. `helm upgrade` applies
@@ -437,7 +514,7 @@ Follow these steps in order.
    operator never streams an in-place update to a Pod it is about to recreate,
    and every Pod is recreated by this roll.
 
-#### Upgrading
+#### Upgrading {#upgrading-to-080}
 
 ```bash
 helm upgrade cnmsql cnmsql/cnmsql -n <operator-namespace> --version 0.8.0
@@ -450,7 +527,7 @@ Follow the roll with `kubectl get clusters -A`: each cluster goes through
   yet.
 - Don't scale clusters or create new ones until the roll is over.
 
-#### After upgrading
+#### After upgrading {#after-upgrading-to-080}
 
 1. Check that the roll finished everywhere: every cluster `Ready`, and no
    instance Pod carries a password variable any more:
@@ -469,7 +546,7 @@ Follow the roll with `kubectl get clusters -A`: each cluster goes through
 3. Each cluster now has a `<cluster>-dump` Secret and a `cnmsql_dump` account,
    which [logical backups](./logical-backups.md) use.
 
-#### Downgrading to 0.7.x
+#### Downgrading to 0.7.x {#downgrading-to-07x}
 
 A downgrade restarts every instance once more, back to password environment
 variables. Data is not affected. Before you run `helm rollback`:
@@ -490,6 +567,75 @@ variables. Data is not affected. Before you run `helm rollback`:
 After upgrading to 0.8.0 again, delete any `Backup` whose `Progressing`
 condition has reason `UnsupportedMethod`: the 0.7.x operator created it during
 the upgrade, and it never runs.
+
+### Changes in earlier releases
+
+#### Binlogs are retained locally after archiving
+
+Since 0.7.3, clusters with `spec.backup.continuousArchiving.enabled: true`
+change their disk profile on upgrade. Previously the archiver purged each binary log from the data
+volume as soon as it reached the object store, so local binlogs stayed near
+zero. They are now kept until `binlogExpireSeconds` (default 604800, seven days)
+so a lagged or returning replica can catch up from the primary instead of being
+re-cloned from a backup.
+
+**Action required.** The data volume must now hold the dataset plus roughly
+`write throughput × binlogExpireSeconds` of binlogs. Before upgrading, check the
+headroom on your archiving clusters:
+
+```bash
+kubectl exec <instance> -c mysql -- df -h /var/lib/mysql
+kubectl exec <instance> -c mysql -- \
+  sh -c 'du -sh /var/lib/mysql/binlog.* 2>/dev/null | tail -1'
+```
+
+Distroless instance images have no shell or `df`. Run the same commands from a
+debug container that shares the instance's processes, through
+`/proc/1/root/var/lib/mysql`:
+
+```bash
+kubectl debug -it <instance> --image=busybox --target=mysql -- sh
+```
+
+Then pick one:
+
+- **Grow the volume.** Raise `spec.storage.size`; see
+  [Storage](./storage.md). This is the option that preserves the new
+  catch-up behaviour.
+- **Shorten the window.** Lower
+  `spec.backup.continuousArchiving.binlogExpireSeconds` to fit the disk you
+  have. A shorter window still beats purge-on-archive for replica catch-up.
+- **Keep the old behaviour.** Set
+  `spec.backup.continuousArchiving.purgeAfterArchive: true` to restore
+  purge-on-archive exactly as it worked before.
+
+```yaml
+spec:
+  backup:
+    continuousArchiving:
+      enabled: true
+      purgeAfterArchive: true # pre-upgrade behaviour
+```
+
+PITR is unaffected either way: recovery replays from the object store, not from
+local binlogs. See [Local binlog
+retention](./pitr.md#local-binlog-retention) for the sizing model and the
+trade-off in full.
+
+#### Single-instance clusters restart once
+
+Since 0.7.6, instance Pods carry the switchover-on-drain `preStop` hook
+whatever the instance count. Previously a single-instance cluster's Pod had no hook, so its
+Pod template changed whenever the cluster was scaled to or from one instance.
+That rolled the primary without a handoff and, on a scale-up, failed it over
+instead of switching over. The hook now returns immediately when no replica is
+streaming from the primary, so a single-instance teardown is not delayed.
+
+**Expect one restart.** Each single-instance cluster with switchover-on-drain
+enabled (the default) gets a new Pod template, so its only instance is restarted
+once during the operator upgrade. Multi-instance clusters already carry the hook
+and are not rolled for this change. Plan the operator upgrade for a window in
+which a brief outage of your single-instance clusters is acceptable.
 
 ## Troubleshooting
 
