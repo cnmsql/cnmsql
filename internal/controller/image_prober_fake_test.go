@@ -35,6 +35,7 @@ func init() {
 var testImageVersions = map[string]string{
 	"8.0":   mysqlDefaultServerVersion,
 	"8.4":   "8.4.0",
+	"9.7":   "9.7.1",
 	"9.x":   "9.6.0",
 	"10.11": "10.11.8",
 	"11.4":  "11.4.3",
