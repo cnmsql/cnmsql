@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -58,20 +59,34 @@ func ParseBanner(out string) (Server, error) {
 // binary is the authority on its own version: image tags and catalog entries
 // only name it.
 //
-// Callers that do not know the flavor yet pass the bare name "mysqld". When the
-// image also has mariadbd, Detect runs that instead: MariaDB 11.x keeps mysqld
-// only as a compat name and prints a deprecation warning ahead of the banner.
+// Callers that do not know the flavor yet pass mysqld, either the bare name or
+// a path such as /usr/sbin/mysqld. When the image also has mariadbd there, Detect
+// runs that instead: MariaDB 11.x keeps mysqld only as a compat name and prints
+// a deprecation warning ahead of the banner.
 func Detect(ctx context.Context, mysqld string) (Server, error) {
-	if mysqld == "mysqld" {
-		if mariadbd, err := exec.LookPath("mariadbd"); err == nil {
-			mysqld = mariadbd
-		}
-	}
+	mysqld = preferMariadbd(mysqld)
 	out, err := exec.CommandContext(ctx, mysqld, "--version").CombinedOutput()
 	if err != nil {
 		return Server{}, fmt.Errorf("running %s --version: %w: %s", mysqld, err, bytes.TrimSpace(out))
 	}
 	return ParseBanner(string(out))
+}
+
+// preferMariadbd returns the mariadbd that sits where mysqld would be found (on
+// PATH for the bare name, in the same directory for a path), or mysqld itself
+// when there is none or the binary is not named mysqld.
+func preferMariadbd(mysqld string) string {
+	if filepath.Base(mysqld) != "mysqld" {
+		return mysqld
+	}
+	candidate := "mariadbd"
+	if mysqld != "mysqld" {
+		candidate = filepath.Join(filepath.Dir(mysqld), "mariadbd")
+	}
+	if mariadbd, err := exec.LookPath(candidate); err == nil {
+		return mariadbd
+	}
+	return mysqld
 }
 
 // Resolve returns override when it is set, else the version the mysqld binary
