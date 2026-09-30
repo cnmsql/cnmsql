@@ -45,11 +45,14 @@ func TestGuardDataDirUpgrade(t *testing.T) {
 		wantErr bool
 	}{
 		{"same series patch bump", "8.0.36", "8.0.40", false},
+		{"9.7 same series patch bump", "9.7.0", "9.7.1", false},
 		{"single hop forward", "8.0.36", "8.4.3", false},
-		{"second hop forward", "8.4.3", "9.0.1", false},
-		{"second hop to current 9.x", "8.4.3", "9.6.0", false},
-		{"skips a series", "8.0.36", "9.0.1", true},
+		{"second hop to 9.7 lts", "8.4.3", "9.7.1", false},
+		{"9.6 data dir restarts on same version", "9.6.0", "9.6.0", false},
+		{"legacy 9.6 data dir cannot upgrade to 9.7", "9.6.0", "9.7.1", true},
+		{"skips a series", "8.0.36", "9.7.1", true},
 		{"downgrade", "8.4.3", "8.0.36", true},
+		{"downgrade 9.7 to 9.6", "9.7.1", "9.6.0", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

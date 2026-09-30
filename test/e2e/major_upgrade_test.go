@@ -14,7 +14,7 @@ import (
 )
 
 // These specs exercise both the admission guard and, in the dedicated
-// multi-image CI job, a real Group Replication roll through 8.0 -> 8.4 -> 9.x.
+// multi-image CI job, a real Group Replication roll through 8.0 -> 8.4 -> 9.7.
 
 // upgradeCatalogName is the ImageCatalog these specs resolve series against.
 const upgradeCatalogName = "upgrade-images"
@@ -34,9 +34,11 @@ spec:
       image: %s
     - series: "8.4"
       image: %s
+    - series: "9.7"
+      image: %s
     - series: "9.0"
       image: %s
-`, name, ns, instanceImage, instanceImage, instanceImage)
+`, name, ns, instanceImage, instanceImage, instanceImage, instanceImage)
 }
 
 func catalogClusterManifest(name, ns, series string) string {
@@ -76,9 +78,9 @@ spec:
       image: %s
     - series: "8.4"
       image: %s
-    - series: "9.0"
+    - series: "9.7"
       image: %s
-`, name, ns, instanceImageFor("8.0"), instanceImageFor("8.4"), instanceImageFor("9.x"))
+`, name, ns, instanceImageFor("8.0"), instanceImageFor("8.4"), instanceImageFor("9.7"))
 }
 
 func majorUpgradeGRClusterManifest(name, ns, catalog, series string) string {
@@ -145,14 +147,23 @@ var _ = Describe("MySQL major-version upgrade admission", Ordered, Label("featur
 		applyManifest(cluster, catalogClusterManifest(cluster, testNamespace, "8.0"))
 		DeferCleanup(func() { deleteCluster(cluster) })
 
-		By("rejecting a skip straight to 9.0")
-		expectApplyRejected(cluster, catalogClusterManifest(cluster, testNamespace, "9.0"), "8.4")
+		By("rejecting a skip straight to 9.7")
+		expectApplyRejected(cluster, catalogClusterManifest(cluster, testNamespace, "9.7"), "8.4")
 
 		By("allowing the adjacent hop to 8.4")
 		applyManifest(cluster, catalogClusterManifest(cluster, testNamespace, "8.4"))
 
 		By("rejecting a downgrade back to 8.0")
 		expectApplyRejected(cluster, catalogClusterManifest(cluster, testNamespace, "8.0"), "downgrade")
+	})
+
+	It("rejects a legacy 9.x innovation series as an upgrade source", func() {
+		By("creating a cluster pinned to the legacy 9.0 series")
+		applyManifest(cluster, catalogClusterManifest(cluster, testNamespace, "9.0"))
+		DeferCleanup(func() { deleteCluster(cluster) })
+
+		By("rejecting the hop to 9.7: the 9.x innovation line is hard-cut")
+		expectApplyRejected(cluster, catalogClusterManifest(cluster, testNamespace, "9.7"), "unsupported source")
 	})
 
 	It("blocks a cluster whose ImageCatalog does not exist at reconcile time", func() {
@@ -287,7 +298,7 @@ var _ = Describe("MySQL major-version upgrade rollout", Ordered, Label("disrupti
 			image        string
 		}{
 			{series: "8.4", serverPrefix: "8.4.", image: instanceImageFor("8.4")},
-			{series: "9.0", serverPrefix: "9.", image: instanceImageFor("9.x")},
+			{series: "9.7", serverPrefix: "9.7.", image: instanceImageFor("9.7")},
 		}
 		for _, hop := range hops {
 			By(fmt.Sprintf("upgrading all members to MySQL %s", hop.series))
@@ -382,11 +393,11 @@ var _ = Describe("MySQL major-version upgrade defensive scenarios", Ordered, Lab
 		password := appPassword(cluster)
 
 		By("mutating the catalog by adding a bogus extra series entry")
-		image9x := instanceImageFor("9.x")
+		image97 := instanceImageFor("9.7")
 		updatedCatalog := majorUpgradeCatalogManifest(catalog, ns)
 		updatedCatalog = strings.Replace(updatedCatalog,
-			"- series: \"9.0\"\n      image: "+image9x,
-			"- series: \"9.0\"\n      image: "+image9x+"\n    - series: \"9.9\"\n      image: "+image9x, 1)
+			"- series: \"9.7\"\n      image: "+image97,
+			"- series: \"9.7\"\n      image: "+image97+"\n    - series: \"9.9\"\n      image: "+image97, 1)
 		applyManifest(catalog, updatedCatalog)
 
 		By("verifying the cluster stays Ready and on its pinned series despite the catalog change")
@@ -471,7 +482,7 @@ spec:
 			serverPrefix string
 		}{
 			{series: "8.4", serverPrefix: "8.4."},
-			{series: "9.0", serverPrefix: "9."},
+			{series: "9.7", serverPrefix: "9.7."},
 		}
 		for _, hop := range hops {
 			By(fmt.Sprintf("upgrading to MySQL %s", hop.series))

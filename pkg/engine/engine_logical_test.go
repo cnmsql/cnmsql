@@ -97,7 +97,7 @@ func TestLogicalDumpArgs(t *testing.T) {
 		{"mysql 8.0.26", FlavorMySQL, "8.0.26",
 			[]string{"--source-data=2", "--set-gtid-purged=OFF"}, []string{"--master-data=2"}},
 		{"mysql 8.4", FlavorMySQL, "8.4.11", []string{"--source-data=2"}, []string{"--master-data=2"}},
-		{"mysql 9.x", FlavorMySQL, "9.6.0", []string{"--source-data=2"}, []string{"--master-data=2"}},
+		{"mysql 9.7", FlavorMySQL, "9.7.1", []string{"--source-data=2"}, []string{"--master-data=2"}},
 		{"mariadb 10.11", FlavorMariaDB, "10.11.19-MariaDB",
 			[]string{"--master-data=2"}, []string{"--set-gtid-purged=OFF", "--gtid", "--source-data=2"}},
 		{"mariadb 12.3", FlavorMariaDB, "12.3.3-MariaDB",
@@ -208,7 +208,7 @@ func TestDumpAccountGrants(t *testing.T) {
 		return false
 	}
 	mysql := MustForFlavor(FlavorMySQL).Logical()
-	for _, v := range []string{"8.0.46", "8.4.11", "9.6.0"} {
+	for _, v := range []string{"8.0.46", "8.4.11", "9.7.1"} {
 		g := mysql.DumpAccountGrants(mustVersion(t, v))
 		for _, p := range []string{"SELECT", "SHOW VIEW", "TRIGGER", "EVENT", "RELOAD", "REPLICATION CLIENT"} {
 			if !has(g, p) {

@@ -99,7 +99,7 @@ func TestClusterSpecValidator(t *testing.T) {
 			name:    "reject a skipped series",
 			op:      admissionv1.Update,
 			old:     catalogCluster("8.0"),
-			new:     catalogCluster("9.0"),
+			new:     catalogCluster("9.7"),
 			allowed: false,
 		},
 		{

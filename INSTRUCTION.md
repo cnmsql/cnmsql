@@ -11,7 +11,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | Mirror CNPG's design and resource set, adapted to MySQL | CNPG is a proven, sane DBMS-operator design |
-| D2 | Build for **Percona Server for MySQL** only (8.0, 8.4, 9.x) | Percona ships the tooling (XtraBackup, etc.) we rely on. 5.6 is NOT supported |
+| D2 | Build for **Percona Server for MySQL** only (8.0, 8.4, 9.7) | Percona ships the tooling (XtraBackup, etc.) we rely on. 5.6 is NOT supported |
 | D3 | **Pods + PVCs + instance-manager** (CNPG-style), NOT StatefulSets | Max control over per-instance lifecycle, promotion, failover |
 | D4 | First replication topology: **async / semi-sync GTID** primary-replica | Closest analog to CNPG streaming replication; Group Replication deferred |
 | D5 | API group `mysql.cnmsql.co` | From scaffolded PROJECT file |
@@ -21,7 +21,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | D9 | Instance manager reaches mysqld via **admin interface** (`admin_address`/`admin_port`, 8.0.14+), falls back to socket + reserved slot | Socket does NOT bypass `max_connections`; manager must never be locked out |
 | D10 | Manager binary injected at pod startup via bootstrap-controller init container copying `/manager` from operator image into shared `scratch-data` emptyDir | CNPG pattern; operator and instance manager versions always identical |
 | D11 | Backup worker Jobs use the **same cnmsql instance image** as the Cluster | Keeps worker version-aligned with XtraBackup tooling |
-| D12 | Integration tests run a **version matrix** (8.0, 8.4, 9.x) | Every supported version exercised end-to-end |
+| D12 | Integration tests run a **version matrix** (8.0, 8.4, 9.7) | Every supported version exercised end-to-end |
 | D13 | Structured logs project-wide (operator, instance manager, child processes) | controller-runtime `logr`, K8s logging style; child-process output wrapped into structured log entries |
 | D14 | Per-instance ServiceAccount identity + validating status webhook | Prevents a rogue instance from patching `Cluster` status fields it does not own; see `design/020-status-instance-webhook.md` |
 | D15 | Logical backups are `Backup.spec.method: logical`: the engine's own dump client (`mysqldump`/`mariadb-dump`) runs inside the source instance manager as the read-only, socket-only `cnmsql_dump@localhost` account and streams over mTLS to the backup worker; the operator creates that account on new and existing clusters from its reconcile loop, and the instance manager reads the dump password from the `<cluster>-dump` Secret itself (design 030), so the worker Job and the dump request carry no password; application schemas only, definers kept, no users/grants; separate `logical.json` manifest; never a PITR anchor; restore via `bootstrap.initdb.import` | Least privilege for the dump, no instance Pod restart on operator upgrade (the Pod spec doesn't change), S3 creds stay out of the instance Pod, and dumps can never be mistaken for base backups. Requires the instance images in `cnmsql/containers` to stop stripping `mysqldump`/`mariadb-dump`, plus a required-tools CI check there; see `design/028-logical-backups.md` §5.9 |
@@ -29,10 +29,11 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | D17 | The instance manager reads its account passwords from the cluster's credential Secrets through the Kubernetes API (`get`/`watch` by name, never `list`), learning the names from the Cluster object; instance Pods carry no password env vars | Adding an account changes the Role, not the Pod spec, so no instance restarts; rotated Secrets apply without a restart; passwords stay out of `/proc/*/environ` and child processes. See `design/030-instance-credentials-from-api.md` |
 | D18 | Instance data directories are bootstrapped (initdb / restore / join / import) by a one-shot **Job per instance volume** that runs before the instance Pod exists; a `mysql.cnmsql.co/pvc-status` PVC annotation records the result, and the bootstrap source is never read again once the primary's volume is bootstrapped | The bootstrap config and its object-store credentials stop being runtime dependencies of instance Pods; restores get their own resources, deadline, status and logs. See `design/031-bootstrap-jobs.md` |
 | D19 | The server version is read from the image, never from its tag: the operator runs each new image in a probe Pod (`manager instance probe`) and records `status.targetImage`, and the instance manager reads `mysqld --version` itself | Tags only name an image; the binary is authoritative. Catches mis-mapped catalogs and digest-only references before any instance rolls, and keeps version knowledge out of the Pod spec. See `design/033-image-version-discovery.md` |
+| D20 | LTS series only: 8.0, 8.4, 9.7. Innovation lines are unsupported; the 9.x line is hard-cut (no in-place upgrade from 9.1–9.6) | Removes the 9.x → `9.0` catalog-alias hack. See `design/032-mysql-97-lts-support.md` |
 
 ## Features
 
-- Version 8.0, 8.4, and 9.x (Percona Server for MySQL)
+- Version 8.0, 8.4, and 9.7 (Percona Server for MySQL) LTS series only
 - Scheduling management (CNPG-style)
 - Physical backup and recovery (XtraBackup to S3-compatible object store)
 - Automated failover with RPO/RTO (CNPG-style)

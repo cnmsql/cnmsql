@@ -43,7 +43,7 @@ type ImageCatalogSpec struct {
 // major could not express the 8.0 -> 8.4 hop.
 type CatalogImage struct {
 	// Series is the MySQL release series in "major.minor" form (e.g. "8.0",
-	// "8.4", "9.0"). It must match the image's server version line.
+	// "8.4", "9.7"). It must match the image's server version line.
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
 	// +kubebuilder:validation:Required
 	Series string `json:"series"`

@@ -77,7 +77,7 @@ def load_json(path):
 
 
 def _server_version_key(row):
-    # "8.0.46" -> (8, 0, 46) so 9.6.0 sorts above 8.4.0 above 8.0.46.
+    # "8.0.46" -> (8, 0, 46) so 9.7.1 sorts above 8.4.0 above 8.0.46.
     parts = re.findall(r"\d+", row.get("serverVersion", "0"))
     return tuple(int(p) for p in parts) if parts else (0,)
 

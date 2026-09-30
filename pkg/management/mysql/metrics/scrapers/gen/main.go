@@ -56,7 +56,7 @@ var supportFiles = []string{
 }
 
 // scraperFiles are the individual MySQL scrapers we expose. Each one runs a
-// single SHOW/SELECT and is flavor-safe across the Percona 8.0/8.4/9.x versions
+// single SHOW/SELECT and is flavor-safe across the Percona 8.0/8.4/9.7 versions
 // we support. Scrapers gated behind kingpin CLI flags upstream (heartbeat,
 // processlist, *_events_statements, ...) are intentionally excluded: they would
 // drag in the exporter's flag wiring.

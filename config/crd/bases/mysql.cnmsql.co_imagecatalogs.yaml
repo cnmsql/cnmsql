@@ -68,7 +68,7 @@ spec:
                     series:
                       description: |-
                         Series is the MySQL release series in "major.minor" form (e.g. "8.0",
-                        "8.4", "9.0"). It must match the image's server version line.
+                        "8.4", "9.7"). It must match the image's server version line.
                       pattern: ^[0-9]+\.[0-9]+$
                       type: string
                   required:

@@ -10,11 +10,11 @@ MySQL only supports upgrades between adjacent release series, and never a
 downgrade in place. cnmsql enforces the same chain:
 
 ```
-8.0  →  8.4  →  9.0
+8.0  →  8.4  →  9.7
 ```
 
-- You must move **one series at a time**. `8.0 → 9.0` directly is rejected; go
-  `8.0 → 8.4`, then `8.4 → 9.0`.
+- You must move **one series at a time**. `8.0 → 9.7` directly is rejected; go
+  `8.0 → 8.4`, then `8.4 → 9.7`.
 - **Patch upgrades within a series** (e.g. `8.0.36 → 8.0.40`) are unrestricted.
 - **Downgrades are not supported.** Once a server starts on the new series it
   upgrades its data dictionary, which is irreversible. The only way back is to
@@ -40,7 +40,7 @@ The supported chain lives in `UpgradeSeriesChain`
 
 Major upgrades must be driven through an `ImageCatalog` (or
 `ClusterImageCatalog`), so the target series is explicit. The catalog is keyed by
-**series** (`8.0`, `8.4`, `9.0`), not by integer major. 8.0 and 8.4 are distinct
+**series** (`8.0`, `8.4`, `9.7`), not by integer major. 8.0 and 8.4 are distinct
 upgrade targets.
 
 1. Ensure the catalog lists the target series:
@@ -121,16 +121,42 @@ old series.
 A [logical backup](logical-backups.md) moves data between any two supported
 series of the same flavor, in either direction: take a dump of the source, then
 create a new cluster on the target series with `bootstrap.initdb.import`. Use it
-to skip series (`8.0` straight to `9.x`), to go back to an older series after
+to skip series (`8.0` straight to `9.7`), to go back to an older series after
 the upgraded cluster has taken writes, or to move only some databases. It is
 slower than an in-place upgrade on large datasets, and the new cluster is a
 separate cluster that clients must be moved to. See
 [Moving to another server series](logical-backups.md#moving-to-another-server-series).
 
+## Legacy 9.x innovation clusters
+
+cnmsql supports LTS series only: 8.0 (while Percona still publishes it; upstream
+MySQL 8.0 reached end of life in April 2026), 8.4, and 9.7. Innovation releases
+are not upgrade targets. Earlier releases shipped the 9.x innovation line under
+the catalog series `9.0` and the `:9.x` image tags; that line is now a hard cut:
+
+- A cluster on 9.1–9.6 cannot upgrade in place to 9.7. Admission rejects the
+  change with `unsupported source MySQL series`, and the instance manager
+  refuses to start mysqld on a 9.6 data directory with a 9.7 image.
+- A physical backup of 9.6 cannot seed a 9.7 cluster either: XtraBackup 9.7
+  only restores 9.7 servers.
+- The `:9.x` image tags stay published, frozen at their last 9.6 build, so
+  existing clusters keep running and reconciling.
+
+To move a 9.x cluster to 9.7, take a
+[logical backup](logical-backups.md) (`Backup.spec.method: logical`) and load
+it into a fresh 9.7 cluster with `bootstrap.initdb.import` or a
+`LogicalRestore`, as described in
+[Moving to another server series](logical-backups.md#moving-to-another-server-series).
+
+Future innovation releases (9.8 onward, 10.x) are not supported until they
+become an LTS series.
+
 ## Troubleshooting
 
 - **The update is rejected on apply.** Admission refused the transition. Check the
-  message: a skipped series (`upgrade to 8.4 first`), a downgrade, or a series
+  message: a skipped series (`upgrade to 8.4 first`), a downgrade, a legacy
+  9.x innovation source (`unsupported source MySQL series`, see
+  [Legacy 9.x innovation clusters](#legacy-9x-innovation-clusters)), or a series
   change via `imageName` (use `imageCatalogRef` instead).
 - **A Pod crash-loops right after the image change.** The instance manager refused
   an unsupported transition (the data directory's series does not match the

@@ -43,7 +43,7 @@ operator image, runs the suite, and tears the cluster down.
 make test-e2e                              # whole suite (alias for ./hack/e2e.sh)
 ./hack/e2e.sh --tier smoke                 # critical path only, fast
 ./hack/e2e.sh --focus 'switchover' --keep  # one spec, reuse the cluster
-./hack/e2e.sh --mysql 9.x --tier flavor    # version-sensitive specs on 9.x
+./hack/e2e.sh --mysql 9.7 --tier flavor    # version-sensitive specs on 9.7
 ./hack/e2e.sh --help                       # all flags (--k8s, --procs, --junit, --fresh, ...)
 ```
 

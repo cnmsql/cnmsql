@@ -70,26 +70,20 @@ func Parse(v string) (Version, error) {
 
 // Series returns the major.minor release series of the version, with the patch
 // component zeroed. MySQL upgrades are reasoned about per series (8.0, 8.4,
-// 9.0), not per patch.
+// 9.7), not per patch.
 func (v Version) Series() Version {
-	// The public catalog/API names the rolling MySQL innovation line "9.0"
-	// while published server images advance through 9.1, 9.2, ... 9.x. Treat
-	// every runtime 9.x version as that one supported upgrade series.
-	if v.Major == 9 {
-		return Version{Major: 9, Minor: 0}
-	}
 	return Version{Major: v.Major, Minor: v.Minor}
 }
 
 // UpgradeSeriesChain is the ordered set of MySQL series this operator supports
 // upgrading across. Each adjacent pair is exactly one supported hop: an upgrade
-// may move at most one entry forward, may not skip an entry (e.g. 8.0 -> 9.0
+// may move at most one entry forward, may not skip an entry (e.g. 8.0 -> 9.7
 // must pass through 8.4), and may not move backward (in-place downgrade is
 // unsupported). Extend this slice as further series are qualified.
 var UpgradeSeriesChain = []Version{
 	{Major: 8, Minor: 0},
 	{Major: 8, Minor: 4},
-	{Major: 9, Minor: 0},
+	{Major: 9, Minor: 7},
 }
 
 // seriesIndex returns the position of v's series in UpgradeSeriesChain, or -1

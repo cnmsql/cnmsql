@@ -30,7 +30,15 @@ The current version matrix is:
 |-------|------------|---------------------|-----------------|-------|
 | 8.0 | `debian:bookworm-slim` | `ps-80` | `pxb-80` | Main modern line. |
 | 8.4 | `debian:bookworm-slim` | `ps-84-lts` | `pxb-84-lts` | LTS line. |
-| 9.x | `debian:bookworm-slim` | `ps-9x-innovation` | `pxb-9x-innovation` | Currently tracks Percona Server for MySQL 9.6. Built from Percona testing packages. |
+| 9.7 | `debian:bookworm-slim` | `ps-97-lts` | `pxb-97-lts` | LTS line. |
+
+cnmsql supports LTS series only (plus 8.0 while Percona still publishes it).
+The earlier `9.x` images tracked the 9.x innovation line. They are frozen at
+their last 9.6 build and no longer rebuilt; see
+[Legacy 9.x innovation clusters](major-version-upgrade.md#legacy-9x-innovation-clusters).
+
+Percona XtraBackup 9.7 is still a release candidate upstream. The 9.7 image
+ships the RC build and picks up the GA package on its next rebuild.
 
 ## Where the images come from
 
@@ -176,7 +184,7 @@ Images published before logical backup support strip `mysqldump` (and
 
 | Image | First tag with the dump tool |
 |---|---|
-| `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, `9.x-5` |
+| `ghcr.io/cnmsql/cnmsql-instance` | `8.0-5`, `8.4-5`, every `9.7` tag |
 | `ghcr.io/cnmsql/cnmsql-mariadb-instance` | `10.11-4`, `11.4-4`, `11.8-4`, `12.3-4` |
 
 The moving series tags (`8.4`, `11.4`, …) already point at them.
@@ -205,11 +213,10 @@ and avoids moving backup payloads through the controller-manager process.
 
 When restoring, choose an image compatible with the source backup. Cross-major
 restore is not supported. In-place **major** upgrades follow the supported series
-chain (`8.0 → 8.4 → 9.0`); see [MySQL Version Upgrades](major-version-upgrade.md).
+chain (`8.0 → 8.4 → 9.7`); see [MySQL Version Upgrades](major-version-upgrade.md).
 
 ## Known limits
 
 - Percona Server 5.6 is not supported.
-- Percona 9.x packaging is currently taken from Percona's testing channel.
 - Native Oracle MySQL images are not supported.
 - Clone-plugin provisioning is deferred; replica provisioning is XtraBackup-first.

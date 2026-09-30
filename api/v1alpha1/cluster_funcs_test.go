@@ -703,7 +703,7 @@ var _ = Describe("Series upgrade validation", func() {
 	})
 
 	It("rejects skipping a series via catalog", func() {
-		Expect(catalogCluster("9.0").ValidateUpdate(catalogCluster("8.0"))).NotTo(BeEmpty())
+		Expect(catalogCluster("9.7").ValidateUpdate(catalogCluster("8.0"))).NotTo(BeEmpty())
 	})
 
 	It("rejects a downgrade via catalog", func() {

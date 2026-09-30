@@ -205,7 +205,7 @@ func neededInstanceVersions() []string {
 	var out []string
 	versions := append([]string{sampleVersion()}, archiveVersions()...)
 	if os.Getenv("E2E_MAJOR_UPGRADE") == trueEnvValue {
-		versions = append(versions, "8.0", "8.4", "9.x")
+		versions = append(versions, "8.0", "8.4", "9.7")
 	}
 	for _, v := range versions {
 		if !seen[v] {
@@ -218,7 +218,7 @@ func neededInstanceVersions() []string {
 	// may have removed old tags; don't fail the suite when a pull fails — specs
 	// that need them can still pull through the cluster's container runtime.
 	if os.Getenv("E2E_ALL_MYSQL_VERSIONS") == trueEnvValue {
-		for _, v := range []string{"8.0", "8.4", "9.x"} {
+		for _, v := range []string{"8.0", "8.4", "9.7"} {
 			if !seen[v] {
 				out = append(out, v)
 			}
