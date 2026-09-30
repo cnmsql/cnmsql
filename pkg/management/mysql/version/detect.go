@@ -57,7 +57,16 @@ func ParseBanner(out string) (Server, error) {
 // Detect runs `<mysqld> --version` and returns what the binary reports. The
 // binary is the authority on its own version: image tags and catalog entries
 // only name it.
+//
+// Callers that do not know the flavor yet pass the bare name "mysqld". When the
+// image also has mariadbd, Detect runs that instead: MariaDB 11.x keeps mysqld
+// only as a compat name and prints a deprecation warning ahead of the banner.
 func Detect(ctx context.Context, mysqld string) (Server, error) {
+	if mysqld == "mysqld" {
+		if mariadbd, err := exec.LookPath("mariadbd"); err == nil {
+			mysqld = mariadbd
+		}
+	}
 	out, err := exec.CommandContext(ctx, mysqld, "--version").CombinedOutput()
 	if err != nil {
 		return Server{}, fmt.Errorf("running %s --version: %w: %s", mysqld, err, bytes.TrimSpace(out))

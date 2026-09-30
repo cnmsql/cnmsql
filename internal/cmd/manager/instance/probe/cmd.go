@@ -60,7 +60,8 @@ func NewCommand() *cobra.Command {
 	}
 
 	// MariaDB images ship the server as mysqld too (natively on 10.x, through
-	// mariadb-server-compat on 11.x and later).
+	// mariadb-server-compat on 11.x and later). With the default name, the probe
+	// runs mariadbd when the image has it (see version.Detect).
 	cmd.Flags().StringVar(&mysqldPath, "mysqld", "mysqld", "Path to the server binary")
 	cmd.Flags().StringVar(&output, "output", "/dev/termination-log", "Also write the result to this file (empty: stdout only)")
 
