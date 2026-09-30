@@ -181,6 +181,31 @@ the operator Deployment has been updated to a new image.
 
 ## Version-specific upgrade notes
 
+### Instances roll once: the server version comes from the image
+
+The operator no longer derives the server version from the image tag. It runs
+each new image once in a short-lived probe Pod that reports the version its
+`mysqld` binary knows, and the instance manager reads it from `mysqld --version`
+itself (see [How the operator learns the server
+version](./instance-images.md#how-the-operator-learns-the-server-version)).
+Instance Pods and bootstrap Jobs therefore no longer carry the `MYSQL_VERSION`
+variable or the `--server-version` argument, so the Pod template changes once:
+after upgrading the operator, every instance restarts once through the normal
+rolling update (replicas first, then a switchover, then the primary), even with
+`inPlaceInstanceManagerUpdates` enabled.
+
+What to expect:
+
+- **A probe Pod per cluster.** Right after the upgrade, each cluster runs one
+  `<cluster>-image-<hash>` Pod that pulls the image the cluster already runs and
+  exits within seconds. It is deleted once read. Namespaces with a
+  `ResourceQuota` need room for it (10m CPU and 32Mi requested, 200m and 128Mi
+  limits); an admission policy that only admits known Pods must allow it.
+- **A more precise configuration.** my.cnf is now rendered for the exact server
+  version instead of a per-series guess (`8.4` used to mean 8.4.0). Settings
+  gated on a patch release may appear in the rendered configuration.
+- **A `VERSION` column** in `kubectl get mysql`, from `status.targetImage`.
+
 ### Binlogs are retained locally after archiving
 
 Clusters with `spec.backup.continuousArchiving.enabled: true` change their disk

@@ -30,12 +30,14 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 type clusterPlan struct {
 	Image         string
 	ServerVersion string
+	// imageDecision is what the plan concluded about the resolved image, for
+	// Reconcile to record in the status (design 033).
+	imageDecision imageDecision
 	// Flavor is the resolved engine flavor (mysql or mariadb). It selects the
 	// in-Pod engine via the CNMSQL_FLAVOR env var on both the init and run
 	// containers.
@@ -230,16 +232,20 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 	if err != nil {
 		return clusterPlan{}, err
 	}
-	serverVersion, err := resolveServerVersion(image, clusterEng)
+	// The instances run the target image: the resolved one once it has been
+	// probed and validated, the previous one until then (design 033).
+	target, decision, err := r.resolveTargetImage(ctx, cluster, clusterEng, image)
 	if err != nil {
 		return clusterPlan{}, err
 	}
+	serverVersion := target.ServerVersion
 	r.warnRemovedParameters(cluster, serverVersion)
 
 	certs := cluster.Spec.Certificates
 	plan := clusterPlan{
-		Image:              image,
+		Image:              target.Image,
 		ServerVersion:      serverVersion,
+		imageDecision:      decision,
 		Flavor:             cluster.ResolvedFlavor(),
 		Instances:          cluster.Spec.Instances,
 		PrimaryName:        cluster.Status.CurrentPrimary,
@@ -504,7 +510,7 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 	}
 	if ref := cluster.Spec.ImageCatalogRef; ref != nil {
 		switch ref.Kind {
-		case "ImageCatalog", "":
+		case catalogKindNamespaced, "":
 			catalog := &mysqlv1alpha1.ImageCatalog{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: ref.Name}, catalog); err != nil {
 				return "", err
@@ -512,7 +518,7 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 			if image, ok := catalog.Spec.FindImageForSeries(ref.Series); ok {
 				return image, nil
 			}
-		case "ClusterImageCatalog":
+		case catalogKindCluster:
 			catalog := &mysqlv1alpha1.ClusterImageCatalog{}
 			if err := r.Get(ctx, types.NamespacedName{Name: ref.Name}, catalog); err != nil {
 				return "", err
@@ -526,22 +532,6 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 		return "", fmt.Errorf("no image for MySQL series %s in catalog %s", ref.Series, ref.Name)
 	}
 	return clusterEng.DefaultImage(), nil
-}
-
-func resolveServerVersion(image string, clusterEng engine.Engine) (string, error) {
-	tag := imageTag(image)
-	sv, err := clusterEng.DefaultServerVersion(tag)
-	if err == nil {
-		return sv, nil
-	}
-	parsed, err := version.Parse(tag)
-	if err != nil {
-		return "", fmt.Errorf("cannot resolve MySQL server version from image %q: %w", image, err)
-	}
-	if parsed.Major == 5 && parsed.Minor == 6 {
-		return "", fmt.Errorf("MySQL 5.6 is not supported")
-	}
-	return tag, nil
 }
 
 func imageTag(image string) string {

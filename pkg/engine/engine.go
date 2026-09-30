@@ -100,10 +100,6 @@ type Engine interface {
 	// the latest supported series of this flavor.
 	DefaultImage() string
 
-	// DefaultServerVersion resolves the concrete server version string for a
-	// catalog series tag (e.g. "8.0" → "8.0.46", "11.4" → "11.4.3").
-	DefaultServerVersion(tag string) (string, error)
-
 	// --- replication SQL dialect ---
 
 	// Repl returns the replication SQL dialect for this flavor.
@@ -274,10 +270,6 @@ func (mysqlEngine) DefaultImage() string {
 	return defaultMySQLImage
 }
 
-func (mysqlEngine) DefaultServerVersion(tag string) (string, error) {
-	return mysqlDefaultServerVersion(tag)
-}
-
 // replication dialect
 
 func (mysqlEngine) Repl() ReplDialect {
@@ -405,10 +397,6 @@ func (mariadbEngine) CheckUpgrade(from, to version.Version) error {
 
 func (mariadbEngine) DefaultImage() string {
 	return defaultMariaDBImage
-}
-
-func (mariadbEngine) DefaultServerVersion(tag string) (string, error) {
-	return mariadbDefaultServerVersion(tag)
 }
 
 // replication dialect
@@ -573,34 +561,4 @@ func checkUpgradeChain(from, to version.Version, chain []version.Version, label 
 			label, from.Major, from.Minor, to.Major, to.Minor, next.Major, next.Minor)
 	}
 	return nil
-}
-
-// mysqlDefaultServerVersion resolves a MySQL catalog series tag to the concrete
-// default server version.
-func mysqlDefaultServerVersion(tag string) (string, error) {
-	switch tag {
-	case "8.0":
-		return "8.0.46", nil
-	case "8.4":
-		return "8.4.0", nil
-	case "9.x":
-		return "9.6.0", nil
-	default:
-		return "", fmt.Errorf("unsupported MySQL series %q", tag)
-	}
-}
-
-// mariadbDefaultServerVersion resolves a MariaDB catalog series tag to the
-// concrete default server version.
-func mariadbDefaultServerVersion(tag string) (string, error) {
-	switch tag {
-	case "10.11":
-		return "10.11.8", nil
-	case "11.4":
-		return "11.4.3", nil
-	case "12.3":
-		return "12.3.0", nil
-	default:
-		return "", fmt.Errorf("unsupported MariaDB series %q", tag)
-	}
 }

@@ -48,6 +48,11 @@ func restoreTarget(endpoint string) *mysqlv1alpha1.Cluster {
 	cluster.Status.CurrentPrimary = "prod-1"
 	cluster.Status.TargetPrimary = "prod-1"
 	cluster.Status.Image = "ghcr.io/cnmsql/cnmsql-instance:8.4"
+	cluster.Status.TargetImage = &mysqlv1alpha1.ImageInfo{
+		Image:         cluster.Status.Image,
+		Flavor:        mysqlv1alpha1.FlavorMySQL,
+		ServerVersion: "8.4.11",
+	}
 	cluster.Spec.ExternalClusters = []mysqlv1alpha1.ExternalCluster{{Name: "prod", ObjectStore: importStore(endpoint)}}
 	return cluster
 }

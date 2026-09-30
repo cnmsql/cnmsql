@@ -21,11 +21,18 @@ downgrade in place. cnmsql enforces the same chain:
   restore a backup taken before the upgrade (see [Rollback](#rollback)).
 
 The supported chain lives in `UpgradeSeriesChain`
-(`pkg/management/mysql/version/version.go`) and is enforced in two places:
+(`pkg/management/mysql/version/version.go`) and is enforced in three places:
 
 1. **Admission**: `Cluster.ValidateUpdate` rejects a downgrade, a skipped
    series, or a series change expressed through `imageName` instead of a catalog.
-2. **The instance manager**: before starting mysqld, it compares the series
+2. **The operator, before rolling**: it runs the new image in a probe Pod and
+   checks the server version it reports against the current one and against
+   the series the catalog entry names. This catches what admission cannot see:
+   a digest-only image reference, or a catalog entry that points at another
+   series' image. The cluster stays on its current image and the `ImageReady`
+   condition explains why (see [How the operator learns the server
+   version](instance-images.md#how-the-operator-learns-the-server-version)).
+3. **The instance manager**: before starting mysqld, it compares the series
    recorded in the data directory against the image version and refuses to start
    on an unsupported transition, even if admission was bypassed.
 

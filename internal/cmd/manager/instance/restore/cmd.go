@@ -29,6 +29,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // NewCommand builds the `instance restore` command.
@@ -74,8 +75,8 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if serverVersion == "" {
-				serverVersion = os.Getenv("MYSQL_VERSION")
+			if serverVersion, err = version.Resolve(cmd.Context(), serverVersion, mysqldPath); err != nil {
+				return err
 			}
 
 			creds.Namespace = os.Getenv("POD_NAMESPACE")
@@ -153,7 +154,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&mysqldPath, "mysqld", "mysqld", "Path to the mysqld binary, used to reconcile restored credentials")
 	cmd.Flags().StringVar(&configFile, "config", "/etc/mysql/my.cnf", "Path to the rendered my.cnf for the reconcile server")
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket for the temporary reconcile server")
-	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version; gates ALTER USER vs SET PASSWORD syntax")
+	cmd.Flags().StringVar(&serverVersion, "server-version", "", "Override the server version (default: what the mysqld binary reports); gates ALTER USER vs SET PASSWORD syntax")
 	cmd.Flags().StringVar(&controlUser, "control-user", "", "Control account to reset to the control credential's password after restore")
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "XtraBackup account to reset to the backup credential's password after restore")
 	cmd.Flags().StringVar(&creds.ClusterName, "cluster-name", "", "Owning Cluster name; locates the credential Secrets")

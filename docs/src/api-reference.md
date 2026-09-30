@@ -914,6 +914,7 @@ _Appears in:_
 | `phase` _string_ | Phase is a high-level human-readable cluster phase. |  | Optional: \{\} <br /> |
 | `phaseReason` _string_ | PhaseReason gives more detail about the current phase. |  | Optional: \{\} <br /> |
 | `image` _string_ | Image is the resolved image currently in use. |  | Optional: \{\} <br /> |
+| `targetImage` _[ImageInfo](#imageinfo)_ | TargetImage is what the operator learned about the image it rolls the<br />instances to, by running it in a probe Pod: the server version and flavor<br />the image's server binary reports, and the digest the kubelet pulled. A<br />new image is probed and validated before any instance moves to it; until<br />then the cluster stays on this one (see the ImageReady condition). |  | Optional: \{\} <br /> |
 | `gtidExecutedByInstance` _object (keys:string, values:string)_ | GTIDExecutedByInstance maps an instance name to its gtid_executed set. |  | Optional: \{\} <br /> |
 | `gtidExecutedUpdatedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | GTIDExecutedUpdatedAt records when GTIDExecutedByInstance was last<br />refreshed. Because gtid_executed advances on every write, the operator<br />throttles how often it persists the map; this timestamp marks the last<br />persisted snapshot. |  | Optional: \{\} <br /> |
 | `replicationLagByInstance` _object (keys:string, values:integer)_ | ReplicationLagByInstance maps an instance name to its replication lag in<br />milliseconds, as measured by the heartbeat (see<br />spec.replication.heartbeat). Instances that reported no reading are absent<br />rather than zero, since zero would say "in sync", which is the opposite of<br />what an unreadable heartbeat means.<br /><br />It is here to be looked at. The failover bound does not read it: it asks the<br />surviving replicas for their readings at the moment it elects, which is both<br />fresher than this snapshot and, unlike the departing primary's GTID<br />position, still answerable. Expect these values to climb while a primary is<br />down, because nothing is stamping the heartbeat any more. |  | Optional: \{\} <br /> |
@@ -1530,6 +1531,25 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `flavor` _[Flavor](#flavor)_ | Flavor is the advisory engine flavor for the series in this catalog<br />(mysql or mariadb). It is non-gating: a mismatch does not block<br />resolution, but improves the admission error message. |  | Enum: [mysql mariadb] <br />Optional: \{\} <br /> |
 | `images` _[CatalogImage](#catalogimage) array_ | Images is the list of MySQL series to container image mappings. Each<br />series must appear at most once. |  | MaxItems: 8 <br />MinItems: 1 <br /> |
+
+
+#### ImageInfo
+
+
+
+ImageInfo describes an instance image as its own server binary reports it.
+
+
+
+_Appears in:_
+- [ClusterStatus](#clusterstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `image` _string_ | Image is the image reference that was probed, as resolved from<br />spec.imageName or the image catalog. |  |  |
+| `imageID` _string_ | ImageID is the image the kubelet pulled for the probe, as reported in<br />the probe Pod's container status (typically repository@sha256:digest). |  | Optional: \{\} <br /> |
+| `flavor` _[Flavor](#flavor)_ | Flavor is the engine the image contains (mysql or mariadb). |  | Enum: [mysql mariadb] <br /> |
+| `serverVersion` _string_ | ServerVersion is the server release the image contains, e.g. "8.4.11". |  |  |
 
 
 #### InlineUser

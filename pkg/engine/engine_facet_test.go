@@ -414,33 +414,6 @@ func TestMariaDBDefaults(t *testing.T) {
 		t.Errorf("DefaultImage() = %q, want %q", got, want)
 	}
 
-	tests := []struct {
-		tag     string
-		want    string
-		wantErr bool
-	}{
-		{"10.11", "10.11.8", false},
-		{"11.4", "11.4.3", false},
-		{"12.3", "12.3.0", false},
-		{"9.0", "", true},
-	}
-	for _, tc := range tests {
-		got, err := eng.DefaultServerVersion(tc.tag)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("DefaultServerVersion(%q): expected error", tc.tag)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("DefaultServerVersion(%q): unexpected error: %v", tc.tag, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("DefaultServerVersion(%q) = %q, want %q", tc.tag, got, tc.want)
-		}
-	}
-
 	if got, want := eng.DefaultAuthenticationPlugin(), "mysql_native_password"; got != want {
 		t.Errorf("DefaultAuthenticationPlugin() = %q, want %q", got, want)
 	}
@@ -501,33 +474,6 @@ func TestMySQLDefaults(t *testing.T) {
 
 	if got, want := eng.DefaultImage(), "ghcr.io/cnmsql/cnmsql-instance:8.0"; got != want {
 		t.Errorf("DefaultImage() = %q, want %q", got, want)
-	}
-
-	tests := []struct {
-		tag     string
-		want    string
-		wantErr bool
-	}{
-		{"8.0", "8.0.46", false},
-		{"8.4", "8.4.0", false},
-		{"9.x", "9.6.0", false},
-		{"10.6", "", true},
-	}
-	for _, tc := range tests {
-		got, err := eng.DefaultServerVersion(tc.tag)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("DefaultServerVersion(%q): expected error", tc.tag)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("DefaultServerVersion(%q): unexpected error: %v", tc.tag, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("DefaultServerVersion(%q) = %q, want %q", tc.tag, got, tc.want)
-		}
 	}
 
 	if got, want := eng.DefaultAuthenticationPlugin(), "caching_sha2_password"; got != want {
