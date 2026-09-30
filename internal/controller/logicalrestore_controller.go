@@ -38,7 +38,6 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
-	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
 )
 
@@ -313,12 +312,11 @@ func (r *LogicalRestoreReconciler) targetPrimary(ctx context.Context, cluster *m
 func (r *LogicalRestoreReconciler) warnNewerSeries(
 	restore *mysqlv1alpha1.LogicalRestore, cluster *mysqlv1alpha1.Cluster, source string,
 ) {
-	if r.Recorder == nil {
+	if r.Recorder == nil || cluster.Status.TargetImage == nil {
 		return
 	}
-	eng := engine.MustForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
-	target, err := resolveServerVersion(backupWorkerImage(cluster), eng)
-	if err != nil || !dumpFromNewerSeries(source, target) {
+	target := cluster.Status.TargetImage.ServerVersion
+	if !dumpFromNewerSeries(source, target) {
 		return
 	}
 	r.Recorder.Eventf(restore, corev1.EventTypeWarning, "RestoreFromNewerServer",

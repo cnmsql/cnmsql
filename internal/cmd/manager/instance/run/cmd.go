@@ -29,6 +29,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -86,13 +87,11 @@ func NewCommand() *cobra.Command {
 		Short: "Run as PID1, supervise mysqld and serve the control API",
 		Long: "Run mysqld under supervision and expose the control API. Passwords are read from " +
 			"the cluster's credential Secrets through the Kubernetes API; the server version " +
-			"from --server-version or MYSQL_VERSION.",
+			"from the mysqld binary.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if serverVersion == "" {
-				serverVersion = os.Getenv("MYSQL_VERSION")
-			}
-			if serverVersion == "" {
-				return fmt.Errorf("--server-version or MYSQL_VERSION must be set")
+			var err error
+			if serverVersion, err = version.Resolve(cmd.Context(), serverVersion, mysqldPath); err != nil {
+				return err
 			}
 			if instanceName == "" {
 				instanceName = os.Getenv("POD_NAME")
@@ -231,7 +230,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")
 	cmd.Flags().StringVar(&configFile, "config", "/etc/mysql/my.cnf", "Path to the rendered my.cnf")
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket path")
-	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version (e.g. 8.0.36)")
+	cmd.Flags().StringVar(&serverVersion, "server-version", "", "Override the server version (default: what the mysqld binary reports)")
 	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Instance name reported in status")
 	cmd.Flags().StringVar(&controlUser, "control-user", "root", "Privileged user for the control connection")
 	cmd.Flags().StringVar(&adminAddress, "admin-address", "", "Administrative interface address (8.0.14+)")

@@ -606,7 +606,7 @@ func backupWorkerVolumes(clusterName string) []corev1.Volume {
 
 func backupWorkerVolumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
-		{Name: scratchVolumeName, MountPath: "/controller"},
+		{Name: scratchVolumeName, MountPath: scratchMountPath},
 		{Name: "client-tls", MountPath: topology.ServerTLSPath, ReadOnly: true},
 		{Name: clientCAVolumeName, MountPath: topology.ClientCAPath, ReadOnly: true},
 	}

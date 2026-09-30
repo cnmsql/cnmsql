@@ -1742,6 +1742,9 @@ spec:
     - jsonPath: .status.flavor
       name: Flavor
       type: string
+    - jsonPath: .status.targetImage.serverVersion
+      name: Version
+      type: string
     - jsonPath: .status.instances
       name: Instances
       type: integer
@@ -7234,6 +7237,40 @@ spec:
                 items:
                   type: string
                 type: array
+              targetImage:
+                description: |-
+                  TargetImage is what the operator learned about the image it rolls the
+                  instances to, by running it in a probe Pod: the server version and flavor
+                  the image's server binary reports, and the digest the kubelet pulled. A
+                  new image is probed and validated before any instance moves to it; until
+                  then the cluster stays on this one (see the ImageReady condition).
+                properties:
+                  flavor:
+                    description: Flavor is the engine the image contains (mysql or
+                      mariadb).
+                    enum:
+                    - mysql
+                    - mariadb
+                    type: string
+                  image:
+                    description: |-
+                      Image is the image reference that was probed, as resolved from
+                      spec.imageName or the image catalog.
+                    type: string
+                  imageID:
+                    description: |-
+                      ImageID is the image the kubelet pulled for the probe, as reported in
+                      the probe Pod's container status (typically repository@sha256:digest).
+                    type: string
+                  serverVersion:
+                    description: ServerVersion is the server release the image contains,
+                      e.g. "8.4.11".
+                    type: string
+                required:
+                - flavor
+                - image
+                - serverVersion
+                type: object
               targetPrimary:
                 description: |-
                   TargetPrimary is the name of the instance that should become primary (used

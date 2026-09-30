@@ -35,23 +35,60 @@ The current version matrix is:
 ## Where the images come from
 
 The instance images are built and published from the separate
-[`containers`](https://github.com/cnmsql/containers) repo, not from
-this operator repo. That repo holds the `Dockerfile.instance`, the build matrix
-(`images/versions.json`), and the build script, and a GitHub Actions workflow
-publishes the images to GHCR:
+[`containers`](https://github.com/cnmsql/containers) repo, not from this
+operator repo. Every image is pinned there to exact Percona Server and
+XtraBackup package versions on a digest-pinned Debian base; Renovate proposes
+a bump whenever Percona ships a release, and each image is smoke tested
+(initialize, physical backup, prepare, restore) on amd64 and arm64 before it is
+published. See the repo's
+[supply chain design](https://github.com/cnmsql/containers/blob/main/design/001-image-supply-chain.md).
 
-```text
-ghcr.io/cnmsql/cnmsql-instance:<major>
+Tags, for Percona Server 8.4.11 built at 2026-10-01 12:00 UTC on bookworm:
+
+| Tag | Moves? | Points to |
+|---|---|---|
+| `8.4.11-202610011200-bookworm` | never | this build |
+| `8.4.11-bookworm`, `8.4.11` | yes | newest build of 8.4.11 |
+| `8.4-bookworm`, `8.4` | yes | newest build of the newest 8.4 patch |
+
+Older images carry `<major>-<patch>` tags (`8.4-5`); they stay published.
+
+### Published catalogs
+
+The containers repo publishes a `ClusterImageCatalog` per flavor and distro,
+regenerated after every release, that pins each series to its newest image by
+immutable tag and digest. It is the recommended way to pick images:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/cnmsql/containers/main/catalogs/catalog-mysql-bookworm.yaml
 ```
 
-Each major is published under a moving tag (`8.0`, `8.4`, `9.x`) that points to
-the latest patch build, plus immutable `<major>-<patch>` tags (e.g. `8.4-3`).
-Non-release builds off `main` are tagged `<major>-<commit-sha>`. Use a moving
-tag for convenience or an immutable patch tag to pin exactly.
+```yaml
+spec:
+  imageCatalogRef:
+    apiGroup: mysql.cnmsql.co
+    kind: ClusterImageCatalog
+    name: cnmsql-mysql-bookworm
+    series: "8.4"
+```
 
-These tags are selected directly in `Cluster.spec.imageName` or through an
-`ImageCatalog`. If you need to build the images yourself (a fork, a private
-mirror, or a new major), see the build instructions in the `containers` repo.
+Applying a newer revision of the catalog is a patch upgrade: the operator
+probes the new image and rolls the instances onto it.
+
+### Verifying images
+
+Every image is signed with [cosign](https://github.com/sigstore/cosign)
+(keyless, by the containers repo's build workflow) and carries an SPDX SBOM and
+SLSA provenance:
+
+```bash
+cosign verify ghcr.io/cnmsql/cnmsql-instance:8.4 \
+  --certificate-identity-regexp '^https://github.com/cnmsql/containers/\.github/workflows/build\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+An admission policy (Kyverno, sigstore policy-controller) can enforce the same
+identity on every instance Pod.
 
 ## Cluster image selection
 
@@ -90,6 +127,32 @@ spec:
 
 Use an explicit image or catalog in production. The development fallback image
 exists for local workflows only.
+
+## How the operator learns the server version
+
+The operator does not read the server version from the image tag. When a
+cluster resolves to an image it has not used yet, the operator runs that image
+once in a short-lived probe Pod (`<cluster>-image-<hash>`) that reports what its
+`mysqld` binary says: the flavor and the exact server version. The probe uses
+the cluster's pull secrets, pull policy, node selector, node affinity and
+tolerations. The result is recorded in `status.targetImage` and shown in the
+`VERSION` column of `kubectl get mysql`.
+
+Before any instance moves to the new image, the operator checks that:
+
+- its flavor is the cluster's;
+- its series is the one the catalog entry names (or the image tag, when the
+  tag starts with a series);
+- going from the current image to it is a supported upgrade (see
+  [MySQL Version Upgrades](major-version-upgrade.md)).
+
+While the probe runs, or when the image is rejected (it cannot be pulled, or a
+check fails), the cluster keeps running on its current image and the
+`ImageReady` condition says why. A new cluster waits for its first probe.
+
+Any image reference works, including a digest-only one
+(`ghcr.io/cnmsql/cnmsql-instance@sha256:…`). Inside each Pod, the instance
+manager also reads the version from `mysqld --version` itself.
 
 ## Runtime user and filesystem
 
@@ -148,6 +211,5 @@ chain (`8.0 → 8.4 → 9.0`); see [MySQL Version Upgrades](major-version-upgrad
 
 - Percona Server 5.6 is not supported.
 - Percona 9.x packaging is currently taken from Percona's testing channel.
-- Publishing and signing release images is outside the current implementation.
 - Native Oracle MySQL images are not supported.
 - Clone-plugin provisioning is deferred; replica provisioning is XtraBackup-first.

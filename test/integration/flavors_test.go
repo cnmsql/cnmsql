@@ -31,12 +31,13 @@ import (
 // suite consumes the published slim instance images (built and pushed from the
 // separate containers repo) rather than building them here; testcontainers pulls
 // the image on demand. The version matrix mirrors the containers repo's
-// images/versions.json — keep the two in sync.
+// docker-bake.hcl — keep the two in sync.
 type flavor struct {
 	// name is the subtest name and the image tag (the major key, e.g. "8.0").
 	name string
-	// version is passed to the manager as --server-version and must match the
-	// major.minor of the server installed in the image.
+	// version is passed to the manager as --server-version, overriding what it
+	// would detect from mysqld, and must match the major.minor of the server
+	// installed in the image.
 	version string
 	// hasAdminInterface is true for servers with the administrative interface
 	// (8.0.14+); older servers reach the control connection over the socket.

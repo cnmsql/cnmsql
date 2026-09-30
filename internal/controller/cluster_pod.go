@@ -171,10 +171,6 @@ func instanceVolumes(plan clusterPlan, inst instancePlan) []corev1.Volume {
 	}
 }
 
-// serverVersionArg passes the image's MySQL version (from the MYSQL_VERSION env
-// var the kubelet expands) to every instance subcommand that renders my.cnf.
-const serverVersionArg = "--server-version=$(MYSQL_VERSION)"
-
 // restoreArgs builds the recovering primary's bootstrap Job command: download
 // and restore a physical backup from object storage into the data directory,
 // then (for point-in-time recovery) replay archived binlogs up to the target.
@@ -191,7 +187,6 @@ func restoreArgs(plan clusterPlan) []string {
 		"--mysqld=" + mysqldBinary,
 		"--config=" + configPath,
 		"--socket=" + socketPath,
-		serverVersionArg,
 		"--control-user=" + controlUser,
 		"--backup-user=" + backupUser,
 		// restore reads the control and backup passwords from the cluster's
@@ -222,7 +217,6 @@ func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *m
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
-		serverVersionArg,
 		"--replication-user=" + replicationUser,
 		"--replication-require-x509",
 		"--backup-user=" + backupUser,
@@ -265,7 +259,6 @@ func joinArgs(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
-		serverVersionArg,
 		"--backup-dir=" + joinBackupDir,
 		"--source-host=" + primaryFQDN,
 		"--source-port=3306",
@@ -294,7 +287,6 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 		"--config=" + configPath,
 		"--data-dir=" + dataDir,
 		"--socket=" + socketPath,
-		serverVersionArg,
 		"--instance-name=$(POD_NAME)",
 		"--cluster-name=" + cluster.Name,
 		"--namespace=$(POD_NAMESPACE)",
@@ -378,7 +370,6 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 		flavor = string(mysqlv1alpha1.FlavorMySQL)
 	}
 	env := []corev1.EnvVar{
-		{Name: "MYSQL_VERSION", Value: plan.ServerVersion},
 		{Name: "CNMSQL_FLAVOR", Value: flavor},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
@@ -396,7 +387,7 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 
 func volumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{
-		{Name: scratchVolumeName, MountPath: "/controller"},
+		{Name: scratchVolumeName, MountPath: scratchMountPath},
 		{Name: "data", MountPath: dataDir},
 		{Name: runVolumeName, MountPath: "/var/run/mysqld"},
 		{Name: backupVolumeName, MountPath: joinBackupDir},

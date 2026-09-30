@@ -18,7 +18,6 @@ limitations under the License.
 package join
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -26,6 +25,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
 // NewCommand builds the `instance join` command.
@@ -62,11 +62,9 @@ func NewCommand() *cobra.Command {
 			"cluster's credential Secrets; the replication user authenticates " +
 			"with a client certificate (--source-ssl-*), never a password.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if serverVersion == "" {
-				serverVersion = os.Getenv("MYSQL_VERSION")
-			}
-			if serverVersion == "" {
-				return fmt.Errorf("--server-version or MYSQL_VERSION must be set")
+			var err error
+			if serverVersion, err = version.Resolve(cmd.Context(), serverVersion, mysqldPath); err != nil {
+				return err
 			}
 
 			creds.Namespace = os.Getenv("POD_NAMESPACE")
@@ -124,7 +122,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")
 	cmd.Flags().StringVar(&configFile, "config", "/etc/mysql/my.cnf", "Path to the rendered my.cnf")
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket for the temporary server")
-	cmd.Flags().StringVar(&serverVersion, "server-version", "", "MySQL server version (e.g. 8.0.36)")
+	cmd.Flags().StringVar(&serverVersion, "server-version", "", "Override the server version (default: what the mysqld binary reports)")
 	cmd.Flags().StringVar(&sourceHost, "source-host", "", "Replication source host")
 	cmd.Flags().IntVar(&sourcePort, "source-port", 3306, "Replication source port")
 	cmd.Flags().StringVar(&replUser, "replication-user", "", "Replication user")
