@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -174,26 +172,27 @@ func LoadImageToKindClusterWithName(name string) error {
 		return nil
 	}
 
-	// Retry via image-archive: docker save, then kind load image-archive. This
-	// bypasses a containerd snapshotter bug where `ctr import` fails to resolve
-	// layer digests on certain images (ghcr.io/cnmsql/cnmsql-mariadb-instance).
-	// kind takes the archive as a file argument and does not read stdin, so it
-	// goes through a temporary file rather than a pipe: with a pipe, kind exits
-	// at once and docker save blocks forever on the unread pipe. Only the Kind
-	// node's platform is saved: for a multi-platform image the containerd image
-	// store holds the other platforms' index entries but not their layers, and
-	// kind imports with --all-platforms, which then fails on the missing content.
-	dir, tmpErr := os.MkdirTemp("", "kind-image-")
-	if tmpErr != nil {
-		return fmt.Errorf("creating image archive dir: %w (original: %w)", tmpErr, err)
+	// kind exports the image from docker and imports it on the nodes with
+	// `ctr import --all-platforms`. For a multi-platform image, docker's
+	// containerd store holds the index but only the local platform's layers, so
+	// the import fails on the other platforms' missing content. Re-exporting one
+	// platform with `docker save --platform` depends on the daemon version (some
+	// refuse a platform the index does list), so fall back to letting every node
+	// pull the image itself, which only fetches the node's own platform. This
+	// only works for images a registry serves, which is what the instance images
+	// are; a locally built image has to load through kind.
+	nodesOut, nodesErr := Run(exec.Command(kindBinary, "get", "nodes", "--name", cluster))
+	if nodesErr != nil {
+		return fmt.Errorf("listing kind nodes: %w (original: %w)", nodesErr, err)
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	archive := filepath.Join(dir, "image.tar")
-	if _, saveErr := Run(exec.Command("docker", "save", "--platform", "linux/"+runtime.GOARCH, "-o", archive, name)); saveErr != nil {
-		return fmt.Errorf("docker save %s: %w (original: %w)", name, saveErr, err)
+	nodes := GetNonEmptyLines(nodesOut)
+	if len(nodes) == 0 {
+		return fmt.Errorf("kind cluster %s has no nodes (original: %w)", cluster, err)
 	}
-	if _, loadErr := Run(exec.Command(kindBinary, "load", "image-archive", archive, "--name", cluster)); loadErr != nil {
-		return fmt.Errorf("kind load image-archive %s: %w (original: %w)", name, loadErr, err)
+	for _, node := range nodes {
+		if _, pullErr := Run(exec.Command("docker", "exec", node, "crictl", "pull", name)); pullErr != nil {
+			return fmt.Errorf("pulling %s on node %s: %w (original: %w)", name, node, pullErr, err)
+		}
 	}
 	return nil
 }
