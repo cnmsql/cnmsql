@@ -116,7 +116,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary (defaults to the engine's tool: xtrabackup / mariabackup)")
+	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary (defaults to the engine's tool: xtrabackup / mariadb-backup)")
 	cmd.Flags().StringVar(&mysqldPath, "mysqld", "mysqld", "Path to the mysqld binary")
 	cmd.Flags().StringVar(&backupDir, "backup-dir", "", "Directory holding the streamed backup")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")

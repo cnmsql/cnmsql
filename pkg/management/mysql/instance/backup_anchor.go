@@ -29,7 +29,10 @@ import (
 //	mariabackup: MySQL binlog position: filename 'binlog.000004', position '831', GTID of the last change '0-1-2'
 //
 // The GTID clause is present on 11.1+ and absent on 10.11, which is exactly the
-// gap this anchor resolution fills.
+// gap this anchor resolution fills. The match starts at "filename", so whatever
+// precedes it on the line does not matter: current releases print a thread and
+// timestamp prefix ("[00] 2026-09-30 18:44:34 MySQL binlog position: ..."), and
+// older ones or other invocations a program name (mariabackup: or mariadb-backup:).
 var mariabackupBinlogPosRE = regexp.MustCompile(
 	`filename '([^']*)',\s*position '([^']*)'(?:,\s*GTID of the last change '([^']*)')?`)
 

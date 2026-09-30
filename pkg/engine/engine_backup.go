@@ -26,7 +26,7 @@ const (
 	mysqlBinlogClient     = "mysqlbinlog"
 	mysqlSQLClient        = "mysql"
 	mysqlBinlogInfoFile   = "xtrabackup_binlog_info"
-	mariadbBackupBinary   = "mariabackup"
+	mariadbBackupBinary   = "mariadb-backup"
 	mariadbStreamBinary   = "mbstream"
 	mariadbBinlogClient   = "mariadb-binlog"
 	mariadbSQLClient      = "mariadb"
@@ -80,7 +80,7 @@ func fromXtrabackupBinlogInfo(info xtrabackup.BinlogInfo) BinlogInfo {
 // BackupTool exposes the binary names and argument builders for physical backup,
 // restore, stream extraction and point-in-time replay. The arg builders produce
 // identical output for MySQL and MariaDB — the difference is the binary that
-// executes them (xtrabackup vs mariabackup, xbstream vs mbstream, etc.).
+// executes them (xtrabackup vs mariadb-backup, xbstream vs mbstream, etc.).
 type BackupTool interface {
 	BackupBinary() string
 	StreamBinary() string

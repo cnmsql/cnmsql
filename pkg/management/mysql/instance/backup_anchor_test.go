@@ -44,6 +44,19 @@ func TestParseMariabackupBinlogPos(t *testing.T) {
 			wantFile: "binlog.000004", wantPos: 831, wantGTID: "0-1-2", wantOK: true,
 		},
 		{
+			name: "mariadb-backup program-name prefix",
+			stderr: "mariadb-backup: MySQL binlog position: filename 'binlog.000004', " +
+				"position '831', GTID of the last change '0-1-2'\n",
+			wantFile: "binlog.000004", wantPos: 831, wantGTID: "0-1-2", wantOK: true,
+		},
+		{
+			// Verbatim from mariadb-backup 10.11.19 and 12.3.3.
+			name: "thread and timestamp prefix",
+			stderr: "[00] 2026-09-30 18:44:34 MySQL binlog position: filename 'binlog.000001', " +
+				"position '935', GTID of the last change '0-1-4'\n",
+			wantFile: "binlog.000001", wantPos: 935, wantGTID: "0-1-4", wantOK: true,
+		},
+		{
 			name: "last match wins amid progress noise",
 			stderr: "[00] copying...\n" +
 				"mariabackup: MySQL binlog position: filename 'binlog.000004', position '111'\n" +

@@ -42,7 +42,7 @@ type FetchOptions struct {
 	// engine's tool: xbstream for MySQL, mbstream for MariaDB.
 	XBStreamPath string
 	// XtrabackupPath overrides the binary used to decompress when Compress is set.
-	// Empty (the default) selects the engine's tool: xtrabackup / mariabackup.
+	// Empty (the default) selects the engine's tool: xtrabackup / mariadb-backup.
 	XtrabackupPath string
 	// Compress indicates the stream is compressed and must be decompressed after
 	// extraction.

@@ -58,7 +58,7 @@ type RestoreOptions struct {
 	// engine's tool: xbstream for MySQL, mbstream for MariaDB.
 	XBStreamPath string
 	// XtrabackupPath overrides the backup binary. Empty (the default) selects the
-	// engine's tool: xtrabackup for MySQL, mariabackup for MariaDB.
+	// engine's tool: xtrabackup for MySQL, mariadb-backup for MariaDB.
 	XtrabackupPath string
 	// Compress forces decompression after extraction. When MetadataKey is set the
 	// archive's recorded compression flag takes precedence.

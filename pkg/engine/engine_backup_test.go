@@ -42,7 +42,7 @@ func TestMySQLBackupToolBinaries(t *testing.T) {
 
 func TestMariaDBBackupToolBinaries(t *testing.T) {
 	bt := mariadbBackupTool{}
-	if bt.BackupBinary() != "mariabackup" {
+	if bt.BackupBinary() != "mariadb-backup" {
 		t.Errorf("BackupBinary = %q", bt.BackupBinary())
 	}
 	if bt.StreamBinary() != "mbstream" {
@@ -266,7 +266,7 @@ func TestEngineBackup(t *testing.T) {
 		if bt == nil {
 			t.Fatal("Backup() returned nil")
 		}
-		if bt.BackupBinary() != "mariabackup" {
+		if bt.BackupBinary() != "mariadb-backup" {
 			t.Errorf("BackupBinary = %q", bt.BackupBinary())
 		}
 	})

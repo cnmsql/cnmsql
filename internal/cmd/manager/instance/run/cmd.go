@@ -251,7 +251,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sourceSSLCert, "source-ssl-cert", "", "Replication client certificate")
 	cmd.Flags().StringVar(&sourceSSLKey, "source-ssl-key", "", "Replication client key")
 	cmd.Flags().StringVar(&backupUser, "backup-user", "", "Backup user for streaming clones (password from the backup credential Secret); enables GET /cluster/backup")
-	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary for streaming clones (defaults to the engine's tool: xtrabackup / mariabackup)")
+	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary for streaming clones (defaults to the engine's tool: xtrabackup / mariadb-backup)")
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Owning Cluster name; enables the in-Pod role reconciler (dynamic role)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Cluster namespace (defaults to POD_NAMESPACE)")
 	credentials.AddFlags(cmd.Flags(), &creds)

@@ -20,7 +20,7 @@ import "testing"
 
 // TestXtrabackupFlagDefaultsEmpty guards the regression that broke MariaDB
 // streaming clones: the flag must default to empty so BackupStream falls back to
-// the engine's binary (mariabackup on MariaDB) instead of pinning to xtrabackup.
+// the engine's binary (mariadb-backup on MariaDB) instead of pinning to xtrabackup.
 func TestXtrabackupFlagDefaultsEmpty(t *testing.T) {
 	f := NewCommand().Flags().Lookup("xtrabackup")
 	if f == nil {
