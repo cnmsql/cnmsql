@@ -17,11 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/groupreplication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -149,4 +153,65 @@ func TestAggregateArchivingFromPrimary(t *testing.T) {
 
 func containsArg(args []string, want string) bool {
 	return slices.Contains(args, want)
+}
+
+// Under Group Replication no member has an async channel, so every member
+// reports role primary over the control API. The archiving status must still
+// come from the member the group elected, whose archiver is the active one.
+func TestObserveArchivingFromGroupElectedPrimary(t *testing.T) {
+	t.Parallel()
+	cluster := archivingCluster()
+	cluster.Spec.Replication = &mysqlv1alpha1.ReplicationConfiguration{
+		Mode: mysqlv1alpha1.ReplicationModeGroupReplication,
+	}
+	cluster.Spec.Instances = 3
+	cluster.Status.CurrentPrimary = testPrimary
+
+	names := []string{testPrimary, testReplica2, testReplica3}
+	members := make([]webserver.GroupReplicationMember, 0, len(names))
+	for i, name := range names {
+		role := groupreplication.MemberRoleSecondary
+		if i == 0 {
+			role = groupreplication.MemberRolePrimary
+		}
+		members = append(members, webserver.GroupReplicationMember{
+			MemberID: "uuid-" + name, Host: name, Port: 3306,
+			State: groupreplication.MemberStateOnline, Role: role,
+		})
+	}
+	statuses := map[string]*webserver.Status{}
+	for _, name := range names {
+		status := groupViewStatus(name, "uuid-"+name, "uuid-"+testPrimary, members)
+		status.Role = webserver.RolePrimary
+		status.Archiving = &webserver.ArchivingStatus{}
+		statuses[name] = status
+	}
+	statuses[testPrimary].Archiving = &webserver.ArchivingStatus{Active: true, LastArchivedBinlog: "binlog.000007"}
+
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster,
+				readyPod(cluster, testPrimary, rolePrimary),
+				readyPod(cluster, testReplica2, roleReplica),
+				readyPod(cluster, testReplica3, roleReplica)).
+			Build(),
+		Scheme:        scheme,
+		ControlClient: &recordingControlClient{statuses: statuses},
+	}
+	plan := testPlan()
+	plan.Instances = 3
+
+	observed, err := reconciler.observe(context.Background(), cluster, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.PrimaryName != testPrimary {
+		t.Fatalf("primary = %q, want the elected %s", observed.PrimaryName, testPrimary)
+	}
+	if got := observed.ContinuousArchiving; got == nil || got.LastArchivedBinlog != "binlog.000007" {
+		t.Fatalf("archiving = %+v, want the elected primary's archiver state", got)
+	}
 }

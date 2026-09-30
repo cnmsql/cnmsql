@@ -227,13 +227,16 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
-	if cluster.IsArchivingEnabled() {
-		observed.ContinuousArchiving = aggregateArchiving(observed)
-	}
-
 	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster, cluster.Status.GroupReplication, cluster.Status.DivergedInstances))
 	if topologyObservation.PrimaryAuthoritative {
 		observed.PrimaryName = topologyObservation.PrimaryName
+	}
+	// Read the archiver from the primary only once the topology has named it.
+	// Under Group Replication every member reports role primary, so the name
+	// picked up while polling can be any member, and only the elected one runs
+	// the archiver.
+	if cluster.IsArchivingEnabled() {
+		observed.ContinuousArchiving = aggregateArchiving(observed)
 	}
 	observed.GroupReplication = topologyObservation.GroupReplication
 	observed.DivergedInstances = topologyObservation.DivergedInstances
