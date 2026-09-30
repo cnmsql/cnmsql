@@ -135,7 +135,24 @@ func TestDetectPrefersMariadbd(t *testing.T) {
 	}
 }
 
-// Percona images have no mariadbd, and an explicit path is always run as given.
+// The operator passes an explicit --mysqld=/usr/sbin/mysqld, so a mariadbd next
+// to it is preferred the same way.
+func TestDetectPrefersMariadbdNextToExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+	writeServer(t, dir, "mysqld", "mysqld: Deprecated program name. It will be removed in a future release")
+	writeServer(t, dir, "mariadbd", "mariadbd  Ver 11.4.13-MariaDB-deb12 for debian-linux-gnu on x86_64")
+	t.Setenv("PATH", t.TempDir())
+
+	got, err := Detect(context.Background(), filepath.Join(dir, "mysqld"))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if got.Version != "11.4.13" || !got.MariaDB {
+		t.Errorf("Detect = %+v, want MariaDB 11.4.13", got)
+	}
+}
+
+// Percona images have no mariadbd, and a binary not named mysqld is run as given.
 func TestDetectKeepsMysqld(t *testing.T) {
 	dir := t.TempDir()
 	writeServer(t, dir, "mysqld", "mysqld  Ver 8.4.11-11 for Linux on x86_64 (Percona Server (GPL))")
@@ -144,9 +161,14 @@ func TestDetectKeepsMysqld(t *testing.T) {
 	if got, err := Detect(context.Background(), "mysqld"); err != nil || got.Version != "8.4.11" || got.MariaDB {
 		t.Errorf("Detect without mariadbd = %+v, %v; want Percona 8.4.11", got, err)
 	}
+	if got, err := Detect(context.Background(), filepath.Join(dir, "mysqld")); err != nil || got.Version != "8.4.11" {
+		t.Errorf("Detect with an explicit path and no mariadbd = %+v, %v; want Percona 8.4.11", got, err)
+	}
 
 	writeServer(t, dir, "mariadbd", "mariadbd  Ver 11.4.13-MariaDB-deb12 for debian-linux-gnu on x86_64")
-	if got, err := Detect(context.Background(), filepath.Join(dir, "mysqld")); err != nil || got.Version != "8.4.11" {
-		t.Errorf("Detect with an explicit path = %+v, %v; want the binary at that path", got, err)
+	writeServer(t, dir, "custom-server", "custom-server  Ver 8.4.11-11 for Linux on x86_64 (Percona Server (GPL))")
+	got, err := Detect(context.Background(), filepath.Join(dir, "custom-server"))
+	if err != nil || got.Version != "8.4.11" {
+		t.Errorf("Detect with another binary = %+v, %v; want the binary at that path", got, err)
 	}
 }
