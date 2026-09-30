@@ -27,10 +27,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/rootclient"
 )
 
 // SocketPath is the mysqld Unix socket inside an instance container.
 const SocketPath = "/var/run/mysqld/mysqld.sock"
+
+// InstanceManager is the instance manager binary in every instance container.
+// The operator copies it in at Pod start, so it is there whatever the image
+// ships, even no shell.
+const InstanceManager = "/controller/manager"
 
 // RootSecretName returns the Secret holding the cluster's root password,
 // honoring spec.rootPasswordSecret and otherwise defaulting to the
@@ -64,23 +70,6 @@ func ClientBinary(cluster *mysqlv1alpha1.Cluster) string {
 	return string(mysqlv1alpha1.FlavorMySQL)
 }
 
-// passwordReady is printed by the in-pod wrapper once terminal echo is off.
-// It is an OSC sequence with a private number, so a terminal that ever
-// received it would ignore it rather than display it.
-const passwordReady = "\x1b]7717;cnmsql-password\x07"
-
-// rootClientScript runs the client as root over the local socket. It reads
-// the password from the first line of stdin with echo turned off, so it never
-// appears in any process's arguments, on either side of the exec, nor on a
-// terminal. The client and its arguments are passed as positional parameters
-// ($0 "$@") so no caller-supplied value is ever parsed by the shell.
-const rootClientScript = `stty -echo 2>/dev/null
-printf '` + `\033]7717;cnmsql-password\007` + `'
-IFS= read -r MYSQL_PWD
-stty echo 2>/dev/null
-export MYSQL_PWD
-exec "$0" "$@"`
-
 // RootClientOptions describes a database client session run as root on an
 // instance.
 type RootClientOptions struct {
@@ -96,12 +85,15 @@ type RootClientOptions struct {
 }
 
 // rootClientCommand builds the argv that runs the cluster's database client
-// as root over the local socket. The default character set is pinned before
-// any caller args so a bare instance image cannot negotiate latin1 and
-// double-encode UTF-8; the client honours the last occurrence of a flag, so
-// callers may still override it.
+// as root over the local socket, through `manager instance client`, which
+// reads the password from the first line of stdin with echo off (see package
+// rootclient). The client and its arguments are passed as argv, so no
+// caller-supplied value is ever parsed by a shell. The default character set
+// is pinned before any caller args so a bare instance image cannot negotiate
+// latin1 and double-encode UTF-8; the client honours the last occurrence of a
+// flag, so callers may still override it.
 func rootClientCommand(opts RootClientOptions) []string {
-	return append([]string{"sh", "-c", rootClientScript,
+	return append([]string{InstanceManager, "instance", "client", "--",
 		ClientBinary(opts.Cluster), "--socket=" + SocketPath, "--user=root",
 		"--default-character-set=utf8mb4"}, opts.Args...)
 }
@@ -131,7 +123,7 @@ func (e *Env) RootClient(ctx context.Context, opts RootClientOptions) error {
 }
 
 // readyWriter passes output through while watching for, and removing, the
-// passwordReady marker. It closes ready when the marker is seen.
+// rootclient.PasswordReady marker. It closes ready when the marker is seen.
 type readyWriter struct {
 	w       io.Writer
 	pending []byte
@@ -152,8 +144,8 @@ func (r *readyWriter) Write(p []byte) (int, error) {
 		return r.w.Write(p)
 	}
 	r.pending = append(r.pending, p...)
-	if i := bytes.Index(r.pending, []byte(passwordReady)); i >= 0 {
-		out := append(r.pending[:i:i], r.pending[i+len(passwordReady):]...)
+	if i := bytes.Index(r.pending, []byte(rootclient.PasswordReady)); i >= 0 {
+		out := append(r.pending[:i:i], r.pending[i+len(rootclient.PasswordReady):]...)
 		r.pending = nil
 		r.seen = true
 		r.once.Do(func() { close(r.ready) })
@@ -182,10 +174,10 @@ func (r *readyWriter) Flush() {
 }
 
 // markerPrefixLen returns the length of the longest suffix of b that is a
-// prefix of passwordReady.
+// prefix of rootclient.PasswordReady.
 func markerPrefixLen(b []byte) int {
-	for n := min(len(b), len(passwordReady)-1); n > 0; n-- {
-		if bytes.HasPrefix([]byte(passwordReady), b[len(b)-n:]) {
+	for n := min(len(b), len(rootclient.PasswordReady)-1); n > 0; n-- {
+		if bytes.HasPrefix([]byte(rootclient.PasswordReady), b[len(b)-n:]) {
 			return n
 		}
 	}

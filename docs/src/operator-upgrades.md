@@ -225,6 +225,14 @@ kubectl exec <instance> -c mysql -- \
   sh -c 'du -sh /var/lib/mysql/binlog.* 2>/dev/null | tail -1'
 ```
 
+Distroless instance images have no shell or `df`. Run the same commands from a
+debug container that shares the instance's processes, through
+`/proc/1/root/var/lib/mysql`:
+
+```bash
+kubectl debug -it <instance> --image=busybox --target=mysql -- sh
+```
+
 Then pick one:
 
 - **Grow the volume.** Raise `spec.storage.size`; see
@@ -264,6 +272,20 @@ enabled (the default) gets a new Pod template, so its only instance is restarted
 once during the operator upgrade. Multi-instance clusters already carry the hook
 and are not rolled for this change. Plan the operator upgrade for a window in
 which a brief outage of your single-instance clusters is acceptable.
+
+### Upgrade the operator before the kubectl plugin
+
+The `kubectl cnmsql` commands that run SQL as root now start the database
+client through `manager instance client`, the instance manager already in
+every instance container, instead of a `sh -c` wrapper. The password
+handshake is unchanged, and instance images no longer need a shell, which the
+distroless images do not have.
+
+**Order matters.** A new plugin against instances that still run an older
+instance manager fails with `unknown command "client"`. Upgrade the operator
+first, and wait until its instances run the new instance manager (after the
+rolling or in-place upgrade), then the plugin. An older plugin keeps working
+against the new operator on images that have a shell, not on distroless ones.
 
 ### Instances roll once: passwords move from env vars to the API
 
