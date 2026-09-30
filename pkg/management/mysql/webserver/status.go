@@ -208,6 +208,11 @@ type ArchivingStatus struct {
 	// LastError and LastErrorTime record the most recent archiving failure.
 	LastError     string `json:"lastError,omitempty"`
 	LastErrorTime string `json:"lastErrorTime,omitempty"`
+	// PurgeHeldBy lists the instances that have not applied the oldest archived
+	// file yet, so the purge gate keeps it; PurgeHeldSince (RFC3339) is when that
+	// file started being held.
+	PurgeHeldBy    []string `json:"purgeHeldBy,omitempty"`
+	PurgeHeldSince string   `json:"purgeHeldSince,omitempty"`
 }
 
 // ReplicationStatus captures the replica-side replication state, derived from

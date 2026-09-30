@@ -916,17 +916,21 @@ type ContinuousArchivingConfiguration struct {
 	// +optional
 	BinlogExpireSeconds int32 `json:"binlogExpireSeconds,omitempty"`
 
-	// PurgeAfterArchive turns on the active purge gate: the archiver runs PURGE
-	// BINARY LOGS up to the last successfully archived file, reclaiming binlog
-	// space as soon as it is safely in the object store instead of waiting for
-	// binlogExpireSeconds.
+	// PurgeAfterArchive turns on the active purge gate: the primary runs PURGE
+	// BINARY LOGS on a binary log once it is safely in the object store and
+	// every other instance of the cluster has applied the transactions it holds,
+	// reclaiming binlog space without waiting for binlogExpireSeconds.
 	//
-	// Defaults to false. Purging on archive keeps the data volume small, but it
-	// removes binlogs a replica may still need: a replica that was down, lagged,
-	// or is rejoining must then be re-cloned from a backup rather than catching
-	// up from the primary. Enable it only when the data volume cannot hold
-	// binlogExpireSeconds worth of writes, and prefer lowering
-	// binlogExpireSeconds first.
+	// The replicas' positions come from status.gtidExecutedByInstance, which the
+	// operator refreshes at least every five minutes, so purging trails writes by
+	// about that much. An instance whose position is unknown (still joining, for
+	// example) holds every file; a fenced instance holds the files it has not
+	// applied; a diverged instance, which must be re-cloned anyway, holds none.
+	// When the same file stays held for a while the BinlogPurgeHeld condition
+	// names the instances holding it. binlogExpireSeconds still applies on its
+	// own, so a replica down for longer than that must be re-cloned.
+	//
+	// Defaults to false.
 	// +kubebuilder:default:=false
 	// +optional
 	PurgeAfterArchive *bool `json:"purgeAfterArchive,omitempty"`
@@ -1640,6 +1644,16 @@ type ContinuousArchivingStatus struct {
 	LastFailureReason string `json:"lastFailureReason,omitempty"`
 	// +optional
 	LastFailureTime *metav1.Time `json:"lastFailureTime,omitempty"`
+
+	// PurgeHeldBy lists the instances that have not applied the oldest archived
+	// binary log on the primary, which keeps the purge gate from removing it.
+	// Empty when the purge gate is off or holds nothing back.
+	// +optional
+	PurgeHeldBy []string `json:"purgeHeldBy,omitempty"`
+
+	// PurgeHeldSince is when the purge gate started keeping that binary log.
+	// +optional
+	PurgeHeldSince *metav1.Time `json:"purgeHeldSince,omitempty"`
 }
 
 // ImageInfo describes an instance image as its own server binary reports it.

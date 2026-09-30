@@ -153,6 +153,16 @@ type ArchiveResult struct {
 	CoveredGTIDSet string
 	// LastArchivedTime is when the most recent file finished archiving.
 	LastArchivedTime time.Time
+	// Files lists every rotated file the pass proved archived, in sequence
+	// order, with the GTIDs it holds. The purge gate reads it to decide how far
+	// the replicas let it go.
+	Files []ArchivedFile
+}
+
+// ArchivedFile is one binlog known to be in the object store.
+type ArchivedFile struct {
+	Name    string
+	GTIDSet string
 }
 
 // ArchivePending ships every rotated, not-yet-archived binlog in the provided
@@ -192,6 +202,7 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		if archived {
 			result.Archived = append(result.Archived, l.Name)
 		}
+		result.Files = append(result.Files, ArchivedFile{Name: l.Name, GTIDSet: meta.GTIDSet})
 
 		// Whether freshly archived or already present, fold its coverage into the
 		// segment frontier so a resumed pass converges.

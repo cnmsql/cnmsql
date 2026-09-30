@@ -18,6 +18,8 @@ package binlog
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -46,6 +48,17 @@ type ReplicationProbe interface {
 	Streaming(ctx context.Context) (bool, error)
 }
 
+// ReplicaFloor reports how far the other instances of the cluster have applied
+// the primary's history. The purge gate uses it to keep every binlog some
+// expected instance still needs.
+type ReplicaFloor interface {
+	// Positions returns the applied GTID set of every instance the purge must
+	// wait for, and the names of those whose position is not known yet. ok is
+	// false when nothing about the cluster has been observed, which forbids any
+	// purge.
+	Positions() (positions map[string]string, unknown []string, ok bool)
+}
+
 type Loop struct {
 	reader   *Reader
 	archiver *Archiver
@@ -58,6 +71,9 @@ type Loop struct {
 	// purge, when true, lets the loop issue PURGE BINARY LOGS up to the archived
 	// frontier (the purge gate: mysqld can never recycle an un-shipped log).
 	purge bool
+	// floor further bounds the purge to what every expected instance has
+	// applied. When nil, nothing is purged.
+	floor ReplicaFloor
 
 	mu    sync.Mutex
 	state State
@@ -76,6 +92,14 @@ type State struct {
 	// LastError and LastErrorTime record the most recent failure, if any.
 	LastError     string
 	LastErrorTime time.Time
+	// PurgeHeldBy lists the instances that have not applied the oldest archived
+	// file yet (or whose position is unknown), so the purge gate keeps it.
+	// PurgeHeldSince is when that file started being held. Both are empty
+	// while nothing archived is held back.
+	PurgeHeldBy    []string
+	PurgeHeldSince time.Time
+	// purgeHeldFile is the file PurgeHeldSince refers to.
+	purgeHeldFile string
 }
 
 // LoopOptions configures a Loop.
@@ -87,6 +111,9 @@ type LoopOptions struct {
 	FlushInterval time.Duration
 	// Purge enables the active purge gate (PURGE BINARY LOGS to the frontier).
 	Purge bool
+	// Floor bounds the purge to what every expected instance has applied. The
+	// gate purges nothing without it.
+	Floor ReplicaFloor
 	// Replication authorises the drain of binlogs stranded by a demotion. When
 	// nil, a non-writable instance never archives.
 	Replication ReplicationProbe
@@ -109,6 +136,7 @@ func NewLoop(opts LoopOptions) *Loop {
 		pollInterval:  poll,
 		flushInterval: flush,
 		purge:         opts.Purge,
+		floor:         opts.Floor,
 		replication:   opts.Replication,
 	}
 }
@@ -117,7 +145,9 @@ func NewLoop(opts LoopOptions) *Loop {
 func (l *Loop) State() State {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.state
+	s := l.state
+	s.PurgeHeldBy = slices.Clone(s.PurgeHeldBy)
+	return s
 }
 
 // Run blocks driving the archive until ctx is cancelled.
@@ -188,11 +218,16 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		return
 	}
 
-	if l.purge && res.LastArchivedBinlog != "" {
-		// Purge up to (not including) the frontier file: everything strictly
-		// before the last-archived log is safely shipped.
-		if before := fileBefore(logs, res.LastArchivedBinlog); before != "" {
-			if err := l.reader.PurgeLogsTo(ctx, before); err != nil {
+	var held purgeHold
+	if l.purge {
+		plan, err := l.planPurge(logs, res)
+		if err != nil {
+			l.fail("evaluating the replica floor", err)
+			return
+		}
+		held = plan.held
+		if plan.to != "" {
+			if err := l.reader.PurgeLogsTo(ctx, plan.to); err != nil {
 				l.fail("purging archived logs", err)
 				return
 			}
@@ -200,7 +235,17 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 	}
 
 	l.mu.Lock()
+	heldSince := time.Time{}
+	if held.file != "" {
+		heldSince = time.Now()
+		if held.file == l.state.purgeHeldFile && !l.state.PurgeHeldSince.IsZero() {
+			heldSince = l.state.PurgeHeldSince
+		}
+	}
 	l.state = State{
+		PurgeHeldBy:        held.by,
+		PurgeHeldSince:     heldSince,
+		purgeHeldFile:      held.file,
 		Active:             true,
 		LastArchivedBinlog: res.LastArchivedBinlog,
 		LastArchivedGTID:   res.LastArchivedGTID,
@@ -213,6 +258,95 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 			"files", res.Archived,
 			"lastArchivedGTID", res.LastArchivedGTID)
 	}
+}
+
+// purgePlan is where the purge gate may go this pass.
+type purgePlan struct {
+	// to is the file to PURGE BINARY LOGS TO (everything before it goes), or ""
+	// to purge nothing.
+	to string
+	// held describes the archived file the replicas keep, if any.
+	held purgeHold
+}
+
+// purgeHold names the oldest archived file the replica floor keeps and the
+// instances that still need it.
+type purgeHold struct {
+	file string
+	by   []string
+}
+
+// planPurge bounds the purge by two conditions, both required for a file to go:
+// it is archived, and every expected instance has applied every GTID in it.
+//
+// The archive bound is unchanged: everything strictly before the file preceding
+// the frontier. The replica floor then lowers it to the first file some instance
+// has not applied, so a replica that is disconnected, restarting or rejoining
+// can still catch up from the primary instead of being re-cloned. mysqld only
+// protects the files a connected replica is reading, which is not enough.
+//
+// Every unknown fails closed: no observation of the cluster, or an instance with
+// no known position, keeps every file.
+func (l *Loop) planPurge(logs []BinaryLog, res ArchiveResult) (purgePlan, error) {
+	limit := fileBefore(logs, res.LastArchivedBinlog)
+	if limit == "" || l.floor == nil {
+		return purgePlan{}, nil
+	}
+	// Only files strictly before limit are candidates; limit itself is kept.
+	var candidates []ArchivedFile
+	for _, f := range res.Files {
+		if f.Name == limit {
+			break
+		}
+		candidates = append(candidates, f)
+	}
+	if len(candidates) == 0 {
+		return purgePlan{}, nil
+	}
+
+	positions, unknown, ok := l.floor.Positions()
+	if !ok {
+		return purgePlan{}, nil
+	}
+	if len(unknown) > 0 {
+		by := slices.Clone(unknown)
+		slices.Sort(by)
+		return purgePlan{held: purgeHold{file: candidates[0].Name, by: by}}, nil
+	}
+
+	names := make([]string, 0, len(positions))
+	applied := make(map[string]gtidOps, len(positions))
+	for name, raw := range positions {
+		set := l.archiver.newSet()
+		if err := set.Parse(raw); err != nil {
+			return purgePlan{}, fmt.Errorf("parsing the gtid position of %s: %w", name, err)
+		}
+		names = append(names, name)
+		applied[name] = set
+	}
+	slices.Sort(names)
+
+	for i, f := range candidates {
+		fileSet := l.archiver.newSet()
+		if err := fileSet.Parse(f.GTIDSet); err != nil {
+			return purgePlan{}, fmt.Errorf("parsing the gtid set of %s: %w", f.Name, err)
+		}
+		var by []string
+		for _, name := range names {
+			if !applied[name].Contains(fileSet) {
+				by = append(by, name)
+			}
+		}
+		if len(by) == 0 {
+			continue
+		}
+		plan := purgePlan{held: purgeHold{file: f.Name, by: by}}
+		if i > 0 {
+			plan.to = f.Name
+		}
+		return plan, nil
+	}
+	return purgePlan{to: limit}, nil
 }
 
 // drain ships the closed binlogs a former primary stranded when it stopped being

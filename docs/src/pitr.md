@@ -143,12 +143,58 @@ spec:
       purgeAfterArchive: true
 ```
 
-With `purgeAfterArchive: true` the archiver runs `PURGE BINARY LOGS` up to the
-last successfully archived file on every pass, so local binlogs live only until
-they reach the object store. PITR is unaffected — recovery replays from the
-archive, not from local logs — but replicas lose the ability to catch up from
-the primary, so any replica that falls outside the (now very short) local window
-must be re-cloned. Prefer lowering `binlogExpireSeconds` before enabling it.
+With `purgeAfterArchive: true` the primary runs `PURGE BINARY LOGS` on every
+archiving pass. A binlog is purged only when both of these are true:
+
+- it is in the object store;
+- every other instance of the cluster has applied every transaction in it.
+
+The second condition is what keeps replicas able to catch up. A replica that is
+down, fenced, restarting or behind keeps the files it still needs on the
+primary, and reads them from there when it returns instead of being re-cloned.
+PITR is unaffected either way: recovery replays from the archive, not from
+local logs.
+
+The primary reads the other instances' positions from
+`status.gtidExecutedByInstance`, which the operator refreshes at least every
+five minutes, so purging trails writes by about that much. Which instances
+count:
+
+| Instance | Holds the purge |
+|----------|-----------------|
+| Replica or Group Replication member | Until it has applied the file |
+| Fenced | Yes: it catches up when unfenced |
+| Position not reported yet (joining, never answered) | Yes, every file |
+| Diverged | No: it must be re-cloned anyway |
+| Removed by a scale-down | No, from the moment it leaves `spec.instances` |
+
+`binlogExpireSeconds` still applies on its own and stays the hard limit: a
+replica that is down for longer than that has to be re-cloned, as before. So
+does an instance whose volume was kept by a scale-down and that a later
+scale-up brings back, if the primary purged what it was missing in the
+meantime. Delete that volume before scaling up again to get a fresh copy.
+
+The primary reports what holds the purge back in
+`status.continuousArchiving`:
+
+```yaml
+status:
+  continuousArchiving:
+    purgeHeldBy: ["demo-3"]
+    purgeHeldSince: "2026-09-30T10:00:00Z"
+```
+
+A few of the newest files are always held while the operator's next snapshot
+of the replicas' positions is pending, so this is normal for short periods.
+When the same file stays held for 15 minutes, the `BinlogPurgeHeld` condition
+turns `True`, names the instances, and the operator emits a `BinlogPurgeHeld`
+warning event. Bring those instances back, or remove them, before their binlogs
+reach `binlogExpireSeconds`:
+
+```bash
+kubectl get cluster <name> \
+  -o jsonpath='{.status.conditions[?(@.type=="BinlogPurgeHeld")].message}'
+```
 
 ### Object store layout
 

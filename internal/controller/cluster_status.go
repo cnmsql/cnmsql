@@ -578,6 +578,8 @@ func aggregateArchiving(observed observedCluster) *mysqlv1alpha1.ContinuousArchi
 	out.PendingFiles = a.PendingFiles
 	out.LastFailureReason = a.LastError
 	out.LastFailureTime = parseInstanceTime(a.LastErrorTime)
+	out.PurgeHeldBy = a.PurgeHeldBy
+	out.PurgeHeldSince = parseInstanceTime(a.PurgeHeldSince)
 	return out
 }
 
@@ -673,6 +675,8 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		latest.Status.ExecutableHashByInstance = observed.ExecutableHashByInstance
 	}
 	r.applyContinuousArchivingCondition(latest, observed)
+	wasPurgeHeld := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionBinlogPurgeHeld)
+	applyBinlogPurgeHeldCondition(latest, time.Now())
 	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             conditionStatus(observed.Ready),
@@ -754,6 +758,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
 	r.recordPhaseEvents(latest, before, observed, wasStoragePressured)
+	r.recordBinlogPurgeHeldEvent(latest, wasPurgeHeld)
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
@@ -801,6 +806,54 @@ func (r *ClusterReconciler) applyContinuousArchivingCondition(latest *mysqlv1alp
 			Message:            message,
 			ObservedGeneration: latest.Generation,
 		})
+	}
+}
+
+// binlogPurgeHeldAfter is how long the purge gate may keep the same file before
+// the BinlogPurgeHeld condition turns True. The replicas' positions it reads are
+// refreshed every gtidPersistInterval, so holding the newest files for about
+// that long is the steady state; three intervals means the floor stopped moving.
+const binlogPurgeHeldAfter = 3 * gtidPersistInterval
+
+// applyBinlogPurgeHeldCondition reports whether some instance has kept the purge
+// gate from removing the same archived binlog for longer than
+// binlogPurgeHeldAfter. That instance is down, stuck or far behind, and once the
+// file reaches binlogExpireSeconds mysqld removes it anyway and the instance has
+// to be re-cloned.
+func applyBinlogPurgeHeldCondition(latest *mysqlv1alpha1.Cluster, now time.Time) {
+	if !latest.IsArchivingEnabled() || !latest.IsPurgeAfterArchiveEnabled() {
+		apimeta.RemoveStatusCondition(&latest.Status.Conditions, mysqlv1alpha1.ConditionBinlogPurgeHeld)
+		return
+	}
+	condition := metav1.Condition{
+		Type:               mysqlv1alpha1.ConditionBinlogPurgeHeld,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Purging",
+		Message:            "Every instance has applied the archived binary logs the purge gate may remove",
+		ObservedGeneration: latest.Generation,
+	}
+	if ca := latest.Status.ContinuousArchiving; ca != nil && ca.PurgeHeldSince != nil && len(ca.PurgeHeldBy) > 0 {
+		// The message carries the start time rather than the elapsed time, which
+		// would change the status, and so write it, on every reconcile.
+		if now.Sub(ca.PurgeHeldSince.Time) >= binlogPurgeHeldAfter {
+			condition.Status = metav1.ConditionTrue
+			condition.Reason = "ReplicasBehind"
+			condition.Message = fmt.Sprintf(
+				"Binary log purge held since %s by instances that have not applied it: %s",
+				ca.PurgeHeldSince.UTC().Format(time.RFC3339), strings.Join(ca.PurgeHeldBy, ", "))
+		}
+	}
+	apimeta.SetStatusCondition(&latest.Status.Conditions, condition)
+}
+
+// recordBinlogPurgeHeldEvent warns once when the purge gate starts holding.
+func (r *ClusterReconciler) recordBinlogPurgeHeldEvent(latest *mysqlv1alpha1.Cluster, wasHeld bool) {
+	if r.Recorder == nil || wasHeld {
+		return
+	}
+	condition := apimeta.FindStatusCondition(latest.Status.Conditions, mysqlv1alpha1.ConditionBinlogPurgeHeld)
+	if condition != nil && condition.Status == metav1.ConditionTrue {
+		r.Recorder.Event(latest, corev1.EventTypeWarning, mysqlv1alpha1.ConditionBinlogPurgeHeld, condition.Message)
 	}
 }
 
