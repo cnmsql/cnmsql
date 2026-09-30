@@ -364,7 +364,9 @@ func purgeGateSpecs(f purgeFlavor) {
 
 		By("waiting for the purge to move past what the removed instance held")
 		expectPurgedPast(heldFrom, "the instance holding it was removed")
-		Expect(heldBy()).NotTo(ContainElement(removed))
+		// The primary has dropped it; the Cluster status follows on the operator's
+		// next poll of the primary.
+		Eventually(heldBy, e2eTimeout(2*time.Minute), 5*time.Second).ShouldNot(ContainElement(removed))
 
 		By("scaling back up with a fresh volume and checking the new instance joins")
 		// Scale-down keeps a bootstrapped volume; reusing it would bring the old
