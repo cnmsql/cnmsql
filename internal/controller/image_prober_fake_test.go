@@ -79,3 +79,7 @@ func (p fixedImageProber) Probe(context.Context, *mysqlv1alpha1.Cluster, string,
 	info := *p.info
 	return &info, p.err
 }
+
+func (tagImageProber) Release(context.Context, *mysqlv1alpha1.Cluster, string) error { return nil }
+
+func (fixedImageProber) Release(context.Context, *mysqlv1alpha1.Cluster, string) error { return nil }
