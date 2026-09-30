@@ -40,7 +40,7 @@ import (
 // main mysqld starts, replication resumes automatically.
 type JoinOptions struct {
 	// XtrabackupPath overrides the backup binary. Empty (the default) selects the
-	// engine's tool: xtrabackup for MySQL, mariabackup for MariaDB.
+	// engine's tool: xtrabackup for MySQL, mariadb-backup for MariaDB.
 	XtrabackupPath string
 	// MysqldPath is the mysqld binary (default "mysqld").
 	MysqldPath string

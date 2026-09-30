@@ -142,7 +142,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary (defaults to the engine's tool: xtrabackup / mariabackup)")
+	cmd.Flags().StringVar(&xtrabackupPath, "xtrabackup", "", "Override the backup binary (defaults to the engine's tool: xtrabackup / mariadb-backup)")
 	cmd.Flags().StringVar(&xbstreamPath, "xbstream", "", "Override the stream extractor (defaults to the engine's tool: xbstream / mbstream)")
 	cmd.Flags().StringVar(&backupDir, "backup-dir", "", "Scratch directory to extract the archive into")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/var/lib/mysql", "MySQL data directory")

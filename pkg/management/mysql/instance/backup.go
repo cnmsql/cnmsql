@@ -38,7 +38,7 @@ import (
 // backup is always taken locally and streamed to the caller.
 type BackupConfig struct {
 	// XtrabackupPath overrides the backup binary. Empty (the default) selects the
-	// engine's tool: xtrabackup for MySQL, mariabackup for MariaDB.
+	// engine's tool: xtrabackup for MySQL, mariadb-backup for MariaDB.
 	XtrabackupPath string
 	// DataDir is the data directory to back up.
 	DataDir string
