@@ -58,9 +58,11 @@ cluster label, which selects instance Pods):
   `restartPolicy: Never`, tiny resource requests, a 5-minute deadline.
 
 The operator reads the termination message and `containerStatuses[].imageID`
-when the Pod succeeds, records the result, and deletes the Pod. A Pod stuck on
-`ErrImagePull` / `ImagePullBackOff` / `InvalidImageName`, or failed, is
-reported in the `ImageReady` condition; the Pod is recreated when the image
+when the Pod succeeds. It deletes the Pod once the result is accepted and
+recorded. A rejected result keeps its Pod for 5 minutes, so the rejection is not
+re-probed on every reconcile (deleting the Pod would itself trigger one). A Pod
+stuck on `ErrImagePull` / `ImagePullBackOff` / `InvalidImageName`, or failed,
+is reported in the `ImageReady` condition; the Pod is recreated when the image
 reference changes.
 
 ## Where the version comes from now

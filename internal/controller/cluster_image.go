@@ -56,8 +56,10 @@ const (
 	imageProbeContainerName = "probe"
 	// imageProbeDeadline bounds a probe Pod's run, image pull included.
 	imageProbeDeadline = int64(300)
-	// imageProbeRetry is how long a failed probe Pod is kept, reporting why,
-	// before it is deleted so the next reconcile probes the image again.
+	// imageProbeRetry is how long a finished probe Pod whose result was not
+	// accepted (it failed, or the image it reported was rejected) is kept,
+	// reporting why, before it is deleted so the next reconcile probes the
+	// image again.
 	imageProbeRetry = 5 * time.Minute
 
 	reasonImageProbed          = "Probed"
@@ -76,6 +78,11 @@ type ImageProber interface {
 	// cannot be used as is (it cannot be pulled, or its server binary failed);
 	// any other error is transient.
 	Probe(ctx context.Context, cluster *mysqlv1alpha1.Cluster, image, operatorImage string) (*mysqlv1alpha1.ImageInfo, error)
+
+	// Release discards the probe of an image the cluster accepted. Until
+	// then Probe keeps returning the same result, so a rejected image is not
+	// probed again on every reconcile.
+	Release(ctx context.Context, cluster *mysqlv1alpha1.Cluster, image string) error
 }
 
 // imageRejectedError is an image the cluster cannot move to. The cluster stays
@@ -160,6 +167,9 @@ func (r *ClusterReconciler) resolveTargetImage(
 			reason:  reasonImageProbing,
 			message: fmt.Sprintf("Probing image %s; staying on %s until it is validated", image, previous.Image),
 		}, nil
+	}
+	if err := r.imageProber().Release(ctx, cluster, image); err != nil {
+		return nil, imageDecision{}, err
 	}
 	return info, imageDecision{accepted: info, status: metav1.ConditionTrue, reason: reasonImageProbed, message: imageSummary(info)}, nil
 }
@@ -354,15 +364,23 @@ func (p *podImageProber) Probe(
 	status := probeContainerStatus(pod)
 	switch pod.Status.Phase {
 	case corev1.PodSucceeded:
+		// The Pod stays until Release, when the result is accepted: deleting
+		// it here would have the next reconcile, which the deletion
+		// triggers, probe a rejected image again straight away.
 		if status == nil || status.State.Terminated == nil {
 			return nil, &imageRejectedError{Reason: reasonImageProbeFailed, Message: fmt.Sprintf("Image probe Pod %s reported no result", name)}
+		}
+		if time.Since(status.State.Terminated.FinishedAt.Time) > imageProbeRetry {
+			// An old result that was never accepted: probe again, in case
+			// the image behind the reference has changed.
+			if err := p.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+				return nil, err
+			}
+			return nil, nil
 		}
 		result, err := imageprobe.Decode(status.State.Terminated.Message)
 		if err != nil {
 			return nil, &imageRejectedError{Reason: reasonImageProbeFailed, Message: fmt.Sprintf("Image %s: %v", image, err)}
-		}
-		if err := p.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
-			return nil, err
 		}
 		return &mysqlv1alpha1.ImageInfo{
 			Image:         image,
@@ -399,6 +417,12 @@ func (p *podImageProber) Probe(
 		}
 	}
 	return nil, nil
+}
+
+// Release deletes the probe Pod of an accepted image.
+func (p *podImageProber) Release(ctx context.Context, cluster *mysqlv1alpha1.Cluster, image string) error {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: cluster.Namespace, Name: imageProbePodName(cluster, image)}}
+	return client.IgnoreNotFound(p.Delete(ctx, pod))
 }
 
 // deleteStaleProbes removes the cluster's probe Pods for images it no longer

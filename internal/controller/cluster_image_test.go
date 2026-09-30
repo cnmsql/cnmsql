@@ -317,25 +317,109 @@ func TestPodImageProberReadsTheResult(t *testing.T) {
 	pod := probePod(cluster, image, corev1.PodSucceeded, corev1.ContainerStatus{
 		ImageID: "registry.example/mysql@sha256:abcd",
 		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-			Message: `{"flavor":"mysql","serverVersion":"8.4.11","banner":"mysqld  Ver 8.4.11-11"}`,
+			Message:    `{"flavor":"mysql","serverVersion":"8.4.11","banner":"mysqld  Ver 8.4.11-11"}`,
+			FinishedAt: metav1.Now(),
 		}},
 	})
 	stale := probePod(cluster, "registry.example/mysql:8.0", corev1.PodPending, corev1.ContainerStatus{})
 	prober, c, cluster := probeReconcilerFixture(t, pod, stale)
+	ctx := context.Background()
+	exists := func(name string) bool {
+		err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &corev1.Pod{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
 
-	info, err := prober.Probe(context.Background(), cluster, image, "")
-	if err != nil {
+	want := mysqlv1alpha1.ImageInfo{Image: image, ImageID: "registry.example/mysql@sha256:abcd", Flavor: mysqlv1alpha1.FlavorMySQL, ServerVersion: "8.4.11"}
+	for range 2 {
+		info, err := prober.Probe(ctx, cluster, image, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info == nil || *info != want {
+			t.Fatalf("info = %+v, want %+v", info, want)
+		}
+	}
+	if exists(stale.Name) {
+		t.Error("the probe of an image the cluster no longer resolves to was kept")
+	}
+	if !exists(pod.Name) {
+		t.Fatal("the probe Pod was deleted before its result was accepted")
+	}
+	if err := prober.Release(ctx, cluster, image); err != nil {
 		t.Fatal(err)
 	}
-	want := mysqlv1alpha1.ImageInfo{Image: image, ImageID: "registry.example/mysql@sha256:abcd", Flavor: mysqlv1alpha1.FlavorMySQL, ServerVersion: "8.4.11"}
-	if info == nil || *info != want {
-		t.Fatalf("info = %+v, want %+v", info, want)
+	if exists(pod.Name) {
+		t.Error("the probe Pod was kept after Release")
 	}
-	for _, name := range []string{pod.Name, stale.Name} {
-		err := c.Get(context.Background(), types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &corev1.Pod{})
-		if !apierrors.IsNotFound(err) {
-			t.Errorf("probe Pod %s: %v, want it deleted", name, err)
-		}
+}
+
+func TestPodImageProberProbesAnOldResultAgain(t *testing.T) {
+	t.Parallel()
+	const image = "registry.example/mysql:8.4"
+	cluster := baseCluster()
+	pod := probePod(cluster, image, corev1.PodSucceeded, corev1.ContainerStatus{State: corev1.ContainerState{
+		Terminated: &corev1.ContainerStateTerminated{
+			Message:    `{"flavor":"mysql","serverVersion":"8.4.11","banner":"mysqld  Ver 8.4.11-11"}`,
+			FinishedAt: metav1.NewTime(time.Now().Add(-2 * imageProbeRetry)),
+		},
+	}})
+	prober, c, cluster := probeReconcilerFixture(t, pod)
+	info, err := prober.Probe(context.Background(), cluster, image, "")
+	if info != nil || err != nil {
+		t.Fatalf("probe = %+v, %v; want a new probe pending", info, err)
+	}
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: cluster.Namespace, Name: pod.Name}, &corev1.Pod{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("old probe Pod: %v, want it deleted so the image is probed again", err)
+	}
+}
+
+// A rejected image must not be probed again on every reconcile: the probe Pod
+// holding the result stays, so the next reconcile reads it instead of creating
+// a new one, which would trigger yet another reconcile.
+func TestResolveTargetImageKeepsTheProbeOfARejectedImage(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		image    string
+		accepted bool
+	}{
+		{image: "registry.example/mysql:9.6", accepted: true},
+		{image: "registry.example/mysql:9.0", accepted: false},
+	} {
+		t.Run(tc.image, func(t *testing.T) {
+			t.Parallel()
+			cluster := baseCluster()
+			cluster.Spec.ImageName = tc.image
+			pod := probePod(cluster, tc.image, corev1.PodSucceeded, corev1.ContainerStatus{State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{
+					Message:    `{"flavor":"mysql","serverVersion":"9.6.0","banner":"mysqld  Ver 9.6.0-1"}`,
+					FinishedAt: metav1.Now(),
+				},
+			}})
+			prober, c, _ := probeReconcilerFixture(t, pod)
+			r := &ClusterReconciler{Client: c, Scheme: c.Scheme(), ImageProber: prober}
+
+			for range 2 {
+				info, _, err := r.resolveTargetImage(ctx, cluster, engine.MustForFlavor(engine.FlavorMySQL), tc.image)
+				if tc.accepted {
+					if err != nil || info == nil || info.ServerVersion != "9.6.0" {
+						t.Fatalf("resolveTargetImage = %+v, %v; want 9.6.0 accepted", info, err)
+					}
+					break
+				}
+				if _, ok := errors.AsType[*imageRejectedError](err); !ok {
+					t.Fatalf("resolveTargetImage error = %v, want a rejection", err)
+				}
+			}
+			err := c.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: pod.Name}, &corev1.Pod{})
+			if tc.accepted != apierrors.IsNotFound(err) {
+				t.Fatalf("probe Pod after resolve: %v; accepted=%v", err, tc.accepted)
+			}
+		})
 	}
 }
 
@@ -365,7 +449,7 @@ func TestPodImageProberReportsFailures(t *testing.T) {
 		{
 			name: "result is not a probe result",
 			pod: probePod(cluster, image, corev1.PodSucceeded, corev1.ContainerStatus{State: corev1.ContainerState{
-				Terminated: &corev1.ContainerStateTerminated{Message: "hello"},
+				Terminated: &corev1.ContainerStateTerminated{Message: "hello", FinishedAt: metav1.Now()},
 			}}),
 			reason: reasonImageProbeFailed,
 		},
