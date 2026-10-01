@@ -525,3 +525,31 @@ func TestClustersUsingCatalog(t *testing.T) {
 		t.Errorf("ClusterImageCatalog images -> %s", got)
 	}
 }
+
+func TestResolveImageRejectsClusterCatalogWhenNamespaced(t *testing.T) {
+	t.Parallel()
+	scheme := testScheme(t)
+	catalog := &mysqlv1alpha1.ClusterImageCatalog{
+		ObjectMeta: metav1.ObjectMeta{Name: "images"},
+		Spec: mysqlv1alpha1.ImageCatalogSpec{Images: []mysqlv1alpha1.CatalogImage{
+			{Series: "8.4", Image: "example.com/mysql:8.4"},
+		}},
+	}
+	cluster := baseCluster()
+	cluster.Spec.ImageName = ""
+	cluster.Spec.ImageCatalogRef = &mysqlv1alpha1.ImageCatalogRef{
+		TypedLocalObjectReference: corev1.TypedLocalObjectReference{Name: "images", Kind: catalogKindCluster},
+		Series:                    "8.4",
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(catalog).Build()
+
+	r := &ClusterReconciler{Client: c, Scheme: scheme}
+	if got, err := r.resolveImage(context.Background(), cluster, nil); err != nil || got != "example.com/mysql:8.4" {
+		t.Fatalf("cluster-wide resolveImage = %q, %v", got, err)
+	}
+
+	r.Namespaced = true
+	if _, err := r.resolveImage(context.Background(), cluster, nil); err == nil || !strings.Contains(err.Error(), "namespaced operator") {
+		t.Fatalf("namespaced resolveImage error = %v, want a namespaced-operator error", err)
+	}
+}
