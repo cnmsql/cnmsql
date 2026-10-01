@@ -47,6 +47,7 @@ jobs:
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
       E2E_JUNIT: test-results/junit.xml
       GINKGO_EXTRA_ARGS: --repeat=${{ github.event.inputs.repeat || '2' }}
+      E2E_REGISTRY_MIRRORS: ${{ github.repository_owner == 'cnmsql' && 'true' || 'false' }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -71,11 +72,15 @@ jobs:
 
     - name: Prepare runner
       run: |
-        echo "KIND_CLUSTER=cnmsql-flake-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
-        for c in $(kind get clusters 2>/dev/null || true); do
-          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
-        done
-        docker system prune -f || true
+        # Other e2e jobs may share this host: keep the kubeconfig and temp files
+        # in this runner's temp dir and only sweep this job's clusters (see
+        # e2e.yml).
+        {
+          echo "KIND_CLUSTER=cnmsql-flake-${GITHUB_RUN_ID}"
+          echo "KUBECONFIG=${RUNNER_TEMP}/kubeconfig"
+          echo "TMPDIR=${RUNNER_TEMP}"
+        } >> "$GITHUB_ENV"
+        ./hack/e2e-ci-hygiene.sh prepare "cnmsql-flake-${GITHUB_RUN_ID}"
 
     - name: Flake hunt
       run: |
@@ -97,9 +102,5 @@ jobs:
         retention-days: 14
 
     - name: Cleanup
-      if: always()
-      run: |
-        for c in $(kind get clusters 2>/dev/null || true); do
-          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
-        done
-        rm -f /tmp/cnmsql-e2e-*.yaml || true
+      if: always() && env.KIND_CLUSTER != ''
+      run: ./hack/e2e-ci-hygiene.sh cleanup "$KIND_CLUSTER"

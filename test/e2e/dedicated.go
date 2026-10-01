@@ -35,8 +35,9 @@ type dedicated struct {
 }
 
 // provisionDedicated creates an ephemeral Kind cluster for a disruptive spec and
-// deploys the operator into it. kindConfigPath selects the topology ("" => Kind's
-// default single node; node-failure passes its multi-node config). Kind switches
+// deploys the operator into it. kindConfigPath selects the topology ("" => the
+// single node of test/e2e/kind-config.yaml; node-failure passes its multi-node
+// config). Kind switches
 // the active kube-context to the new cluster, so every kubectl/make call that
 // follows targets it until teardown restores the previous context.
 //
@@ -52,15 +53,20 @@ func provisionDedicated(slug, kindConfigPath string) *dedicated {
 	d := &dedicated{name: dedicatedClusterName(slug), prevContext: currentKubeContext()}
 
 	By(fmt.Sprintf("creating dedicated Kind cluster %s", d.name))
-	createArgs := []string{"create", "cluster", "--name", d.name}
-	if kindConfigPath != "" {
-		createArgs = append(createArgs, "--config", kindConfigPath)
+	if kindConfigPath == "" {
+		kindConfigPath = "test/e2e/kind-config.yaml"
 	}
+	createArgs := []string{"create", "cluster", "--name", d.name, "--config", kindConfigPath}
 	if v := os.Getenv("K8S_VERSION"); v != "" {
 		createArgs = append(createArgs, "--image", "kindest/node:"+v)
 	}
 	_, err := utils.Run(exec.Command(kindBinary(), createArgs...))
 	Expect(err).NotTo(HaveOccurred(), "failed to create dedicated Kind cluster %s", d.name)
+
+	if os.Getenv("E2E_REGISTRY_MIRRORS") == trueEnvValue {
+		_, err = utils.Run(exec.Command("hack/e2e-registry-mirrors.sh", "configure", d.name))
+		Expect(err).NotTo(HaveOccurred(), "failed to point %s at the registry mirrors", d.name)
+	}
 
 	By("loading the operator and instance images into the dedicated cluster")
 	d.loadImage(managerImage)

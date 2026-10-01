@@ -125,6 +125,8 @@ KIND_CLUSTER ?= cnmsql-test-e2e
 # matrix can exercise a specific Kubernetes version. Empty uses Kind's default.
 K8S_VERSION ?=
 KIND_IMAGE_ARG = $(if $(K8S_VERSION),--image kindest/node:$(K8S_VERSION),)
+# KIND_CONFIG lets the nodes use the registry mirrors (hack/e2e-registry-mirrors.sh).
+KIND_CONFIG ?= test/e2e/kind-config.yaml
 
 .PHONY: test-s3-conformance
 test-s3-conformance: ## Qualify an S3-compatible provider: runs the object-store conformance suite against the endpoint in the cnmsql_S3_* env (see docs/src/object-store.md).
@@ -141,7 +143,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist. Opt
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
 			echo "Creating Kind cluster '$(KIND_CLUSTER)' $(if $(K8S_VERSION),(kindest/node:$(K8S_VERSION)),(default node image))..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) $(KIND_IMAGE_ARG) ;; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG) $(KIND_IMAGE_ARG) ;; \
 	esac
 
 GINKGO_VERSION ?= v2.33.0

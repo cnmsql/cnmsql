@@ -17,3 +17,8 @@ nodes:
 - role: worker
 - role: worker
 - role: worker
+# Read registry mirrors from /etc/containerd/certs.d (see kind-config.yaml).
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"

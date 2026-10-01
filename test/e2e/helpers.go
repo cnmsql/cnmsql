@@ -209,7 +209,7 @@ func waitForWebhookReady(ns string) {
 	if ns == "" {
 		ns = testNamespace
 	}
-	probePath := "/tmp/cnmsql-e2e-webhook-readiness.yaml"
+	probePath := filepath.Join(os.TempDir(), "cnmsql-e2e-webhook-readiness.yaml")
 	probe := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:
@@ -318,7 +318,7 @@ func deleteCluster(name string) {
 }
 
 func writeManifest(name, manifest string) string {
-	path := filepath.Join("/tmp", fmt.Sprintf("cnmsql-e2e-%s-%d.yaml", name, GinkgoParallelProcess()))
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("cnmsql-e2e-%s-%d.yaml", name, GinkgoParallelProcess()))
 	Expect(os.WriteFile(path, []byte(manifest), 0o644)).To(Succeed(), "Failed to write manifest %s", name)
 	return path
 }
