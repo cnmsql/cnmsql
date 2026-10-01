@@ -137,6 +137,12 @@ jobs:
     - name: Build the manager image
       run: make docker-build IMG="$E2E_MANAGER_IMAGE"
 
+    # Start the host's registry mirrors before any lane needs them (lanes also
+    # run `up`, which is then a no-op).
+    - name: Start registry mirrors
+      if: github.repository_owner == 'cnmsql'
+      run: ./hack/e2e-registry-mirrors.sh up
+
     # The lanes are skipped when the build fails, so fail their pending statuses
     # here or the PR would wait on them forever.
     - name: Fail every lane

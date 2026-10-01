@@ -32,8 +32,17 @@ UPSTREAMS=(
 
 mirror_name() { echo "cnmsql-mirror-${1//./-}"; }
 
+# Concurrent lanes on one host share the mirrors, so creating them and joining
+# them to the kind network is serialized with a host-wide lock. Not under TMPDIR:
+# CI points that at each runner's own temp dir.
+lock() {
+	exec 9>"/tmp/cnmsql-e2e-registry-mirrors.lock"
+	flock 9
+}
+
 up() {
 	local entry host url name
+	lock
 	for entry in "${UPSTREAMS[@]}"; do
 		read -r host url <<<"$entry"
 		name="$(mirror_name "$host")"
@@ -42,28 +51,25 @@ up() {
 		fi
 		docker rm -f "$name" >/dev/null 2>&1 || true
 		echo "==> starting registry mirror $name for $host"
-		# A concurrent lane may win the race to create it; that is fine as long as
-		# it ends up running.
 		docker run -d --restart=always --name "$name" \
 			-v "$name:/var/lib/registry" \
 			-e REGISTRY_PROXY_REMOTEURL="$url" \
 			-e REGISTRY_LOG_LEVEL=info \
 			-e OTEL_TRACES_EXPORTER=none \
-			"$REGISTRY_IMAGE" >/dev/null ||
-			[[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == true ]]
+			"$REGISTRY_IMAGE" >/dev/null
 	done
 }
 
 configure() {
 	local cluster="$1" entry host url name node
+	lock
 	for entry in "${UPSTREAMS[@]}"; do
 		read -r host url <<<"$entry"
 		name="$(mirror_name "$host")"
 		# Kind nodes resolve the mirrors by container name on the `kind` network,
 		# which exists once the first cluster is created.
 		if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "$name" | grep -q '"kind"'; then
-			docker network connect kind "$name" 2>/dev/null ||
-				docker inspect -f '{{json .NetworkSettings.Networks}}' "$name" | grep -q '"kind"'
+			docker network connect kind "$name"
 		fi
 	done
 	for node in $("$KIND" get nodes --name "$cluster"); do
