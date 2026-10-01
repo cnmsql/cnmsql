@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -53,11 +54,19 @@ type Config struct {
 	TTL time.Duration
 }
 
+// customQueryTimeout bounds each custom query, so a slow one cannot hold a
+// scrape open past a typical Prometheus scrape timeout.
+const customQueryTimeout = 10 * time.Second
+
 // Exporter collects MySQL metrics from a local mysqld connection by running the
 // vendored mysqld_exporter scrapers, then any custom queries, on Prometheus
 // scrapes.
 type Exporter struct {
-	db       *sql.DB
+	db *sql.DB
+	// customDB runs the custom queries. It is a separate, unprivileged
+	// connection, so user SQL never runs as the control account nor ties up
+	// the control connection the probes depend on.
+	customDB *sql.DB
 	scrapers []scrapers.Scraper
 	logger   *slog.Logger
 	now      func() time.Time
@@ -69,22 +78,33 @@ type Exporter struct {
 	cachedAt time.Time
 }
 
-// NewExporter builds a Prometheus collector backed by db, running the default
-// scraper set until SetConfig says otherwise.
-func NewExporter(db *sql.DB) *Exporter {
+// NewExporter builds a Prometheus collector running the default scraper set on
+// db until SetConfig says otherwise. Custom queries run on customDB.
+func NewExporter(db, customDB *sql.DB) *Exporter {
 	return &Exporter{
 		db:       db,
+		customDB: customDB,
 		scrapers: scrapers.Default,
 		logger:   slog.Default(),
 	}
 }
 
-// SetConfig replaces what the next scrape runs and drops any cached results.
+// SetConfig replaces what the next scrape runs. Cached results are dropped
+// only when the set of queries changed, so re-applying the same settings does
+// not shorten the TTL.
 func (e *Exporter) SetConfig(c Config) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if !e.config.sameQueries(c) {
+		e.cached = nil
+	}
 	e.config = c
-	e.cached = nil
+}
+
+// sameQueries reports whether c and o run the same queries.
+func (c Config) sameQueries(o Config) bool {
+	return c.DisableDefaultQueries == o.DisableDefaultQueries &&
+		slices.EqualFunc(c.CustomQueries, o.CustomQueries, CustomQuery.equal)
 }
 
 // Describe implements prometheus.Collector. The scrapers emit dynamic metrics
@@ -125,16 +145,7 @@ func (e *Exporter) scrape() []prometheus.Metric {
 		done <- out
 	}()
 
-	var errs []error
-	if !e.config.DisableDefaultQueries {
-		errs = append(errs, scrapers.Run(ctx, e.db, buf, e.logger, e.scrapers))
-	}
-	for _, q := range e.config.CustomQueries {
-		if err := q.Scrape(ctx, e.db, buf); err != nil {
-			errs = append(errs, fmt.Errorf("custom query %s: %w", q.Name, err))
-		}
-	}
-	close(buf)
+	errs := e.run(ctx, buf)
 	out := <-done
 
 	scrapeError := 0.0
@@ -143,4 +154,33 @@ func (e *Exporter) scrape() []prometheus.Metric {
 		e.logger.Error("MySQL metrics scrape failed", "err", err)
 	}
 	return append(out, prometheus.MustNewConstMetric(scrapeErrorDesc, prometheus.GaugeValue, scrapeError))
+}
+
+// run sends every enabled query's metrics to buf and closes it. A panic in a
+// scraper is reported as a scrape error instead of failing the whole gather.
+func (e *Exporter) run(ctx context.Context, buf chan<- prometheus.Metric) (errs []error) {
+	defer close(buf)
+	defer func() {
+		if r := recover(); r != nil {
+			errs = append(errs, fmt.Errorf("scraper panicked: %v", r))
+		}
+	}()
+	if !e.config.DisableDefaultQueries {
+		errs = append(errs, scrapers.Run(ctx, e.db, buf, e.logger, e.scrapers))
+	}
+	for _, q := range e.config.CustomQueries {
+		if err := e.runCustom(ctx, q, buf); err != nil {
+			errs = append(errs, fmt.Errorf("custom query %s: %w", q.Name, err))
+		}
+	}
+	return errs
+}
+
+func (e *Exporter) runCustom(ctx context.Context, q CustomQuery, buf chan<- prometheus.Metric) error {
+	if e.customDB == nil {
+		return errors.New("no connection for custom queries")
+	}
+	ctx, cancel := context.WithTimeout(ctx, customQueryTimeout)
+	defer cancel()
+	return q.Scrape(ctx, e.customDB, buf)
 }

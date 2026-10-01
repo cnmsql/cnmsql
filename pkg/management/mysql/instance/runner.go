@@ -84,6 +84,9 @@ type RunOptions struct {
 	GroupReplication bool
 	// Control describes the privileged control connection used for monitoring.
 	Control pool.ControlParams
+	// MetricsUser is the local, passwordless account initdb creates for the
+	// exporter. Custom monitoring queries run as it, over Control.Socket.
+	MetricsUser string
 	// WebserverAddr is the listen address for the control API.
 	WebserverAddr string
 	// HealthAddr is the plain HTTP listen address for Kubernetes probes.
@@ -644,7 +647,20 @@ func Run(ctx context.Context, opts RunOptions) error {
 			}
 		}
 	}
-	exporter := metrics.NewExporter(db)
+	// Custom queries get their own connection as the unprivileged metrics
+	// account: user SQL must not run as the control account, nor hold the
+	// single control connection the probes depend on.
+	customDB, err := pool.Connect(pool.Config{
+		Socket:       opts.Control.Socket,
+		User:         opts.MetricsUser,
+		MaxOpenConns: 1,
+	})
+	if err != nil {
+		log.Error(err, "Could not set up the custom monitoring query connection")
+	} else {
+		defer func() { _ = customDB.Close() }()
+	}
+	exporter := metrics.NewExporter(db, customDB)
 	metricsCollectors := []prometheus.Collector{
 		exporter,
 		metrics.NewVolumeCollector(opts.DataDir),

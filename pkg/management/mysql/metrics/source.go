@@ -18,12 +18,14 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -31,7 +33,15 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
-const defaultQueriesResync = time.Minute
+const (
+	defaultQueriesResync = time.Minute
+	// apiReadTimeout bounds each ConfigMap or Secret read.
+	apiReadTimeout = 10 * time.Second
+)
+
+// errNoKey reports a referenced document missing its key. Like a missing
+// object, it drops the document's queries instead of keeping the last good ones.
+var errNoKey = errors.New("key not found")
 
 // QuerySource feeds an Exporter the monitoring settings of the Cluster: it
 // reads the custom query ConfigMaps and Secrets the Cluster references by name
@@ -119,7 +129,9 @@ func (s *QuerySource) apply(ctx context.Context) {
 
 // load reads and merges every referenced document, ConfigMaps first, then
 // Secrets, each in list order. A query name seen again replaces the earlier
-// one; a query whose metric names clash with another query's is dropped.
+// one; a query whose metric names clash with another query's is dropped. A
+// document that cannot be read or parsed keeps its last good queries, unless
+// it is gone: a missing object or key drops them.
 func (s *QuerySource) load(ctx context.Context, spec *mysqlv1alpha1.MonitoringConfiguration) []CustomQuery {
 	log := logf.FromContext(ctx).WithName("custom-queries")
 	type document struct {
@@ -131,6 +143,8 @@ func (s *QuerySource) load(ctx context.Context, spec *mysqlv1alpha1.MonitoringCo
 		docs = append(docs, document{
 			id: "configmap/" + ref.Name + "/" + ref.Key,
 			read: func() ([]byte, error) {
+				ctx, cancel := context.WithTimeout(ctx, apiReadTimeout)
+				defer cancel()
 				cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 				if err != nil {
 					return nil, err
@@ -141,7 +155,7 @@ func (s *QuerySource) load(ctx context.Context, spec *mysqlv1alpha1.MonitoringCo
 				if v, ok := cm.BinaryData[ref.Key]; ok {
 					return v, nil
 				}
-				return nil, fmt.Errorf("configmap %s has no key %q", ref.Name, ref.Key)
+				return nil, fmt.Errorf("configmap %s has no key %q: %w", ref.Name, ref.Key, errNoKey)
 			},
 		})
 	}
@@ -149,6 +163,8 @@ func (s *QuerySource) load(ctx context.Context, spec *mysqlv1alpha1.MonitoringCo
 		docs = append(docs, document{
 			id: "secret/" + ref.Name + "/" + ref.Key,
 			read: func() ([]byte, error) {
+				ctx, cancel := context.WithTimeout(ctx, apiReadTimeout)
+				defer cancel()
 				sec, err := s.client.CoreV1().Secrets(s.namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 				if err != nil {
 					return nil, err
@@ -156,7 +172,7 @@ func (s *QuerySource) load(ctx context.Context, spec *mysqlv1alpha1.MonitoringCo
 				if v, ok := sec.Data[ref.Key]; ok {
 					return v, nil
 				}
-				return nil, fmt.Errorf("secret %s has no key %q", ref.Name, ref.Key)
+				return nil, fmt.Errorf("secret %s has no key %q: %w", ref.Name, ref.Key, errNoKey)
 			},
 		})
 	}
@@ -167,11 +183,15 @@ func (s *QuerySource) load(ctx context.Context, spec *mysqlv1alpha1.MonitoringCo
 	for _, d := range docs {
 		used[d.id] = true
 		queries, err := s.parse(d.read)
-		if err != nil {
+		switch {
+		case apierrors.IsNotFound(err) || errors.Is(err, errNoKey):
+			log.Info("Could not find custom queries", "source", d.id, "error", err.Error())
+			delete(s.lastGood, d.id)
+		case err != nil:
 			log.Info("Could not load custom queries, keeping the last good ones",
 				"source", d.id, "error", err.Error())
 			queries = s.lastGood[d.id]
-		} else {
+		default:
 			s.lastGood[d.id] = queries
 		}
 		for _, q := range queries {

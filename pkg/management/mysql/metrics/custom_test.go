@@ -111,6 +111,13 @@ func TestParseCustomQueriesRejectsBadDocuments(t *testing.T) {
 		"no value column": "q:\n  query: SELECT 1 AS v\n  metrics:\n    - v:\n        usage: LABEL\n",
 		"empty query":     "q:\n  query: ''\n  metrics:\n    - v:\n        usage: GAUGE\n",
 		"bad name":        "my-query:\n  query: SELECT 1 AS v\n  metrics:\n    - v:\n        usage: GAUGE\n",
+		"reserved label": "q:\n  query: SELECT 1 AS v, 'x' AS __name\n  metrics:\n" +
+			"    - __name:\n        usage: LABEL\n    - v:\n        usage: GAUGE\n",
+		// mysql_global_status_threads is a built-in family.
+		"built-in prefix": "global:\n  query: SELECT 1 AS status_threads\n  metrics:\n" +
+			"    - status_threads:\n        usage: GAUGE\n",
+		"built-in exporter": "exporter:\n  query: SELECT 1 AS last_scrape_error\n  metrics:\n" +
+			"    - last_scrape_error:\n        usage: GAUGE\n",
 		"duplicate col": "q:\n  query: SELECT 1 AS v\n  metrics:\n" +
 			"    - v:\n        usage: GAUGE\n    - v:\n        usage: LABEL\n",
 		"unknown field": "q:\n  query: SELECT 1 AS v\n  primary: true\n  metrics:\n    - v:\n        usage: GAUGE\n",
@@ -143,7 +150,7 @@ func TestCustomQueryScrape(t *testing.T) {
 			AddRow("app", "users", "7", "1")) // repeated labels: dropped
 	mock.ExpectRollback()
 
-	exp := &Exporter{db: db, logger: discardLogger(), config: Config{
+	exp := &Exporter{customDB: db, logger: discardLogger(), config: Config{
 		DisableDefaultQueries: true,
 		CustomQueries:         queries,
 	}}
@@ -181,7 +188,8 @@ func TestCustomQueryMissingColumnFlagsScrapeError(t *testing.T) {
 		sqlmock.NewRows([]string{"table_schema", "table_rows"}).AddRow("app", "1"))
 	mock.ExpectRollback()
 
-	exp := &Exporter{db: db, logger: discardLogger(), config: Config{DisableDefaultQueries: true, CustomQueries: queries}}
+	exp := &Exporter{customDB: db, logger: discardLogger(),
+		config: Config{DisableDefaultQueries: true, CustomQueries: queries}}
 	got := collect(t, exp)
 	if e := got["mysql_exporter_last_scrape_error"]; len(e) != 1 || e[0].value != 1 {
 		t.Fatalf("scrape error = %+v, want 1", e)
@@ -192,7 +200,8 @@ func TestCustomQueryMissingColumnFlagsScrapeError(t *testing.T) {
 }
 
 // TestExporterTTLReusesResults checks that scrapes inside the TTL replay the
-// previous run instead of querying again, and that SetConfig drops the cache.
+// previous run instead of querying again, and that only a change of queries
+// drops the cache.
 func TestExporterTTLReusesResults(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New()
@@ -233,10 +242,17 @@ func TestExporterTTLReusesResults(t *testing.T) {
 	if v := threads(); v != 2 {
 		t.Fatalf("scrape after the TTL = %v, want 2", v)
 	}
+	// Re-applying the same queries, as the minute resync does, or changing only
+	// the TTL keeps the cached run.
+	exp.SetConfig(Config{TTL: 30 * time.Second})
 	exp.SetConfig(Config{TTL: time.Hour})
-	expectStatus("3")
-	if v := threads(); v != 3 {
-		t.Fatalf("scrape after SetConfig = %v, want 3", v)
+	if v := threads(); v != 2 {
+		t.Fatalf("scrape after re-applying the config = %v, want the cached 2", v)
+	}
+	// Changing what runs drops it.
+	exp.SetConfig(Config{TTL: time.Hour, DisableDefaultQueries: true})
+	if s := collect(t, exp)["mysql_global_status_threads_connected"]; len(s) != 0 {
+		t.Fatalf("threads_connected = %+v after disabling the defaults, want none", s)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -274,7 +290,7 @@ func TestQuerySourceLoadsReferencedDocuments(t *testing.T) {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "secret-queries", Namespace: "ns"},
 			Data: map[string][]byte{"other.yaml": []byte(other)}},
 	)
-	exp := NewExporter(nil)
+	exp := NewExporter(nil, nil)
 	src := NewQuerySource(cs, "ns", exp)
 
 	cluster := &mysqlv1alpha1.Cluster{}
@@ -318,10 +334,89 @@ func TestQuerySourceLoadsReferencedDocuments(t *testing.T) {
 		t.Fatalf("queries after a bad edit = %+v, want table_rows kept", q)
 	}
 
+	// Re-reading unchanged documents keeps the exporter's cached results.
+	exp.cached = []prometheus.Metric{}
+	src.apply(ctx)
+	if exp.cached == nil {
+		t.Fatal("resync with unchanged queries dropped the cached results")
+	}
+
+	// A deleted source stops publishing instead of keeping its last queries.
+	if err := cs.CoreV1().Secrets("ns").Delete(ctx, "secret-queries", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	src.apply(ctx)
+	if q := exp.config.CustomQueries; len(q) != 1 || q[0].Name != "table_rows" {
+		t.Fatalf("queries after deleting the Secret = %+v, want only table_rows", q)
+	}
+
 	// Dropping the references returns to the defaults only.
 	src.Observe(&mysqlv1alpha1.Cluster{})
 	src.apply(ctx)
 	if c := exp.config; c.DisableDefaultQueries || c.TTL != 0 || len(c.CustomQueries) != 0 {
 		t.Fatalf("config = %+v, want the defaults", c)
+	}
+}
+
+// A label value that is not valid UTF-8 (a BINARY column, say) must not fail
+// the whole gather: the row is dropped and the scrape is flagged.
+func TestCustomQueryInvalidLabelValue(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	queries, err := ParseCustomQueries([]byte(tableRowsDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT table_schema").WillReturnRows(
+		sqlmock.NewRows([]string{"table_schema", "table_name", "table_rows", "data_length"}).
+			AddRow("app", []byte{0xff, 0xfe}, "1", "1").
+			AddRow("app", "users", "42", "1"))
+	mock.ExpectRollback()
+
+	exp := &Exporter{customDB: db, logger: discardLogger(),
+		config: Config{DisableDefaultQueries: true, CustomQueries: queries}}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(exp)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather failed: %v", err)
+	}
+	got := map[string]*dto.MetricFamily{}
+	for _, f := range families {
+		got[f.GetName()] = f
+	}
+	if rows := got["mysql_table_rows_table_rows"].GetMetric(); len(rows) != 1 || rows[0].GetGauge().GetValue() != 42 {
+		t.Fatalf("table_rows = %v, want only the valid row", rows)
+	}
+	if e := got["mysql_exporter_last_scrape_error"].GetMetric(); len(e) != 1 || e[0].GetGauge().GetValue() != 1 {
+		t.Fatalf("scrape error = %v, want 1", e)
+	}
+}
+
+// Custom queries never fall back to the control connection.
+func TestCustomQueriesNeedTheirOwnConnection(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	queries, err := ParseCustomQueries([]byte(tableRowsDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := NewExporter(db, nil)
+	exp.logger = discardLogger()
+	exp.SetConfig(Config{DisableDefaultQueries: true, CustomQueries: queries})
+	if e := collect(t, exp)["mysql_exporter_last_scrape_error"]; len(e) != 1 || e[0].value != 1 {
+		t.Fatalf("scrape error = %+v, want 1", e)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

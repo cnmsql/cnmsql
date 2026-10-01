@@ -114,22 +114,23 @@ metadata:
   name: cluster-sample-monitoring
 data:
   queries.yaml: |
-    table_size:
+    table_io:
       query: |
-        SELECT table_schema, table_name, table_rows, data_length
-        FROM information_schema.tables
-        WHERE table_schema NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')
+        SELECT object_schema AS table_schema, object_name AS table_name,
+               count_read AS rows_read, count_write AS rows_written
+        FROM performance_schema.table_io_waits_summary_by_table
+        WHERE object_schema NOT IN ('mysql', 'sys', 'performance_schema')
       metrics:
         - table_schema:
             usage: LABEL
         - table_name:
             usage: LABEL
-        - table_rows:
-            usage: GAUGE
-            description: Estimated number of rows in the table
-        - data_length:
-            usage: GAUGE
-            description: Size of the table data in bytes
+        - rows_read:
+            usage: COUNTER
+            description: Rows read from the table
+        - rows_written:
+            usage: COUNTER
+            description: Rows written to the table
 ---
 apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
@@ -153,17 +154,46 @@ order, to one of these usages:
 | `DISCARD` | The column is ignored. Columns left out of the list are ignored too. |
 
 A `GAUGE` or `COUNTER` column is published as `mysql_<query>_<column>`, so the
-example above gives `mysql_table_size_table_rows` and
-`mysql_table_size_data_length`, both labelled with `table_schema` and
-`table_name`. Query and column names may only use letters, digits and
-underscores. Rows with a `NULL` value skip that metric, and a row that repeats
-the labels of an earlier row is dropped.
+example above gives `mysql_table_io_rows_read` and `mysql_table_io_rows_written`, both
+labelled with `table_schema` and `table_name`. Column names must match the
+result exactly, so alias them as in the example. Query and column names may
+only use letters, digits and underscores, and label columns may not start with
+`__`. Names that would fall under a built-in family, such as
+`mysql_global_status_` or `mysql_exporter_`, are rejected.
 
-Each instance runs the queries on its own server, in a read-only transaction,
-as the instance manager's control account. Anyone who can edit a referenced
-ConfigMap can therefore run SQL as that account; keep queries that should stay
-private in a Secret with `customQueriesSecret`, which takes the same
-`name`/`key` pairs.
+Rows with a `NULL` value skip that metric. A row that repeats the labels of an
+earlier row, or whose label value is not valid UTF-8, is dropped and sets
+`mysql_exporter_last_scrape_error` to 1.
+
+### Account and privileges
+
+Each instance runs the queries on its own server as `cnmsql_metrics`, a
+passwordless account that only accepts connections from inside the Pod over
+the local socket. It has `PROCESS`, `REPLICATION CLIENT` and
+`REPLICATION SLAVE` on all databases and `SELECT` on `performance_schema`, and
+nothing else. To query your own tables, grant it read access on the primary,
+for example through `postInitSQL`:
+
+```yaml
+spec:
+  bootstrap:
+    initdb:
+      postInitSQL:
+        - GRANT SELECT ON app.* TO 'cnmsql_metrics'@'localhost'
+```
+
+The queries use a separate connection from the instance manager's control
+account, so a slow query cannot hold up health checks or failover. Each query
+is cancelled after 10 seconds.
+
+Queries run in a read-only transaction, but that does not stop a statement
+that commits implicitly, such as `CREATE USER`. The privileges of
+`cnmsql_metrics` are what limit the damage a query can do, so grant it only
+read access. Anyone who can edit a referenced ConfigMap can run SQL as that
+account; use `customQueriesSecret`, which takes the same `name`/`key` pairs,
+for queries that should stay private.
+
+### Loading and updates
 
 ConfigMaps are read first, then Secrets, each in list order. When two documents
 define the same query name, the later one wins. A query whose metric names
@@ -172,15 +202,17 @@ clash with another query's is skipped and logged.
 The operator grants the instance Pods `get` on the referenced ConfigMaps and
 Secrets only, and the instance manager reads them through the Kubernetes API.
 Edits are picked up within a minute and never restart a Pod. If a document
-cannot be read or parsed, the instance keeps the queries it last loaded from it
-and logs the error. A query that fails at scrape time sets
+cannot be parsed or the API is unreachable, the instance keeps the queries it
+last loaded from it and logs the error. If the ConfigMap, the Secret or the key
+no longer exists, its queries stop. A query that fails at scrape time sets
 `mysql_exporter_last_scrape_error` to 1.
 
 Two more fields shape what runs on a scrape:
 
-- `disableDefaultQueries: true` turns off the built-in metrics (global status,
-  variables, replication and the other mysqld_exporter families), leaving only
-  the custom queries.
+- `disableDefaultQueries: true` turns off the built-in MySQL queries (global
+  status, variables, replication and the other mysqld_exporter families). The
+  data volume, heartbeat and `mysql_exporter_last_scrape_error` metrics are
+  still published, as are the custom queries.
 - `metricsQueriesTTL` sets the minimum interval between two runs of the
   queries. A scrape that arrives sooner gets the previous results. Use it to
   keep expensive queries from running on every scrape:

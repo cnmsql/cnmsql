@@ -19,6 +19,7 @@ package metricserver
 
 import (
 	"crypto/tls"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -39,7 +40,12 @@ func New(addr string, tlsConfig *tls.Config, collectors_ ...prometheus.Collector
 	registry.MustRegister(collectors.NewGoCollector())
 
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	// A collector that fails to gather loses only its own metrics: the rest of
+	// the page is still served and the error is logged.
+	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+		ErrorHandling: promhttp.ContinueOnError,
+		ErrorLog:      slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
+	}))
 	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,

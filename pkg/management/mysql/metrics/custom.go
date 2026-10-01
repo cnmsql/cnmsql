@@ -46,6 +46,15 @@ const (
 
 var metricNamePart = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+// builtinSubsystems are the metric name prefixes, after mysql_, that the
+// built-in scrapers and collectors publish. A custom metric under one of them
+// could collide with a built-in one, and the registry would then reject the
+// whole scrape.
+var builtinSubsystems = []string{
+	"binlog", "exporter", "galera", "global_status", "global_variables", "info_schema",
+	"instance", "perf_schema", "slave_status", "transaction", "version",
+}
+
 // ColumnMapping describes one result column of a custom query.
 type ColumnMapping struct {
 	Usage       ColumnUsage `json:"usage"`
@@ -115,6 +124,9 @@ func buildCustomQuery(name string, spec QuerySpec) (CustomQuery, error) {
 			if !metricNamePart.MatchString(col) {
 				return CustomQuery{}, fmt.Errorf("column %q must match %s", col, metricNamePart)
 			}
+			if m.Usage == UsageLabel && strings.HasPrefix(col, "__") {
+				return CustomQuery{}, fmt.Errorf("label column %q: names starting with __ are reserved", col)
+			}
 			if slices.ContainsFunc(columns, func(c column) bool { return c.name == col }) {
 				return CustomQuery{}, fmt.Errorf("column %q is listed twice", col)
 			}
@@ -140,6 +152,12 @@ func buildCustomQuery(name string, spec QuerySpec) (CustomQuery, error) {
 		default:
 			return CustomQuery{}, fmt.Errorf("column %q: unknown usage %q", c.name, c.Usage)
 		}
+		fqName := prometheus.BuildFQName(namespace, name, c.name)
+		for _, sub := range builtinSubsystems {
+			if strings.HasPrefix(fqName, namespace+"_"+sub+"_") {
+				return CustomQuery{}, fmt.Errorf("metric %s would share the built-in %s_%s_ prefix", fqName, namespace, sub)
+			}
+		}
 		help := c.Description
 		if help == "" {
 			help = fmt.Sprintf("Column %s of custom query %s.", c.name, name)
@@ -147,13 +165,22 @@ func buildCustomQuery(name string, spec QuerySpec) (CustomQuery, error) {
 		q.values = append(q.values, customValue{
 			column:    c.name,
 			valueType: vt,
-			desc:      prometheus.NewDesc(prometheus.BuildFQName(namespace, name, c.name), help, q.labels, nil),
+			desc:      prometheus.NewDesc(fqName, help, q.labels, nil),
 		})
 	}
 	if len(q.values) == 0 {
 		return CustomQuery{}, errors.New("no GAUGE or COUNTER column")
 	}
 	return q, nil
+}
+
+// equal reports whether q and o are the same query publishing the same
+// metrics.
+func (q CustomQuery) equal(o CustomQuery) bool {
+	return q.Name == o.Name && q.query == o.query && slices.Equal(q.labels, o.labels) &&
+		slices.EqualFunc(q.values, o.values, func(a, b customValue) bool {
+			return a.column == b.column && a.valueType == b.valueType && a.desc.String() == b.desc.String()
+		})
 }
 
 // metricNames returns the fully qualified names the query publishes.
@@ -167,7 +194,8 @@ func (q CustomQuery) metricNames() []string {
 
 // Scrape runs the query in a read-only transaction and sends one metric per
 // row and value column. NULL values are skipped. A row repeating an earlier
-// row's labels is dropped, since the registry would reject the whole scrape.
+// row's labels, or with a label value that is not valid UTF-8, is dropped and
+// reported, since the registry would reject the whole scrape.
 func (q CustomQuery) Scrape(ctx context.Context, db *sql.DB, ch chan<- prometheus.Metric) error {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -230,7 +258,12 @@ func (q CustomQuery) Scrape(ctx context.Context, db *sql.DB, ch chan<- prometheu
 				errs = append(errs, fmt.Errorf("column %q: %w", v.column, err))
 				continue
 			}
-			ch <- prometheus.MustNewConstMetric(v.desc, v.valueType, f, labelValues...)
+			m, err := prometheus.NewConstMetric(v.desc, v.valueType, f, labelValues...)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("column %q: %w", v.column, err))
+				continue
+			}
+			ch <- m
 		}
 	}
 	if err := rows.Err(); err != nil {
