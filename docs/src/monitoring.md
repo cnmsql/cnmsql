@@ -171,16 +171,21 @@ Each instance runs the queries on its own server as `cnmsql_metrics`, a
 passwordless account that only accepts connections from inside the Pod over
 the local socket. It has `PROCESS`, `REPLICATION CLIENT` and
 `REPLICATION SLAVE` on all databases and `SELECT` on `performance_schema`, and
-nothing else. To query your own tables, grant it read access on the primary,
-for example through `postInitSQL`:
+nothing else. To query your own tables, grant it read access on the primary.
+The grant replicates to every instance and stays in place until you revoke
+it:
 
-```yaml
-spec:
-  bootstrap:
-    initdb:
-      postInitSQL:
-        - GRANT SELECT ON app.* TO 'cnmsql_metrics'@'localhost'
+```bash
+NS=<namespace> CLUSTER=<cluster>
+POD=$(kubectl -n $NS get cluster $CLUSTER -o jsonpath='{.status.currentPrimary}')
+PASS=$(kubectl -n $NS get secret $CLUSTER-root -o jsonpath='{.data.password}' | base64 -d)
+kubectl -n $NS exec $POD -c mysql -- mysql -uroot -p"$PASS" \
+  -e "GRANT SELECT ON app.* TO 'cnmsql_metrics'@'localhost'"
 ```
+
+The operator does not manage these grants. Managed roles and `DatabaseUser`
+resources cannot change `cnmsql_metrics`, because it is a reserved account. A
+grant run from `postInitSQL` also works, but only on a new cluster.
 
 The queries use a separate connection from the instance manager's control
 account, so a slow query cannot hold up health checks or failover. Each query
