@@ -160,6 +160,11 @@ func LoadImageToKindClusterWithName(name string) error {
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
+	return LoadImageToKindCluster(name, cluster)
+}
+
+// LoadImageToKindCluster loads a local docker image to the named kind cluster
+func LoadImageToKindCluster(name, cluster string) error {
 	kindBinary := defaultKindBinary
 	if v, ok := os.LookupEnv("KIND"); ok {
 		kindBinary = v
