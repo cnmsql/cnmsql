@@ -213,3 +213,58 @@ func TestEnsureInstanceRBACOmitsAppSecretWithoutInitDB(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureInstanceRBACGrantsCustomQuerySources(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := testScheme(t)
+	plan := testPlan()
+
+	roleFor := func(t *testing.T, cluster *mysqlv1alpha1.Cluster) *rbacv1.Role {
+		t.Helper()
+		r := &ClusterReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(), Scheme: scheme}
+		if err := r.ensureInstanceRBAC(ctx, cluster, plan); err != nil {
+			t.Fatal(err)
+		}
+		role := &rbacv1.Role{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name + "-instance"}, role); err != nil {
+			t.Fatal(err)
+		}
+		return role
+	}
+
+	// Without references there is no configmaps rule at all: an empty
+	// resourceNames would grant every ConfigMap in the namespace.
+	for _, rule := range roleFor(t, baseCluster()).Rules {
+		if slices.Contains(rule.Resources, "configmaps") {
+			t.Fatalf("configmaps granted without custom queries: %+v", rule)
+		}
+	}
+
+	cluster := baseCluster()
+	cluster.Spec.Monitoring = &mysqlv1alpha1.MonitoringConfiguration{
+		CustomQueriesConfigMap: []mysqlv1alpha1.ConfigMapKeySelector{
+			{Name: "queries-b", Key: "a.yaml"}, {Name: "queries-a", Key: "b.yaml"}, {Name: "queries-b", Key: "c.yaml"},
+		},
+		CustomQueriesSecret: []mysqlv1alpha1.SecretKeySelector{{Name: "secret-queries", Key: "q.yaml"}},
+	}
+	var cmRule, secretRule *rbacv1.PolicyRule
+	role := roleFor(t, cluster)
+	for i, rule := range role.Rules {
+		switch {
+		case slices.Contains(rule.Resources, "configmaps"):
+			cmRule = &role.Rules[i]
+		case slices.Contains(rule.Resources, "secrets"):
+			secretRule = &role.Rules[i]
+		}
+	}
+	if cmRule == nil {
+		t.Fatal("no configmaps rule for custom queries")
+	}
+	if !slices.Equal(cmRule.Verbs, []string{"get"}) || !slices.Equal(cmRule.ResourceNames, []string{"queries-a", "queries-b"}) {
+		t.Fatalf("configmaps rule = %+v, want get on [queries-a queries-b]", cmRule)
+	}
+	if secretRule == nil || !slices.Contains(secretRule.ResourceNames, "secret-queries") {
+		t.Fatalf("secrets rule = %+v, want secret-queries granted", secretRule)
+	}
+}

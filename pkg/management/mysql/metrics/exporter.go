@@ -23,7 +23,11 @@ package metrics
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -38,22 +42,49 @@ var scrapeErrorDesc = prometheus.NewDesc(
 	nil, nil,
 )
 
+// Config selects what the exporter runs on a scrape.
+type Config struct {
+	// DisableDefaultQueries turns off the built-in scrapers.
+	DisableDefaultQueries bool
+	// CustomQueries run after the built-in scrapers.
+	CustomQueries []CustomQuery
+	// TTL is the minimum interval between two runs of the queries. Scrapes
+	// inside it are served the previous results. Zero runs them every scrape.
+	TTL time.Duration
+}
+
 // Exporter collects MySQL metrics from a local mysqld connection by running the
-// vendored mysqld_exporter scrapers on every Prometheus scrape.
+// vendored mysqld_exporter scrapers, then any custom queries, on Prometheus
+// scrapes.
 type Exporter struct {
 	db       *sql.DB
 	scrapers []scrapers.Scraper
 	logger   *slog.Logger
+	now      func() time.Time
+
+	// mu serialises scrapes, so concurrent ones share one run within the TTL.
+	mu       sync.Mutex
+	config   Config
+	cached   []prometheus.Metric
+	cachedAt time.Time
 }
 
 // NewExporter builds a Prometheus collector backed by db, running the default
-// scraper set.
+// scraper set until SetConfig says otherwise.
 func NewExporter(db *sql.DB) *Exporter {
 	return &Exporter{
 		db:       db,
 		scrapers: scrapers.Default,
 		logger:   slog.Default(),
 	}
+}
+
+// SetConfig replaces what the next scrape runs and drops any cached results.
+func (e *Exporter) SetConfig(c Config) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.config = c
+	e.cached = nil
 }
 
 // Describe implements prometheus.Collector. The scrapers emit dynamic metrics
@@ -65,11 +96,51 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-	err := scrapers.Run(context.Background(), e.db, ch, e.logger, e.scrapers)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := time.Now
+	if e.now != nil {
+		now = e.now
+	}
+	if e.cached == nil || e.config.TTL <= 0 || now().Sub(e.cachedAt) >= e.config.TTL {
+		e.cached = e.scrape()
+		e.cachedAt = now()
+	}
+	for _, m := range e.cached {
+		ch <- m
+	}
+}
+
+// scrape runs every enabled query and returns what they emitted, ending with
+// the scrape-error gauge.
+func (e *Exporter) scrape() []prometheus.Metric {
+	ctx := context.Background()
+	buf := make(chan prometheus.Metric)
+	done := make(chan []prometheus.Metric)
+	go func() {
+		var out []prometheus.Metric
+		for m := range buf {
+			out = append(out, m)
+		}
+		done <- out
+	}()
+
+	var errs []error
+	if !e.config.DisableDefaultQueries {
+		errs = append(errs, scrapers.Run(ctx, e.db, buf, e.logger, e.scrapers))
+	}
+	for _, q := range e.config.CustomQueries {
+		if err := q.Scrape(ctx, e.db, buf); err != nil {
+			errs = append(errs, fmt.Errorf("custom query %s: %w", q.Name, err))
+		}
+	}
+	close(buf)
+	out := <-done
+
 	scrapeError := 0.0
-	if err != nil {
+	if err := errors.Join(errs...); err != nil {
 		scrapeError = 1
 		e.logger.Error("MySQL metrics scrape failed", "err", err)
 	}
-	ch <- prometheus.MustNewConstMetric(scrapeErrorDesc, prometheus.GaugeValue, scrapeError)
+	return append(out, prometheus.MustNewConstMetric(scrapeErrorDesc, prometheus.GaugeValue, scrapeError))
 }

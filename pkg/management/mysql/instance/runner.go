@@ -34,8 +34,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/diskusage"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/heartbeat"
@@ -641,8 +644,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 			}
 		}
 	}
+	exporter := metrics.NewExporter(db)
 	metricsCollectors := []prometheus.Collector{
-		metrics.NewExporter(db),
+		exporter,
 		metrics.NewVolumeCollector(opts.DataDir),
 	}
 	if heartbeatLoop != nil {
@@ -708,7 +712,19 @@ func Run(ctx context.Context, opts RunOptions) error {
 	roleErr := make(chan error, 1)
 	mgrCtx, cancelMgr := context.WithCancel(ctx)
 	defer cancelMgr()
+	onCluster := floor.Observe
 	if roleManaged {
+		// Custom monitoring queries come from ConfigMaps and Secrets the
+		// Cluster names; without an API client the default queries still run.
+		if querySource, err := newQuerySource(opts.Namespace, exporter); err != nil {
+			log.Error(err, "Could not start custom monitoring queries")
+		} else {
+			go querySource.Run(logf.IntoContext(mgrCtx, log))
+			onCluster = func(c *mysqlv1alpha1.Cluster) {
+				floor.Observe(c)
+				querySource.Observe(c)
+			}
+		}
 		log.Info("Starting role reconciler")
 		go func() {
 			roleErr <- rolereconciler.Start(mgrCtx, rolereconciler.StartOptions{
@@ -719,7 +735,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 				Local:              controller,
 				GroupReplication:   opts.GroupReplication,
 				OnAPIServerContact: isolationDetector.RecordContact,
-				OnCluster:          floor.Observe,
+				OnCluster:          onCluster,
 			})
 		}()
 	}
@@ -1015,4 +1031,18 @@ func openControl(ctx context.Context, cfg pool.Config, timeout time.Duration) (*
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// newQuerySource builds the custom monitoring query loader on the Pod's
+// ServiceAccount.
+func newQuerySource(namespace string, exporter *metrics.Exporter) (*metrics.QuerySource, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading in-cluster config: %w", err)
+	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return metrics.NewQuerySource(cs, namespace, exporter), nil
 }
