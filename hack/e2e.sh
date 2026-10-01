@@ -191,8 +191,20 @@ if [[ "$FRESH" == true ]]; then
 fi
 make setup-test-e2e KIND_CLUSTER="$CLUSTER" K8S_VERSION="$K8S"
 
-echo "==> building and loading the manager image ($MANAGER_IMAGE)"
-make e2e-build-images IMG="$MANAGER_IMAGE" KIND_CLUSTER="$CLUSTER"
+# CI builds the manager image once per run in a dedicated job on the same runner
+# and sets E2E_PREBUILT_MANAGER_IMAGE, so a lane only loads it. Fall back to
+# building when the image is missing (a lane landed on another runner, or a
+# re-run after the image was garbage-collected) so the lane still runs.
+if [[ "${E2E_PREBUILT_MANAGER_IMAGE:-false}" == true ]] && docker image inspect "$MANAGER_IMAGE" >/dev/null 2>&1; then
+	echo "==> loading the prebuilt manager image ($MANAGER_IMAGE)"
+	"$KIND" load docker-image "$MANAGER_IMAGE" --name "$CLUSTER"
+else
+	if [[ "${E2E_PREBUILT_MANAGER_IMAGE:-false}" == true ]]; then
+		echo "::warning::prebuilt manager image $MANAGER_IMAGE not found on this runner; building it"
+	fi
+	echo "==> building and loading the manager image ($MANAGER_IMAGE)"
+	make e2e-build-images IMG="$MANAGER_IMAGE" KIND_CLUSTER="$CLUSTER"
+fi
 
 [[ -n "$JUNIT" ]] && mkdir -p "$(dirname "$JUNIT")"
 

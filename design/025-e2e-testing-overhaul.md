@@ -442,6 +442,13 @@ critical for a persistent runner):
   crashed prior run can never be silently reused.
 - *Post-job (`if: always()`):* tear down the run's Kind cluster(s) and remove
   `/tmp/cnmsql-e2e-*` manifests.
+- *One image build per run:* a `build-images` job builds the manager image as
+  `example.com/cnmsql:e2e-<run id>` and outputs its runner name; every lane runs
+  on that runner (`runs-on: [self-hosted, <runner name>]`, so each self-hosted
+  runner must carry its own name as a label) and `hack/e2e.sh` only `kind load`s
+  the image (`E2E_PREBUILT_MANAGER_IMAGE=true`). A lane that cannot find the
+  image builds it, with a warning. Images older than two days are removed by the
+  next build, and are kept until then so "Re-run failed jobs" still finds them.
 
 **Artifacts (`if: always()`):**
 

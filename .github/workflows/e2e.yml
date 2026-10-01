@@ -28,6 +28,10 @@ env:
   # which only kind v0.32.0+ can read (older kind fails `kind load` with
   # "unknown containerd config version: 4"). Keep in sync with k8s_versions_scope.json.
   KIND_VERSION: v0.32.0
+  # The manager image is built once per run by the build-images job and reused
+  # by every lane on the same runner. The tag is per run (not per attempt) so a
+  # "Re-run failed jobs" lane still finds the image the original build left.
+  E2E_MANAGER_IMAGE: example.com/cnmsql:e2e-${{ github.run_id }}
 
 jobs:
   generate-jobs:
@@ -90,11 +94,73 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
 
-  e2e:
-    name: ${{ matrix.id }}
+  build-images:
+    name: Build E2E images
     needs: generate-jobs
     if: needs.generate-jobs.outputs.kindEnabled == 'true'
     runs-on: ${{ github.repository_owner == 'cnmsql' && 'self-hosted' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      statuses: write
+    outputs:
+      # The lanes pin themselves to this runner to reuse its Docker image store.
+      runner: ${{ steps.runner.outputs.name }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+        ref: ${{ github.event.inputs.pr_sha || github.ref }}
+
+    - name: Record runner
+      id: runner
+      run: echo "name=${RUNNER_NAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Remove stale E2E manager images
+      run: |
+        # Each run leaves its image behind so re-runs can reuse it; drop the ones
+        # from runs older than two days so the persistent runner does not fill up.
+        cutoff=$(date -d '2 days ago' +%s)
+        docker image ls --filter "reference=example.com/cnmsql:e2e-*" --format '{{.Repository}}:{{.Tag}}' \
+          | while read -r ref; do
+              [[ "$ref" == "$E2E_MANAGER_IMAGE" ]] && continue
+              created=$(date -d "$(docker image inspect -f '{{.Created}}' "$ref")" +%s)
+              if (( created < cutoff )); then
+                docker image rm "$ref" || true
+              fi
+            done
+
+    - name: Build the manager image
+      run: make docker-build IMG="$E2E_MANAGER_IMAGE"
+
+    # The lanes are skipped when the build fails, so fail their pending statuses
+    # here or the PR would wait on them forever.
+    - name: Fail every lane
+      if: failure() && github.event.inputs.pr_sha != ''
+      run: |
+        echo '${{ needs.generate-jobs.outputs.kindMatrix }}' \
+          | jq -r '.include[].id' \
+          | while read -r lane; do
+              gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \
+                -f state="failure" \
+                -f context="E2E / $lane" \
+                -f description="E2E image build failed" \
+                -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                --silent
+            done
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+  e2e:
+    name: ${{ matrix.id }}
+    needs: [generate-jobs, build-images]
+    if: needs.generate-jobs.outputs.kindEnabled == 'true'
+    # On the self-hosted pool every lane runs on the runner that built the
+    # images, so it loads them instead of rebuilding. Runners only accept one job
+    # at a time, so the lanes queue there. This needs each self-hosted runner to
+    # carry its own name as a custom label: GitHub matches runs-on against labels,
+    # not runner names.
+    runs-on: ${{ github.repository_owner == 'cnmsql' && fromJSON(format('["self-hosted","{0}"]', needs.build-images.outputs.runner)) || 'ubuntu-latest' }}
     permissions:
       contents: read
       statuses: write
@@ -114,6 +180,9 @@ jobs:
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
       E2E_JUNIT: test-results/junit.xml
       E2E_SHARED_SETUP: ${{ matrix.shared_setup }}
+      # Load the image build-images left on this runner. GitHub-hosted lanes are
+      # fresh VMs without it, so they build their own as before.
+      E2E_PREBUILT_MANAGER_IMAGE: ${{ github.repository_owner == 'cnmsql' && 'true' || 'false' }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

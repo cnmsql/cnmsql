@@ -835,7 +835,9 @@ func restoreE2EMarker() {
 // metrics continuity, rapid re-deploy survival, and downgrade safety.
 var _ = Describe("Operator Upgrade defensive scenarios", Ordered, Serial, Label("disruptive"), func() {
 	const v2Image = "example.com/cnmsql:v0.0.2"
-	const v1Image = "example.com/cnmsql:v0.0.1"
+	// v1 is the suite's manager image: it is the one loaded into the dedicated
+	// cluster, and CI tags it per run (E2E_MANAGER_IMAGE).
+	v1Image := managerImage
 
 	var ns string
 	var dc *dedicated
