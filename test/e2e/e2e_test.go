@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
@@ -706,81 +706,66 @@ spec:
 		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("verifying the operator hash changed after upgrade")
+		var newHash string
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
 				"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).NotTo(BeEmpty())
-			g.Expect(output).NotTo(Equal(initialHash), "operator hash should change after v2 deploy")
-		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
-
-		By("verifying replicas are upgraded one at a time during the rollout")
-		phaseSeen := false
-		minReadySeen := 3
-		checkSerialized := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
-				"-n", testNamespace, "-o", "jsonpath={.status.phase}")
-			phase, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			if phase == "Ready" {
-				return
-			}
-			phaseSeen = true
-			cmd = exec.Command("kubectl", "get", "cluster", "upgrade",
-				"-n", testNamespace, "-o", "jsonpath={.status.phaseReason}")
-			reason, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			GinkgoWriter.Printf("Upgrade phase: %s — %s\n", phase, reason)
-			g.Expect(phase).To(Or(Equal("Upgrading"), Equal("Switchover"), Equal("WaitingForUser")))
-			if phase == "Upgrading" {
-				g.Expect(reason).To(Or(
-					ContainSubstring(initialPrimary+"-2"),
-					ContainSubstring(initialPrimary+"-3"),
-				), "first upgraded instance should be a replica, not the primary %s", initialPrimary)
-			}
-			cmd = exec.Command("kubectl", "get", "cluster", "upgrade",
-				"-n", testNamespace, "-o", "jsonpath={.status.readyInstances}")
-			readyStr, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			if ready, err := strconv.Atoi(strings.TrimSpace(readyStr)); err == nil && ready < minReadySeen {
-				minReadySeen = ready
-			}
-		}
-		Eventually(checkSerialized, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
-		Expect(phaseSeen).To(BeTrue(), "Expected Upgrading or Switchover phase to appear during rollout")
-		Expect(minReadySeen).To(BeNumerically(">=", 2),
-			"at most one instance should be down during serialized rollout (min ready seen: %d)", minReadySeen)
-
-		By("waiting for the upgrade to complete and the cluster to return to Ready")
-		expectClusterReady("upgrade", 3, 15*time.Minute)
-
-		// A serialized rollout flaps Ready→Degraded→Ready as each member rolls, so
-		// "Ready" alone does not mean the rollout finished — the primary is rolled
-		// last (via switchover) and may still be pending. The unambiguous
-		// completion signal is every instance's executable hash matching the new
-		// operator hash; gate on that before reading the primary, otherwise a
-		// single early sample races the primary-last roll.
-		By("waiting for every instance to roll to the new operator hash")
-		var newHash string
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
-				"-n", testNamespace, "-o", "jsonpath={.status.operatorExecutableHash}")
-			out, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			newHash = strings.TrimSpace(out)
+			newHash = strings.TrimSpace(output)
 			g.Expect(newHash).NotTo(BeEmpty())
 			g.Expect(newHash).NotTo(Equal(initialHash), "operator hash should change after v2 deploy")
-			for _, inst := range []string{"upgrade-1", "upgrade-2", "upgrade-3"} {
-				cmd := exec.Command("kubectl", "get", "cluster", "upgrade",
-					"-n", testNamespace, "-o", fmt.Sprintf(`go-template={{index .status.executableHashByInstance "%s"}}`, inst))
-				instHash, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(strings.TrimSpace(instHash)).To(Equal(newHash),
-					"instance %s should be rolled to the new operator hash", inst)
-			}
-		}, e2eTimeout(15*time.Minute), 5*time.Second).Should(Succeed())
+		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 		GinkgoWriter.Printf("New operator hash: %s\n", newHash)
+
+		// A serialized rollout flaps Ready→Upgrading→Degraded→Ready as each member
+		// rolls, so neither a single phase sample nor "Ready" says anything about
+		// progress. Sample the whole status until every instance reports the new
+		// operator hash — the unambiguous completion signal — and judge the
+		// rollout on what was observed along the way.
+		By("verifying the rollout is serialized and rolls the primary last")
+		instances := []string{"upgrade-1", "upgrade-2", "upgrade-3"}
+		var phasesSeen []string
+		minReadySeen := 3
+		primaryRolledEarly := ""
+		Eventually(func(g Gomega) {
+			out, err := kubectl("get", "cluster", "upgrade", "-n", testNamespace, "-o", "jsonpath={.status}")
+			g.Expect(err).NotTo(HaveOccurred())
+			var status struct {
+				Phase                    string            `json:"phase"`
+				PhaseReason              string            `json:"phaseReason"`
+				ReadyInstances           int               `json:"readyInstances"`
+				ExecutableHashByInstance map[string]string `json:"executableHashByInstance"`
+			}
+			g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed(), "status: %s", out)
+
+			var pending []string
+			for _, inst := range instances {
+				if status.ExecutableHashByInstance[inst] != newHash {
+					pending = append(pending, inst)
+				}
+			}
+			GinkgoWriter.Printf("Upgrade phase: %s — %s (ready %d, pending %v)\n",
+				status.Phase, status.PhaseReason, status.ReadyInstances, pending)
+			if status.Phase != "Ready" && !slices.Contains(phasesSeen, status.Phase) {
+				phasesSeen = append(phasesSeen, status.Phase)
+			}
+			minReadySeen = min(minReadySeen, status.ReadyInstances)
+			if status.ExecutableHashByInstance[initialPrimary] == newHash && len(pending) > 0 && primaryRolledEarly == "" {
+				primaryRolledEarly = fmt.Sprintf("%s rolled while %v still ran the old manager", initialPrimary, pending)
+			}
+			g.Expect(pending).To(BeEmpty(), "instances not yet rolled to the new operator hash")
+		}, e2eTimeout(15*time.Minute), 2*time.Second).Should(Succeed())
+		Expect(phasesSeen).NotTo(BeEmpty(), "Expected the cluster to leave Ready during the rollout")
+		Expect(phasesSeen).To(HaveEach(BeElementOf(
+			"Upgrading", "Switchover", "Degraded", "WaitingForUser",
+		)), "unexpected phase during the operator rollout")
+		Expect(minReadySeen).To(BeNumerically(">=", 2),
+			"at most one instance should be down during serialized rollout (min ready seen: %d)", minReadySeen)
+		Expect(primaryRolledEarly).To(BeEmpty(), "the initial primary must be rolled last")
+
+		By("waiting for the cluster to return to Ready")
+		expectClusterReady("upgrade", 3, 15*time.Minute)
 
 		// The initial primary (upgrade-1) is rolled last and only after a
 		// switchover hands the primary role to a replica, so once the rollout is
