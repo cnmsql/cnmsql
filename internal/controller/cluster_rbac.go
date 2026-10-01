@@ -33,12 +33,33 @@ import (
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 )
 
-// instanceSecretNames lists the credential Secrets an instance manager reads.
-// Object-store and replication Secrets are deliberately absent.
+const verbGet = "get"
+
+// instanceSecretNames lists the Secrets an instance manager reads: its
+// credentials and any custom monitoring queries. Object-store and replication
+// Secrets are deliberately absent.
 func instanceSecretNames(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []string {
 	names := []string{plan.RootSecretName, plan.ControlSecretName, plan.BackupSecretName, cluster.DumpSecretName()}
 	if cluster.AppSecretName() != "" {
 		names = append(names, plan.AppSecretName)
+	}
+	if m := cluster.Spec.Monitoring; m != nil {
+		for _, ref := range m.CustomQueriesSecret {
+			names = append(names, ref.Name)
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// instanceConfigMapNames lists the custom monitoring query ConfigMaps an
+// instance manager reads.
+func instanceConfigMapNames(cluster *mysqlv1alpha1.Cluster) []string {
+	var names []string
+	if m := cluster.Spec.Monitoring; m != nil {
+		for _, ref := range m.CustomQueriesConfigMap {
+			names = append(names, ref.Name)
+		}
 	}
 	slices.Sort(names)
 	return slices.Compact(names)
@@ -61,7 +82,7 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 			{
 				APIGroups:     []string{mysqlv1alpha1.GroupVersion.Group},
 				Resources:     []string{"clusters"},
-				Verbs:         []string{"get", "list", "watch"},
+				Verbs:         []string{verbGet, "list", "watch"},
 				ResourceNames: []string{cluster.Name},
 			},
 			{
@@ -70,9 +91,19 @@ func (r *ClusterReconciler) ensureInstanceRBAC(ctx context.Context, cluster *mys
 				// expose every Secret in the namespace.
 				APIGroups:     []string{""},
 				Resources:     []string{"secrets"},
-				Verbs:         []string{"get", "watch"},
+				Verbs:         []string{verbGet, "watch"},
 				ResourceNames: instanceSecretNames(cluster, plan),
 			},
+		}
+		// An empty resourceNames would grant every ConfigMap, so the rule only
+		// exists while the Cluster references some.
+		if names := instanceConfigMapNames(cluster); len(names) > 0 {
+			role.Rules = append(role.Rules, rbacv1.PolicyRule{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				Verbs:         []string{verbGet},
+				ResourceNames: names,
+			})
 		}
 		role.Rules = append(role.Rules, topologyReconciler.InstancePolicyRules(cluster)...)
 		return controllerutil.SetControllerReference(cluster, role, r.Scheme)

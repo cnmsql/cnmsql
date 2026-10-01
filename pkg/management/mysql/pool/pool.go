@@ -135,6 +135,20 @@ func (c Config) DSN() (string, error) {
 // Open opens a *sql.DB to the local mysqld and verifies connectivity within the
 // given timeout.
 func Open(ctx context.Context, c Config) (*sql.DB, error) {
+	db, err := Connect(c)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("pool: pinging mysqld: %w", err)
+	}
+	return db, nil
+}
+
+// Connect builds a *sql.DB to the local mysqld without connecting: the first
+// query opens the first connection.
+func Connect(c Config) (*sql.DB, error) {
 	dsn, err := c.DSN()
 	if err != nil {
 		return nil, err
@@ -161,12 +175,6 @@ func Open(ctx context.Context, c Config) (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(maxOpen)
-
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("pool: pinging mysqld: %w", err)
-	}
-
 	return db, nil
 }
 

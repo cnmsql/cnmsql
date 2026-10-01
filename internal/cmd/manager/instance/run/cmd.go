@@ -40,6 +40,7 @@ func NewCommand() *cobra.Command {
 		dataDir          string
 		configFile       string
 		socket           string
+		metricsUser      string
 		serverVersion    string
 		instanceName     string
 		controlUser      string
@@ -209,6 +210,7 @@ func NewCommand() *cobra.Command {
 				SemiSyncTimeoutMillis: semiSyncTimeout,
 				StopDelay:             time.Duration(stopDelay) * time.Second,
 				SmartShutdownTimeout:  time.Duration(smartShutdownTimeout) * time.Second,
+				MetricsUser:           metricsUser,
 				Control: pool.ControlParams{
 					User:         controlUser,
 					PasswordFunc: credentials.Getter(src, credentials.Control),
@@ -232,6 +234,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket path")
 	cmd.Flags().StringVar(&serverVersion, "server-version", "", "Override the server version (default: what the mysqld binary reports)")
 	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Instance name reported in status")
+	cmd.Flags().StringVar(&metricsUser, "metrics-user", "cnmsql_metrics",
+		"Local passwordless account custom monitoring queries run as")
 	cmd.Flags().StringVar(&controlUser, "control-user", "root", "Privileged user for the control connection")
 	cmd.Flags().StringVar(&adminAddress, "admin-address", "", "Administrative interface address (8.0.14+)")
 	cmd.Flags().IntVar(&adminPort, "admin-port", 0, "Administrative interface port (8.0.14+)")
