@@ -65,6 +65,8 @@ type StartOptions struct {
 	// APIServerProbeInterval paces the reachability prober (default 5s). Ignored
 	// when OnAPIServerContact is nil.
 	APIServerProbeInterval time.Duration
+	// OnCluster, when set, receives every Cluster the reconciler reads.
+	OnCluster func(*mysqlv1alpha1.Cluster)
 }
 
 // Start builds a controller-runtime manager scoped to the owning Cluster's
@@ -110,6 +112,7 @@ func Start(ctx context.Context, opts StartOptions) error {
 		SourceTemplate:   opts.SourceTemplate,
 		Local:            opts.Local,
 		groupReplication: opts.GroupReplication,
+		OnCluster:        opts.OnCluster,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return err

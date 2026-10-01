@@ -120,6 +120,9 @@ type Reconciler struct {
 	groupReplication bool
 	// primaryLeaseEnabled controls the optional primary Lease fencing layer.
 	primaryLeaseEnabled bool
+	// OnCluster, when set, receives every Cluster this reconciler reads, so
+	// other in-Pod loops can follow the Cluster without a watch of their own.
+	OnCluster func(*mysqlv1alpha1.Cluster)
 }
 
 // Reconcile drives one role reconciliation pass.
@@ -129,6 +132,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	cluster := &mysqlv1alpha1.Cluster{}
 	if err := r.Get(ctx, r.ClusterKey, cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if r.OnCluster != nil {
+		r.OnCluster(cluster)
 	}
 	// The primary Lease is an async-only split-brain guard. Under GR the group's
 	// own quorum provides safety and the instance SA holds no Lease RBAC, so the

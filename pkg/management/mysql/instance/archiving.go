@@ -19,6 +19,9 @@ package instance
 import (
 	"context"
 	"database/sql"
+	"maps"
+	"slices"
+	"sync/atomic"
 	"time"
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -48,6 +51,66 @@ func (p replicaProbe) Streaming(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	return state.IORunning && state.SQLRunning, nil
+}
+
+// clusterFloor is the purge gate's replica floor, read from the Cluster the role
+// reconciler already follows. The operator keeps status.gtidExecutedByInstance
+// to the names in status.instanceNames and rewrites both in the same patch, so a
+// scaled-down instance stops holding the purge as soon as it leaves the list.
+//
+// The positions are the operator's throttled snapshot, not live reads. That is
+// safe in the one direction that matters: gtid_executed only grows, and a new or
+// re-cloned instance starts from a copy of one whose set already contains any
+// earlier floor, so an old snapshot can only understate what the replicas have
+// and purge less.
+type clusterFloor struct {
+	instance string
+	latest   atomic.Pointer[floorView]
+}
+
+// floorView is the part of a Cluster the floor reads.
+type floorView struct {
+	instances []string
+	diverged  []string
+	positions map[string]string
+}
+
+func newClusterFloor(instance string) *clusterFloor {
+	return &clusterFloor{instance: instance}
+}
+
+// Observe records the latest Cluster read by the role reconciler.
+func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
+	f.latest.Store(&floorView{
+		instances: slices.Clone(cluster.Status.InstanceNames),
+		diverged:  slices.Clone(cluster.Status.DivergedInstances),
+		positions: maps.Clone(cluster.Status.GTIDExecutedByInstance),
+	})
+}
+
+// Positions implements binlog.ReplicaFloor. Every expected instance but this
+// one counts, fenced ones included since they come back. Diverged instances do
+// not: the source refuses them whatever binlogs it keeps, so they are re-cloned
+// anyway, and waiting for them would stop purging for good.
+func (f *clusterFloor) Positions() (map[string]string, []string, bool) {
+	view := f.latest.Load()
+	if view == nil {
+		return nil, nil, false
+	}
+	positions := make(map[string]string, len(view.instances))
+	var unknown []string
+	for _, name := range view.instances {
+		if name == f.instance || slices.Contains(view.diverged, name) {
+			continue
+		}
+		position, ok := view.positions[name]
+		if !ok {
+			unknown = append(unknown, name)
+			continue
+		}
+		positions[name] = position
+	}
+	return positions, unknown, true
 }
 
 // ArchivingConfig configures the in-Pod continuous binlog archiver.
@@ -104,6 +167,7 @@ func startArchiver(
 	db *sql.DB,
 	identityQuery string,
 	repl *replication.Manager,
+	floor binlog.ReplicaFloor,
 ) (*binlog.Loop, <-chan error, error) {
 	log := logf.FromContext(ctx).WithName("archiver")
 	store, err := objectstore.NewClientFromEnv()
@@ -140,6 +204,7 @@ func startArchiver(
 		Logger:        log,
 		FlushInterval: cfg.FlushInterval,
 		Purge:         cfg.Purge,
+		Floor:         floor,
 		Replication:   replicaProbe{repl: repl},
 	})
 
@@ -164,6 +229,10 @@ func archivingStatusProvider(loop *binlog.Loop) func() *webserver.ArchivingStatu
 			LastArchivedGTID:   s.LastArchivedGTID,
 			PendingFiles:       s.PendingFiles,
 			LastError:          s.LastError,
+			PurgeHeldBy:        s.PurgeHeldBy,
+		}
+		if !s.PurgeHeldSince.IsZero() {
+			out.PurgeHeldSince = s.PurgeHeldSince.UTC().Format(time.RFC3339)
 		}
 		if !s.LastArchivedTime.IsZero() {
 			out.LastArchivedTime = s.LastArchivedTime.UTC().Format(time.RFC3339)

@@ -552,6 +552,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// writable primary. Its terminal error is fatal to the run loop like the
 	// other long-lived servers.
 	var archiveErr <-chan error = make(chan error) // never fires unless enabled
+	// The purge gate's replica floor follows the Cluster through the role
+	// reconciler. Without one (no owning Cluster) it never observes anything and
+	// the gate purges nothing.
+	floor := newClusterFloor(opts.InstanceName)
 	archiveCtx, cancelArchive := context.WithCancel(logf.IntoContext(ctx, log))
 	defer cancelArchive()
 	if opts.Archiving != nil && opts.Archiving.Enabled {
@@ -573,7 +577,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 			opts.Archiving.ArchiveIdentity = id
 		}
 		loop, errCh, err := startArchiver(archiveCtx, *opts.Archiving, db, eng.Repl().ServerIdentityQuery(),
-			replication.NewManagerWithDialect(db, ver, eng.Repl()))
+			replication.NewManagerWithDialect(db, ver, eng.Repl()), floor)
 		if err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
@@ -715,6 +719,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 				Local:              controller,
 				GroupReplication:   opts.GroupReplication,
 				OnAPIServerContact: isolationDetector.RecordContact,
+				OnCluster:          floor.Observe,
 			})
 		}()
 	}

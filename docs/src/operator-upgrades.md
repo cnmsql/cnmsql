@@ -223,6 +223,13 @@ After the upgrade:
   every 8.4 image, so settings that depend on a later patch release may now
   appear.
 - `kubectl get mysql` has a `VERSION` column.
+- With `spec.backup.continuousArchiving.purgeAfterArchive: true`, the primary
+  no longer purges a binlog that another instance has not applied yet, so a
+  replica that was down can catch up instead of being re-cloned. The data
+  volume holds more binlog while a replica is down or behind, up to
+  `binlogExpireSeconds` of writes. A new `BinlogPurgeHeld` condition reports an
+  instance that holds the purge for 15 minutes or more. See
+  [the purge gate](./pitr.md).
 - The `kubectl cnmsql` plugin opens root sessions through the instance manager
   instead of a shell, so it works on distroless images. The new plugin fails
   with `unknown command "client"` on instances that still run the old instance
@@ -606,8 +613,9 @@ Then pick one:
   `spec.backup.continuousArchiving.binlogExpireSeconds` to fit the disk you
   have. A shorter window still beats purge-on-archive for replica catch-up.
 - **Keep the old behaviour.** Set
-  `spec.backup.continuousArchiving.purgeAfterArchive: true` to restore
-  purge-on-archive exactly as it worked before.
+  `spec.backup.continuousArchiving.purgeAfterArchive: true` to purge binlogs
+  once they are archived. Since 0.9.0 it also waits until every other instance
+  has applied a binlog before purging it.
 
 ```yaml
 spec:

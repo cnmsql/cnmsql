@@ -356,4 +356,10 @@ const (
 	// DeadlineExceeded). Delete the Job, or change the spec it was built from,
 	// to retry.
 	ConditionBootstrapFailed = "BootstrapFailed"
+
+	// ConditionBinlogPurgeHeld is True when the purge gate
+	// (backup.continuousArchiving.purgeAfterArchive) has kept the same archived
+	// binary log for a while because some instance has not applied it yet. The
+	// message names the instances. It is absent when the purge gate is off.
+	ConditionBinlogPurgeHeld = "BinlogPurgeHeld"
 )

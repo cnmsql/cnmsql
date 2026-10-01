@@ -86,7 +86,7 @@ func provisionDedicated(slug, kindConfigPath string) *dedicated {
 // their own cluster instead of the shared one.
 func (d *dedicated) loadImage(image string) {
 	GinkgoHelper()
-	_, err := utils.Run(exec.Command(kindBinary(), "load", "docker-image", image, "--name", d.name))
+	err := utils.LoadImageToKindCluster(image, d.name)
 	Expect(err).NotTo(HaveOccurred(), "failed to load image %s into %s", image, d.name)
 }
 
