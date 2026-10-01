@@ -277,6 +277,10 @@ type ClusterReconciler struct {
 	// neither watch nor reconcile PodMonitors, so the operator runs without the
 	// Prometheus Operator present. Set in SetupWithManager.
 	podMonitorAvailable bool
+	// Namespaced is set when the operator watches a single namespace. Its RBAC
+	// is then a namespaced Role, which cannot grant access to cluster-scoped
+	// ClusterImageCatalogs, so they are neither watched nor resolved.
+	Namespaced bool
 }
 
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch;update;patch
@@ -699,8 +703,12 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&batchv1.Job{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
-		Watches(&mysqlv1alpha1.ImageCatalog{}, handler.EnqueueRequestsFromMapFunc(r.clustersUsingCatalog(catalogKindNamespaced))).
-		Watches(&mysqlv1alpha1.ClusterImageCatalog{}, handler.EnqueueRequestsFromMapFunc(r.clustersUsingCatalog(catalogKindCluster)))
+		Watches(&mysqlv1alpha1.ImageCatalog{}, handler.EnqueueRequestsFromMapFunc(r.clustersUsingCatalog(catalogKindNamespaced)))
+	// A namespaced operator cannot list ClusterImageCatalogs; watching them
+	// would leave the informer unsynced and the manager would exit on start.
+	if !r.Namespaced {
+		builder = builder.Watches(&mysqlv1alpha1.ClusterImageCatalog{}, handler.EnqueueRequestsFromMapFunc(r.clustersUsingCatalog(catalogKindCluster)))
+	}
 	// Only watch PodMonitors when the Prometheus Operator CRD is installed;
 	// otherwise the informer fails to start with a no-matches error.
 	if r.podMonitorAvailable {

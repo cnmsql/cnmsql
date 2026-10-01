@@ -519,6 +519,9 @@ func (r *ClusterReconciler) resolveImage(ctx context.Context, cluster *mysqlv1al
 				return image, nil
 			}
 		case catalogKindCluster:
+			if r.Namespaced {
+				return "", fmt.Errorf("imageCatalogRef kind %s is not supported by a namespaced operator; use %s", catalogKindCluster, catalogKindNamespaced)
+			}
 			catalog := &mysqlv1alpha1.ClusterImageCatalog{}
 			if err := r.Get(ctx, types.NamespacedName{Name: ref.Name}, catalog); err != nil {
 				return "", err

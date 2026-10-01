@@ -133,7 +133,8 @@ func main() {
 			// (watch every namespace), set means namespaced (watch only that namespace,
 			// so multiple operator instances can cohabit in one cluster). In namespaced
 			// packaging the value is injected from the pod's own namespace.
-			if watchNamespace := os.Getenv("WATCH_NAMESPACE"); watchNamespace != "" {
+			watchNamespace := os.Getenv("WATCH_NAMESPACE")
+			if watchNamespace != "" {
 				setupLog.Info("Operator running namespaced", "namespace", watchNamespace)
 				managerOptions.Cache = cache.Options{
 					DefaultNamespaces: map[string]cache.Config{watchNamespace: {}},
@@ -164,6 +165,7 @@ func main() {
 				Recorder:               mgr.GetEventRecorderFor("cluster-controller"), //nolint:staticcheck
 				OperatorImageName:      operatorImage,
 				OperatorExecutableHash: operatorHash,
+				Namespaced:             watchNamespace != "",
 			}
 			if err := clusterReconciler.SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "cluster")
