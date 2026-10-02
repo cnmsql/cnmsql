@@ -65,7 +65,7 @@ func TestParseMetricsGrantTarget(t *testing.T) {
 		"", "*.*", "*", "app", "app.", ".t", "*.t", "app.*.*", "app.t.u",
 		"mysql.*", "MySQL.user", "`mysql`.*", "mysq_.*", "my_ql.*", "_____.*",
 		"app%.*", "`a%`.*", "`a\\b`.*", "app.`t`x", "`app.*", "app;DROP.*",
-		"app.* TO x", "`ap`p`.*",
+		"app.* TO x", "`ap`p`.*", "information_schema.*", "INFORMATION_SCHEMA.TABLES",
 	}
 	for _, on := range bad {
 		if _, err := ParseMetricsGrantTarget(on); err == nil {

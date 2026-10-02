@@ -113,6 +113,9 @@ func ParseMetricsGrantTarget(on string) (MetricsGrantTarget, error) {
 	if matchesMySQLSchema(db) {
 		return MetricsGrantTarget{}, fmt.Errorf("target %q covers the mysql schema, which holds password hashes", on)
 	}
+	if strings.EqualFold(db, "information_schema") {
+		return MetricsGrantTarget{}, fmt.Errorf("target %q cannot be granted: information_schema is readable without a grant", on)
+	}
 	return MetricsGrantTarget{Database: db, Table: table}, nil
 }
 
