@@ -200,7 +200,12 @@ grants above are never revoked, even if you list one and remove it later.
 
 Only `SELECT` and `SHOW VIEW` are accepted, on a database (`db.*`) or a
 table (`db.table`). The webhook refuses `*.*` and the `mysql` schema, since
-`mysql.user` holds password hashes. Managed roles and `DatabaseUser`
+`mysql.user` holds password hashes. MySQL reads `_` in a database name as a
+one-character wildcard, so `my_app.*` also covers `myXapp`, and a name that
+`_` would let match `mysql` is refused as well. `information_schema` is
+readable without a grant and cannot be listed. A table-level grant needs the
+table to exist: until it does, the condition reads `ApplyFailed`, and the
+other grants and revokes are still applied. Managed roles and `DatabaseUser`
 resources still cannot change `cnmsql_metrics`, because it is a reserved
 account.
 

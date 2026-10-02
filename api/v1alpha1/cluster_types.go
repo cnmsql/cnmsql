@@ -1233,7 +1233,7 @@ type MonitoringConfiguration struct {
 	// queries run as. Only SELECT and SHOW VIEW on a database (db.*) or a
 	// table (db.table) are allowed; *.* and the mysql schema are refused. The
 	// operator applies them on the primary and revokes any other grant the
-	// account holds, except its built-in ones.
+	// account holds, except its built-in ones. Each entry must set on.
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	Privileges []RolePrivilege `json:"privileges,omitempty"`

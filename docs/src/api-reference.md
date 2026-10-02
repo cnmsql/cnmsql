@@ -1902,6 +1902,7 @@ _Appears in:_
 | `customQueriesSecret` _[SecretKeySelector](#secretkeyselector) array_ | CustomQueriesSecret references secrets holding custom monitoring queries. |  | Optional: \{\} <br /> |
 | `disableDefaultQueries` _boolean_ | DisableDefaultQueries disables the built-in monitoring query set. |  | Optional: \{\} <br /> |
 | `metricsQueriesTTL` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | MetricsQueriesTTL is the minimum interval between executions of the<br />default and custom monitoring queries. |  | Optional: \{\} <br /> |
+| `privileges` _[RolePrivilege](#roleprivilege) array_ | Privileges are extra grants for the cnmsql_metrics account that custom<br />queries run as. Only SELECT and SHOW VIEW on a database (db.*) or a<br />table (db.table) are allowed; *.* and the mysql schema are refused. The<br />operator applies them on the primary and revokes any other grant the<br />account holds, except its built-in ones. Each entry must set on. |  | MaxItems: 32 <br />Optional: \{\} <br /> |
 | `tls` _[ClusterMonitoringTLSConfig](#clustermonitoringtlsconfig)_ | TLS configures TLS for the instance metrics endpoint. |  | Optional: \{\} <br /> |
 
 
