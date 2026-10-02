@@ -197,6 +197,9 @@ on the Cluster reports the outcome, and an event lists each change.
 The list is authoritative. Any other grant on `cnmsql_metrics`, whether it
 came from a manual `GRANT` or from `postInitSQL`, is revoked. The built-in
 grants above are never revoked, even if you list one and remove it later.
+`PROXY` grants are the exception: the operator's control account cannot
+revoke them, so the condition reads `ApplyFailed` until you revoke one by
+hand.
 
 Only `SELECT` and `SHOW VIEW` are accepted, on a database (`db.*`) or a
 table (`db.table`). The webhook refuses `*.*` and the `mysql` schema, since

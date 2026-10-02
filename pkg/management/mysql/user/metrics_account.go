@@ -61,12 +61,23 @@ func (m *Manager) EnsureMetricsAccount(
 	if name == "" {
 		return nil, errors.New("no metrics account is configured on this instance")
 	}
-	declared, err := metricsDeclaredGrants(req.Privileges)
-	if err != nil {
+	if _, err := metricsDeclaredGrants(req.Privileges, false); err != nil {
 		return nil, &InvalidRequestError{Err: err}
 	}
 	host := engine.MetricsAccountHost
 	resp := &MetricsAccountResponse{}
+
+	// With lower_case_table_names set, the server stores and prints names in
+	// lower case, so the declared targets have to compare that way too.
+	var lowerCaseTableNames int
+	if err := m.conn.QueryRowContext(ctx,
+		"SELECT @@GLOBAL.lower_case_table_names").Scan(&lowerCaseTableNames); err != nil {
+		return nil, fmt.Errorf("reading lower_case_table_names: %w", err)
+	}
+	declared, err := metricsDeclaredGrants(req.Privileges, lowerCaseTableNames != 0)
+	if err != nil {
+		return nil, &InvalidRequestError{Err: err}
+	}
 
 	var count int
 	if err := m.conn.QueryRowContext(ctx,
@@ -89,7 +100,16 @@ func (m *Manager) EnsureMetricsAccount(
 		base = append(base, Privilege{Privileges: g.Privileges, On: g.On})
 	}
 	plan := PlanMetricsGrants(name, host, observed, base, declared)
-	if err := m.execAll(ctx, append(plan.Grants, plan.Revokes...)); err != nil {
+	// Revokes run first and every statement is tried: a grant that cannot be
+	// applied yet, such as one on a table that does not exist, must not keep
+	// an out-of-band grant in place or hold back the other grants.
+	var errs []error
+	for _, stmt := range append(plan.Revokes, plan.Grants...) {
+		if err := m.execAll(ctx, []string{stmt}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
 	resp.Granted, resp.Revoked = plan.Granted, plan.Revoked
@@ -98,8 +118,8 @@ func (m *Manager) EnsureMetricsAccount(
 
 // metricsDeclaredGrants validates the requested grants with the same rules as
 // the Cluster webhook, upper-cases the privilege names and renders the
-// targets as quoted SQL.
-func metricsDeclaredGrants(in []Privilege) ([]Privilege, error) {
+// targets as quoted SQL, in lower case when lowerCase is set.
+func metricsDeclaredGrants(in []Privilege, lowerCase bool) ([]Privilege, error) {
 	out := make([]Privilege, 0, len(in))
 	for i, p := range in {
 		if err := engine.ValidateMetricsPrivilegeNames(p.Privileges); err != nil {
@@ -108,6 +128,9 @@ func metricsDeclaredGrants(in []Privilege) ([]Privilege, error) {
 		target, err := engine.ParseMetricsGrantTarget(p.On)
 		if err != nil {
 			return nil, fmt.Errorf("privileges[%d]: %w", i, err)
+		}
+		if lowerCase {
+			target.Database, target.Table = strings.ToLower(target.Database), strings.ToLower(target.Table)
 		}
 		names := make([]string, 0, len(p.Privileges))
 		for _, name := range p.Privileges {

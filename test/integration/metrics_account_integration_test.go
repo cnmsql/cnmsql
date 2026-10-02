@@ -21,6 +21,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -54,7 +55,8 @@ func runMetricsAccountTest(t *testing.T, img logicalImage) {
 		resp := n.post(ctx, t, "/monitoring/account", user.MetricsAccountRequest{Privileges: privileges})
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != want {
-			t.Fatalf("POST /monitoring/account = %d, want %d", resp.StatusCode, want)
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("POST /monitoring/account = %d, want %d: %s", resp.StatusCode, want, body)
 		}
 		var out user.MetricsAccountResponse
 		if want == http.StatusOK {
@@ -128,6 +130,37 @@ func runMetricsAccountTest(t *testing.T, img logicalImage) {
 	if g := grants(); !strings.Contains(g, "`performance_schema`") || strings.Contains(g, "`app`") {
 		t.Fatalf("unexpected grants after dropping the list:\n%s", g)
 	}
+
+	// A grant that cannot apply yet (its table does not exist) does not hold
+	// back the revokes or the other grants.
+	n.sql(ctx, t, "GRANT INSERT ON app.* TO 'cnmsql_metrics'@'localhost';")
+	declare(http.StatusInternalServerError,
+		user.Privilege{Privileges: []string{"SELECT"}, On: "app.nosuch"}, selectApp)
+	if g := grants(); strings.Contains(g, "INSERT") || !strings.Contains(g, "`app`.*") {
+		t.Fatalf("a failed grant held back the others:\n%s", g)
+	}
+
+	// A PROXY grant with its grant option gets a REVOKE the server parses.
+	// The control account holds no PROXY privilege, so the server refuses
+	// it (access denied, not a syntax error), and the failure is reported
+	// without holding back the other statements.
+	proxyTarget := "''@''"
+	if img.flavor == engine.FlavorMariaDB {
+		proxyTarget = "''@'%'"
+	}
+	n.sql(ctx, t, "GRANT PROXY ON "+proxyTarget+" TO 'cnmsql_metrics'@'localhost' WITH GRANT OPTION;"+
+		" GRANT INSERT ON app.* TO 'cnmsql_metrics'@'localhost';")
+	resp := n.post(ctx, t, "/monitoring/account", user.MetricsAccountRequest{Privileges: []user.Privilege{selectApp}})
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(body), "REVOKE PROXY ON") ||
+		strings.Contains(string(body), "1064") {
+		t.Fatalf("unexpected PROXY revoke outcome %d: %s", resp.StatusCode, body)
+	}
+	if g := grants(); strings.Contains(g, "INSERT") {
+		t.Fatalf("the PROXY failure held back the INSERT revoke:\n%s", g)
+	}
+	n.sql(ctx, t, "REVOKE PROXY ON "+proxyTarget+" FROM 'cnmsql_metrics'@'localhost';")
 
 	// The endpoint refuses write privileges and runs nothing.
 	declare(http.StatusBadRequest, user.Privilege{Privileges: []string{"INSERT"}, On: "app.*"})
