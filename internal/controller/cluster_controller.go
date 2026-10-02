@@ -221,6 +221,9 @@ type InstanceControlClient interface {
 	CreateDatabase(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.CreateDatabaseRequest) error
 	DropDatabase(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.DropDatabaseRequest) error
 	ListDatabases(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string) (*user.ListDatabasesResponse, error)
+	// EnsureMetricsAccount makes the metrics account on the named instance
+	// hold its base grants plus exactly req.Privileges.
+	EnsureMetricsAccount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error)
 
 	SetSemiSyncWaitForReplicaCount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, count int) error
 
@@ -479,6 +482,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// account as soon as the primary is up. Best effort: only logical Backups
 	// wait on it.
 	r.reconcileDumpAccountBestEffort(ctx, cluster, observed)
+	// Keep the metrics account's grants equal to its base grants plus
+	// spec.monitoring.privileges, creating it on clusters that lack it.
+	r.reconcileMetricsAccountBestEffort(ctx, cluster, observed)
 	if !observed.Ready {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
