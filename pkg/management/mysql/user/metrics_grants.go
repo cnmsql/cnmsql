@@ -43,7 +43,9 @@ var privilegeAliases = map[string]string{
 
 // grantPair is one privilege on one target. The text fields keep what the
 // server printed (or what the caller declared) so a REVOKE reuses it exactly;
-// key is the normalized form used for comparison. Privilege names compare
+// key is the normalized form used for comparison. Identifier quotes are
+// dropped from the key: the server quotes with double quotes instead of
+// backticks when sql_mode has ANSI_QUOTES. Privilege names compare
 // case-insensitively, targets case-sensitively, as identifiers are on Linux.
 type grantPair struct {
 	privilege string
@@ -51,8 +53,10 @@ type grantPair struct {
 	key       string
 }
 
+var identifierQuotes = strings.NewReplacer("`", "", `"`, "")
+
 func newGrantPair(privilege, target string) grantPair {
-	priv := strings.ToLower(strings.Join(strings.Fields(strings.ReplaceAll(privilege, "`", "")), " "))
+	priv := strings.ToLower(strings.Join(strings.Fields(identifierQuotes.Replace(privilege)), " "))
 	if alias, ok := privilegeAliases[priv]; ok {
 		priv = alias
 	}
@@ -60,7 +64,7 @@ func newGrantPair(privilege, target string) grantPair {
 	return grantPair{
 		privilege: strings.TrimSpace(privilege),
 		target:    target,
-		key:       priv + "@" + strings.ReplaceAll(target, "`", ""),
+		key:       priv + "@" + identifierQuotes.Replace(target),
 	}
 }
 
@@ -174,7 +178,10 @@ func PlanMetricsGrants(name, host string, observed []string, base, declared []Pr
 			continue
 		}
 		privs := g.privileges
-		if g.grantOption {
+		// A PROXY grant names an account, not a schema. REVOKE PROXY takes no
+		// other privilege in its list, and dropping the proxy row also drops
+		// its grant option.
+		if g.grantOption && indexTopLevel(g.target, "@") < 0 {
 			privs = append(slices.Clone(privs), "GRANT OPTION")
 		}
 		for _, priv := range privs {

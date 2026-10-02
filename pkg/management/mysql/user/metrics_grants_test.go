@@ -48,6 +48,11 @@ func TestPlanMetricsGrantsInSync(t *testing.T) {
 			"GRANT PROCESS, BINLOG MONITOR, SLAVE MONITOR, REPLICATION SLAVE ON *.* TO `cnmsql_metrics`@`localhost`",
 			mysqlBasePS, appSelect,
 		},
+		"ansi quotes": {
+			`GRANT PROCESS, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO "cnmsql_metrics"@"localhost"`,
+			`GRANT SELECT ON "performance_schema".* TO "cnmsql_metrics"@"localhost"`,
+			`GRANT SELECT ON "app".* TO "cnmsql_metrics"@"localhost"`,
+		},
 		"replication replica alias": {
 			"GRANT PROCESS, REPLICATION REPLICA, REPLICATION CLIENT ON *.* TO `cnmsql_metrics`@`localhost`",
 			mysqlBasePS, appSelect,
@@ -147,5 +152,17 @@ func TestParseShowGrantIgnoresNonGrantLines(t *testing.T) {
 		if _, ok := parseShowGrant(line); ok {
 			t.Errorf("%q: expected to be ignored", line)
 		}
+	}
+}
+
+func TestPlanMetricsGrantsRevokesProxyWithGrantOption(t *testing.T) {
+	t.Parallel()
+	// REVOKE PROXY takes no other privilege in its list, and removing the
+	// proxy row also removes its grant option.
+	p := planMetrics([]string{mysqlBaseGlobal, mysqlBasePS,
+		"GRANT PROXY ON ``@`` TO `cnmsql_metrics`@`localhost` WITH GRANT OPTION"})
+	want := []string{"REVOKE PROXY ON ``@`` FROM 'cnmsql_metrics'@'localhost'"}
+	if !slices.Equal(p.Revokes, want) {
+		t.Fatalf("revokes = %q, want %q", p.Revokes, want)
 	}
 }
