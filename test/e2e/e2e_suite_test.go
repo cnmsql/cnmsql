@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).NotTo(HaveOccurred(), "controller-manager did not become available")
 
 	By("waiting for the Cluster admission webhook to accept requests")
-	probePath := "/tmp/cnmsql-e2e-webhook-readiness.yaml"
+	probePath := filepath.Join(os.TempDir(), "cnmsql-e2e-webhook-readiness.yaml")
 	probe := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
 metadata:

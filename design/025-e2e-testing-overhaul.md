@@ -442,6 +442,33 @@ critical for a persistent runner):
   crashed prior run can never be silently reused.
 - *Post-job (`if: always()`):* tear down the run's Kind cluster(s) and remove
   `/tmp/cnmsql-e2e-*` manifests.
+- *One image build per run:* a `build-images` job builds the manager image as
+  `example.com/cnmsql:e2e-<run id>` and outputs its host label
+  (`CNMSQL_E2E_HOST_LABEL` from the runner's `.env`, else the runner name). Every
+  lane runs on that host (`runs-on: [self-hosted, <host label>]`), where all
+  runners share one Docker daemon, and `hack/e2e.sh` only `kind load`s the image
+  (`E2E_PREBUILT_MANAGER_IMAGE=true`). A lane that cannot find the image builds
+  it, with a warning. Images older than two days are removed by the next build,
+  and are kept until then so "Re-run failed jobs" still finds them. The
+  Dockerfile's Go build cache mount makes the suite's own marker-variant
+  rebuilds incremental.
+- *Parallel lanes on one host:* register several runners on the host and lanes
+  run concurrently, one Kind cluster each. A lane's cluster is
+  `cnmsql-e2e-<run id>-<matrix index>`, its `KUBECONFIG` and `TMPDIR` live in
+  `$RUNNER_TEMP`, and [hack/e2e-ci-hygiene.sh](../hack/e2e-ci-hygiene.sh) only
+  deletes the lane's own clusters, plus clusters older than 8h (no job runs that
+  long). Pruning is age-filtered, never `docker system prune`, so it cannot race
+  another lane. The matrix's `max-parallel` (repository variable
+  `E2E_MAX_PARALLEL`, default 2) caps concurrent lanes by memory: the worst pair,
+  `core-feature` (3 procs) plus a `flavor` lane (2 procs), needs ~22 GiB of the
+  24 GiB runner host. The host needs at least that many runners registered.
+- *Registry mirrors:* [hack/e2e-registry-mirrors.sh](../hack/e2e-registry-mirrors.sh)
+  runs a `registry` pull-through cache per upstream (docker.io, quay.io,
+  ghcr.io, registry.k8s.io) as long-lived containers on the host, and points
+  each Kind cluster's containerd at them through `/etc/containerd/certs.d`. The
+  Kind configs in `test/e2e/` enable that `config_path`. Third-party images
+  (cert-manager, SeaweedFS, rclone, curl, VPA, metrics-server) then cross the
+  network once per host rather than once per cluster.
 
 **Artifacts (`if: always()`):**
 

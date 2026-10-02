@@ -578,7 +578,7 @@ func serviceAccountToken() (string, error) {
 
 	By("creating temporary file to store the token request")
 	secretName := fmt.Sprintf("%s-token-request-%d", serviceAccountName, GinkgoParallelProcess())
-	tokenRequestFile := filepath.Join("/tmp", secretName)
+	tokenRequestFile := filepath.Join(os.TempDir(), secretName)
 	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
 	if err != nil {
 		return "", err
@@ -835,7 +835,9 @@ func restoreE2EMarker() {
 // metrics continuity, rapid re-deploy survival, and downgrade safety.
 var _ = Describe("Operator Upgrade defensive scenarios", Ordered, Serial, Label("disruptive"), func() {
 	const v2Image = "example.com/cnmsql:v0.0.2"
-	const v1Image = "example.com/cnmsql:v0.0.1"
+	// v1 is the suite's manager image: it is the one loaded into the dedicated
+	// cluster, and CI tags it per run (E2E_MANAGER_IMAGE).
+	v1Image := managerImage
 
 	var ns string
 	var dc *dedicated
@@ -907,7 +909,7 @@ spec:
   storage:
     size: 1Gi
 `, ns, instanceImage)
-		probePath := filepath.Join("/tmp", fmt.Sprintf("cnmsql-e2e-webhook-continuity-%d.yaml", GinkgoParallelProcess()))
+		probePath := filepath.Join(os.TempDir(), fmt.Sprintf("cnmsql-e2e-webhook-continuity-%d.yaml", GinkgoParallelProcess()))
 		Expect(os.WriteFile(probePath, []byte(probeManifest), 0o644)).To(Succeed())
 		DeferCleanup(func() { os.Remove(probePath) })
 
@@ -920,7 +922,7 @@ spec:
 
 		By("verifying the webhook still rejects known-invalid requests during redeploy")
 		invalidProbe := strings.Replace(probeManifest, "imageName:", "imageName: invalid-image\n  imageCatalogRef:\n    apiGroup: mysql.cnmsql.co\n    kind: ImageCatalog\n    name: bogus\n    series: \"5.7\"\n  imageName:", 1)
-		invalidPath := filepath.Join("/tmp", fmt.Sprintf("cnmsql-e2e-webhook-continuity-invalid-%d.yaml", GinkgoParallelProcess()))
+		invalidPath := filepath.Join(os.TempDir(), fmt.Sprintf("cnmsql-e2e-webhook-continuity-invalid-%d.yaml", GinkgoParallelProcess()))
 		Expect(os.WriteFile(invalidPath, []byte(invalidProbe), 0o644)).To(Succeed())
 		DeferCleanup(func() { os.Remove(invalidPath) })
 		Eventually(func(g Gomega) {

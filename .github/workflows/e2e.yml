@@ -28,6 +28,10 @@ env:
   # which only kind v0.32.0+ can read (older kind fails `kind load` with
   # "unknown containerd config version: 4"). Keep in sync with k8s_versions_scope.json.
   KIND_VERSION: v0.32.0
+  # The manager image is built once per run by the build-images job and reused
+  # by every lane on the same runner. The tag is per run (not per attempt) so a
+  # "Re-run failed jobs" lane still finds the image the original build left.
+  E2E_MANAGER_IMAGE: example.com/cnmsql:e2e-${{ github.run_id }}
 
 jobs:
   generate-jobs:
@@ -90,16 +94,93 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
 
-  e2e:
-    name: ${{ matrix.id }}
+  build-images:
+    name: Build E2E images
     needs: generate-jobs
     if: needs.generate-jobs.outputs.kindEnabled == 'true'
     runs-on: ${{ github.repository_owner == 'cnmsql' && 'self-hosted' || 'ubuntu-latest' }}
     permissions:
       contents: read
       statuses: write
+    outputs:
+      # The lanes pin themselves to this host to reuse its Docker image store.
+      host: ${{ steps.host.outputs.label }}
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+        ref: ${{ github.event.inputs.pr_sha || github.ref }}
+
+    # Runners on one host share its Docker daemon, so the image built here is
+    # visible to all of them. Each runner of a multi-runner host sets
+    # CNMSQL_E2E_HOST_LABEL in its .env file to a label every runner of that host
+    # carries; a lone runner falls back to its own name.
+    - name: Record host
+      id: host
+      run: echo "label=${CNMSQL_E2E_HOST_LABEL:-$RUNNER_NAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Remove stale E2E manager images
+      run: |
+        # Each run leaves its image behind so re-runs can reuse it; drop the ones
+        # from runs older than two days so the persistent runner does not fill up.
+        cutoff=$(date -d '2 days ago' +%s)
+        docker image ls --filter "reference=example.com/cnmsql:e2e-*" --format '{{.Repository}}:{{.Tag}}' \
+          | while read -r ref; do
+              [[ "$ref" == "$E2E_MANAGER_IMAGE" ]] && continue
+              created=$(date -d "$(docker image inspect -f '{{.Created}}' "$ref")" +%s)
+              if (( created < cutoff )); then
+                docker image rm "$ref" || true
+              fi
+            done
+
+    - name: Build the manager image
+      run: make docker-build IMG="$E2E_MANAGER_IMAGE"
+
+    # Start the host's registry mirrors before any lane needs them (lanes also
+    # run `up`, which is then a no-op).
+    - name: Start registry mirrors
+      if: github.repository_owner == 'cnmsql'
+      run: ./hack/e2e-registry-mirrors.sh up
+
+    # The lanes are skipped when the build fails, so fail their pending statuses
+    # here or the PR would wait on them forever.
+    - name: Fail every lane
+      if: failure() && github.event.inputs.pr_sha != ''
+      run: |
+        echo '${{ needs.generate-jobs.outputs.kindMatrix }}' \
+          | jq -r '.include[].id' \
+          | while read -r lane; do
+              gh api "repos/${{ github.repository }}/statuses/${{ github.event.inputs.pr_sha }}" \
+                -f state="failure" \
+                -f context="E2E / $lane" \
+                -f description="E2E image build failed" \
+                -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                --silent
+            done
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+  e2e:
+    name: ${{ matrix.id }}
+    needs: [generate-jobs, build-images]
+    if: needs.generate-jobs.outputs.kindEnabled == 'true'
+    # On the self-hosted pool every lane runs on the host that built the images,
+    # so it loads them instead of rebuilding. Lanes run in parallel across that
+    # host's runners, each with its own Kind cluster. GitHub matches runs-on
+    # against labels, not runner names: see the Record host step.
+    runs-on: ${{ github.repository_owner == 'cnmsql' && fromJSON(format('["self-hosted","{0}"]', needs.build-images.outputs.host)) || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      statuses: write
     strategy:
       fail-fast: false
+      # Concurrent lanes share one host's memory: each runs its own Kind cluster
+      # with up to `procs` MySQL clusters (~4 GiB each), so the cap is a memory
+      # budget, not a runner count. 2 fits the 8 vCPU / 24 GiB runner host; tune
+      # with the E2E_MAX_PARALLEL repository variable. GitHub-hosted lanes each
+      # get their own VM and are not capped.
+      max-parallel: ${{ github.repository_owner == 'cnmsql' && fromJSON(vars.E2E_MAX_PARALLEL || '2') || 32 }}
       matrix: ${{ fromJSON(needs.generate-jobs.outputs.kindMatrix) }}
     env:
       # Lane fields map straight onto the knobs the suite + hack/e2e.sh consume.
@@ -114,6 +195,12 @@ jobs:
       E2E_TIMEOUT_MULTIPLIER: ${{ github.repository_owner == 'cnmsql' && '2' || '1' }}
       E2E_JUNIT: test-results/junit.xml
       E2E_SHARED_SETUP: ${{ matrix.shared_setup }}
+      # Load the image build-images left on this runner. GitHub-hosted lanes are
+      # fresh VMs without it, so they build their own as before.
+      E2E_PREBUILT_MANAGER_IMAGE: ${{ github.repository_owner == 'cnmsql' && 'true' || 'false' }}
+      # Kind nodes pull through registry caches on the persistent host (see
+      # hack/e2e-registry-mirrors.sh). Pointless on a throwaway GitHub VM.
+      E2E_REGISTRY_MIRRORS: ${{ github.repository_owner == 'cnmsql' && 'true' || 'false' }}
     steps:
     - name: Clone the code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -152,19 +239,17 @@ jobs:
 
     - name: Prepare runner
       run: |
-        # Unique cluster name per run so a leftover cluster from a crashed job is
-        # never silently reused (the self-hosted runner is persistent). The lane
-        # is NOT part of the name: lanes run sequentially on the single runner and
-        # the sweep below clears leftovers, and adding it would push the dedicated
-        # clusters' node names (<cluster>-control-plane, capped by the harness)
-        # past the 63-char hostname limit.
-        echo "KIND_CLUSTER=cnmsql-e2e-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
-        # Sweep leftover cnmsql Kind clusters and reclaim disk before starting.
-        for c in $(kind get clusters 2>/dev/null || true); do
-          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
-        done
-        docker system prune -f || true
-        df -h / || true
+        # Lanes of one run share a host and may run at once, so the cluster name
+        # carries the lane's matrix index (the lane id would push the dedicated
+        # clusters' node names past the 63-char hostname limit). The kubeconfig
+        # and temp files live in the runner's own temp dir: kind switches the
+        # current context, and the suite writes manifests to os.TempDir().
+        {
+          echo "KIND_CLUSTER=cnmsql-e2e-${GITHUB_RUN_ID}-${{ strategy.job-index }}"
+          echo "KUBECONFIG=${RUNNER_TEMP}/kubeconfig"
+          echo "TMPDIR=${RUNNER_TEMP}"
+        } >> "$GITHUB_ENV"
+        ./hack/e2e-ci-hygiene.sh prepare "cnmsql-e2e-${GITHUB_RUN_ID}-${{ strategy.job-index }}"
 
     - name: Run e2e lane ${{ matrix.id }} (k8s ${{ matrix.k8s_version }}, MySQL ${{ matrix.mysql_version }})
       run: |
@@ -200,12 +285,8 @@ jobs:
         retention-days: 14
 
     - name: Cleanup after e2e
-      if: always()
-      run: |
-        # Delete every cnmsql Kind cluster this lane may have created: the shared
-        # suite cluster plus any ephemeral clusters the disruptive specs provision
-        # (named <KIND_CLUSTER>-<slug>).
-        for c in $(kind get clusters 2>/dev/null || true); do
-          case "$c" in *cnmsql*) kind delete cluster --name "$c" || true ;; esac
-        done
-        rm -f /tmp/cnmsql-e2e-*.yaml || true
+      if: always() && env.KIND_CLUSTER != ''
+      # Delete this lane's shared suite cluster and the ephemeral clusters its
+      # disruptive specs provisioned (<KIND_CLUSTER>-<slug>), and nothing else:
+      # other lanes may be running on this host.
+      run: ./hack/e2e-ci-hygiene.sh cleanup "$KIND_CLUSTER"

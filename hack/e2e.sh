@@ -189,10 +189,30 @@ if [[ "$FRESH" == true ]]; then
 	echo "==> recreating Kind cluster (--fresh)"
 	make cleanup-test-e2e KIND_CLUSTER="$CLUSTER" || true
 fi
+# Pull-through registry caches (CI's persistent runner): the shared cluster and
+# every dedicated cluster the suite creates pull through them.
+if [[ "${E2E_REGISTRY_MIRRORS:-false}" == true ]]; then
+	./hack/e2e-registry-mirrors.sh up
+fi
 make setup-test-e2e KIND_CLUSTER="$CLUSTER" K8S_VERSION="$K8S"
+if [[ "${E2E_REGISTRY_MIRRORS:-false}" == true ]]; then
+	./hack/e2e-registry-mirrors.sh configure "$CLUSTER"
+fi
 
-echo "==> building and loading the manager image ($MANAGER_IMAGE)"
-make e2e-build-images IMG="$MANAGER_IMAGE" KIND_CLUSTER="$CLUSTER"
+# CI builds the manager image once per run in a dedicated job on the same runner
+# and sets E2E_PREBUILT_MANAGER_IMAGE, so a lane only loads it. Fall back to
+# building when the image is missing (a lane landed on another runner, or a
+# re-run after the image was garbage-collected) so the lane still runs.
+if [[ "${E2E_PREBUILT_MANAGER_IMAGE:-false}" == true ]] && docker image inspect "$MANAGER_IMAGE" >/dev/null 2>&1; then
+	echo "==> loading the prebuilt manager image ($MANAGER_IMAGE)"
+	"$KIND" load docker-image "$MANAGER_IMAGE" --name "$CLUSTER"
+else
+	if [[ "${E2E_PREBUILT_MANAGER_IMAGE:-false}" == true ]]; then
+		echo "::warning::prebuilt manager image $MANAGER_IMAGE not found on this runner; building it"
+	fi
+	echo "==> building and loading the manager image ($MANAGER_IMAGE)"
+	make e2e-build-images IMG="$MANAGER_IMAGE" KIND_CLUSTER="$CLUSTER"
+fi
 
 [[ -n "$JUNIT" ]] && mkdir -p "$(dirname "$JUNIT")"
 

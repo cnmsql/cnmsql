@@ -1,0 +1,12 @@
+# Single-node Kind topology for the shared e2e suite cluster and the default
+# dedicated clusters.
+#
+# containerd reads per-registry mirror config from /etc/containerd/certs.d, which
+# hack/e2e-registry-mirrors.sh fills in after the cluster is created. Without
+# that directory filled in, containerd pulls from the upstream registries as usual.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
