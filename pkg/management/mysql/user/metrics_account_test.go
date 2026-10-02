@@ -35,7 +35,8 @@ func TestEnsureMetricsAccountCreatesAndGrants(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SHOW GRANTS FOR 'cnmsql_metrics'@'localhost'")).
 		WillReturnRows(sqlmock.NewRows([]string{"g"}).AddRow("GRANT USAGE ON *.* TO `cnmsql_metrics`@`localhost`"))
-	mock.ExpectExec(regexp.QuoteMeta("GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cnmsql_metrics'@'localhost'")).
+	mock.ExpectExec(regexp.QuoteMeta(
+		"GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'cnmsql_metrics'@'localhost'")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("GRANT SELECT ON performance_schema.* TO 'cnmsql_metrics'@'localhost'")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -80,12 +81,13 @@ func TestEnsureMetricsAccountRejectsInvalidRequest(t *testing.T) {
 		"write privilege": {Privileges: []Privilege{{Privileges: []string{"INSERT"}, On: "app.*"}}},
 		"global target":   {Privileges: []Privilege{{Privileges: []string{"SELECT"}, On: "*.*"}}},
 		"mysql schema":    {Privileges: []Privilege{{Privileges: []string{"SELECT"}, On: "mysql.*"}}},
-		"injection":       {Privileges: []Privilege{{Privileges: []string{"SELECT"}, On: "app.* TO x; DROP DATABASE app; --"}}},
+		"injection": {Privileges: []Privilege{
+			{Privileges: []string{"SELECT"}, On: "app.* TO x; DROP DATABASE app; --"},
+		}},
 	} {
 		m, mock := newManager(t)
 		_, err := m.EnsureMetricsAccount(context.Background(), "cnmsql_metrics", req)
-		var invalid *InvalidRequestError
-		if !errors.As(err, &invalid) {
+		if _, ok := errors.AsType[*InvalidRequestError](err); !ok {
 			t.Errorf("%s: expected InvalidRequestError, got %v", name, err)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {

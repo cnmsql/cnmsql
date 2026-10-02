@@ -105,7 +105,10 @@ func (f *fakeController) DropDatabase(_ context.Context, req user.DropDatabaseRe
 func (f *fakeController) ListDatabases(context.Context) (*user.ListDatabasesResponse, error) {
 	return f.listDatabases, f.userMgmtErr
 }
-func (f *fakeController) EnsureMetricsAccount(_ context.Context, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error) {
+func (f *fakeController) EnsureMetricsAccount(
+	_ context.Context,
+	req user.MetricsAccountRequest,
+) (*user.MetricsAccountResponse, error) {
 	f.metricsReq = &req
 	if f.metricsErr != nil {
 		return nil, f.metricsErr
@@ -571,7 +574,9 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 func TestMonitoringAccountHandler(t *testing.T) {
-	fake := &fakeController{metricsResp: &user.MetricsAccountResponse{Created: true, Granted: []string{"SELECT ON `app`.*"}}}
+	fake := &fakeController{metricsResp: &user.MetricsAccountResponse{
+		Created: true, Granted: []string{"SELECT ON `app`.*"},
+	}}
 	srv := httptest.NewServer(Handler(fake))
 	defer srv.Close()
 

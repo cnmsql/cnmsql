@@ -23,6 +23,9 @@ import (
 	"strings"
 )
 
+// GlobalGrantTarget is the grant target covering every schema and table.
+const GlobalGrantTarget = "*.*"
+
 const (
 	// MetricsAccountName is the passwordless account custom monitoring
 	// queries run as. Its host is MetricsAccountHost, so it only
@@ -37,7 +40,7 @@ const (
 // revokes them.
 func MetricsAccountBaseGrants() []AccountGrant {
 	return []AccountGrant{
-		{Privileges: []string{"PROCESS", "REPLICATION CLIENT", "REPLICATION SLAVE"}, On: "*.*"},
+		{Privileges: []string{"PROCESS", "REPLICATION CLIENT", "REPLICATION SLAVE"}, On: GlobalGrantTarget},
 		{Privileges: []string{"SELECT"}, On: "performance_schema.*"},
 	}
 }

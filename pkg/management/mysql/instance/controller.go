@@ -1034,7 +1034,10 @@ func (c *Controller) SetMetricsUser(name string) {
 
 // EnsureMetricsAccount makes the metrics account exist and hold its base
 // grants plus exactly the requested extra grants.
-func (c *Controller) EnsureMetricsAccount(ctx context.Context, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error) {
+func (c *Controller) EnsureMetricsAccount(
+	ctx context.Context,
+	req user.MetricsAccountRequest,
+) (*user.MetricsAccountResponse, error) {
 	resp, err := c.users.EnsureMetricsAccount(ctx, c.metricsUser, req)
 	if err != nil {
 		return nil, err

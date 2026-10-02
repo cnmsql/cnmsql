@@ -451,8 +451,9 @@ var _ = Describe("Cluster validation", func() {
 			{Privileges: []string{"SELECT"}, On: "mysql.*"},
 			{Privileges: []string{"SELECT"}},
 		}}
-		var fields []string
-		for _, e := range cluster.Validate() {
+		errs := cluster.Validate()
+		fields := make([]string, 0, len(errs))
+		for _, e := range errs {
 			fields = append(fields, e.Field)
 		}
 		Expect(fields).To(ConsistOf(

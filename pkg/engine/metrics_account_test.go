@@ -76,8 +76,9 @@ func TestParseMetricsGrantTarget(t *testing.T) {
 
 func TestMetricsAccountBaseGrants(t *testing.T) {
 	t.Parallel()
-	var rendered []string
-	for _, g := range MetricsAccountBaseGrants() {
+	base := MetricsAccountBaseGrants()
+	rendered := make([]string, 0, len(base))
+	for _, g := range base {
 		rendered = append(rendered, strings.Join(g.Privileges, ", ")+" ON "+g.On)
 	}
 	want := "PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.*|SELECT ON performance_schema.*"

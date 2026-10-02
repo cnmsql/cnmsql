@@ -53,7 +53,11 @@ func (e *InvalidRequestError) Unwrap() error { return e.Err }
 // compares SHOW GRANTS with the desired set, and runs only the GRANT and
 // REVOKE statements needed, so an account already in sync costs no binlog
 // event. Base grants are never revoked.
-func (m *Manager) EnsureMetricsAccount(ctx context.Context, name string, req MetricsAccountRequest) (*MetricsAccountResponse, error) {
+func (m *Manager) EnsureMetricsAccount(
+	ctx context.Context,
+	name string,
+	req MetricsAccountRequest,
+) (*MetricsAccountResponse, error) {
 	if name == "" {
 		return nil, errors.New("no metrics account is configured on this instance")
 	}
