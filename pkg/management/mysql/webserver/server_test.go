@@ -68,6 +68,10 @@ type fakeController struct {
 	dropDBReq     *user.DropDatabaseRequest
 	listDatabases *user.ListDatabasesResponse
 
+	metricsReq  *user.MetricsAccountRequest
+	metricsResp *user.MetricsAccountResponse
+	metricsErr  error
+
 	setAsPrimaryErr  error
 	setAsPrimaryUUID string
 
@@ -100,6 +104,16 @@ func (f *fakeController) DropDatabase(_ context.Context, req user.DropDatabaseRe
 }
 func (f *fakeController) ListDatabases(context.Context) (*user.ListDatabasesResponse, error) {
 	return f.listDatabases, f.userMgmtErr
+}
+func (f *fakeController) EnsureMetricsAccount(_ context.Context, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error) {
+	f.metricsReq = &req
+	if f.metricsErr != nil {
+		return nil, f.metricsErr
+	}
+	if f.metricsResp == nil {
+		return &user.MetricsAccountResponse{}, nil
+	}
+	return f.metricsResp, nil
 }
 
 func (f *fakeController) Healthz(context.Context) error  { return f.healthErr }
@@ -553,5 +567,54 @@ func TestMethodNotAllowed(t *testing.T) {
 	rec := do(t, h, http.MethodGet, "/promote")
 	if rec.Code == http.StatusOK {
 		t.Errorf("GET /promote should not return 200")
+	}
+}
+
+func TestMonitoringAccountHandler(t *testing.T) {
+	fake := &fakeController{metricsResp: &user.MetricsAccountResponse{Created: true, Granted: []string{"SELECT ON `app`.*"}}}
+	srv := httptest.NewServer(Handler(fake))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/monitoring/account", "application/json",
+		strings.NewReader(`{"privileges":[{"privileges":["SELECT"],"on":"app.*"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got user.MetricsAccountResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Created || len(got.Granted) != 1 {
+		t.Fatalf("response = %+v", got)
+	}
+	if fake.metricsReq == nil || fake.metricsReq.Privileges[0].On != "app.*" {
+		t.Fatalf("request not forwarded: %+v", fake.metricsReq)
+	}
+}
+
+func TestMonitoringAccountHandlerStatusCodes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		err  error
+		want int
+	}{
+		"malformed body":  {body: "{", want: http.StatusBadRequest},
+		"invalid request": {body: "{}", err: &user.InvalidRequestError{Err: errors.New("nope")}, want: http.StatusBadRequest},
+		"server error":    {body: "{}", err: errors.New("boom"), want: http.StatusInternalServerError},
+	} {
+		srv := httptest.NewServer(Handler(&fakeController{metricsErr: tc.err}))
+		resp, err := http.Post(srv.URL+"/monitoring/account", "application/json", strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		srv.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s: status = %d, want %d", name, resp.StatusCode, tc.want)
+		}
 	}
 }

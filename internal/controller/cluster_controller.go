@@ -39,6 +39,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -180,7 +181,7 @@ const (
 	replicationUser = "cnmsql_repl"
 	backupUser      = "cnmsql_backup"
 	controlUser     = "cnmsql_control"
-	metricsUser     = "cnmsql_metrics"
+	metricsUser     = engine.MetricsAccountName
 	mysqldBinary    = "/usr/sbin/mysqld"
 
 	// switchoverHandoffSeconds bounds how long a draining primary's preStop hook
