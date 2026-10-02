@@ -4,5 +4,5 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: example.com/cnmsql
-  newTag: e2e-local
+  newName: ghcr.io/cnmsql/cnmsql
+  newTag: e49ded4-dirty

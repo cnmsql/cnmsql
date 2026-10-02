@@ -343,6 +343,11 @@ const (
 	// logical backups can run.
 	ConditionDumpAccountReady = "DumpAccountReady"
 
+	// ConditionMetricsAccountReady indicates that the cnmsql_metrics account
+	// exists on the primary with its built-in grants and exactly the extra
+	// grants in spec.monitoring.privileges.
+	ConditionMetricsAccountReady = "MetricsAccountReady"
+
 	// ConditionImageReady is True when the image the cluster resolves to has
 	// been probed and accepted as status.targetImage. It is False while a new
 	// image is being probed, or when it was rejected (it cannot be pulled, its

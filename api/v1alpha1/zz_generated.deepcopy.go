@@ -1916,6 +1916,13 @@ func (in *MonitoringConfiguration) DeepCopyInto(out *MonitoringConfiguration) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.Privileges != nil {
+		in, out := &in.Privileges, &out.Privileges
+		*out = make([]RolePrivilege, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.TLSConfig != nil {
 		in, out := &in.TLSConfig, &out.TLSConfig
 		*out = new(ClusterMonitoringTLSConfig)

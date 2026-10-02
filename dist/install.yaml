@@ -5567,6 +5567,33 @@ spec:
                       MetricsQueriesTTL is the minimum interval between executions of the
                       default and custom monitoring queries.
                     type: string
+                  privileges:
+                    description: |-
+                      Privileges are extra grants for the cnmsql_metrics account that custom
+                      queries run as. Only SELECT and SHOW VIEW on a database (db.*) or a
+                      table (db.table) are allowed; *.* and the mysql schema are refused. The
+                      operator applies them on the primary and revokes any other grant the
+                      account holds, except its built-in ones.
+                    items:
+                      description: RolePrivilege is a grant of one or more privileges
+                        on a target.
+                      properties:
+                        "on":
+                          description: On is the target (e.g. "*.*", "mydb.*"). Defaults
+                            to "*.*".
+                          type: string
+                        privileges:
+                          description: Privileges is the grant list (SELECT, INSERT,
+                            ALL, etc.).
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                      required:
+                      - privileges
+                      type: object
+                    maxItems: 32
+                    type: array
                   tls:
                     description: TLS configures TLS for the instance metrics endpoint.
                     properties:

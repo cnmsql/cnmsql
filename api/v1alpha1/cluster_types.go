@@ -1229,6 +1229,15 @@ type MonitoringConfiguration struct {
 	// +optional
 	MetricsQueriesTTL *metav1.Duration `json:"metricsQueriesTTL,omitempty"`
 
+	// Privileges are extra grants for the cnmsql_metrics account that custom
+	// queries run as. Only SELECT and SHOW VIEW on a database (db.*) or a
+	// table (db.table) are allowed; *.* and the mysql schema are refused. The
+	// operator applies them on the primary and revokes any other grant the
+	// account holds, except its built-in ones.
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Privileges []RolePrivilege `json:"privileges,omitempty"`
+
 	// TLS configures TLS for the instance metrics endpoint.
 	// +optional
 	TLSConfig *ClusterMonitoringTLSConfig `json:"tls,omitempty"`

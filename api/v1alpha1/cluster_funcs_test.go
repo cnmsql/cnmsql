@@ -433,6 +433,35 @@ var _ = Describe("Cluster validation", func() {
 		}}
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
+
+	It("accepts read-only monitoring privileges", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Monitoring = &MonitoringConfiguration{Privileges: []RolePrivilege{
+			{Privileges: []string{"SELECT"}, On: "app.*"},
+			{Privileges: []string{"select", "SHOW VIEW"}, On: "`reports`.`daily`"},
+		}}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects write monitoring privileges and unsafe targets", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Monitoring = &MonitoringConfiguration{Privileges: []RolePrivilege{
+			{Privileges: []string{"INSERT"}, On: "app.*"},
+			{Privileges: []string{"SELECT"}, On: "*.*"},
+			{Privileges: []string{"SELECT"}, On: "mysql.*"},
+			{Privileges: []string{"SELECT"}},
+		}}
+		var fields []string
+		for _, e := range cluster.Validate() {
+			fields = append(fields, e.Field)
+		}
+		Expect(fields).To(ConsistOf(
+			"spec.monitoring.privileges[0].privileges",
+			"spec.monitoring.privileges[1].on",
+			"spec.monitoring.privileges[2].on",
+			"spec.monitoring.privileges[3].on",
+		))
+	})
 })
 
 var _ = Describe("Credential secret names", func() {
