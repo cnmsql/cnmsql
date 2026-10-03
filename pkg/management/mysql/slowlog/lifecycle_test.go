@@ -47,8 +47,7 @@ func TestRotationUnderLoadIsLossless(t *testing.T) {
 	t.Parallel()
 	l, rec := newTestLog(t, fast(Config{RotateBytes: 2048}))
 	m := newFakeMysqld(t, l.cfg.Dir)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	l.Start(ctx, m.flush)
 
 	const n = 300
@@ -88,8 +87,7 @@ func TestStalledEmitterStaysUnderHardCap(t *testing.T) {
 	l, rec := newTestLog(t, fast(Config{RotateBytes: 2048, HardCapBytes: 8192}))
 	rec.block = make(chan struct{})
 	m := newFakeMysqld(t, l.cfg.Dir)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	l.Start(ctx, m.flush)
 
 	for i := range 400 {
@@ -149,8 +147,7 @@ func TestReExecHandoff(t *testing.T) {
 	t.Parallel()
 	l, rec := newTestLog(t, fast(Config{}))
 	m := newFakeMysqld(t, l.cfg.Dir)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	l.Start(ctx, m.flush)
 
 	m.slow("a")
@@ -197,8 +194,7 @@ func TestResumeFinishesAPendingRotation(t *testing.T) {
 	}
 	m.slow("b") // mysqld still writes the renamed file: no flush yet
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	l.Start(ctx, m.flush)
 	eventually(t, func() bool { _, ok := statPath(l.rotatedPath()); return !ok }, ".1 never finished")
 	m.slow("c")

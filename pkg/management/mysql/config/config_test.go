@@ -582,7 +582,9 @@ func TestRenderSlowLogSettings(t *testing.T) {
 }
 
 func TestSlowLogKeysAreManaged(t *testing.T) {
-	for _, key := range []string{"slow_query_log_file", "slow-query-log-file", "log_slow_query_file", "LOG_OUTPUT", "log-output"} {
+	for _, key := range []string{
+		"slow_query_log_file", "slow-query-log-file", "log_slow_query_file", "LOG_OUTPUT", "log-output",
+	} {
 		if !IsManagedKey(key) {
 			t.Errorf("IsManagedKey(%q) = false", key)
 		}
