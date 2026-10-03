@@ -49,6 +49,20 @@ func (r *Reconciler) ReconcileFailover(
 		return topology.FailoverResult{}, r.recordPrimaryHealthy(ctx, cluster)
 	}
 
+	// A planned switchover owns the primary change while one is in flight. The
+	// demote step of a switchover makes the old primary look exactly like a
+	// failed one — read-only, reporting a replica role, lease released — and it
+	// is the promotion machinery, not an emergency, that hands the role to the
+	// target. Failover firing in that window stamps an emergency FailingOver
+	// over a planned handoff (a node drain produces this reliably). Defer while
+	// the target is fit to receive the role: it promotes itself through the
+	// switchover path, and a switchover that stalls is aborted by
+	// maxSwitchoverDelay, which points targetPrimary back and reopens this path.
+	knownDiverged := append(slices.Clone(observed.Diverged), cluster.Status.DivergedInstances...)
+	if switchoverInFlight(cluster, observed, knownDiverged) {
+		return topology.FailoverResult{}, nil
+	}
+
 	failingSince, err := r.recordPrimaryFailing(ctx, cluster)
 	if err != nil {
 		return topology.FailoverResult{Handled: true}, err
@@ -90,7 +104,6 @@ func (r *Reconciler) ReconcileFailover(
 		}, nil
 	}
 
-	knownDiverged := append(slices.Clone(observed.Diverged), cluster.Status.DivergedInstances...)
 	eng, err := engine.ForFlavor(engine.Flavor(cluster.ResolvedFlavor()))
 	if err != nil {
 		return topology.FailoverResult{}, fmt.Errorf("unknown engine flavor %q", cluster.ResolvedFlavor())
@@ -168,6 +181,29 @@ func (r *Reconciler) ReconcileFailover(
 		r.recorder.Event(cluster, corev1.EventTypeWarning, topology.PhaseFailingOver, message)
 	}
 	return topology.FailoverResult{Handled: true, RequeueAfter: request.ProvisioningRetry}, nil
+}
+
+// switchoverInFlight reports whether a planned switchover is being driven to a
+// fit target: either the target is a healthy replica awaiting promotion, or it
+// has already promoted itself and only status.currentPrimary still names the
+// old primary. A diverged target is never in flight — the in-Pod reconciler
+// refuses to promote it, so deferring would strand the cluster with no writable
+// primary and the failover path must keep ownership (and refuse loudly when no
+// safe replica exists). An unfit target reopens the failover path for the same
+// reason: the switchover cannot complete without it.
+func switchoverInFlight(cluster *mysqlv1alpha1.Cluster, observed topology.FailoverState, knownDiverged []string) bool {
+	target := cluster.Status.TargetPrimary
+	if target == "" || target == cluster.Status.CurrentPrimary {
+		return false
+	}
+	if slices.Contains(knownDiverged, target) {
+		return false
+	}
+	if validateSwitchoverTarget(observed, target) == nil {
+		return true
+	}
+	status, ok := observed.Instances[target]
+	return ok && status.Ready && status.Primary
 }
 
 // maxTransactionsBehind returns the configured promotion bound, or nil when the
