@@ -1,7 +1,7 @@
 # 036 — Separate binlog archive storage and replica clusters
 
-Status: proposed (2026-10-03). Phase 1 accepted for implementation; phases 2
-and 3 are recorded here and wait for their own go-ahead.
+Status: phase 1 done (2026-10-03); phases 2 and 3 proposed, waiting for their
+own go-ahead.
 
 Issue #65.
 
@@ -23,7 +23,7 @@ Two limits are listed as future work in `docs/src/pitr.md`:
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| 1 | Separate binlog archive object store | accepted, implement now |
+| 1 | Separate binlog archive object store | done |
 | 2 | MySQL replica clusters: live channel + archive follow | proposed |
 | 3 | MariaDB replica clusters | proposed, sketch only |
 

@@ -937,7 +937,7 @@ type ContinuousArchivingConfiguration struct {
 
 	// ObjectStore is where the binary-log archive is written. When unset, the
 	// archive goes to spec.backup.objectStore next to the base backups. The
-	// archive keeps the same layout in either store: <path>/<cluster>/binlogs/.
+	// archive keeps the same layout in either store: `<path>/<cluster>/binlogs/`.
 	// Changing it starts a new archive in the new store from the oldest binary
 	// log still on the primary; take a new base backup afterwards.
 	// +optional
@@ -1643,7 +1643,7 @@ type ContinuousArchivingStatus struct {
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Destination is the archive location in use, "<endpoint>/<bucket>/<path>"
+	// Destination is the archive location in use, `<endpoint>/<bucket>/<path>`
 	// (endpoint empty for AWS). A change is reported with an ArchiveMoved
 	// Warning event.
 	// +optional

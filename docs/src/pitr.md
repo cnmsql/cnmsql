@@ -29,8 +29,11 @@ flowchart LR
         Archiver["Binlog Archiver\n(primary-gated)"]
     end
 
-    subgraph Store["Object Store"]
+    subgraph Store["Backup Store (spec.backup.objectStore)"]
         BaseBackup["backup.xbstream\nmetadata.json"]
+    end
+
+    subgraph ArchiveStore["Archive Store (continuousArchiving.objectStore,\ndefaults to the backup store)"]
         Binlogs["binlogs/<server_uuid>/\n_index.json"]
     end
 
@@ -198,7 +201,9 @@ kubectl get cluster <name> \
 
 ### Object store layout
 
-Continuous archives live under the cluster prefix:
+Continuous archives live under the cluster prefix of the archive store. That is
+`spec.backup.continuousArchiving.objectStore` when it is set, and
+`spec.backup.objectStore` otherwise. The layout is the same in both cases:
 
 ```text
 <path>/<cluster>/binlogs/<server-uuid>/<binlog-file>
@@ -316,7 +321,57 @@ spec:
 The recovery object store is resolved from the `Backup` override when present,
 otherwise from the recovering cluster's `spec.backup.objectStore`. The source
 cluster name comes from `Backup.spec.cluster.name`; binlogs are replayed from
-that source cluster's archive prefix.
+that source cluster's archive prefix, in the archive store the `Backup` recorded
+in `status.binlogObjectStore` when it ran. A `Backup` without that field (taken
+without archiving, or before the field existed) is replayed from the base
+backup's store.
+
+### Keeping the archive in its own store
+
+The archive can go to a different bucket, path or provider from the base
+backups, with its own credentials, storage class and lifecycle rules:
+
+```yaml
+spec:
+  backup:
+    objectStore:
+      bucket: cnmsql-backups
+      path: production
+      endpoint: http://seaweedfs.objectstore.svc:8333
+      credentials:
+        accessKeyId:
+          name: objectstore-creds
+          key: accessKey
+        secretAccessKey:
+          name: objectstore-creds
+          key: secretKey
+    continuousArchiving:
+      enabled: true
+      objectStore:
+        bucket: cnmsql-binlogs
+        path: production
+        endpoint: http://seaweedfs.objectstore.svc:8333
+        credentials:
+          accessKeyId:
+            name: binlog-store-creds
+            key: accessKey
+          secretAccessKey:
+            name: binlog-store-creds
+            key: secretKey
+```
+
+Base backups and logical dumps stay in `spec.backup.objectStore`. Only
+`binlogs/` goes to the archive store. The instance Pods carry the archive
+store's credentials, so setting the field (or changing its Secret references)
+rolls the instances once. `status.continuousArchiving.destination` shows the
+archive location in use.
+
+Moving the archive is allowed, and the operator emits an `ArchiveMoved` Warning
+event when it notices. The archiver ships every binary log still on the
+primary's disk to the new store, so the new archive starts at the oldest local
+binary log. Backups taken before that point can only be recovered to a target
+with the old store (raw object-store recovery with `binlogObjectStore` pointing
+at it). Take a new base backup right after a move.
 
 ## RPO model
 
@@ -411,8 +466,8 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 
 - Keep the referenced `Backup` object until recovery clusters no longer need it;
   its status carries the backup ID used to construct archive keys.
-- Preserve the object-store bucket/path containing both the base backup and
-  `binlogs/` archive for the required recovery window.
+- Preserve the base-backup store and the archive store (the same one unless
+  `continuousArchiving.objectStore` is set) for the required recovery window.
 - Enable continuous archiving before relying on PITR. A physical backup alone can
   restore only to the backup's consistency point.
 - Configure credentials or IAM so instance pods can write the source archive and
@@ -441,8 +496,8 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 - Multi-failover archive planning is covered by unit tests; operators should
   still validate their own failover-heavy recovery runbooks against their object
   store and MySQL versions.
-- Separate binlog storage and external replica recovery remain future work in
-  the current API surface.
+- Replica clusters, which keep following another cluster's archive or a live
+  source, remain future work; see design 036.
 
 ## Verification coverage
 

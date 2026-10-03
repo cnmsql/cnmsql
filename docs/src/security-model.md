@@ -254,6 +254,11 @@ references in the Pod spec, and the kubelet materializes the values into the
 instance manager's environment, so the object-store credentials remain visible
 in `/proc/*/environ` of the instance manager and of every process it spawns.
 
+These are the credentials of the archive store. Setting
+`spec.backup.continuousArchiving.objectStore` to a store with its own
+credentials keeps the base-backup credentials out of the instance Pods
+entirely, and lets the Pod credentials be scoped to the binlog bucket.
+
 This distinction is deliberate and worth stating precisely. The "no password
 environment variables" property above covers MySQL account passwords only:
 those never enter the Pod environment in any configuration. Static object-store
