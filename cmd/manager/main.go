@@ -24,16 +24,26 @@ import (
 	"errors"
 	"os"
 
+	"github.com/go-logr/logr"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/cnmsql/cnmsql/internal/cmd/manager"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog"
 )
 
+// newLogger builds the manager's logger. It writes through slowlog.Output, the
+// stderr writer the slow query records also use, so the two never interleave
+// inside one line.
+func newLogger() logr.Logger {
+	return zap.New(zap.UseDevMode(false), zap.WriteTo(slowlog.Output))
+}
+
 func main() {
-	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
+	ctrl.SetLogger(newLogger())
 	setupLog := ctrl.Log.WithName("setup")
 
 	cmd := manager.NewRootCommand()

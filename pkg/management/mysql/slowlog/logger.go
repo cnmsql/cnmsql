@@ -18,6 +18,7 @@ package slowlog
 
 import (
 	"io"
+	"os"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
@@ -27,6 +28,11 @@ import (
 
 // LoggerName names the slow log's records.
 const LoggerName = "mysqld.slowlog"
+
+// Output is the instance manager's stderr, shared by the manager's logger and
+// the record logger. Every write takes its lock, so a record larger than an
+// atomic pipe write is never spliced with another log line.
+var Output zapcore.WriteSyncer = zapcore.Lock(os.Stderr)
 
 // NewRecordLogger returns the logger slow query records go through: JSON in
 // the instance manager's format (level, RFC 3339 ts, logger, msg), written to

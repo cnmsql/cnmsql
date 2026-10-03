@@ -388,7 +388,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// cannot keep MySQL from writing its socket lock file (design 037).
 	slowCfg := slowlog.Config{
 		Dir:         opts.SlowLogDir,
-		Logger:      slowlog.NewRecordLogger(os.Stderr),
+		Logger:      slowlog.NewRecordLogger(slowlog.Output),
 		RotateBytes: opts.SlowLogRotateBytes,
 	}
 	if adopting {
