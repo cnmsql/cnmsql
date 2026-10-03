@@ -277,15 +277,13 @@ func ListArchivedBinlogs(
 	return entries, nil
 }
 
-// ApplyRetention executes a retention plan: it deletes the expired base backups
-// and uncoverable binlogs, then rewrites the archive index. The index rewrite is
-// done last so a mid-run failure leaves a still-valid index; any objects deleted
-// but not yet de-indexed are cleaned up on the next pass.
-func ApplyRetention(
+// ApplyBackupExpiry deletes the expired base backups from the store holding
+// them. It runs before ApplyBinlogExpiry so a failure on the binlog side never
+// keeps an expired recovery point alive.
+func ApplyBackupExpiry(
 	ctx context.Context,
 	client *Client,
 	store mysqlv1alpha1.S3ObjectStore,
-	clusterName string,
 	plan RetentionPlan,
 ) error {
 	for _, prefix := range plan.DeleteBackupPrefixes {
@@ -293,6 +291,20 @@ func ApplyRetention(
 			return err
 		}
 	}
+	return nil
+}
+
+// ApplyBinlogExpiry deletes the uncoverable binlogs from the archive store,
+// then rewrites the archive index. The index rewrite is done last so a mid-run
+// failure leaves a still-valid index; any objects deleted but not yet
+// de-indexed are cleaned up on the next pass.
+func ApplyBinlogExpiry(
+	ctx context.Context,
+	client *Client,
+	store mysqlv1alpha1.S3ObjectStore,
+	clusterName string,
+	plan RetentionPlan,
+) error {
 	for _, key := range plan.DeleteBinlogKeys {
 		if err := client.Remove(ctx, store.Bucket, key); err != nil {
 			return err

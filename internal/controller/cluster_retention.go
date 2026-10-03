@@ -105,7 +105,10 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	// before the logical pass below: a failure on the logical side must not
 	// keep expired recovery points alive.
 	if !plan.Empty() {
-		if err := objectstore.ApplyRetention(ctx, client, *store, cluster.Name, plan); err != nil {
+		if err := objectstore.ApplyBackupExpiry(ctx, client, *store, plan); err != nil {
+			return err
+		}
+		if err := objectstore.ApplyBinlogExpiry(ctx, client, *store, cluster.Name, plan); err != nil {
 			return err
 		}
 		msg := fmt.Sprintf(

@@ -310,3 +310,39 @@ func TestIsEmptyPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestBinlogEnvName(t *testing.T) {
+	if got := BinlogEnvName(EnvBucket); got != "cnmsql_BINLOG_S3_BUCKET" {
+		t.Fatalf("BinlogEnvName(%q) = %q", EnvBucket, got)
+	}
+	if got := BinlogEnvName(EnvSecretAccessKey); got != "cnmsql_BINLOG_S3_SECRET_ACCESS_KEY" {
+		t.Fatalf("BinlogEnvName(%q) = %q", EnvSecretAccessKey, got)
+	}
+}
+
+func TestBinlogConfigFromEnv(t *testing.T) {
+	t.Setenv(EnvEndpoint, "http://base:9000")
+	t.Setenv(EnvBucket, "base")
+	if HasBinlogStoreEnv() {
+		t.Fatal("no binlog env set, HasBinlogStoreEnv should be false")
+	}
+	t.Setenv(BinlogEnvName(EnvEndpoint), "http://archive:9000")
+	t.Setenv(BinlogEnvName(EnvAccessKeyID), "archive-key")
+	t.Setenv(BinlogEnvName(EnvForcePathStyle), "true")
+	t.Setenv(BinlogEnvName(EnvBucket), "binlogs")
+	t.Setenv(BinlogEnvName(EnvPath), "archive")
+
+	if !HasBinlogStoreEnv() {
+		t.Fatal("HasBinlogStoreEnv should be true once the binlog bucket is set")
+	}
+	cfg := BinlogConfigFromEnv()
+	if cfg.Endpoint != "http://archive:9000" || cfg.AccessKeyID != "archive-key" || !cfg.ForcePathStyle {
+		t.Fatalf("binlog config = %+v", cfg)
+	}
+	if store := BinlogStoreFromEnv(); store.Bucket != "binlogs" || store.Path != "archive" {
+		t.Fatalf("binlog store = %+v", store)
+	}
+	if base := ConfigFromEnv(); base.Endpoint != "http://base:9000" {
+		t.Fatalf("base config changed: %+v", base)
+	}
+}
