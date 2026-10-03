@@ -93,6 +93,10 @@ type RestoreOptions struct {
 	// ObjectStore identifies the bucket/path the binlog archive lives under so
 	// per-file keys can be reconstructed (the Client alone does not carry it).
 	ObjectStore mysqlv1alpha1.S3ObjectStore
+	// BinlogStore reads the binary-log archive when it lives in a different
+	// object store from the base backup. Nil means the archive is in the same
+	// store, and Store is used.
+	BinlogStore *objectstore.Client
 	// SourceCluster is the name of the cluster whose archive is replayed. Its
 	// presence enables the replay step. For same-cluster DR it is the original
 	// cluster name; the archive keys are partitioned under it.

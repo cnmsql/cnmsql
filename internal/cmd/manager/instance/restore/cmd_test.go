@@ -16,7 +16,11 @@ limitations under the License.
 
 package restore
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
+)
 
 // TestToolFlagsDefaultEmpty guards the regression that broke MariaDB backups:
 // the backup-tool flags must default to empty so the instance manager falls
@@ -32,5 +36,37 @@ func TestToolFlagsDefaultEmpty(t *testing.T) {
 		if f.DefValue != "" {
 			t.Errorf("--%s default = %q, want empty (engine selects the tool)", name, f.DefValue)
 		}
+	}
+}
+
+func TestBinlogStoreFromEnvFallsBackToBase(t *testing.T) {
+	t.Setenv(objectstore.EnvBucket, "backups")
+	t.Setenv(objectstore.EnvPath, "base")
+	client, store, err := binlogStoreFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client != nil {
+		t.Fatal("no binlog env: the base-backup client is reused, so none is built")
+	}
+	if store.Bucket != "backups" || store.Path != "base" {
+		t.Fatalf("store = %+v, want the base bucket/path", store)
+	}
+}
+
+func TestBinlogStoreFromEnvSeparate(t *testing.T) {
+	t.Setenv(objectstore.EnvBucket, "backups")
+	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvEndpoint), "http://127.0.0.1:9")
+	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvBucket), "binlogs")
+	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvPath), "archive")
+	client, store, err := binlogStoreFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client == nil {
+		t.Fatal("a separate binlog store needs its own client")
+	}
+	if store.Bucket != "binlogs" || store.Path != "archive" {
+		t.Fatalf("store = %+v, want the binlog bucket/path", store)
 	}
 }
