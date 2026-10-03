@@ -36,27 +36,41 @@ func (l *Log) Start(ctx context.Context, flush Flusher) {
 	l.mu.Lock()
 	l.parent, l.flush = ctx, flush
 	l.mu.Unlock()
-	l.run(l.cfg.Cursor)
+	l.run(func() Cursor { return l.cfg.Cursor }, nil)
 }
 
-func (l *Log) run(resume Cursor) {
-	// A rotated file left by a previous image may not have been flushed yet;
-	// flushing again is harmless.
-	_, pending := statPath(l.rotatedPath())
-	l.setFlushed(!pending)
-
+// run starts a tailer and a watchdog once after is closed, resuming at the
+// cursor resume returns then. The run's context is registered right away, so
+// a Stop issued while it waits still cancels it.
+func (l *Log) run(resume func() Cursor, after <-chan struct{}) {
 	ctx, cancel := context.WithCancel(l.parent)
 	done := make(chan struct{})
 	l.mu.Lock()
 	l.cancel, l.done = cancel, done
 	l.mu.Unlock()
 
-	t := newTailer(l, resume)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); t.run(ctx) }()
-	go func() { defer wg.Done(); l.watch(ctx) }()
-	go func() { wg.Wait(); close(done) }()
+	go func() {
+		defer close(done)
+		// A previous run that outlived Stop's timeout must finish first: two
+		// tailers would emit the same entries and two watchdogs would race.
+		if after != nil {
+			<-after
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// A rotated file left by a previous image may not have been flushed
+		// yet; flushing again is harmless.
+		_, pending := statPath(l.rotatedPath())
+		l.setFlushed(!pending)
+
+		t := newTailer(l, resume())
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); t.run(ctx) }()
+		go func() { defer wg.Done(); l.watch(ctx) }()
+		wg.Wait()
+	}()
 }
 
 // Stop stops the tailer and the watchdog and returns the tailer's cursor. It
@@ -84,9 +98,13 @@ func (l *Log) PrepareReExec() []string {
 	return []string{CursorEnv + "=" + l.Stop(reExecStopTimeout).String()}
 }
 
-// ReExecFailed resumes tailing when the re-exec did not happen.
+// ReExecFailed resumes tailing when the re-exec did not happen, once the
+// stopped run has finished, from where it left off.
 func (l *Log) ReExecFailed() {
-	l.run(l.Cursor())
+	l.mu.Lock()
+	previous := l.done
+	l.mu.Unlock()
+	l.run(l.Cursor, previous)
 }
 
 // DrainLeftovers emits and deletes the slow log files a previous run left on

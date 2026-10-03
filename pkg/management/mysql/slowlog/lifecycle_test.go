@@ -203,3 +203,30 @@ func TestResumeFinishesAPendingRotation(t *testing.T) {
 		t.Fatalf("queries = %q", got)
 	}
 }
+
+// A tailer stuck writing a record outlives Stop's timeout. If the exec then
+// fails, the resumed tailer must not run next to the stuck one: both would
+// emit the stuck record, and both watchdogs would race on their state.
+func TestReExecFailedWaitsForTheStuckTailer(t *testing.T) {
+	t.Parallel()
+	l, rec := newTestLog(t, fast(Config{}))
+	rec.block = make(chan struct{})
+	m := newFakeMysqld(t, l.cfg.Dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.Start(ctx, m.flush)
+
+	m.slow("a")
+	m.slow("b")
+	time.Sleep(50 * time.Millisecond) // the tailer is now blocked emitting a
+	l.Stop(10 * time.Millisecond)
+	l.ReExecFailed()
+	time.Sleep(50 * time.Millisecond)
+	close(rec.block)
+
+	eventually(t, func() bool { return len(rec.queries()) >= 2 }, "entries not emitted")
+	time.Sleep(100 * time.Millisecond)
+	if got := rec.queries(); !slices.Equal(got, sel("a", "b")) {
+		t.Fatalf("queries = %q, want each entry once", got)
+	}
+}
