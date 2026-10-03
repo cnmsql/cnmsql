@@ -180,6 +180,10 @@ func TestRedactSecrets(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ in, want string }{
 		{
+			"CREATE USER a IDENTIFIED VIA mysql_native_password USING PASSWORD('a') OR ed25519 USING PASSWORD('b')",
+			"CREATE USER a IDENTIFIED VIA mysql_native_password USING PASSWORD(<secret>) OR ed25519 USING PASSWORD(<secret>)",
+		},
+		{
 			"CREATE USER 'a'@'%' IDENTIFIED BY 's3cr''et'",
 			"CREATE USER 'a'@'%' IDENTIFIED BY <secret>",
 		},

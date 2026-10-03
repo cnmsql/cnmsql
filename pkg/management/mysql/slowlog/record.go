@@ -121,6 +121,8 @@ const sqlLiteral = `('(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.|"")*")`
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(\bIDENTIFIED\s+(?:WITH\s+\S+\s+)?BY\s+(?:PASSWORD\s+)?)` + sqlLiteral),
 	regexp.MustCompile(`(?i)(\bIDENTIFIED\s+(?:VIA|WITH)\s+\S+\s+(?:USING|AS)\s+(?:PASSWORD\s*\(\s*)?)` + sqlLiteral),
+	// MariaDB chains authentication plugins: IDENTIFIED VIA a USING … OR b USING ….
+	regexp.MustCompile(`(?i)(\bOR\s+\S+\s+(?:USING|AS)\s+(?:PASSWORD\s*\(\s*)?)` + sqlLiteral),
 	regexp.MustCompile(`(?i)(\bSET\s+PASSWORD\b[^=]*=\s*(?:PASSWORD\s*\(\s*)?)` + sqlLiteral),
 	regexp.MustCompile(`(?i)(\b(?:MASTER_|SOURCE_)?PASSWORD\s*=\s*)` + sqlLiteral),
 }
