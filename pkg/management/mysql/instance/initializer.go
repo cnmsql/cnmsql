@@ -303,14 +303,8 @@ func runStdio(ctx context.Context, binary string, args []string, what string) er
 // statements as the passwordless root, then shuts it down.
 func (o *InitOptions) runBootstrap(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("instance-initdb")
-	args := []string{}
-	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
-	}
+	args := temporaryServerArgs(o.ConfigFile, o.DataDir, o.Socket)
 	args = append(args,
-		"--datadir="+o.DataDir,
-		"--socket="+o.Socket,
-		"--skip-networking",
 		// The bootstrap SQL creates accounts and sets the root password, so the
 		// temporary server must be writable. A replica's rendered config carries
 		// read_only/super_read_only=ON (and a Group Replication member always

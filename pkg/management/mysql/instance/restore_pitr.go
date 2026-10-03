@@ -319,14 +319,8 @@ func (o *RestoreOptions) applyReplay(
 ) (err error) {
 	log := logf.FromContext(ctx).WithName("instance-pitr")
 
-	args := []string{}
-	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
-	}
+	args := temporaryServerArgs(o.ConfigFile, o.DataDir, o.Socket)
 	args = append(args,
-		"--datadir="+o.DataDir,
-		"--socket="+o.Socket,
-		"--skip-networking",
 		"--skip-grant-tables",
 	)
 
