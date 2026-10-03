@@ -1373,6 +1373,144 @@ spec:
                   logical backup both hold the dump's snapshot GTID (MariaDB only), for
                   reference.
                 type: string
+              binlogObjectStore:
+                description: |-
+                  BinlogObjectStore records the cluster's binary-log archive store when the
+                  backup ran. Point-in-time recovery from this backup replays binlogs from
+                  it. Unset on backups taken without continuous archiving or before this
+                  field existed, in which case the archive is looked up in ObjectStore.
+                properties:
+                  bucket:
+                    description: Bucket is the destination bucket name.
+                    type: string
+                  credentials:
+                    description: Credentials to access the object store.
+                    properties:
+                      accessKeyId:
+                        description: The reference to the secret key containing the
+                          access key id.
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      inheritFromIAMRole:
+                        default: false
+                        description: |-
+                          InheritFromIAMRole, when true, makes the credentials be retrieved from the
+                          pod's environment (IRSA / instance profile) instead of from a secret.
+                        type: boolean
+                      secretAccessKey:
+                        description: The reference to the secret key containing the
+                          secret access key.
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      sessionToken:
+                        description: |-
+                          The reference to the secret key containing the session token, used for
+                          temporary credentials.
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    type: object
+                  endpoint:
+                    description: |-
+                      Endpoint is the URL of the S3-compatible service. Leave empty to target
+                      AWS S3 with the region's default endpoint.
+                    type: string
+                  forcePathStyle:
+                    default: true
+                    description: |-
+                      ForcePathStyle uses path-style addressing (endpoint/bucket/key) instead of
+                      virtual-hosted style (bucket.endpoint/key). Required by MinIO, Ceph and
+                      most non-AWS providers; defaults to true for maximum compatibility.
+                    type: boolean
+                  path:
+                    description: |-
+                      Path is the key prefix (folder) inside the bucket under which backups are
+                      stored.
+                    type: string
+                  region:
+                    description: |-
+                      Region is the bucket region. Required by most providers; for AWS it
+                      selects the regional endpoint. When empty it defaults to the region the
+                      endpoint expects requests to be signed with: "auto" for Cloudflare R2,
+                      "us-east-1" everywhere else (which MinIO, Ceph and friends accept).
+                    type: string
+                  serverSideEncryption:
+                    description: |-
+                      ServerSideEncryption sets the SSE algorithm applied to every uploaded
+                      object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                      providers that encrypt at rest unconditionally (MinIO, R2, B2), which
+                      reject or silently ignore the SSE header.
+                    type: string
+                  signatureVersion:
+                    default: s3v4
+                    description: |-
+                      SignatureVersion selects the request signing scheme. Defaults to s3v4;
+                      set to s3v2 for legacy providers.
+                    enum:
+                    - s3v4
+                    - s3v2
+                    type: string
+                  storageClass:
+                    description: |-
+                      StorageClass sets the storage class of every uploaded object (e.g.
+                      "STANDARD_IA"). Leave unset on providers with a single class; a class the
+                      provider does not know is rejected at upload time.
+                    type: string
+                  tls:
+                    description: TLS configuration for the endpoint connection.
+                    properties:
+                      caBundleSecret:
+                        description: |-
+                          CABundleSecret references a secret key holding a PEM CA bundle used to
+                          verify the endpoint certificate (for private CAs / self-signed endpoints).
+                        properties:
+                          key:
+                            description: Key within the Secret to select
+                            type: string
+                          name:
+                            description: Name of the Secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        default: false
+                        description: |-
+                          InsecureSkipVerify disables TLS certificate verification against the
+                          endpoint. Use only for testing.
+                        type: boolean
+                    type: object
+                required:
+                - bucket
+                - credentials
+                type: object
               conditions:
                 description: Conditions represent the latest observations of the backup
                   state.
@@ -2807,6 +2945,145 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      objectStore:
+                        description: |-
+                          ObjectStore is where the binary-log archive is written. When unset, the
+                          archive goes to spec.backup.objectStore next to the base backups. The
+                          archive keeps the same layout in either store: `<path>/<cluster>/binlogs/`.
+                          Changing it starts a new archive in the new store from the oldest binary
+                          log still on the primary; take a new base backup afterwards.
+                        properties:
+                          bucket:
+                            description: Bucket is the destination bucket name.
+                            type: string
+                          credentials:
+                            description: Credentials to access the object store.
+                            properties:
+                              accessKeyId:
+                                description: The reference to the secret key containing
+                                  the access key id.
+                                properties:
+                                  key:
+                                    description: Key within the Secret to select
+                                    type: string
+                                  name:
+                                    description: Name of the Secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              inheritFromIAMRole:
+                                default: false
+                                description: |-
+                                  InheritFromIAMRole, when true, makes the credentials be retrieved from the
+                                  pod's environment (IRSA / instance profile) instead of from a secret.
+                                type: boolean
+                              secretAccessKey:
+                                description: The reference to the secret key containing
+                                  the secret access key.
+                                properties:
+                                  key:
+                                    description: Key within the Secret to select
+                                    type: string
+                                  name:
+                                    description: Name of the Secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              sessionToken:
+                                description: |-
+                                  The reference to the secret key containing the session token, used for
+                                  temporary credentials.
+                                properties:
+                                  key:
+                                    description: Key within the Secret to select
+                                    type: string
+                                  name:
+                                    description: Name of the Secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                            type: object
+                          endpoint:
+                            description: |-
+                              Endpoint is the URL of the S3-compatible service. Leave empty to target
+                              AWS S3 with the region's default endpoint.
+                            type: string
+                          forcePathStyle:
+                            default: true
+                            description: |-
+                              ForcePathStyle uses path-style addressing (endpoint/bucket/key) instead of
+                              virtual-hosted style (bucket.endpoint/key). Required by MinIO, Ceph and
+                              most non-AWS providers; defaults to true for maximum compatibility.
+                            type: boolean
+                          path:
+                            description: |-
+                              Path is the key prefix (folder) inside the bucket under which backups are
+                              stored.
+                            type: string
+                          region:
+                            description: |-
+                              Region is the bucket region. Required by most providers; for AWS it
+                              selects the regional endpoint. When empty it defaults to the region the
+                              endpoint expects requests to be signed with: "auto" for Cloudflare R2,
+                              "us-east-1" everywhere else (which MinIO, Ceph and friends accept).
+                            type: string
+                          serverSideEncryption:
+                            description: |-
+                              ServerSideEncryption sets the SSE algorithm applied to every uploaded
+                              object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                              providers that encrypt at rest unconditionally (MinIO, R2, B2), which
+                              reject or silently ignore the SSE header.
+                            type: string
+                          signatureVersion:
+                            default: s3v4
+                            description: |-
+                              SignatureVersion selects the request signing scheme. Defaults to s3v4;
+                              set to s3v2 for legacy providers.
+                            enum:
+                            - s3v4
+                            - s3v2
+                            type: string
+                          storageClass:
+                            description: |-
+                              StorageClass sets the storage class of every uploaded object (e.g.
+                              "STANDARD_IA"). Leave unset on providers with a single class; a class the
+                              provider does not know is rejected at upload time.
+                            type: string
+                          tls:
+                            description: TLS configuration for the endpoint connection.
+                            properties:
+                              caBundleSecret:
+                                description: |-
+                                  CABundleSecret references a secret key holding a PEM CA bundle used to
+                                  verify the endpoint certificate (for private CAs / self-signed endpoints).
+                                properties:
+                                  key:
+                                    description: Key within the Secret to select
+                                    type: string
+                                  name:
+                                    description: Name of the Secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              insecureSkipVerify:
+                                default: false
+                                description: |-
+                                  InsecureSkipVerify disables TLS certificate verification against the
+                                  endpoint. Use only for testing.
+                                type: boolean
+                            type: object
+                        required:
+                        - bucket
+                        - credentials
+                        type: object
                       purgeAfterArchive:
                         default: false
                         description: |-
@@ -4742,6 +5019,143 @@ spec:
                     ExternalCluster describes a MySQL server external to this Cluster, used as a
                     replication source or recovery origin.
                   properties:
+                    binlogObjectStore:
+                      description: |-
+                        BinlogObjectStore is where the external cluster's binary-log archive
+                        lives, when it is not in ObjectStore. Recovery reads base backups from
+                        ObjectStore and binlogs from here.
+                      properties:
+                        bucket:
+                          description: Bucket is the destination bucket name.
+                          type: string
+                        credentials:
+                          description: Credentials to access the object store.
+                          properties:
+                            accessKeyId:
+                              description: The reference to the secret key containing
+                                the access key id.
+                              properties:
+                                key:
+                                  description: Key within the Secret to select
+                                  type: string
+                                name:
+                                  description: Name of the Secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            inheritFromIAMRole:
+                              default: false
+                              description: |-
+                                InheritFromIAMRole, when true, makes the credentials be retrieved from the
+                                pod's environment (IRSA / instance profile) instead of from a secret.
+                              type: boolean
+                            secretAccessKey:
+                              description: The reference to the secret key containing
+                                the secret access key.
+                              properties:
+                                key:
+                                  description: Key within the Secret to select
+                                  type: string
+                                name:
+                                  description: Name of the Secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            sessionToken:
+                              description: |-
+                                The reference to the secret key containing the session token, used for
+                                temporary credentials.
+                              properties:
+                                key:
+                                  description: Key within the Secret to select
+                                  type: string
+                                name:
+                                  description: Name of the Secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                          type: object
+                        endpoint:
+                          description: |-
+                            Endpoint is the URL of the S3-compatible service. Leave empty to target
+                            AWS S3 with the region's default endpoint.
+                          type: string
+                        forcePathStyle:
+                          default: true
+                          description: |-
+                            ForcePathStyle uses path-style addressing (endpoint/bucket/key) instead of
+                            virtual-hosted style (bucket.endpoint/key). Required by MinIO, Ceph and
+                            most non-AWS providers; defaults to true for maximum compatibility.
+                          type: boolean
+                        path:
+                          description: |-
+                            Path is the key prefix (folder) inside the bucket under which backups are
+                            stored.
+                          type: string
+                        region:
+                          description: |-
+                            Region is the bucket region. Required by most providers; for AWS it
+                            selects the regional endpoint. When empty it defaults to the region the
+                            endpoint expects requests to be signed with: "auto" for Cloudflare R2,
+                            "us-east-1" everywhere else (which MinIO, Ceph and friends accept).
+                          type: string
+                        serverSideEncryption:
+                          description: |-
+                            ServerSideEncryption sets the SSE algorithm applied to every uploaded
+                            object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                            providers that encrypt at rest unconditionally (MinIO, R2, B2), which
+                            reject or silently ignore the SSE header.
+                          type: string
+                        signatureVersion:
+                          default: s3v4
+                          description: |-
+                            SignatureVersion selects the request signing scheme. Defaults to s3v4;
+                            set to s3v2 for legacy providers.
+                          enum:
+                          - s3v4
+                          - s3v2
+                          type: string
+                        storageClass:
+                          description: |-
+                            StorageClass sets the storage class of every uploaded object (e.g.
+                            "STANDARD_IA"). Leave unset on providers with a single class; a class the
+                            provider does not know is rejected at upload time.
+                          type: string
+                        tls:
+                          description: TLS configuration for the endpoint connection.
+                          properties:
+                            caBundleSecret:
+                              description: |-
+                                CABundleSecret references a secret key holding a PEM CA bundle used to
+                                verify the endpoint certificate (for private CAs / self-signed endpoints).
+                              properties:
+                                key:
+                                  description: Key within the Secret to select
+                                  type: string
+                                name:
+                                  description: Name of the Secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            insecureSkipVerify:
+                              default: false
+                              description: |-
+                                InsecureSkipVerify disables TLS certificate verification against the
+                                endpoint. Use only for testing.
+                              type: boolean
+                          type: object
+                      required:
+                      - bucket
+                      - credentials
+                      type: object
                     connectionParameters:
                       additionalProperties:
                         type: string
@@ -6890,6 +7304,12 @@ spec:
                   ContinuousArchiving reports the health of continuous binlog archiving when
                   it is enabled.
                 properties:
+                  destination:
+                    description: |-
+                      Destination is the archive location in use, `<endpoint>/<bucket>/<path>`
+                      (endpoint empty for AWS). A change is reported with an ArchiveMoved
+                      Warning event.
+                    type: string
                   enabled:
                     description: Enabled mirrors whether continuous archiving is configured
                       on.

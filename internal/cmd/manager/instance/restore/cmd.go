@@ -25,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
@@ -68,10 +69,15 @@ func NewCommand() *cobra.Command {
 		Long: "Download an XtraBackup archive from S3-compatible object storage, " +
 			"extract, prepare and restore it into the data directory. Account " +
 			"passwords are read from the cluster's credential Secrets; " +
-			"object-store credentials from the cnmsql_S3_* environment variables. " +
+			"object-store credentials from the cnmsql_S3_* environment variables, and " +
+			"those of a separate binlog archive store from cnmsql_BINLOG_S3_*. " +
 			"Idempotent: a no-op when the data directory is already initialised.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := objectstore.NewClientFromEnv()
+			if err != nil {
+				return err
+			}
+			binlogClient, binlogStore, err := binlogStoreFromEnv(sourceCluster != "")
 			if err != nil {
 				return err
 			}
@@ -96,8 +102,8 @@ func NewCommand() *cobra.Command {
 			backupPassword, _ := src.Password(credentials.Backup)
 
 			// Resolve the optional point-in-time recovery target. Replay is enabled
-			// only when --source-cluster is set; the bucket/path come from the same
-			// cnmsql_S3_* env the run container receives.
+			// only when --source-cluster is set; the archive's bucket/path come from
+			// cnmsql_BINLOG_S3_* when it is in its own store, cnmsql_S3_* otherwise.
 			var target binlog.RecoveryTarget
 			if targetTime != "" {
 				ts, err := time.Parse(time.RFC3339, targetTime)
@@ -131,9 +137,10 @@ func NewCommand() *cobra.Command {
 				ControlPassword: controlPassword,
 				BackupUser:      backupUser,
 				BackupPassword:  backupPassword,
-				// Point-in-time recovery: object-store layout from env, archive
+				// Point-in-time recovery: archive store from env, archive
 				// cluster + target from flags.
-				ObjectStore:     objectstore.StoreFromEnv(),
+				ObjectStore:     binlogStore,
+				BinlogStore:     binlogClient,
 				SourceCluster:   sourceCluster,
 				Target:          target,
 				MysqlbinlogPath: mysqlbinlogPath,
@@ -161,7 +168,8 @@ func NewCommand() *cobra.Command {
 	credentials.AddFlags(cmd.Flags(), &creds)
 
 	// Point-in-time recovery (M7.2): replay archived binlogs after the base
-	// restore. Enabled by --source-cluster; bucket/path come from cnmsql_S3_*.
+	// restore. Enabled by --source-cluster; the archive's bucket/path come from
+	// cnmsql_BINLOG_S3_* when it is in its own store, cnmsql_S3_* otherwise.
 	cmd.Flags().StringVar(&sourceCluster, "source-cluster", "", "Name of the cluster whose binlog archive to replay; enables point-in-time recovery")
 	cmd.Flags().StringVar(&targetTime, "target-time", "", "Replay archived binlogs up to this RFC3339 timestamp")
 	cmd.Flags().StringVar(&targetGTID, "target-gtid", "", "Replay archived binlogs up to this GTID set")
@@ -170,4 +178,20 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&mysqlPath, "mysql", "", "Override the SQL client used to apply the replay (defaults to the engine's tool: mysql / mariadb)")
 
 	return cmd
+}
+
+// binlogStoreFromEnv returns the client and bucket/path of the binary-log
+// archive. The restore Job carries cnmsql_BINLOG_S3_* only when it replays
+// binlogs from a store other than the base backup's; otherwise the layout
+// comes from cnmsql_S3_* and the client is nil, so restore reuses the
+// base-backup client. Without replay no archive client is built.
+func binlogStoreFromEnv(replay bool) (*objectstore.Client, mysqlv1alpha1.S3ObjectStore, error) {
+	if !replay || !objectstore.HasBinlogStoreEnv() {
+		return nil, objectstore.StoreFromEnv(), nil
+	}
+	client, err := objectstore.NewClient(objectstore.BinlogConfigFromEnv())
+	if err != nil {
+		return nil, mysqlv1alpha1.S3ObjectStore{}, fmt.Errorf("binlog object store: %w", err)
+	}
+	return client, objectstore.BinlogStoreFromEnv(), nil
 }

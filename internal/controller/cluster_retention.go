@@ -74,18 +74,27 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	if err != nil {
 		return err
 	}
-	binlogs, err := objectstore.ListArchivedBinlogs(ctx, client, *store, cluster.Name)
+	// The archive may live in its own store; base and logical backups stay in
+	// the backup store.
+	binlogStore := cluster.BinlogObjectStore()
+	binlogClient := client
+	if !store.SameLocation(binlogStore) {
+		if binlogClient, err = r.objectStoreClient(ctx, cluster.Namespace, binlogStore); err != nil {
+			return err
+		}
+	}
+	binlogs, err := objectstore.ListArchivedBinlogs(ctx, binlogClient, *binlogStore, cluster.Name)
 	if err != nil {
 		return err
 	}
 
 	var index *objectstore.ArchiveIndex
-	indexKey := objectstore.ArchiveIndexKey(*store, cluster.Name)
-	if exists, err := client.Exists(ctx, store.Bucket, indexKey); err != nil {
+	indexKey := objectstore.ArchiveIndexKey(*binlogStore, cluster.Name)
+	if exists, err := binlogClient.Exists(ctx, binlogStore.Bucket, indexKey); err != nil {
 		return err
 	} else if exists {
 		index = &objectstore.ArchiveIndex{}
-		if err := client.GetJSON(ctx, store.Bucket, indexKey, index); err != nil {
+		if err := binlogClient.GetJSON(ctx, binlogStore.Bucket, indexKey, index); err != nil {
 			return err
 		}
 	}
@@ -105,7 +114,10 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	// before the logical pass below: a failure on the logical side must not
 	// keep expired recovery points alive.
 	if !plan.Empty() {
-		if err := objectstore.ApplyRetention(ctx, client, *store, cluster.Name, plan); err != nil {
+		if err := objectstore.ApplyBackupExpiry(ctx, client, *store, plan); err != nil {
+			return err
+		}
+		if err := objectstore.ApplyBinlogExpiry(ctx, binlogClient, *binlogStore, cluster.Name, plan); err != nil {
 			return err
 		}
 		msg := fmt.Sprintf(

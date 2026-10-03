@@ -251,6 +251,13 @@ type BackupStatus struct {
 	// +optional
 	ObjectStore *S3ObjectStore `json:"objectStore,omitempty"`
 
+	// BinlogObjectStore records the cluster's binary-log archive store when the
+	// backup ran. Point-in-time recovery from this backup replays binlogs from
+	// it. Unset on backups taken without continuous archiving or before this
+	// field existed, in which case the archive is looked up in ObjectStore.
+	// +optional
+	BinlogObjectStore *S3ObjectStore `json:"binlogObjectStore,omitempty"`
+
 	// SHA256 is the checksum of the uploaded backup artifact.
 	// +optional
 	SHA256 string `json:"sha256,omitempty"`

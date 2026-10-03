@@ -174,6 +174,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.InstanceName = sourceInstance
 		status.DestinationPath = keys.ArchiveURI
 		status.ObjectStore = store
+		status.BinlogObjectStore = anchoredBinlogObjectStore(cluster)
 		status.Error = ""
 		setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionTrue, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
 		setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionFalse, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
@@ -582,6 +583,50 @@ func backupObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 		if store.TLS.CABundleSecret != nil {
 			env = append(env, secretKeyEnv(objectstore.EnvCABundle, *store.TLS.CABundleSecret))
 		}
+	}
+	return env
+}
+
+// anchoredBinlogObjectStore is the archive store a backup taken now is anchored
+// to: the cluster's, which a per-Backup spec.objectStore override does not
+// move. Nil when the cluster does not archive.
+func anchoredBinlogObjectStore(cluster *mysqlv1alpha1.Cluster) *mysqlv1alpha1.S3ObjectStore {
+	if !cluster.IsArchivingEnabled() {
+		return nil
+	}
+	return cluster.BinlogObjectStore().DeepCopy()
+}
+
+// objectStoreLocationEnv is backupObjectStoreEnv plus the bucket and path, for
+// consumers that build object keys themselves (the archiver, restore).
+func objectStoreLocationEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
+	return append(backupObjectStoreEnv(store),
+		corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
+		corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
+	)
+}
+
+// binlogObjectStoreEnv renders store under the cnmsql_BINLOG_S3_* names, the
+// second object store a restore Job reads when the binary-log archive is not
+// kept with the base backups.
+func binlogObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
+	env := objectStoreLocationEnv(store)
+	for i := range env {
+		env[i].Name = objectstore.BinlogEnvName(env[i].Name)
+	}
+	return env
+}
+
+// recoveryStoreEnv renders a restore Job's object-store environment: the base
+// backup's store, plus the binary-log archive's store when the restore replays
+// binlogs and the archive is a different location. A restore without replay
+// never reads the archive, so it does not depend on that store's Secrets. A
+// single store renders exactly what it rendered before archive stores could be
+// separated.
+func recoveryStoreEnv(base, binlogs mysqlv1alpha1.S3ObjectStore, replay bool) []corev1.EnvVar {
+	env := objectStoreLocationEnv(base)
+	if replay && !base.SameLocation(&binlogs) {
+		env = append(env, binlogObjectStoreEnv(binlogs)...)
 	}
 	return env
 }

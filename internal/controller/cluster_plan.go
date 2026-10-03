@@ -108,7 +108,8 @@ type recoveryPlan struct {
 	MetadataKey string
 	// StoreEnv carries the cnmsql_S3_* environment (endpoint, region, signing,
 	// credentials, bucket, path) the restore worker needs to reach the object
-	// store and reconstruct binlog archive keys.
+	// store and reconstruct binlog archive keys, plus cnmsql_BINLOG_S3_* when
+	// the binlog archive is in another store.
 	StoreEnv []corev1.EnvVar
 
 	// The fields below drive point-in-time recovery (M7.2). HasTarget is set when
@@ -122,6 +123,9 @@ type recoveryPlan struct {
 	// Store is the resolved (defaulted) recovery object store, used by the
 	// operator's up-front recovery-target satisfiability check.
 	Store mysqlv1alpha1.S3ObjectStore
+	// BinlogStore is the resolved (defaulted) store holding SourceCluster's
+	// binary-log archive. It is Store unless the archive was kept apart.
+	BinlogStore mysqlv1alpha1.S3ObjectStore
 }
 
 // instancePlan holds the per-instance derived names and identity.
@@ -374,18 +378,24 @@ func (r *ClusterReconciler) resolveRecovery(
 	// The binlog archive is partitioned under the source cluster's prefix; the
 	// restore worker reconstructs its keys from the bucket/path env plus this name.
 	sourceCluster := backup.Spec.Cluster.Name
-	storeEnv := append(backupObjectStoreEnv(*store),
-		corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
-		corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
-	)
+
+	// The archive is the source cluster's, recorded on the Backup when it ran.
+	// A Backup without the record predates separate archive stores (or was taken
+	// without archiving): its archive, if any, sits next to the base backup.
+	binlogStore := store
+	if backup.Status.BinlogObjectStore != nil {
+		binlogStore = backup.Status.BinlogObjectStore.DeepCopy()
+		binlogStore.SetDefaults()
+	}
 
 	plan := &recoveryPlan{
 		Bucket:        store.Bucket,
 		ArchiveKey:    keys.ArchiveKey,
 		MetadataKey:   keys.MetadataKey,
-		StoreEnv:      storeEnv,
+		StoreEnv:      recoveryStoreEnv(*store, *binlogStore, rec.RecoveryTarget != nil),
 		SourceCluster: sourceCluster,
 		Store:         *store,
+		BinlogStore:   *binlogStore,
 	}
 	if target := rec.RecoveryTarget; target != nil {
 		plan.HasTarget = true
@@ -441,6 +451,8 @@ func (r *ClusterReconciler) resolveRawS3Recovery(
 	}
 	store := ext.ObjectStore.DeepCopy()
 	store.SetDefaults()
+	binlogStore := ext.GetBinlogObjectStore().DeepCopy()
+	binlogStore.SetDefaults()
 
 	// The external cluster name is the S3 key prefix base backups and binlogs
 	// were stored under, and seeds binlog replay's source cluster.
@@ -470,18 +482,14 @@ func (r *ClusterReconciler) resolveRawS3Recovery(
 	}
 
 	// entry.Prefix already ends with a slash.
-	storeEnv := append(backupObjectStoreEnv(*store),
-		corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
-		corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
-	)
-
 	plan := &recoveryPlan{
 		Bucket:        store.Bucket,
 		ArchiveKey:    entry.Prefix + objectstore.BackupArchiveName,
 		MetadataKey:   entry.Prefix + objectstore.BackupMetadataName,
-		StoreEnv:      storeEnv,
+		StoreEnv:      recoveryStoreEnv(*store, *binlogStore, rec.RecoveryTarget != nil),
 		SourceCluster: sourceCluster,
 		Store:         *store,
+		BinlogStore:   *binlogStore,
 	}
 	if target := rec.RecoveryTarget; target != nil {
 		plan.HasTarget = true

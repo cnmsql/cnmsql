@@ -17,8 +17,15 @@ limitations under the License.
 package objectstore
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"sync"
 	"testing"
 	"time"
+
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func backup(prefix string, started, completed time.Time) BackupEntry {
@@ -182,4 +189,67 @@ func TestPlanRetention(t *testing.T) {
 			t.Fatalf("wrong segment retained: %s", plan.NewIndex.Segments[0].ServerUUID)
 		}
 	})
+}
+
+const emptyListing = `<?xml version="1.0" encoding="UTF-8"?>` +
+	`<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`
+
+// recordingS3 accepts every request and records "METHOD /path".
+func recordingS3(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = w.Write([]byte(emptyListing))
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(seen) }
+}
+
+func testClient(t *testing.T, endpoint string) *Client {
+	t.Helper()
+	c, err := NewClient(Config{Endpoint: endpoint, ForcePathStyle: true, AccessKeyID: "k", SecretAccessKey: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestApplyExpirySplitsStores(t *testing.T) {
+	baseSrv, baseSeen := recordingS3(t)
+	logSrv, logSeen := recordingS3(t)
+	baseStore := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "base"}
+	logStore := mysqlv1alpha1.S3ObjectStore{Bucket: "binlogs", Path: "archive"}
+	plan := RetentionPlan{
+		DeleteBinlogKeys: []string{"archive/demo/binlogs/u/binlog.000001", "archive/demo/binlogs/u/binlog.000001.json"},
+		NewIndex:         &ArchiveIndex{},
+	}
+
+	if err := ApplyBackupExpiry(context.Background(), testClient(t, baseSrv.URL), baseStore, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyBinlogExpiry(context.Background(), testClient(t, logSrv.URL), logStore, "demo", plan); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := baseSeen(); len(got) != 0 {
+		t.Fatalf("base store must not see binlog requests, got %v", got)
+	}
+	got := logSeen()
+	for _, want := range []string{
+		"DELETE /binlogs/archive/demo/binlogs/u/binlog.000001",
+		"DELETE /binlogs/archive/demo/binlogs/u/binlog.000001.json",
+		"PUT /binlogs/archive/demo/binlogs/_index.json",
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("binlog store requests %v missing %q", got, want)
+		}
+	}
 }

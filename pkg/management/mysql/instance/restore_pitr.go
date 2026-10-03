@@ -58,6 +58,15 @@ func (o *RestoreOptions) maybeReplay(ctx context.Context, bt engine.BackupTool, 
 	return nil
 }
 
+// binlogClient returns the client that reads the binary-log archive: the
+// separate archive store when there is one, otherwise the base-backup store.
+func (o *RestoreOptions) binlogClient() *objectstore.Client {
+	if o.BinlogStore != nil {
+		return o.BinlogStore
+	}
+	return o.Store
+}
+
 // replayBinlogs performs point-in-time recovery: it reads the base backup's
 // anchor GTID, loads the cluster archive index, plans the segments/files to
 // replay up to the recovery target, downloads them, and applies them onto the
@@ -103,7 +112,7 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 	// Load the cluster-level archive index: the ordered timeline of UUID segments.
 	indexKey := objectstore.ArchiveIndexKey(o.ObjectStore, o.SourceCluster)
 	var index objectstore.ArchiveIndex
-	if err := o.Store.GetJSON(ctx, o.ObjectStore.Bucket, indexKey, &index); err != nil {
+	if err := o.binlogClient().GetJSON(ctx, o.ObjectStore.Bucket, indexKey, &index); err != nil {
 		return fmt.Errorf("pitr: reading archive index %q: %w", indexKey, err)
 	}
 
@@ -227,7 +236,7 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 		return fmt.Errorf("pitr: creating %s: %w", local, err)
 	}
 	defer func() { _ = f.Close() }()
-	if _, err := o.Store.Download(ctx, o.ObjectStore.Bucket, key, f); err != nil {
+	if _, err := o.binlogClient().Download(ctx, o.ObjectStore.Bucket, key, f); err != nil {
 		return fmt.Errorf("pitr: downloading %s: %w", key, err)
 	}
 	return nil

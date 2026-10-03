@@ -934,6 +934,14 @@ type ContinuousArchivingConfiguration struct {
 	// +kubebuilder:default:=false
 	// +optional
 	PurgeAfterArchive *bool `json:"purgeAfterArchive,omitempty"`
+
+	// ObjectStore is where the binary-log archive is written. When unset, the
+	// archive goes to spec.backup.objectStore next to the base backups. The
+	// archive keeps the same layout in either store: `<path>/<cluster>/binlogs/`.
+	// Changing it starts a new archive in the new store from the oldest binary
+	// log still on the primary; take a new base backup afterwards.
+	// +optional
+	ObjectStore *S3ObjectStore `json:"objectStore,omitempty"`
 }
 
 // BackupTarget describes which instance a backup is taken from.
@@ -990,6 +998,12 @@ type ExternalCluster struct {
 	// ObjectStore allows recovering from a backup stored in an object store.
 	// +optional
 	ObjectStore *S3ObjectStore `json:"objectStore,omitempty"`
+
+	// BinlogObjectStore is where the external cluster's binary-log archive
+	// lives, when it is not in ObjectStore. Recovery reads base backups from
+	// ObjectStore and binlogs from here.
+	// +optional
+	BinlogObjectStore *S3ObjectStore `json:"binlogObjectStore,omitempty"`
 }
 
 // ManagedConfiguration describes resources managed declaratively by the
@@ -1628,6 +1642,12 @@ type ContinuousArchivingStatus struct {
 	// Enabled mirrors whether continuous archiving is configured on.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// Destination is the archive location in use, `<endpoint>/<bucket>/<path>`
+	// (endpoint empty for AWS). A change is reported with an ArchiveMoved
+	// Warning event.
+	// +optional
+	Destination string `json:"destination,omitempty"`
 
 	// LastArchivedBinlog is the most recent binary-log file shipped by the
 	// current primary.

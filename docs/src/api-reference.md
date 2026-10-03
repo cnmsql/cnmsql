@@ -293,6 +293,7 @@ _Appears in:_
 | `jobName` _string_ | JobName is the Kubernetes Job running this backup. |  | Optional: \{\} <br /> |
 | `destinationPath` _string_ | DestinationPath is the full path of the backup in the object store. |  | Optional: \{\} <br /> |
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore records the destination the backup was uploaded to, resolved at<br />backup time from the Backup spec or the referenced Cluster. It is snapshotted<br />so the cleanup finalizer can still locate and remove the archive after the<br />referenced Cluster is gone. |  | Optional: \{\} <br /> |
+| `binlogObjectStore` _[S3ObjectStore](#s3objectstore)_ | BinlogObjectStore records the cluster's binary-log archive store when the<br />backup ran. Point-in-time recovery from this backup replays binlogs from<br />it. Unset on backups taken without continuous archiving or before this<br />field existed, in which case the archive is looked up in ObjectStore. |  | Optional: \{\} <br /> |
 | `sha256` _string_ | SHA256 is the checksum of the uploaded backup artifact. |  | Optional: \{\} <br /> |
 | `beginGTID` _string_ | BeginGTID/EndGTID record the GTID range covered by the backup. For a<br />logical backup both hold the dump's snapshot GTID (MariaDB only), for<br />reference. |  | Optional: \{\} <br /> |
 | `endGTID` _string_ |  |  | Optional: \{\} <br /> |
@@ -1079,6 +1080,8 @@ _Appears in:_
 | `targetRPOSeconds` _integer_ | TargetRPOSeconds bounds the recovery point objective: the primary forces a<br />binary-log rotation at least this often so a low-write cluster still<br />archives promptly. Defaults to 300 (5 minutes). | 300 | Minimum: 10 <br />Optional: \{\} <br /> |
 | `maxBinlogSizeMB` _integer_ | MaxBinlogSizeMB caps the active binary log before mysqld rotates it,<br />bounding the size-based RPO and per-object size. Defaults to 16 MiB. | 16 | Minimum: 1 <br />Optional: \{\} <br /> |
 | `binlogExpireSeconds` _integer_ | BinlogExpireSeconds is the conservative backstop after which mysqld may<br />expire a binary log, applied under the active purge gate. Defaults to<br />604800 (7 days). | 604800 | Minimum: 0 <br />Optional: \{\} <br /> |
+| `purgeAfterArchive` _boolean_ | PurgeAfterArchive turns on the active purge gate: the primary runs PURGE<br />BINARY LOGS on a binary log once it is safely in the object store and<br />every other instance of the cluster has applied the transactions it holds,<br />reclaiming binlog space without waiting for binlogExpireSeconds.<br />The replicas' positions come from status.gtidExecutedByInstance, which the<br />operator refreshes at least every five minutes, so purging trails writes by<br />about that much. An instance whose position is unknown (still joining, for<br />example) holds every file; a fenced instance holds the files it has not<br />applied; a diverged instance, which must be re-cloned anyway, holds none.<br />When the same file stays held for a while the BinlogPurgeHeld condition<br />names the instances holding it. binlogExpireSeconds still applies on its<br />own, so a replica down for longer than that must be re-cloned.<br />Defaults to false. | false | Optional: \{\} <br /> |
+| `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore is where the binary-log archive is written. When unset, the<br />archive goes to spec.backup.objectStore next to the base backups. The<br />archive keeps the same layout in either store: `<path>/<cluster>/binlogs/`.<br />Changing it starts a new archive in the new store from the oldest binary<br />log still on the primary; take a new base backup afterwards. |  | Optional: \{\} <br /> |
 
 
 #### ContinuousArchivingStatus
@@ -1096,6 +1099,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled mirrors whether continuous archiving is configured on. |  | Optional: \{\} <br /> |
+| `destination` _string_ | Destination is the archive location in use, `<endpoint>/<bucket>/<path>`<br />(endpoint empty for AWS). A change is reported with an ArchiveMoved<br />Warning event. |  | Optional: \{\} <br /> |
 | `lastArchivedBinlog` _string_ | LastArchivedBinlog is the most recent binary-log file shipped by the<br />current primary. |  | Optional: \{\} <br /> |
 | `lastArchivedGTID` _string_ | LastArchivedGTID is the last GTID covered by the archive. |  | Optional: \{\} <br /> |
 | `lastArchivedTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | LastArchivedTime is when the most recent file finished archiving. |  | Optional: \{\} <br /> |
@@ -1431,6 +1435,7 @@ _Appears in:_
 | `sslKey` _[SecretKeySelector](#secretkeyselector)_ |  |  | Optional: \{\} <br /> |
 | `sslRootCert` _[SecretKeySelector](#secretkeyselector)_ |  |  | Optional: \{\} <br /> |
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore allows recovering from a backup stored in an object store. |  | Optional: \{\} <br /> |
+| `binlogObjectStore` _[S3ObjectStore](#s3objectstore)_ | BinlogObjectStore is where the external cluster's binary-log archive<br />lives, when it is not in ObjectStore. Recovery reads base backups from<br />ObjectStore and binlogs from here. |  | Optional: \{\} <br /> |
 
 
 

@@ -868,3 +868,121 @@ var _ = Describe("Cluster admission warnings", func() {
 		Expect(semiSyncCluster("", 2, 2).Warnings()).To(BeEmpty())
 	})
 })
+
+var _ = Describe("Binlog archive object store", func() {
+	base := &S3ObjectStore{Bucket: "backups", Path: "base"}
+	archive := &S3ObjectStore{Bucket: "binlogs", Path: "archive"}
+
+	It("falls back to the backup object store", func() {
+		cluster := &Cluster{}
+		Expect(cluster.BinlogObjectStore()).To(BeNil())
+		cluster.Spec.Backup = &BackupConfiguration{ObjectStore: base}
+		Expect(cluster.BinlogObjectStore()).To(Equal(base))
+		cluster.Spec.Backup.ContinuousArchiving = &ContinuousArchivingConfiguration{Enabled: true}
+		Expect(cluster.BinlogObjectStore()).To(Equal(base))
+	})
+
+	It("prefers continuousArchiving.objectStore", func() {
+		cluster := &Cluster{}
+		cluster.Spec.Backup = &BackupConfiguration{
+			ObjectStore:         base,
+			ContinuousArchiving: &ContinuousArchivingConfiguration{Enabled: true, ObjectStore: archive},
+		}
+		Expect(cluster.BinlogObjectStore()).To(Equal(archive))
+	})
+
+	It("ignores continuousArchiving.objectStore while archiving is off", func() {
+		cluster := &Cluster{}
+		cluster.Spec.Backup = &BackupConfiguration{
+			ObjectStore:         base,
+			ContinuousArchiving: &ContinuousArchivingConfiguration{Enabled: false, ObjectStore: archive},
+		}
+		Expect(cluster.BinlogObjectStore()).To(Equal(base))
+	})
+
+	It("does not enable archiving from the archive store alone", func() {
+		cluster := &Cluster{}
+		cluster.Spec.Backup = &BackupConfiguration{
+			ContinuousArchiving: &ContinuousArchivingConfiguration{Enabled: true, ObjectStore: archive},
+		}
+		Expect(cluster.IsArchivingEnabled()).To(BeFalse())
+	})
+
+	It("resolves an external cluster's archive store", func() {
+		ext := &ExternalCluster{Name: "prod", ObjectStore: base}
+		Expect(ext.GetBinlogObjectStore()).To(Equal(base))
+		ext.BinlogObjectStore = archive
+		Expect(ext.GetBinlogObjectStore()).To(Equal(archive))
+	})
+
+	It("compares locations without credentials and with normalized paths", func() {
+		a := &S3ObjectStore{Endpoint: "http://s3:8333/", Bucket: "b", Path: "/archive/",
+			Credentials: S3Credentials{AccessKeyID: &SecretKeySelector{Name: "one", Key: "k"}}}
+		b := &S3ObjectStore{Endpoint: "http://s3:8333", Bucket: "b", Path: "archive",
+			Credentials: S3Credentials{AccessKeyID: &SecretKeySelector{Name: "two", Key: "k"}}}
+		Expect(a.Location()).To(Equal("http://s3:8333/b/archive"))
+		Expect(a.SameLocation(b)).To(BeTrue())
+		Expect(a.SameLocation(&S3ObjectStore{Endpoint: "http://s3:8333", Bucket: "b", Path: "other"})).To(BeFalse())
+		var none *S3ObjectStore
+		Expect(none.Location()).To(Equal(""))
+	})
+
+	It("defaults the archive stores", func() {
+		cluster := &Cluster{}
+		cluster.Spec.Backup = &BackupConfiguration{
+			ObjectStore:         &S3ObjectStore{Bucket: "backups"},
+			ContinuousArchiving: &ContinuousArchivingConfiguration{ObjectStore: &S3ObjectStore{Bucket: "binlogs"}},
+		}
+		cluster.Spec.ExternalClusters = []ExternalCluster{{Name: "prod", BinlogObjectStore: &S3ObjectStore{Bucket: "x"}}}
+		cluster.SetDefaults()
+		Expect(cluster.Spec.Backup.ContinuousArchiving.ObjectStore.ForcePathStyle).NotTo(BeNil())
+		Expect(cluster.Spec.ExternalClusters[0].BinlogObjectStore.SignatureVersion).To(Equal(SignatureVersionV4))
+	})
+
+	It("accepts a raw object-store recovery target without a backup store of its own", func() {
+		cluster := &Cluster{Spec: ClusterSpec{
+			ImageName: "percona/percona-server:8.0",
+			Instances: 1,
+			Storage:   StorageConfiguration{Size: "1Gi"},
+			Bootstrap: &BootstrapConfiguration{Recovery: &BootstrapRecovery{
+				Source:         "prod",
+				RecoveryTarget: &RecoveryTarget{TargetGTID: "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5"},
+			}},
+			ExternalClusters: []ExternalCluster{{
+				Name:              "prod",
+				ObjectStore:       &S3ObjectStore{Bucket: "backups"},
+				BinlogObjectStore: &S3ObjectStore{Bucket: "binlogs"},
+			}},
+		}}
+		cluster.SetDefaults()
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("validates the archive stores like the other object stores", func() {
+		bad := func() *S3ObjectStore {
+			sse := "rot13"
+			return &S3ObjectStore{Bucket: "b", ServerSideEncryption: &sse}
+		}
+		cluster := &Cluster{Spec: ClusterSpec{
+			ImageName: "percona/percona-server:8.0",
+			Instances: 1,
+			Storage:   StorageConfiguration{Size: "1Gi"},
+		}}
+		cluster.Spec.Backup = &BackupConfiguration{
+			ObjectStore:         &S3ObjectStore{Bucket: "b"},
+			ContinuousArchiving: &ContinuousArchivingConfiguration{Enabled: true, ObjectStore: bad()},
+		}
+		cluster.Spec.ExternalClusters = []ExternalCluster{{Name: "prod", BinlogObjectStore: bad()}}
+		cluster.SetDefaults()
+
+		errs := cluster.Validate()
+		fields := make([]string, 0, len(errs))
+		for _, e := range errs {
+			fields = append(fields, e.Field)
+		}
+		Expect(fields).To(ContainElements(
+			"spec.backup.continuousArchiving.objectStore.serverSideEncryption",
+			"spec.externalClusters[0].binlogObjectStore.serverSideEncryption",
+		))
+	})
+})

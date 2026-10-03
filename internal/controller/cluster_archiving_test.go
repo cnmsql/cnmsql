@@ -316,3 +316,54 @@ func TestObserveArchivingFromGroupElectedPrimary(t *testing.T) {
 		t.Fatalf("archiving = %+v, want the elected primary's archiver state", got)
 	}
 }
+
+func TestArchivingEnvUsesSeparateArchiveStore(t *testing.T) {
+	cluster := archivingCluster()
+	cluster.Spec.Backup.ContinuousArchiving.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket: "binlogs", Path: "archive", Endpoint: "http://archive:8333",
+	}
+	env := runEnv(cluster, testPlan())
+	if got := envValue(env, "cnmsql_S3_BUCKET"); got != "binlogs" {
+		t.Fatalf("archiver bucket = %q, want the archive store", got)
+	}
+	if got := envValue(env, "cnmsql_S3_PATH"); got != "archive" {
+		t.Fatalf("archiver path = %q", got)
+	}
+	if got := envValue(env, "cnmsql_S3_ENDPOINT"); got != "http://archive:8333" {
+		t.Fatalf("archiver endpoint = %q", got)
+	}
+}
+
+func TestArchiveDestinationReported(t *testing.T) {
+	cluster := archivingCluster()
+	cluster.Spec.Backup.ContinuousArchiving.ObjectStore = &mysqlv1alpha1.S3ObjectStore{Bucket: "binlogs", Path: "archive"}
+	if got, want := archiveDestination(cluster), "/binlogs/archive"; got != want {
+		t.Fatalf("destination = %q, want %q", got, want)
+	}
+}
+
+func TestArchiveMovedEventOnlyOnChange(t *testing.T) {
+	withDest := func(dest string) *mysqlv1alpha1.Cluster {
+		c := archivingCluster()
+		c.Status.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true, Destination: dest}
+		return c
+	}
+	recorder := record.NewFakeRecorder(4)
+	r := &ClusterReconciler{Recorder: recorder}
+
+	r.recordArchiveMovedEvent(withDest("/backups/cnmsql"), withDest(""))
+	r.recordArchiveMovedEvent(withDest("/backups/cnmsql"), withDest("/backups/cnmsql"))
+	if len(recorder.Events) != 0 {
+		t.Fatal("no event on the first report or without a change")
+	}
+	r.recordArchiveMovedEvent(withDest("/binlogs/archive"), withDest("/backups/cnmsql"))
+	select {
+	case ev := <-recorder.Events:
+		if !strings.Contains(ev, "Warning ArchiveMoved") ||
+			!strings.Contains(ev, "/backups/cnmsql") || !strings.Contains(ev, "/binlogs/archive") {
+			t.Fatalf("event = %q", ev)
+		}
+	default:
+		t.Fatal("expected an ArchiveMoved warning")
+	}
+}

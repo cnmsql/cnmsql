@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 // writeReplayFakes drops shell scripts into binDir impersonating both flavors'
@@ -245,5 +246,18 @@ func TestReplaySessionApplyFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "apply: exit status 9") {
 		t.Fatalf("finish error lost the apply exit status: %v", err)
+	}
+}
+
+func TestRestoreBinlogClientDefaultsToBaseStore(t *testing.T) {
+	base := &objectstore.Client{}
+	o := &RestoreOptions{Store: base}
+	if o.binlogClient() != base {
+		t.Fatal("without a binlog store, binlogs are read through the base-backup client")
+	}
+	archive := &objectstore.Client{}
+	o.BinlogStore = archive
+	if o.binlogClient() != archive {
+		t.Fatal("a separate binlog store must be used for the archive")
 	}
 }

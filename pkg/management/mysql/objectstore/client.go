@@ -66,6 +66,38 @@ const (
 	EnvCABundle    = "cnmsql_S3_CA_BUNDLE"
 )
 
+// binlogEnvPrefix replaces the "cnmsql_" prefix of a cnmsql_S3_* name. The
+// restore Job carries the binary-log archive store under these names when it
+// is not the base-backup store.
+const (
+	envPrefix       = "cnmsql_"
+	binlogEnvPrefix = "cnmsql_BINLOG_"
+)
+
+// BinlogEnvName returns the cnmsql_BINLOG_S3_* twin of a cnmsql_S3_* name.
+func BinlogEnvName(name string) string {
+	return binlogEnvPrefix + strings.TrimPrefix(name, envPrefix)
+}
+
+// HasBinlogStoreEnv reports whether the environment names a separate
+// binary-log archive store.
+func HasBinlogStoreEnv() bool {
+	return os.Getenv(BinlogEnvName(EnvBucket)) != ""
+}
+
+// BinlogStoreFromEnv is StoreFromEnv for the binary-log archive store.
+func BinlogStoreFromEnv() mysqlv1alpha1.S3ObjectStore {
+	return mysqlv1alpha1.S3ObjectStore{
+		Bucket: os.Getenv(BinlogEnvName(EnvBucket)),
+		Path:   os.Getenv(BinlogEnvName(EnvPath)),
+	}
+}
+
+// BinlogConfigFromEnv is ConfigFromEnv for the binary-log archive store.
+func BinlogConfigFromEnv() Config {
+	return configFromEnv(func(name string) string { return os.Getenv(BinlogEnvName(name)) })
+}
+
 // StoreFromEnv builds an S3ObjectStore destination (bucket + path) from the
 // environment. Endpoint/credentials come separately via ConfigFromEnv.
 func StoreFromEnv() mysqlv1alpha1.S3ObjectStore {
@@ -109,21 +141,25 @@ type Config struct {
 
 // ConfigFromEnv builds a Config from the cnmsql_S3_* environment variables.
 func ConfigFromEnv() Config {
+	return configFromEnv(os.Getenv)
+}
+
+func configFromEnv(getenv func(string) string) Config {
 	cfg := Config{
-		Endpoint:             os.Getenv(EnvEndpoint),
-		Region:               os.Getenv(EnvRegion),
-		AccessKeyID:          os.Getenv(EnvAccessKeyID),
-		SecretAccessKey:      os.Getenv(EnvSecretAccessKey),
-		SessionToken:         os.Getenv(EnvSessionToken),
-		SignatureV2:          strings.EqualFold(os.Getenv(EnvSignatureVersion), "s3v2"),
-		ServerSideEncryption: os.Getenv(EnvServerSideEncryption),
-		StorageClass:         os.Getenv(EnvStorageClass),
-		CABundle:             os.Getenv(EnvCABundle),
+		Endpoint:             getenv(EnvEndpoint),
+		Region:               getenv(EnvRegion),
+		AccessKeyID:          getenv(EnvAccessKeyID),
+		SecretAccessKey:      getenv(EnvSecretAccessKey),
+		SessionToken:         getenv(EnvSessionToken),
+		SignatureV2:          strings.EqualFold(getenv(EnvSignatureVersion), "s3v2"),
+		ServerSideEncryption: getenv(EnvServerSideEncryption),
+		StorageClass:         getenv(EnvStorageClass),
+		CABundle:             getenv(EnvCABundle),
 	}
-	if force, err := strconv.ParseBool(os.Getenv(EnvForcePathStyle)); err == nil {
+	if force, err := strconv.ParseBool(getenv(EnvForcePathStyle)); err == nil {
 		cfg.ForcePathStyle = force
 	}
-	if insecure, err := strconv.ParseBool(os.Getenv(EnvTLSInsecure)); err == nil {
+	if insecure, err := strconv.ParseBool(getenv(EnvTLSInsecure)); err == nil {
 		cfg.InsecureSkipVerify = insecure
 	}
 	return cfg

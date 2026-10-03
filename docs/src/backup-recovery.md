@@ -309,6 +309,30 @@ and `backup` are mutually exclusive. PITR with `recoveryTarget` works
 identically: the binlog archive is resolved from the same object store under the
 source name.
 
+When the source kept its binlog archive in a store of its own
+(`continuousArchiving.objectStore`), add that store as `binlogObjectStore` on the
+entry. Base backups are read from `objectStore` and binlogs from
+`binlogObjectStore`:
+
+```yaml
+  externalClusters:
+    - name: prod-cluster
+      objectStore:
+        bucket: cnmsql-backups
+        path: production
+        # endpoint, credentials ...
+      binlogObjectStore:
+        bucket: cnmsql-binlogs
+        path: production
+        # endpoint, credentials ...
+```
+
+The same field recovers backups taken before an archive move once their
+`Backup` objects are gone: point `binlogObjectStore` at the old archive store.
+While the `Backup` objects exist they already point at the store they were
+anchored to. See
+[keeping the archive in its own store](pitr#keeping-the-archive-in-its-own-store).
+
 ## Failure surfaces
 
 Common failure points are reported through Backup phase, Backup conditions, Job

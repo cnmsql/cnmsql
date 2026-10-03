@@ -78,7 +78,19 @@ spec:
         key: secretKey
 ```
 
-If omitted, the Backup uses `Cluster.spec.backup.objectStore`.
+If omitted, the Backup uses `Cluster.spec.backup.objectStore`. The override
+moves only the base backup: the binlog archive stays where the Cluster writes it,
+and the Backup records that store in `status.binlogObjectStore` for
+point-in-time recovery.
+
+## Separate binlog archive store
+
+`spec.backup.continuousArchiving.objectStore` sends the continuous binlog
+archive to a store of its own, with the same fields as any other object store.
+Base backups and logical dumps stay in `spec.backup.objectStore`. See
+[keeping the archive in its own store](pitr#keeping-the-archive-in-its-own-store).
+On an `externalClusters` entry, `binlogObjectStore` plays the same role for
+recovery.
 
 An `objectStore` also attaches to an `externalClusters` entry, which enables
 [raw object-store recovery](backup-recovery#restore-from-raw-object-store-no-backup-cr):
@@ -128,7 +140,8 @@ Physical backups:
 <path>/<cluster>/<backup-name>/<backup-id>/metadata.json
 ```
 
-Continuous binlog archive:
+Continuous binlog archive, in the archive store (`continuousArchiving.objectStore`
+when set, `spec.backup.objectStore` otherwise):
 
 ```text
 <path>/<cluster>/binlogs/<server-uuid>/<binlog-file>
@@ -152,8 +165,10 @@ of the bootstrap. The credentials stay in those Jobs, never in instance Pods:
 once the primary's volume is bootstrapped the source is not resolved again.
 
 Continuous archiving writes from the primary instance manager, so instance Pods
-carry the `cnmsql_S3_*` environment — including the access keys — when
-archiving is enabled. The [security model](./security-model.md#object-store-credentials)
+carry the `cnmsql_S3_*` environment — including the access keys — of the archive
+store when archiving is enabled. With a separate archive store, the instance
+Pods hold only that store's credentials, not the base-backup store's. A restore
+Job that needs both gets the archive store as `cnmsql_BINLOG_S3_*`. The [security model](./security-model.md#object-store-credentials)
 covers what that exposure means and how it differs from the MySQL account
 passwords, which never enter the Pod environment.
 

@@ -237,6 +237,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	// the archiver.
 	if cluster.IsArchivingEnabled() {
 		observed.ContinuousArchiving = aggregateArchiving(observed)
+		observed.ContinuousArchiving.Destination = archiveDestination(cluster)
 	}
 	observed.GroupReplication = topologyObservation.GroupReplication
 	observed.DivergedInstances = topologyObservation.DivergedInstances
@@ -586,6 +587,31 @@ func aggregateArchiving(observed observedCluster) *mysqlv1alpha1.ContinuousArchi
 	return out
 }
 
+// eventArchiveMoved is the Warning event reason for a change of the archive
+// destination.
+const eventArchiveMoved = "ArchiveMoved"
+
+// archiveDestination is the location the cluster archives binary logs to.
+func archiveDestination(cluster *mysqlv1alpha1.Cluster) string {
+	return cluster.BinlogObjectStore().Location()
+}
+
+// recordArchiveMovedEvent warns when the archive destination changed since the
+// last reported status. Backups anchored before the move need the old store
+// for point-in-time recovery, so the user should know and take a new one.
+func (r *ClusterReconciler) recordArchiveMovedEvent(latest, before *mysqlv1alpha1.Cluster) {
+	if r.Recorder == nil || latest.Status.ContinuousArchiving == nil || before.Status.ContinuousArchiving == nil {
+		return
+	}
+	from, to := before.Status.ContinuousArchiving.Destination, latest.Status.ContinuousArchiving.Destination
+	if from == "" || to == "" || from == to {
+		return
+	}
+	r.Recorder.Eventf(latest, corev1.EventTypeWarning, eventArchiveMoved,
+		"Binary-log archive moved from %s to %s; the new archive starts at the oldest binary log on the primary, "+
+			"so take a new base backup. Point-in-time recovery from older backups needs the old store", from, to)
+}
+
 // parseInstanceTime converts a timestamp the instance manager reports over its
 // status API, which is RFC3339 text, into the Kubernetes time the status surfaces.
 // An unparseable stamp is dropped rather than propagated: a status field that
@@ -762,6 +788,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	}
 	r.recordPhaseEvents(latest, before, observed, wasStoragePressured)
 	r.recordBinlogPurgeHeldEvent(latest, wasPurgeHeld)
+	r.recordArchiveMovedEvent(latest, before)
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}

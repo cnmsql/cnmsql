@@ -131,7 +131,8 @@ spec:
 When set, the operator adds a `mysql.cnmsql.co/cleanup-object-store` finalizer to
 the Cluster. On Cluster deletion it wipes the cluster's entire archive prefix
 (every base backup, the archived binlogs, and the archive index) before releasing
-the finalizer. As with the Backup path, a cleanup failure requeues and emits a
+the finalizer. With a separate archive store (`continuousArchiving.objectStore`)
+the cluster's prefix is wiped in both stores. As with the Backup path, a cleanup failure requeues and emits a
 `CleanupFailed` event; if the object store is permanently unreachable, an operator
 can remove the finalizer by hand to force teardown.
 
@@ -178,6 +179,10 @@ and an established primary. Each pass:
 4. **Expires old logical backups** on the same window, keeping the newest one.
    Dumps are counted on their own: they never keep a base backup or a binlog
    alive, and they never count as the newest base backup.
+
+With a separate archive store, base and logical backups expire in
+`spec.backup.objectStore` and binlog segments and the index in the archive
+store; the horizon still comes from the retained base backups.
 
 Binlog GC is conservative: a segment with an unknown (zero) last-event time is
 kept rather than risk shortening the PITR window. The index is rewritten **last**,

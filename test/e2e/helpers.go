@@ -776,11 +776,16 @@ spec:
 // the shared in-cluster object store. indent is the leading whitespace for the
 // `objectStore` key so the snippet can be embedded under spec.backup.
 func objectStoreYAML(indent string) string {
+	return objectStoreYAMLFor(indent, objectStoreBucket)
+}
+
+// objectStoreYAMLFor is objectStoreYAML for another bucket of the same store.
+func objectStoreYAMLFor(indent, bucket string) string {
 	lines := []string{
 		"objectStore:",
 		"  endpoint: " + objectStoreEndpoint(),
 		"  region: us-east-1",
-		"  bucket: " + objectStoreBucket,
+		"  bucket: " + bucket,
 		"  forcePathStyle: true",
 		"  credentials:",
 		"    accessKeyId:",

@@ -25,7 +25,6 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
-	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) corev1.PodSpec {
@@ -358,8 +357,8 @@ func initEnv(plan clusterPlan) []corev1.EnvVar {
 // runEnv is the environment for the run container. It reads no passwords: the
 // instance manager reads the credentials from the cluster's Secrets through
 // the Kubernetes API. When cluster has continuous archiving enabled, the
-// object-store credentials and destination (bucket/path) are appended so the
-// in-Pod archiver can ship binlogs. cluster may be nil for the bootstrap
+// binary-log archive store's credentials and destination (bucket/path) are
+// appended so the in-Pod archiver can ship binlogs. cluster may be nil for the bootstrap
 // Job's workers, which never archive.
 func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 	// The flavor rides on the plan (not the cluster arg) so the bootstrap Job's
@@ -375,12 +374,7 @@ func runEnv(cluster *mysqlv1alpha1.Cluster, plan clusterPlan) []corev1.EnvVar {
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
 	}
 	if cluster != nil && cluster.IsArchivingEnabled() {
-		store := *cluster.Spec.Backup.ObjectStore
-		env = append(env, backupObjectStoreEnv(store)...)
-		env = append(env,
-			corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
-			corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
-		)
+		env = append(env, objectStoreLocationEnv(*cluster.BinlogObjectStore())...)
 	}
 	return env
 }
