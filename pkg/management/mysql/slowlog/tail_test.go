@@ -176,3 +176,36 @@ func TestCursorRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// A rotated file the tailer never opened, next to the active file it reads, is
+// what the open race leaves behind: the tailer missed .1 and opened the file
+// the flush created. It must still be drained and deleted, or it blocks every
+// later rotation.
+func TestTailerDrainsARotatedFileItNeverOpened(t *testing.T) {
+	t.Parallel()
+	l, rec := newTestLog(t, Config{})
+	m := newFakeMysqld(t, l.cfg.Dir)
+	tl := newTailer(l, Cursor{})
+	ctx := context.Background()
+
+	m.slow("a")
+	tl.poll(ctx)
+	tl.poll(ctx)
+	expectQueries(t, rec, "a")
+
+	stray := "# User@Host: app[app] @ localhost []\n# Query_time: 0.5  Lock_time: 0.0 Rows_sent: 1  Rows_examined: 1\n" +
+		"SET timestamp=1791036744;\nSELECT 'missed';\n"
+	if err := os.WriteFile(l.rotatedPath(), []byte(stray), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tl.poll(ctx)
+	tl.poll(ctx)
+	expectQueries(t, rec, "a", "missed")
+	if _, ok := statPath(l.rotatedPath()); ok {
+		t.Fatal("the missed rotated file was not deleted")
+	}
+	m.slow("b")
+	tl.poll(ctx)
+	tl.poll(ctx)
+	expectQueries(t, rec, "a", "missed", "b")
+}

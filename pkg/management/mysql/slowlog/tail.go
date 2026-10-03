@@ -68,6 +68,7 @@ func (t *tailer) poll(ctx context.Context) {
 	if t.f == nil && !t.open() {
 		return
 	}
+	t.drainMissedRotation()
 	// The order matters: the watchdog marks the flush pending before it
 	// renames, so once the rename is visible, flushed describes that rotation.
 	away := t.rotatedAway()
@@ -156,6 +157,24 @@ func (t *tailer) open() bool {
 		return true
 	}
 	return false
+}
+
+// drainMissedRotation drains and deletes a rotated file the tailer never
+// opened. That happens when opening races a rotation: .1 does not exist yet
+// when the tailer looks for it, then the rename and the flush both complete
+// before it opens the active file, so it reads the new file and skips .1.
+// mysqld created that new file when it stopped writing .1, so .1 is complete.
+// Left alone it would block every later rotation.
+func (t *tailer) drainMissedRotation() {
+	st, ok := statPath(t.l.rotatedPath())
+	if !ok || st.ino == t.ino || st.ino == t.skipIno || t.rotatedAway() {
+		return
+	}
+	t.l.drainFile(t.l.rotatedPath())
+	if err := os.Remove(t.l.rotatedPath()); err != nil {
+		t.l.log.Error(err, "Could not delete the rotated slow log")
+		t.skipIno = st.ino
+	}
 }
 
 // rotatedAway reports whether the active path no longer names the open file.
