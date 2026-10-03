@@ -212,9 +212,7 @@ func TestReExecFailedWaitsForTheStuckTailer(t *testing.T) {
 	l, rec := newTestLog(t, fast(Config{}))
 	rec.block = make(chan struct{})
 	m := newFakeMysqld(t, l.cfg.Dir)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	l.Start(ctx, m.flush)
+	l.Start(t.Context(), m.flush)
 
 	m.slow("a")
 	m.slow("b")
