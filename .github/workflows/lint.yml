@@ -31,6 +31,31 @@ jobs:
     - name: Run linter
       run: make lint
 
+  api-docs:
+    permissions:
+      contents: read
+    name: Check API reference is up to date
+    runs-on: ubuntu-latest
+    steps:
+    - name: Clone the code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Setup Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version-file: go.mod
+
+    - name: Regenerate the API reference
+      run: make api-docs
+    - name: Fail on drift
+      run: |
+        git diff --exit-code docs/src/api-reference.md || {
+          echo "::error file=docs/src/api-reference.md::The API reference is out of date. Run 'make api-docs' and commit the result."
+          exit 1
+        }
+
   vulncheck:
     permissions:
       contents: read
