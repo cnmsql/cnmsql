@@ -233,3 +233,24 @@ func TestCheckBackupDestinationAllowsBothEmpty(t *testing.T) {
 		t.Fatalf("empty stores should pass, got blocked=%q retry=%v", check.Blocked, check.Retry)
 	}
 }
+
+func TestCheckBackupDestinationIgnoresArchiveStoreWhenArchivingIsOff(t *testing.T) {
+	t.Parallel()
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(listEmpty))
+	}))
+	defer empty.Close()
+
+	cluster := freshArchivingCluster(empty.URL)
+	// A leftover archive store whose endpoint is unreachable must not hold the
+	// cluster in provisioning while archiving is off.
+	cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+		Enabled: false, ObjectStore: storeAt("http://127.0.0.1:1", "binlogs", "archive"),
+	}
+	check := guardReconciler(t).checkBackupDestination(context.Background(), cluster)
+	if check.Retry != nil || check.Blocked != "" {
+		t.Fatalf("archive store must be ignored while archiving is off, got blocked=%q retry=%v",
+			check.Blocked, check.Retry)
+	}
+}

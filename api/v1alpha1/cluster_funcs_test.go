@@ -891,6 +891,15 @@ var _ = Describe("Binlog archive object store", func() {
 		Expect(cluster.BinlogObjectStore()).To(Equal(archive))
 	})
 
+	It("ignores continuousArchiving.objectStore while archiving is off", func() {
+		cluster := &Cluster{}
+		cluster.Spec.Backup = &BackupConfiguration{
+			ObjectStore:         base,
+			ContinuousArchiving: &ContinuousArchivingConfiguration{Enabled: false, ObjectStore: archive},
+		}
+		Expect(cluster.BinlogObjectStore()).To(Equal(base))
+	})
+
 	It("does not enable archiving from the archive store alone", func() {
 		cluster := &Cluster{}
 		cluster.Spec.Backup = &BackupConfiguration{

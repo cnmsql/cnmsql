@@ -1192,13 +1192,15 @@ func (cluster *Cluster) IsArchivingEnabled() bool {
 }
 
 // BinlogObjectStore returns the object store the binary-log archive is written
-// to: continuousArchiving.objectStore when set, otherwise backup.objectStore.
+// to: continuousArchiving.objectStore when archiving is enabled and it is set,
+// otherwise backup.objectStore. The archive store is ignored while archiving is
+// off, so a leftover one cannot hold up retention, reclaim or provisioning.
 // Nil when neither is configured.
 func (cluster *Cluster) BinlogObjectStore() *S3ObjectStore {
 	if cluster.Spec.Backup == nil {
 		return nil
 	}
-	if ca := cluster.Spec.Backup.ContinuousArchiving; ca != nil && ca.ObjectStore != nil {
+	if ca := cluster.Spec.Backup.ContinuousArchiving; ca != nil && ca.Enabled && ca.ObjectStore != nil {
 		return ca.ObjectStore
 	}
 	return cluster.Spec.Backup.ObjectStore
