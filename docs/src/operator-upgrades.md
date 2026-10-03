@@ -370,6 +370,21 @@ image tag, so first move any cluster whose tag has no version (a digest,
 `:latest`) back to a tag like `:8.4`. The 0.8.x plugin cannot open root
 sessions on distroless images.
 
+#### Slow query log and the run volume
+
+The slow query log becomes usable (see [Slow query
+log](./monitoring.md#slow-query-log)), which changes two things:
+
+- The `run` volume of every instance Pod, mounted at `/var/run/mysqld`, is now
+  memory-backed and capped at 32 MiB. This change to the Pod template is part
+  of the restart above. Up to 32 MiB of it counts against the instance
+  container's memory limit; check that clusters with a tight
+  `resources.limits.memory` have room for it.
+- `log_output` and `slow_query_log_file` are now managed by the operator. A
+  cluster that sets either in `spec.mysql.parameters` goes `Blocked` after the
+  upgrade, with a `phaseReason` naming the key. Remove them before upgrading.
+  `slow_query_log` and `long_query_time` are still yours to set.
+
 ### Upgrading from 0.7.x to 0.8.0
 
 The upgrade keeps your data: checksums, archived binlogs and point-in-time

@@ -171,14 +171,8 @@ func (o *JoinOptions) configureReplication(
 	ctx context.Context, eng engine.Engine, ver version.Version, gtidPurged string,
 ) error {
 	log := logf.FromContext(ctx).WithName("instance-join")
-	args := []string{}
-	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
-	}
+	args := temporaryServerArgs(o.ConfigFile, o.DataDir, o.Socket)
 	args = append(args,
-		"--datadir="+o.DataDir,
-		"--socket="+o.Socket,
-		"--skip-networking",
 		"--log-bin=binlog",
 	)
 	args = append(args, eng.GTIDStartupArgs()...)

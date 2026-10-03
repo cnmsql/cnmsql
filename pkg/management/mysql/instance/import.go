@@ -168,14 +168,8 @@ func Import(ctx context.Context, opts ImportOptions) error {
 		return fmt.Errorf("import: %s is not in this instance image: %w", client, err)
 	}
 
-	args := []string{}
-	if opts.ConfigFile != "" {
-		args = append(args, "--defaults-file="+opts.ConfigFile)
-	}
+	args := temporaryServerArgs(opts.ConfigFile, opts.DataDir, opts.Socket)
 	args = append(args,
-		"--datadir="+opts.DataDir,
-		"--socket="+opts.Socket,
-		"--skip-networking",
 		// The load is not replicated: replicas clone the loaded primary, and
 		// the dump carries no GTIDs that must survive. Without a binary log the
 		// load is faster and the first archived binlog is not the size of it.

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -286,5 +287,45 @@ func TestProcessSupervisorPid(t *testing.T) {
 	_ = s.ShutdownWithTimeout(2 * time.Second)
 	if s.Pid() != 0 {
 		t.Errorf("Pid after shutdown = %d, want 0", s.Pid())
+	}
+}
+
+type fakeParticipant struct{ prepared, failed int }
+
+func (p *fakeParticipant) PrepareReExec() []string {
+	p.prepared++
+	return []string{"CNMSQL_TEST_HANDOFF=42"}
+}
+func (p *fakeParticipant) ReExecFailed() { p.failed++ }
+
+func TestReexecEnvCarriesExtraEntries(t *testing.T) {
+	t.Setenv("CNMSQL_TEST_HANDOFF", "old")
+	env := reexecEnv(7, "CNMSQL_TEST_HANDOFF=42")
+	if !slices.Contains(env, "CNMSQL_TEST_HANDOFF=42") || slices.Contains(env, "CNMSQL_TEST_HANDOFF=old") {
+		t.Fatalf("env does not replace the handoff entry: %v", env)
+	}
+	if !slices.Contains(env, AdoptMysqldPIDEnv+"=7") {
+		t.Fatalf("env lost the adopt PID: %v", env)
+	}
+}
+
+func TestFailedReExecResumesParticipants(t *testing.T) {
+	p := &fakeParticipant{}
+	reExecParticipantsMu.Lock()
+	saved := reExecParticipants
+	reExecParticipants = nil
+	reExecParticipantsMu.Unlock()
+	t.Cleanup(func() {
+		reExecParticipantsMu.Lock()
+		reExecParticipants = saved
+		reExecParticipantsMu.Unlock()
+	})
+	RegisterReExecParticipant(p)
+
+	if err := reExecPath(filepath.Join(t.TempDir(), "missing"), 1); err == nil {
+		t.Fatal("exec of a missing binary succeeded")
+	}
+	if p.prepared != 1 || p.failed != 1 {
+		t.Fatalf("prepared=%d failed=%d, want 1 and 1", p.prepared, p.failed)
 	}
 }

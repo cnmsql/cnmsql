@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +42,7 @@ import (
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog"
 )
 
 var (
@@ -261,6 +263,7 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 		Role:         role,
 		DataDir:      dataDir,
 		Socket:       socketPath,
+		SlowLogFile:  filepath.Join(filepath.Dir(socketPath), slowlog.FileName),
 		Port:         3306,
 		ReportHost:   inst.ServiceName,
 		BinlogFormat: cluster.Spec.MySQL.BinlogFormat,

@@ -256,8 +256,8 @@ log paths affects every tenant on the cluster. cnmsql guards it:
   offending key, before any Pod is created.
 - **A dangerous-key denylist** rejects keys that are not operator-set but would
   still compromise the deployment (`datadir`, `pid_file`, `port`, `tmpdir`,
-  `plugin_dir`, `secure_file_priv`, `log_error`, the admin/TLS cipher knobs, and
-  more) with the same `Blocked` outcome.
+  `plugin_dir`, `secure_file_priv`, `log_error`, `log_output`,
+  `slow_query_log_file`, the admin/TLS cipher knobs, and more) with the same `Blocked` outcome.
 - **Deprecated keys** that still parse (for example `master_info_repository`,
   `slave_parallel_workers`) are accepted but raise a `DeprecatedParameter`
   warning event so they surface before a version bump removes them.

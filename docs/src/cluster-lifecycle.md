@@ -226,8 +226,8 @@ topology, TLS material, binlog durability) and the ones that would move on-disk
 paths or expose the administrative interface, for example `server_id`,
 `gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`,
 `socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`,
-`admin_address`, `admin_ssl_cert`, `tls_ciphersuites`, `skip_replica_start` and
-`auto_generate_certs`. `require_secure_transport` is allowed: whether clients
+`log_output`, `slow_query_log_file`, `admin_address`, `admin_ssl_cert`,
+`tls_ciphersuites`, `skip_replica_start` and `auto_generate_certs`. `require_secure_transport` is allowed: whether clients
 must use TLS is your choice.
 
 A deprecated key is accepted, and the operator emits a `DeprecatedParameter`

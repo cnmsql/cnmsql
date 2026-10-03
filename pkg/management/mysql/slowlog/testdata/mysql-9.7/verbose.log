@@ -1,0 +1,202 @@
+# Time: 2026-10-03T14:13:00.473463Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Query_time: 0.000028  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 10 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 118 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.473435Z End: 2026-10-03T14:13:00.473463Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:13:00.475206Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Query_time: 0.001681  Lock_time: 0.000001 Rows_sent: 0  Rows_examined: 0 Thread_id: 10 Errno: 0 Killed: 0 Bytes_received: 41 Bytes_sent: 11 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.473525Z End: 2026-10-03T14:13:00.475206Z Schema:  Rows_affected: 1
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# InnoDB_trx_id: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+#   InnoDB_IO_r_ops: 0  InnoDB_IO_r_bytes: 0  InnoDB_IO_r_wait: 0.000000
+#   InnoDB_rec_lock_wait: 0.000000  InnoDB_queue_wait: 0.000000
+#   InnoDB_pages_distinct: 2
+SET timestamp=1791036780;
+CREATE DATABASE IF NOT EXISTS shop;
+# Time: 2026-10-03T14:13:00.482174Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Query_time: 0.006946  Lock_time: 0.000004 Rows_sent: 0  Rows_examined: 0 Thread_id: 10 Errno: 0 Killed: 0 Bytes_received: 76 Bytes_sent: 11 Read_first: 0 Read_last: 0 Read_key: 18 Read_next: 11 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.475228Z End: 2026-10-03T14:13:00.482174Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# InnoDB_trx_id: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+#   InnoDB_IO_r_ops: 0  InnoDB_IO_r_bytes: 0  InnoDB_IO_r_wait: 0.000000
+#   InnoDB_rec_lock_wait: 0.000000  InnoDB_queue_wait: 0.000000
+#   InnoDB_pages_distinct: 23
+SET timestamp=1791036780;
+CREATE TABLE IF NOT EXISTS shop.t (id INT PRIMARY KEY, v VARCHAR(20));
+# Time: 2026-10-03T14:13:00.482778Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Query_time: 0.000582  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 10 Errno: 0 Killed: 0 Bytes_received: 49 Bytes_sent: 50 Read_first: 0 Read_last: 0 Read_key: 2 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.482196Z End: 2026-10-03T14:13:00.482778Z Schema:  Rows_affected: 2
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# InnoDB_trx_id: 811
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+#   InnoDB_IO_r_ops: 1  InnoDB_IO_r_bytes: 16384  InnoDB_IO_r_wait: 0.000187
+#   InnoDB_rec_lock_wait: 0.000000  InnoDB_queue_wait: 0.000000
+#   InnoDB_pages_distinct: 6
+SET timestamp=1791036780;
+REPLACE INTO shop.t VALUES (1,'a'),(2,'b');
+# Time: 2026-10-03T14:13:00.482825Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Query_time: 0.000001  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 10 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.482824Z End: 2026-10-03T14:13:00.482825Z Schema:  Rows_affected: 2
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+# administrator command: Quit;
+# Time: 2026-10-03T14:13:00.487770Z
+# User@Host: root[root] @ localhost []  Id:    11
+# Query_time: 0.000029  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 11 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 118 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.487741Z End: 2026-10-03T14:13:00.487770Z Schema: shop Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+use shop;
+SET timestamp=1791036780;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:13:00.487894Z
+# User@Host: root[root] @ localhost []  Id:    11
+# Query_time: 0.000071  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 2 Thread_id: 11 Errno: 0 Killed: 0 Bytes_received: 36 Bytes_sent: 94 Read_first: 1 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 3 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.487823Z End: 2026-10-03T14:13:00.487894Z Schema: shop Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# InnoDB_trx_id: 0
+# Full_scan: Yes  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+#   InnoDB_IO_r_ops: 0  InnoDB_IO_r_bytes: 0  InnoDB_IO_r_wait: 0.000000
+#   InnoDB_rec_lock_wait: 0.000000  InnoDB_queue_wait: 0.000000
+#   InnoDB_pages_distinct: 1
+SET timestamp=1791036780;
+SELECT * FROM t WHERE v = 'a';
+# Time: 2026-10-03T14:13:00.487952Z
+# User@Host: root[root] @ localhost []  Id:    11
+# Query_time: 0.000001  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 11 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.487951Z End: 2026-10-03T14:13:00.487952Z Schema: shop Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+# administrator command: Quit;
+# Time: 2026-10-03T14:13:00.492467Z
+# User@Host: root[root] @ localhost []  Id:    12
+# Query_time: 0.000043  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 12 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 118 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.492424Z End: 2026-10-03T14:13:00.492467Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:13:00.492658Z
+# User@Host: root[root] @ localhost []  Id:    12
+# Query_time: 0.000126  Lock_time: 0.000001 Rows_sent: 2  Rows_examined: 2 Thread_id: 12 Errno: 0 Killed: 0 Bytes_received: 54 Bytes_sent: 102 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 2 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.492532Z End: 2026-10-03T14:13:00.492658Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# InnoDB_trx_id: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+#   InnoDB_IO_r_ops: 0  InnoDB_IO_r_bytes: 0  InnoDB_IO_r_wait: 0.000000
+#   InnoDB_rec_lock_wait: 0.000000  InnoDB_queue_wait: 0.000000
+#   InnoDB_pages_distinct: 1
+SET timestamp=1791036780;
+SELECT id,
+       v
+  FROM shop.t
+ WHERE id > 0;
+# Time: 2026-10-03T14:13:00.492708Z
+# User@Host: root[root] @ localhost []  Id:    12
+# Query_time: 0.000001  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 12 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.492707Z End: 2026-10-03T14:13:00.492708Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+# administrator command: Quit;
+# Time: 2026-10-03T14:13:00.497236Z
+# User@Host: root[root] @ localhost []  Id:    13
+# Query_time: 0.000026  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 13 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 118 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.497210Z End: 2026-10-03T14:13:00.497236Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:13:00.507373Z
+# User@Host: root[root] @ localhost []  Id:    13
+# Query_time: 0.010092  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 13 Errno: 0 Killed: 0 Bytes_received: 50 Bytes_sent: 126 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.497281Z End: 2026-10-03T14:13:00.507373Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+SELECT 'it''s; # not a header', SLEEP(0.01);
+# Time: 2026-10-03T14:13:00.512091Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Query_time: 0.000041  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 14 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 118 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.512050Z End: 2026-10-03T14:13:00.512091Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:13:00.512162Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Query_time: 0.000011  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 14 Errno: 0 Killed: 0 Bytes_received: 15 Bytes_sent: 49 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.512151Z End: 2026-10-03T14:13:00.512162Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+SELECT 1;
+# Time: 2026-10-03T14:13:00.512188Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Query_time: 0.000008  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 14 Errno: 0 Killed: 0 Bytes_received: 15 Bytes_sent: 49 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.512180Z End: 2026-10-03T14:13:00.512188Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+SELECT 2;
+# Time: 2026-10-03T14:13:00.512224Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Query_time: 0.000001  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 14 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.512223Z End: 2026-10-03T14:13:00.512224Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+# administrator command: Quit;
+# Time: 2026-10-03T14:13:00.516204Z
+# User@Host: root[root] @ localhost []  Id:    15
+# Query_time: 0.000019  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 15 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 118 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.516185Z End: 2026-10-03T14:13:00.516204Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:13:00.535762Z
+# User@Host: root[root] @ localhost []  Id:    15
+# Query_time: 0.019514  Lock_time: 0.000013 Rows_sent: 0  Rows_examined: 0 Thread_id: 15 Errno: 0 Killed: 0 Bytes_received: 28 Bytes_sent: 264 Read_first: 0 Read_last: 0 Read_key: 39 Read_next: 26 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.516248Z End: 2026-10-03T14:13:00.535762Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# InnoDB_trx_id: 816
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+#   InnoDB_IO_r_ops: 2  InnoDB_IO_r_bytes: 32768  InnoDB_IO_r_wait: 0.000627
+#   InnoDB_rec_lock_wait: 0.000000  InnoDB_queue_wait: 0.000000
+#   InnoDB_pages_distinct: 80
+SET timestamp=1791036780;
+OPTIMIZE TABLE shop.t;
+# Time: 2026-10-03T14:13:00.535852Z
+# User@Host: root[root] @ localhost []  Id:    15
+# Query_time: 0.000002  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 15 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Count_hit_tmp_table_size: 0  Start: 2026-10-03T14:13:00.535850Z End: 2026-10-03T14:13:00.535852Z Schema:  Rows_affected: 0
+# Tmp_tables: 0  Tmp_disk_tables: 0  Tmp_table_sizes: 0
+# Full_scan: No  Full_join: No  Tmp_table: No  Tmp_table_on_disk: No
+# Filesort: No  Filesort_on_disk: No  Merge_passes: 0
+# No InnoDB statistics available for this query
+SET timestamp=1791036780;
+# administrator command: Quit;

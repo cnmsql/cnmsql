@@ -334,10 +334,7 @@ func (o *RestoreOptions) reconcileRestoredServer(ctx context.Context, eng engine
 	stmts := restoredServerStatements(
 		eng, o.Version, o.RootPassword, o.ControlUser, o.ControlPassword, o.BackupUser, o.BackupPassword)
 
-	args := []string{}
-	if o.ConfigFile != "" {
-		args = append(args, "--defaults-file="+o.ConfigFile)
-	}
+	args := temporaryServerArgs(o.ConfigFile, o.DataDir, o.Socket)
 	// Do not start replication on the temporary server: the restored metadata is
 	// about to be reset, and starting from it would reach for the backup source's
 	// host. The option was renamed slave→replica in 8.0.26.
@@ -346,9 +343,6 @@ func (o *RestoreOptions) reconcileRestoredServer(ctx context.Context, eng engine
 		skipStart = "--skip-replica-start"
 	}
 	args = append(args,
-		"--datadir="+o.DataDir,
-		"--socket="+o.Socket,
-		"--skip-networking",
 		"--skip-grant-tables",
 		skipStart,
 		// Suppress the binary log for the credential reset. The config file enables
