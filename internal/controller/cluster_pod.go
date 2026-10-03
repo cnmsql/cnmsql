@@ -20,12 +20,19 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 )
+
+// runVolumeSizeLimit caps the memory-backed run volume holding the socket, the
+// manager's pidfile and the slow log (design 037). On a tmpfs the kernel
+// enforces it: a write past it fails with ENOSPC, which only drops slow log
+// entries, where a disk-backed sizeLimit would get the Pod evicted.
+var runVolumeSizeLimit = resource.MustParse("32Mi")
 
 func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) corev1.PodSpec {
 	gracePeriod := int64(cluster.GetMaxStopDelay())
@@ -159,10 +166,14 @@ func (r *ClusterReconciler) podSpec(cluster *mysqlv1alpha1.Cluster, plan cluster
 // mount: the data PVC, the scratch/run/backup emptyDirs, my.cnf and the TLS
 // material.
 func instanceVolumes(plan clusterPlan, inst instancePlan) []corev1.Volume {
+	runLimit := runVolumeSizeLimit
 	return []corev1.Volume{
 		{Name: scratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: inst.PVCName}}},
-		{Name: runVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: runVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium:    corev1.StorageMediumMemory,
+			SizeLimit: &runLimit,
+		}}},
 		{Name: backupVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: inst.ConfigMapName}}}},
 		{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: inst.ServerTLSSecret}}},
