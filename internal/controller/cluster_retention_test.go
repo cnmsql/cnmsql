@@ -18,10 +18,16 @@ package controller
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -104,5 +110,80 @@ func TestReconcileRetentionThrottleExpired(t *testing.T) {
 	}
 	if err := reconciler.reconcileRetention(context.Background(), cluster); err == nil {
 		t.Fatal("expected an object-store error to be surfaced for retry")
+	}
+}
+
+// recordingS3Server answers LIST with an empty result, HEAD with 404 and
+// DELETE with 204, and records "METHOD /path?prefix=..." for each request.
+func recordingS3Server(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path+"?prefix="+r.URL.Query().Get("prefix"))
+		mu.Unlock()
+		switch r.Method {
+		case http.MethodHead:
+			w.WriteHeader(http.StatusNotFound)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(seen) }
+}
+
+func storeAt(endpoint, bucket, path string) *mysqlv1alpha1.S3ObjectStore {
+	store := &mysqlv1alpha1.S3ObjectStore{
+		Bucket: bucket, Path: path, Endpoint: endpoint,
+		Credentials: mysqlv1alpha1.S3Credentials{
+			AccessKeyID:     &mysqlv1alpha1.SecretKeySelector{Name: "cluster-s3", Key: "access"},
+			SecretAccessKey: &mysqlv1alpha1.SecretKeySelector{Name: "cluster-s3", Key: "secret"},
+		},
+	}
+	store.SetDefaults()
+	return store
+}
+
+func anyContains(seen []string, sub string) bool {
+	return slices.ContainsFunc(seen, func(s string) bool { return strings.Contains(s, sub) })
+}
+
+func TestReconcileRetentionListsBinlogsInArchiveStore(t *testing.T) {
+	t.Parallel()
+
+	baseSrv, baseSeen := recordingS3Server(t)
+	logSrv, logSeen := recordingS3Server(t)
+	cluster := baseCluster()
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		ObjectStore:     storeAt(baseSrv.URL, "backups", "base"),
+		RetentionPolicy: "30d",
+		ContinuousArchiving: &mysqlv1alpha1.ContinuousArchivingConfiguration{
+			Enabled: true, ObjectStore: storeAt(logSrv.URL, "binlogs", "archive"),
+		},
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, s3CredentialsSecret()).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if anyContains(baseSeen(), "binlogs/") {
+		t.Fatalf("base store was asked for binlogs: %v", baseSeen())
+	}
+	if !anyContains(logSeen(), "prefix=archive/demo/binlogs/") {
+		t.Fatalf("archive store was not listed for binlogs: %v", logSeen())
+	}
+	if !anyContains(baseSeen(), "prefix=base/demo/") {
+		t.Fatalf("base store was not listed for base backups: %v", baseSeen())
 	}
 }

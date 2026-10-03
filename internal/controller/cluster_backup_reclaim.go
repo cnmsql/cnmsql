@@ -103,25 +103,38 @@ func (r *ClusterReconciler) reconcileClusterDelete(
 }
 
 // cleanupClusterObjectStore removes the cluster's whole archive prefix (every
-// base backup, the archived binlogs and the archive index) from the object
-// store. It is a no-op when no object store is configured.
+// base backup, the archived binlogs and the archive index) from the base-backup
+// store and, when it is kept apart, from the binary-log archive store. It is a
+// no-op when no object store is configured.
 func (r *ClusterReconciler) cleanupClusterObjectStore(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 ) error {
-	log := logf.FromContext(ctx)
-
 	backup := cluster.Spec.Backup
 	if backup == nil || backup.ObjectStore == nil {
 		return nil
 	}
-	store := backup.ObjectStore
-
-	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, store)
-	if err != nil {
-		return err
+	stores := []*mysqlv1alpha1.S3ObjectStore{backup.ObjectStore}
+	if archive := cluster.BinlogObjectStore(); !archive.SameLocation(backup.ObjectStore) {
+		stores = append(stores, archive)
 	}
-	osClient, err := objectstore.NewClient(cfg)
+	for _, store := range stores {
+		if err := r.removeClusterPrefix(ctx, cluster, store); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeClusterPrefix removes the cluster's prefix from store.
+func (r *ClusterReconciler) removeClusterPrefix(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	store *mysqlv1alpha1.S3ObjectStore,
+) error {
+	log := logf.FromContext(ctx)
+
+	osClient, err := r.objectStoreClient(ctx, cluster.Namespace, store)
 	if err != nil {
 		return err
 	}

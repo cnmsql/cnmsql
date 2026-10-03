@@ -189,3 +189,47 @@ func TestCheckRecoveryTargetReadsArchiveStore(t *testing.T) {
 			check.Blocked, check.Retry)
 	}
 }
+
+func TestCheckBackupDestinationBlocksNonEmptyArchiveStore(t *testing.T) {
+	t.Parallel()
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(listEmpty))
+	}))
+	defer empty.Close()
+	nonEmpty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(listNonEmpty))
+	}))
+	defer nonEmpty.Close()
+
+	cluster := freshArchivingCluster(empty.URL)
+	cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+		Enabled: true, ObjectStore: storeAt(nonEmpty.URL, "binlogs", "archive"),
+	}
+
+	check := guardReconciler(t).checkBackupDestination(context.Background(), cluster)
+	if check.Retry != nil {
+		t.Fatalf("unexpected retry: %v", check.Retry)
+	}
+	if !strings.Contains(check.Blocked, "binlogs") {
+		t.Fatalf("a non-empty archive store must block and name its bucket, got %q", check.Blocked)
+	}
+}
+
+func TestCheckBackupDestinationAllowsBothEmpty(t *testing.T) {
+	t.Parallel()
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(listEmpty))
+	}))
+	defer empty.Close()
+
+	cluster := freshArchivingCluster(empty.URL)
+	cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+		Enabled: true, ObjectStore: storeAt(empty.URL, "binlogs", "archive"),
+	}
+	check := guardReconciler(t).checkBackupDestination(context.Background(), cluster)
+	if check.Retry != nil || check.Blocked != "" {
+		t.Fatalf("empty stores should pass, got blocked=%q retry=%v", check.Blocked, check.Retry)
+	}
+}

@@ -59,11 +59,22 @@ func (r *ClusterReconciler) checkBackupDestination(
 	}
 
 	store := cluster.Spec.Backup.ObjectStore
-	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, store)
-	if err != nil {
-		return backupDestinationCheck{Retry: err}
+	if check := r.checkEmptyPrefix(ctx, cluster, store); check.Blocked != "" || check.Retry != nil {
+		return check
 	}
-	osClient, err := objectstore.NewClient(cfg)
+	// A fresh cluster must not write into another cluster's archive either.
+	if archive := cluster.BinlogObjectStore(); !archive.SameLocation(store) {
+		return r.checkEmptyPrefix(ctx, cluster, archive)
+	}
+	return backupDestinationCheck{}
+}
+
+// checkEmptyPrefix blocks when the cluster's prefix in store already holds
+// objects.
+func (r *ClusterReconciler) checkEmptyPrefix(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, store *mysqlv1alpha1.S3ObjectStore,
+) backupDestinationCheck {
+	osClient, err := r.objectStoreClient(ctx, cluster.Namespace, store)
 	if err != nil {
 		return backupDestinationCheck{Retry: err}
 	}
@@ -163,6 +174,18 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 		}
 	}
 	return recoveryTargetCheck{}
+}
+
+// objectStoreClient resolves store's Secrets in namespace and returns a client
+// for it.
+func (r *ClusterReconciler) objectStoreClient(
+	ctx context.Context, namespace string, store *mysqlv1alpha1.S3ObjectStore,
+) (*objectstore.Client, error) {
+	cfg, err := r.objectStoreConfig(ctx, namespace, store)
+	if err != nil {
+		return nil, err
+	}
+	return objectstore.NewClient(cfg)
 }
 
 // objectStoreConfig resolves an object store plus its secret-backed credentials

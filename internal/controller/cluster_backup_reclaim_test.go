@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -188,5 +189,65 @@ func TestClusterDeleteWithoutFinalizerIsNoop(t *testing.T) {
 
 	if err := reconciler.reconcileClusterDelete(context.Background(), cluster); err != nil {
 		t.Fatalf("delete without our finalizer should be a no-op, got %v", err)
+	}
+}
+
+func TestClusterDeleteWipesBothStores(t *testing.T) {
+	t.Parallel()
+
+	baseSrv, baseSeen := recordingS3Server(t)
+	logSrv, logSeen := recordingS3Server(t)
+	cluster := reclaimCluster(storeAt(baseSrv.URL, "backups", "base"))
+	cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+		Enabled: true, ObjectStore: storeAt(logSrv.URL, "binlogs", "archive"),
+	}
+	cluster.Finalizers = []string{clusterBackupFinalizer}
+	now := metav1.Now()
+	cluster.DeletionTimestamp = &now
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, s3CredentialsSecret()).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileClusterDelete(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if !anyContains(baseSeen(), "prefix=base/demo/") {
+		t.Fatalf("base prefix not removed: %v", baseSeen())
+	}
+	if !anyContains(logSeen(), "prefix=archive/demo/") {
+		t.Fatalf("archive prefix not removed: %v", logSeen())
+	}
+}
+
+func TestClusterDeleteWipesSharedStoreOnce(t *testing.T) {
+	t.Parallel()
+
+	srv, seen := recordingS3Server(t)
+	cluster := reclaimCluster(storeAt(srv.URL, "backups", "base"))
+	cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+		Enabled: true, ObjectStore: storeAt(srv.URL, "backups", "/base/"),
+	}
+	cluster.Finalizers = []string{clusterBackupFinalizer}
+	now := metav1.Now()
+	cluster.DeletionTimestamp = &now
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, s3CredentialsSecret()).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileClusterDelete(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	lists := 0
+	for _, s := range seen() {
+		if strings.HasPrefix(s, "GET ") && strings.Contains(s, "prefix=base/demo/") {
+			lists++
+		}
+	}
+	if lists != 1 {
+		t.Fatalf("one location must be listed once, got %d: %v", lists, seen())
 	}
 }
