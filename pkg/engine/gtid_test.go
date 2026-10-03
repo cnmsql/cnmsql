@@ -16,7 +16,10 @@ limitations under the License.
 
 package engine
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 const (
 	uuid1 = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
@@ -228,6 +231,8 @@ func TestGTIDMissingCount(t *testing.T) {
 		{"mariadb: nothing missing", mariadbGTID{}, "0-1-100", "0-1-40", 0},
 		{"mariadb: domain absent", mariadbGTID{}, "0-1-10", "0-1-10,1-2-7", 7},
 		{"mariadb: server id is not a transaction", mariadbGTID{}, "0-1-50", "0-9-50", 0},
+		{"mariadb: sequence above int64 saturates", mariadbGTID{}, "", "0-1-18446744073709551615", math.MaxInt64},
+		{"mariadb: sum across domains saturates", mariadbGTID{}, "", "0-1-9223372036854775807,1-1-5", math.MaxInt64},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

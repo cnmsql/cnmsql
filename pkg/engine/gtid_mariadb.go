@@ -18,6 +18,7 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -141,6 +142,7 @@ func (mariadbGTID) Contains(superset, subset string) (bool, error) {
 // has not reached. MariaDB numbers each domain's transactions consecutively
 // from 1, so the gap in a domain is the difference of the reached sequence
 // numbers, and a domain absent from have counts as its full sequence number.
+// The sum saturates at math.MaxInt64 since sequence numbers are uint64.
 func (mariadbGTID) MissingCount(have, want string) (int64, error) {
 	posHave, err := parseMariaPos(have)
 	if err != nil {
@@ -154,13 +156,26 @@ func (mariadbGTID) MissingCount(have, want string) (int64, error) {
 	for domain, wanted := range posWant {
 		if mine, ok := posHave[domain]; ok {
 			if wanted.seq > mine.seq {
-				missing += int64(wanted.seq - mine.seq)
+				missing = addSaturating(missing, wanted.seq-mine.seq)
 			}
 			continue
 		}
-		missing += int64(wanted.seq)
+		missing = addSaturating(missing, wanted.seq)
 	}
 	return missing, nil
+}
+
+// addSaturating returns total+n, clamped to math.MaxInt64. total must be
+// non-negative.
+func addSaturating(total int64, n uint64) int64 {
+	if n > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	d := int64(n)
+	if d > math.MaxInt64-total {
+		return math.MaxInt64
+	}
+	return total + d
 }
 
 // Union keeps, per domain, the highest sequence number any position reached.
