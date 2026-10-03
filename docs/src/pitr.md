@@ -369,9 +369,22 @@ archive location in use.
 Moving the archive is allowed, and the operator emits an `ArchiveMoved` Warning
 event when it notices. The archiver ships every binary log still on the
 primary's disk to the new store, so the new archive starts at the oldest local
-binary log. Backups taken before that point can only be recovered to a target
-with the old store (raw object-store recovery with `binlogObjectStore` pointing
-at it). Take a new base backup right after a move.
+binary log. Take a new base backup right after a move.
+
+`Backup` objects taken before the move recorded the old store in
+`status.binlogObjectStore` and keep replaying from it, so keep the old store's
+bucket and credentials for as long as those backups matter. If the `Backup`
+objects are gone, use raw object-store recovery with `binlogObjectStore`
+pointing at the old store. Retention and the `Delete` reclaim policy only act on
+the current archive store: binlogs left in the old store are not expired or
+removed, so clean them up by hand once you no longer need them.
+
+The archive store is used only while `continuousArchiving.enabled` is true. With
+archiving off, `continuousArchiving.objectStore` is ignored, and retention and
+reclaim act on `spec.backup.objectStore` alone.
+
+A restore without a `recoveryTarget` reads no binlog, so it does not need the
+archive store or its credentials.
 
 ## RPO model
 

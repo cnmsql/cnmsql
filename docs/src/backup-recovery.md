@@ -327,8 +327,11 @@ entry. Base backups are read from `objectStore` and binlogs from
         # endpoint, credentials ...
 ```
 
-The same field recovers backups taken before an archive move: point
-`binlogObjectStore` at the old archive store.
+The same field recovers backups taken before an archive move once their
+`Backup` objects are gone: point `binlogObjectStore` at the old archive store.
+While the `Backup` objects exist they already point at the store they were
+anchored to. See
+[keeping the archive in its own store](pitr#keeping-the-archive-in-its-own-store).
 
 ## Failure surfaces
 

@@ -125,7 +125,12 @@ Helpers in `api/v1alpha1`:
   the same defaulting (`SetDefaults`) and webhook validation
   (`S3ObjectStore.Validate`) as the other object stores.
 - `continuousArchiving.objectStore` without `enabled: true` is accepted and
-  ignored, like the other archiving fields.
+  ignored, like the other archiving fields: `BinlogObjectStore()` returns
+  `backup.objectStore` while archiving is off, so a leftover archive store never
+  holds up provisioning, retention or reclaim.
+- A `recoveryTarget` on `bootstrap.recovery.source` no longer requires
+  `spec.backup.objectStore` on the recovering cluster: the archive comes from
+  the `externalClusters` entry. Backup-based recovery keeps the rule.
 - A recovery that needs binlogs (`recoveryTarget` set) from an external cluster
   needs `binlogObjectStore` or `objectStore`; the existing "has no objectStore"
   check already covers the second, so nothing new is needed.
@@ -149,9 +154,11 @@ archive is the cluster's. Today PITR from such a backup looks for binlogs in the
 override, where they never were. Recording the cluster's binlog store in
 `status.binlogObjectStore` fixes that as a side effect.
 
-`recoveryPlan` gains `BinlogStore S3ObjectStore` and `BinlogStoreEnv
-[]corev1.EnvVar`. When the binlog store equals the base store (same endpoint,
-bucket and path, credentials ignored), `BinlogStoreEnv` is empty.
+`recoveryPlan` gains `BinlogStore S3ObjectStore`, and its `StoreEnv` carries
+the `cnmsql_BINLOG_S3_*` set only when the restore replays binlogs (a
+`recoveryTarget` is set) and the binlog store is a different location (same
+endpoint, bucket and path count as one, credentials ignored). A restore to the
+end of a base backup never needs the archive store's Secrets.
 
 ### Retention across two stores
 
