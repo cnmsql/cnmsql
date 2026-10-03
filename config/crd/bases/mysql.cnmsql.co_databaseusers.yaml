@@ -32,7 +32,10 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: DatabaseUser is the Schema for the databaseusers API.
+        description: |-
+          DatabaseUser declares one installation-wide MySQL account (name@host) and its
+          grants on a Cluster in the same namespace. Unlike the inline users of a
+          Database, it is not scoped to a single schema.
         properties:
           apiVersion:
             description: |-

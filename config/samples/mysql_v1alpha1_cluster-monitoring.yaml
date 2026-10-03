@@ -30,7 +30,7 @@ spec:
         key: queries.yaml
     privileges:
       - privileges: [SELECT]
-        on: app.*
+        "on": app.*
   bootstrap:
     initdb:
       database: app

@@ -868,7 +868,7 @@ type BackupConfiguration struct {
 	// this cluster: resources, scheduling (nodeSelector/tolerations/affinity/
 	// priorityClassName), extra labels/annotations, and the finished-Job TTL. A
 	// per-Backup spec.jobTemplate overrides it field by field. During recovery the
-	// resources from this template are also applied to the restore init container.
+	// resources from this template are also applied to the restore Job.
 	// +optional
 	JobTemplate *BackupJobTemplate `json:"jobTemplate,omitempty"`
 
@@ -1040,7 +1040,7 @@ type RoleConfiguration struct {
 
 	// PasswordSecret references a Secret key holding the user's password. When
 	// unset, the operator generates a password and stores it in a Secret named
-	// "<cluster>-<name>" with key "password".
+	// `<cluster>-<name>` with key "password".
 	// +optional
 	PasswordSecret *SecretKeySelector `json:"passwordSecret,omitempty"`
 
@@ -1122,7 +1122,7 @@ type ManagedService struct {
 
 	// Name is the name of the additional service. Must be unique among all
 	// managed services and must not collide with the default service names
-	// (<cluster>-rw, <cluster>-ro, <cluster>-r).
+	// (`<cluster>-rw`, `<cluster>-ro`, `<cluster>-r`).
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
@@ -1715,7 +1715,8 @@ type ImageInfo struct {
 // +kubebuilder:printcolumn:name="Primary",type=string,JSONPath=`.status.currentPrimary`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// Cluster is the Schema for the clusters API.
+// Cluster describes a MySQL or MariaDB deployment: its topology, image,
+// storage, bootstrap method, backups, and operational policy.
 type Cluster struct {
 	metav1.TypeMeta `json:",inline"`
 

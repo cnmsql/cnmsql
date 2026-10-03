@@ -308,7 +308,9 @@ type BackupStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// Backup is the Schema for the backups API.
+// Backup is a one-shot request to back up a Cluster with XtraBackup, a volume
+// snapshot, or a logical dump. Deleting it leaves the backup files in place
+// unless it carries the mysql.cnmsql.co/cleanup-backup-files finalizer.
 type Backup struct {
 	metav1.TypeMeta `json:",inline"`
 

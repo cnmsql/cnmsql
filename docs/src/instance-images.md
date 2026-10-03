@@ -133,6 +133,10 @@ spec:
     series: "8.4"
 ```
 
+A `ClusterImageCatalog` takes the same `spec.images` list but is cluster-scoped,
+so Clusters in any namespace can reference it with `kind: ClusterImageCatalog`.
+Each series appears at most once in a catalog.
+
 Use an explicit image or catalog in production. The development fallback image
 exists for local workflows only.
 

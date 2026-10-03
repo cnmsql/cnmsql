@@ -94,8 +94,39 @@ against the spec, and issues the minimal `CREATE USER` / `ALTER USER` /
 stored in `<cluster>-<roleName>`.
 
 This is the right home for accounts that belong to the cluster operator: the
-application owner, a read-only reporting account, a migration account. See the
-[Managed roles](./api-reference.md#managed-roles) reference for every field.
+application owner, a read-only reporting account, a migration account.
+
+```yaml
+spec:
+  managed:
+    roles:
+      - name: app
+        host: "%"
+        ensure: present
+        passwordSecret:
+          name: app-credentials
+          key: password
+        requireTLS: x509
+        maxUserConnections: 50
+        privileges:
+          - privileges: [SELECT, INSERT, UPDATE, DELETE]
+            "on": app.*
+      - name: readonly
+        ensure: present
+        privileges:
+          - privileges: [SELECT]
+            "on": app.*
+      - name: legacy
+        ensure: absent
+```
+
+Quote the `on` key (`"on": app.*`). Unquoted, YAML reads `on` as the boolean
+`true` and the API server rejects the manifest.
+
+Users that exist in MySQL but are not declared are left alone. To remove one,
+declare it with `ensure: absent`. Roles are reconciled once the cluster is
+`Ready`. The [RoleConfiguration](./api-reference.md#roleconfiguration) reference
+lists every field.
 
 ### `Database`: a namespaced tenant resource
 
@@ -233,8 +264,8 @@ log paths affects every tenant on the cluster. cnmsql guards it:
 
 `require_secure_transport` is deliberately not denied: enforcing application
 TLS is a legitimate operator choice. See
-[MySQL configuration](./api-reference.md#mysql-configuration)
-for the full lists.
+[Configuration surface](./cluster-lifecycle.md#configuration-surface)
+for how parameters are checked.
 
 ## Credentials and rotation
 
@@ -339,7 +370,7 @@ databases, scoping, and reclaim applies unchanged within it.
 
 ## See also
 
-- [API Reference: Managed roles](./api-reference.md#managed-roles)
+- [API Reference: RoleConfiguration](./api-reference.md#roleconfiguration)
 - [API Reference: Database](./api-reference.md#database)
 - [Security Model](./security-model.md)
 - [Cluster Lifecycle](./cluster-lifecycle.md)

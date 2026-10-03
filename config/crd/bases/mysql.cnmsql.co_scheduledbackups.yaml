@@ -32,7 +32,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ScheduledBackup is the Schema for the scheduledbackups API.
+        description: ScheduledBackup creates Backup objects for a Cluster on a cron
+          schedule.
         properties:
           apiVersion:
             description: |-

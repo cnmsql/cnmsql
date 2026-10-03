@@ -183,9 +183,9 @@ spec:
         key: queries.yaml
     privileges:
       - privileges: [SELECT]
-        on: app.*
+        "on": app.*
       - privileges: [SELECT, SHOW VIEW]
-        on: reports.daily
+        "on": reports.daily
 ```
 
 The operator applies them on the primary, and replication carries them to

@@ -32,7 +32,10 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Backup is the Schema for the backups API.
+        description: |-
+          Backup is a one-shot request to back up a Cluster with XtraBackup, a volume
+          snapshot, or a logical dump. Deleting it leaves the backup files in place
+          unless it carries the mysql.cnmsql.co/cleanup-backup-files finalizer.
         properties:
           apiVersion:
             description: |-
@@ -1266,7 +1269,7 @@ spec:
                   serverSideEncryption:
                     description: |-
                       ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                      object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                      object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                       providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                       reject or silently ignore the SSE header.
                     type: string
@@ -1455,7 +1458,7 @@ spec:
                   serverSideEncryption:
                     description: |-
                       ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                      object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                      object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                       providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                       reject or silently ignore the SSE header.
                     type: string
@@ -1685,7 +1688,7 @@ spec:
                   serverSideEncryption:
                     description: |-
                       ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                      object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                      object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                       providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                       reject or silently ignore the SSE header.
                     type: string

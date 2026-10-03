@@ -68,14 +68,16 @@ Declare your desired state via Kubernetes custom resources. The operator continu
 
 ## API Resources
 
-| Resource | Purpose |
-|----------|---------|
-| `Cluster` | Define a MySQL cluster: instances, storage, MySQL config, bootstrap, TLS |
-| `Database` | Declarative schema management with owners and privilege scoping |
-| `Backup` | One-shot physical backup via XtraBackup to S3-compatible storage |
-| `ScheduledBackup` | Cron-scheduled backups with deterministic naming and retention |
-| `ImageCatalog` | Cluster-wide image resolution by MySQL series |
-| `ClusterImageCatalog` | Per-cluster image override catalog |
+| Resource | Short names | Purpose |
+|----------|-------------|---------|
+| `Cluster` | `mysql`, `mysqlcluster` | Define a MySQL cluster: instances, storage, MySQL config, bootstrap, TLS |
+| `Database` | `mydatabase` | Declarative schema management with owners and privilege scoping |
+| `DatabaseUser` | `myuser` | An installation-wide MySQL account and its grants |
+| `Backup` | `mybackup` | One-shot backup with XtraBackup, a volume snapshot, or a logical dump |
+| `ScheduledBackup` | `myscheduledbackup` | Cron-scheduled backups with deterministic naming and retention |
+| `LogicalRestore` | `mylogicalrestore` | Load selected databases from a logical backup into a running cluster |
+| `ImageCatalog` | `myimagecatalog` | Namespaced image resolution by server series |
+| `ClusterImageCatalog` | `myclusterimagecatalog` | Cluster-scoped image resolution by server series, usable from any namespace |
 
 All resources live under the `mysql.cnmsql.co/v1alpha1` API group. See the [API Reference](./api-reference.md) for every field.
 

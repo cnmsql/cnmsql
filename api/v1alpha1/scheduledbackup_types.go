@@ -140,7 +140,7 @@ type ScheduledBackupStatus struct {
 // +kubebuilder:printcolumn:name="Last Backup",type=date,JSONPath=`.status.lastScheduleTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ScheduledBackup is the Schema for the scheduledbackups API.
+// ScheduledBackup creates Backup objects for a Cluster on a cron schedule.
 type ScheduledBackup struct {
 	metav1.TypeMeta `json:",inline"`
 

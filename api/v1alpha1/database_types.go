@@ -153,7 +153,9 @@ type DatabaseStatus struct {
 // +kubebuilder:printcolumn:name="Applied",type=boolean,JSONPath=`.status.applied`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// Database is the Schema for the databases API.
+// Database declares a MySQL schema and the accounts scoped to it on a Cluster
+// in the same namespace. The controller issues only the SQL needed to converge
+// and drops nothing unless asked to.
 type Database struct {
 	metav1.TypeMeta `json:",inline"`
 

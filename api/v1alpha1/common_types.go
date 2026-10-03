@@ -304,7 +304,7 @@ type S3ObjectStore struct {
 	SignatureVersion S3SignatureVersion `json:"signatureVersion,omitempty"`
 
 	// ServerSideEncryption sets the SSE algorithm applied to every uploaded
-	// object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+	// object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
 	// providers that encrypt at rest unconditionally (MinIO, R2, B2), which
 	// reject or silently ignore the SSE header.
 	// +optional

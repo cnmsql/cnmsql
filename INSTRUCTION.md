@@ -85,6 +85,7 @@ docs/                           Docusaurus documentation site
 - `config/rbac/role.yaml` — from `make manifests`
 - `config/webhook/manifests.yaml` — from `make manifests`
 - `**/zz_generated.*.go` — from `make generate`
+- `docs/src/api-reference.md` — from `make api-docs`
 - `PROJECT` — from kubebuilder CLI
 
 ### Never Remove Scaffold Markers
@@ -127,6 +128,7 @@ Run e2e tests against a dedicated Kind cluster, not a real dev/prod cluster.
 ```
 make manifests  # Regenerate CRDs/RBAC from markers
 make generate   # Regenerate DeepCopy methods + scraper code
+make api-docs   # Regenerate docs/src/api-reference.md from the API types
 make lint-fix   # Auto-fix code style
 make test       # Run unit tests
 ```

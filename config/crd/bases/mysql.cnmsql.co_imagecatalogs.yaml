@@ -19,7 +19,9 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ImageCatalog is the Schema for the imagecatalogs API (namespaced).
+        description: |-
+          ImageCatalog maps each server series to an instance image for Clusters in
+          its namespace. A Cluster selects an entry with spec.imageCatalogRef.
         properties:
           apiVersion:
             description: |-

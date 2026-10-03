@@ -1,5 +1,5 @@
 processor:
-  useRawDocstring: true
+  useRawDocstring: false
 render:
   kubernetesVersion: "1.35"
 source:

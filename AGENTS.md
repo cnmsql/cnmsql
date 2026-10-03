@@ -43,6 +43,7 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 - `config/rbac/role.yaml` - from `make manifests`
 - `config/webhook/manifests.yaml` - from `make manifests`
 - `**/zz_generated.*.go` - from `make generate`
+- `docs/src/api-reference.md` - from `make api-docs`
 - `PROJECT` - from `kubebuilder [OPTIONS]`
 
 ### Never Remove Scaffold Markers
@@ -64,6 +65,7 @@ Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluste
 ```
 make manifests  # Regenerate CRDs/RBAC from markers
 make generate   # Regenerate DeepCopy methods
+make api-docs   # Regenerate docs/src/api-reference.md
 ```
 
 **After editing `*.go` files:**
