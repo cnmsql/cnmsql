@@ -174,6 +174,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.InstanceName = sourceInstance
 		status.DestinationPath = keys.ArchiveURI
 		status.ObjectStore = store
+		// PITR from this backup replays the cluster's archive, which a per-Backup
+		// spec.objectStore override does not move.
+		if cluster.IsArchivingEnabled() {
+			status.BinlogObjectStore = cluster.BinlogObjectStore().DeepCopy()
+		}
 		status.Error = ""
 		setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionTrue, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
 		setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionFalse, backupPhaseRunning, "Backup worker Job is running", backup.Generation)

@@ -1283,3 +1283,53 @@ func TestBackupDeleteReleasesFinalizerWhenStoreUnresolvable(t *testing.T) {
 		t.Fatalf("backup should be deleted after finalizer release, got err=%v finalizers=%v", err, got.Finalizers)
 	}
 }
+
+func TestBackupRecordsBinlogObjectStore(t *testing.T) {
+	t.Parallel()
+
+	archive := &mysqlv1alpha1.S3ObjectStore{Bucket: "binlogs", Path: "archive"}
+	tests := []struct {
+		name      string
+		archiving bool
+		override  bool
+		want      *mysqlv1alpha1.S3ObjectStore
+	}{
+		{name: "no archiving records nothing"},
+		{name: "archiving records the archive store", archiving: true, want: archive},
+		{name: "a per-Backup base store override keeps the cluster's archive", archiving: true, override: true, want: archive},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scheme := testScheme(t)
+			cluster := baseBackupCluster()
+			if tc.archiving {
+				cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+					Enabled: true, ObjectStore: archive.DeepCopy(),
+				}
+			}
+			backup := baseBackup()
+			if tc.override {
+				backup.Spec.ObjectStore = &mysqlv1alpha1.S3ObjectStore{Bucket: "elsewhere"}
+			}
+			r := &BackupReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).
+					WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+					WithObjects(cluster, backup, readyReplicaPod()).Build(),
+				Scheme: scheme,
+			}
+			reconcileBackup(t, r, backup)
+
+			got := &mysqlv1alpha1.Backup{}
+			if err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: backup.Name}, got); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tc.want == nil && got.Status.BinlogObjectStore != nil:
+				t.Fatalf("binlogObjectStore = %+v, want unset", got.Status.BinlogObjectStore)
+			case tc.want != nil && (got.Status.BinlogObjectStore == nil || got.Status.BinlogObjectStore.Bucket != tc.want.Bucket):
+				t.Fatalf("binlogObjectStore = %+v, want bucket %q", got.Status.BinlogObjectStore, tc.want.Bucket)
+			}
+		})
+	}
+}
