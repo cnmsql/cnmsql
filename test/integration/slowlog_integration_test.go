@@ -74,7 +74,7 @@ func runSlowLogTest(t *testing.T, img logicalImage) {
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		records = n.slowQueryRecords(ctx, t)
-		missing := missingSlowLogMarkers(records)
+		missing := missingSlowLogMarkers(slowLogMarkerCounts(records))
 		if len(missing) == 0 {
 			break
 		}
@@ -82,6 +82,16 @@ func runSlowLogTest(t *testing.T, img logicalImage) {
 			t.Fatalf("%d slow queries never reached the manager output, e.g. %v", len(missing), missing[:min(5, len(missing))])
 		}
 		time.Sleep(2 * time.Second)
+	}
+
+	// Rotations must not emit an entry twice either. Give a late duplicate time
+	// to show up before counting.
+	time.Sleep(3 * time.Second)
+	records = n.slowQueryRecords(ctx, t)
+	for marker, count := range slowLogMarkerCounts(records) {
+		if count != 1 {
+			t.Errorf("%s: %d records, want exactly 1", marker, count)
+		}
 	}
 
 	if after := n.gtidExecuted(ctx, t); after != before {
@@ -127,24 +137,23 @@ func (n *logicalNode) slowQueryRecords(ctx context.Context, t *testing.T) []map[
 	return out
 }
 
-func missingSlowLogMarkers(records []map[string]any) []string {
-	seen := map[string]bool{}
+// slowLogMarkerCounts counts the records carrying each workload marker.
+func slowLogMarkerCounts(records []map[string]any) map[string]int {
+	counts := make(map[string]int, slowLogQueries)
 	for _, r := range records {
-		if q, ok := r["query"].(string); ok {
-			seen[q] = true
+		q, _ := r["query"].(string)
+		if i := strings.Index(q, "slowlog-it-"); i >= 0 && len(q) >= i+len("slowlog-it-000") {
+			counts[q[i:i+len("slowlog-it-000")]]++
 		}
 	}
+	return counts
+}
+
+// missingSlowLogMarkers returns the markers no record carries.
+func missingSlowLogMarkers(counts map[string]int) []string {
 	var missing []string
 	for i := range slowLogQueries {
-		marker := fmt.Sprintf("slowlog-it-%03d", i)
-		found := false
-		for q := range seen {
-			if strings.Contains(q, marker) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if marker := fmt.Sprintf("slowlog-it-%03d", i); counts[marker] == 0 {
 			missing = append(missing, marker)
 		}
 	}
