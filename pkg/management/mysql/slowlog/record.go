@@ -17,6 +17,7 @@ limitations under the License.
 package slowlog
 
 import (
+	"regexp"
 	"time"
 	"unicode/utf8"
 
@@ -85,7 +86,7 @@ func keysAndValues(e *mysqllog.Event) []any {
 	if e.Admin {
 		kv = append(kv, "admin", true)
 	}
-	query, truncated := capQuery(e.Query)
+	query, truncated := capQuery(redactSecrets(e.Query))
 	kv = append(kv, "query", query)
 	if truncated {
 		kv = append(kv, "query_truncated", true)
@@ -106,4 +107,28 @@ func capQuery(q string) (string, bool) {
 		cut--
 	}
 	return q[:cut], true
+}
+
+// sqlLiteral matches a single- or double-quoted SQL string, with backslash and
+// doubled-quote escapes.
+const sqlLiteral = `('(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.|"")*")`
+
+// secretPatterns match the prefix of a password literal. MySQL rewrites these
+// statements before logging them; MariaDB logs them verbatim, including the
+// CREATE USER, ALTER USER and CHANGE MASTER statements the operator sends with
+// passwords from the cluster's Secrets. Redaction is best-effort: it covers the
+// account and replication syntax, not passwords hidden in arbitrary SQL.
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(\bIDENTIFIED\s+(?:WITH\s+\S+\s+)?BY\s+(?:PASSWORD\s+)?)` + sqlLiteral),
+	regexp.MustCompile(`(?i)(\bIDENTIFIED\s+(?:VIA|WITH)\s+\S+\s+(?:USING|AS)\s+(?:PASSWORD\s*\(\s*)?)` + sqlLiteral),
+	regexp.MustCompile(`(?i)(\bSET\s+PASSWORD\b[^=]*=\s*(?:PASSWORD\s*\(\s*)?)` + sqlLiteral),
+	regexp.MustCompile(`(?i)(\b(?:MASTER_|SOURCE_)?PASSWORD\s*=\s*)` + sqlLiteral),
+}
+
+// redactSecrets replaces password literals in q with <secret>, as MySQL does.
+func redactSecrets(q string) string {
+	for _, re := range secretPatterns {
+		q = re.ReplaceAllString(q, "${1}<secret>")
+	}
+	return q
 }

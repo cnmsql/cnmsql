@@ -172,3 +172,35 @@ func TestCapQuery(t *testing.T) {
 		t.Error("record lacks query_truncated for a capped query")
 	}
 }
+
+// TestRedactSecrets covers the statements that carry a password. MySQL
+// rewrites them before logging; MariaDB logs them verbatim, including the
+// ones the operator sends for managed roles and replication.
+func TestRedactSecrets(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"CREATE USER 'a'@'%' IDENTIFIED BY 's3cr''et'":                                     "CREATE USER 'a'@'%' IDENTIFIED BY <secret>",
+		`ALTER USER 'a'@'%' IDENTIFIED BY "p\"w"`:                                          "ALTER USER 'a'@'%' IDENTIFIED BY <secret>",
+		"create user a identified with caching_sha2_password by 'pw'":                      "create user a identified with caching_sha2_password by <secret>",
+		"CREATE USER a IDENTIFIED BY PASSWORD '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'": "CREATE USER a IDENTIFIED BY PASSWORD <secret>",
+		"CREATE USER a IDENTIFIED VIA ed25519 USING PASSWORD('pw')":                        "CREATE USER a IDENTIFIED VIA ed25519 USING PASSWORD(<secret>)",
+		"CREATE USER a IDENTIFIED VIA mysql_native_password USING 'hash'":                  "CREATE USER a IDENTIFIED VIA mysql_native_password USING <secret>",
+		"SET PASSWORD FOR 'a'@'%' = PASSWORD('pw')":                                        "SET PASSWORD FOR 'a'@'%' = PASSWORD(<secret>)",
+		"SET PASSWORD = 'pw'": "SET PASSWORD = <secret>",
+		"CHANGE MASTER TO MASTER_HOST='h', MASTER_PASSWORD='pw', MASTER_PORT=3306": "CHANGE MASTER TO MASTER_HOST='h', MASTER_PASSWORD=<secret>, MASTER_PORT=3306",
+		"CHANGE REPLICATION SOURCE TO SOURCE_PASSWORD = 'pw'":                      "CHANGE REPLICATION SOURCE TO SOURCE_PASSWORD = <secret>",
+		"START REPLICA USER='r' PASSWORD='pw'":                                     "START REPLICA USER='r' PASSWORD=<secret>",
+		"CREATE USER 'a'@'%' IDENTIFIED BY <secret>":                               "CREATE USER 'a'@'%' IDENTIFIED BY <secret>",
+		"SELECT id FROM t WHERE password = 'plain'":                                "SELECT id FROM t WHERE password = <secret>",
+		"SELECT 'IDENTIFIED', name FROM t WHERE id = 'x'":                          "SELECT 'IDENTIFIED', name FROM t WHERE id = 'x'",
+	} {
+		if got := redactSecrets(in); got != want {
+			t.Errorf("redactSecrets(%q)\n got %q\nwant %q", in, got, want)
+		}
+	}
+	e := mysqllog.NewEvent()
+	e.Query = "CREATE USER a IDENTIFIED BY 'pw'"
+	if q := record(e)["query"]; q != "CREATE USER a IDENTIFIED BY <secret>" {
+		t.Errorf("record query = %q, want the password redacted", q)
+	}
+}

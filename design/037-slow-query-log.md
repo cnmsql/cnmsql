@@ -319,12 +319,22 @@ the same `mysql_instance_` prefix:
 
 ### Security
 
-Statement text includes literals such as emails and tokens. MySQL rewrites the
-password out of account statements (`CREATE USER … IDENTIFIED BY`) before
-logging them, but no other literal. Whether MariaDB does the same is checked by
-the integration test, and the docs state the result. Turning `slow_query_log` on sends all of it to the cluster's
-log pipeline. The docs say this plainly and point to `log_slow_rate_limit` and
-`long_query_time` to reduce volume.
+Statement text includes literals such as emails and tokens, and turning
+`slow_query_log` on sends all of it to the cluster's log pipeline. The docs say
+this plainly and point to `log_slow_rate_limit` and `long_query_time` to reduce
+volume.
+
+MySQL rewrites the password out of account statements (`CREATE USER …
+IDENTIFIED BY`) before logging them. MariaDB does not: the integration test
+found `IDENTIFIED BY 'password'` verbatim on 10.11, 11.4, 11.8 and 12.3. That
+includes statements the operator sends with passwords from the cluster's
+Secrets (managed roles, `CHANGE MASTER … MASTER_PASSWORD`). The manager
+therefore redacts password literals in every record, on both engines, the way
+MySQL does (`IDENTIFIED BY <secret>`): `IDENTIFIED BY [PASSWORD]`,
+`IDENTIFIED VIA|WITH … USING|AS [PASSWORD(…)]`, `SET PASSWORD … =`, and
+`[MASTER_|SOURCE_]PASSWORD =`. Redaction is best-effort; it covers account and
+replication syntax, not a password hidden in arbitrary SQL, and it also hides
+the literal of a `password = '…'` comparison.
 
 The statement body is user-controlled. A multi-line statement can contain a line
 that looks like `# User@Host:` and split one entry into two records. MySQL does
