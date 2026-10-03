@@ -44,7 +44,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Cluster is the Schema for the clusters API.
+        description: |-
+          Cluster describes a MySQL or MariaDB deployment: its topology, image,
+          storage, bootstrap method, backups, and operational policy.
         properties:
           apiVersion:
             description: |-
@@ -1179,7 +1181,7 @@ spec:
                           serverSideEncryption:
                             description: |-
                               ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                              object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                              object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                               providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                               reject or silently ignore the SSE header.
                             type: string
@@ -1262,7 +1264,7 @@ spec:
                       this cluster: resources, scheduling (nodeSelector/tolerations/affinity/
                       priorityClassName), extra labels/annotations, and the finished-Job TTL. A
                       per-Backup spec.jobTemplate overrides it field by field. During recovery the
-                      resources from this template are also applied to the restore init container.
+                      resources from this template are also applied to the restore Job.
                     properties:
                       activeDeadline:
                         description: |-
@@ -2438,7 +2440,7 @@ spec:
                       serverSideEncryption:
                         description: |-
                           ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                          object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                          object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                           providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                           reject or silently ignore the SSE header.
                         type: string
@@ -3251,7 +3253,7 @@ spec:
                         serverSideEncryption:
                           description: |-
                             ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                            object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                            object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                             providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                             reject or silently ignore the SSE header.
                           type: string
@@ -3398,7 +3400,7 @@ spec:
                         serverSideEncryption:
                           description: |-
                             ServerSideEncryption sets the SSE algorithm applied to every uploaded
-                            object: "AES256" (SSE-S3), "aws:kms", or "aws:kms:<key-id>". Leave unset on
+                            object: `AES256` (SSE-S3), `aws:kms`, or `aws:kms:<key-id>`. Leave unset on
                             providers that encrypt at rest unconditionally (MinIO, R2, B2), which
                             reject or silently ignore the SSE header.
                           type: string
@@ -3806,7 +3808,7 @@ spec:
                           description: |-
                             PasswordSecret references a Secret key holding the user's password. When
                             unset, the operator generates a password and stores it in a Secret named
-                            "<cluster>-<name>" with key "password".
+                            `<cluster>-<name>` with key "password".
                           properties:
                             key:
                               description: Key within the Secret to select
@@ -3875,7 +3877,7 @@ spec:
                               description: |-
                                 Name is the name of the additional service. Must be unique among all
                                 managed services and must not collide with the default service names
-                                (<cluster>-rw, <cluster>-ro, <cluster>-r).
+                                (`<cluster>-rw`, `<cluster>-ro`, `<cluster>-r`).
                               type: string
                             selectorType:
                               description: |-

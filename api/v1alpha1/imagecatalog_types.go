@@ -56,7 +56,8 @@ type CatalogImage struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced,shortName=myimagecatalog
 
-// ImageCatalog is the Schema for the imagecatalogs API (namespaced).
+// ImageCatalog maps each server series to an instance image for Clusters in
+// its namespace. A Cluster selects an entry with spec.imageCatalogRef.
 type ImageCatalog struct {
 	metav1.TypeMeta `json:",inline"`
 

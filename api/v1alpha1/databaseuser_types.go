@@ -189,7 +189,9 @@ type DatabaseUserStatus struct {
 // +kubebuilder:printcolumn:name="Applied",type=boolean,JSONPath=`.status.applied`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// DatabaseUser is the Schema for the databaseusers API.
+// DatabaseUser declares one installation-wide MySQL account (name@host) and its
+// grants on a Cluster in the same namespace. Unlike the inline users of a
+// Database, it is not scoped to a single schema.
 type DatabaseUser struct {
 	metav1.TypeMeta `json:",inline"`
 

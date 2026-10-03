@@ -23,8 +23,8 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=myclusterimagecatalog
 
-// ClusterImageCatalog is the Schema for the clusterimagecatalogs API
-// (cluster-scoped).
+// ClusterImageCatalog maps each server series to an instance image, like
+// ImageCatalog, but is cluster-scoped so Clusters in any namespace can use it.
 type ClusterImageCatalog struct {
 	metav1.TypeMeta `json:",inline"`
 
