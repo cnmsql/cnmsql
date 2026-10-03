@@ -38,6 +38,9 @@ func (l *Log) watch(ctx context.Context) {
 }
 
 func (l *Log) check(ctx context.Context) {
+	// The cap comes first: a flush can wait up to flushTimeout on a slow
+	// control connection, and the volume's headroom is sized for one check.
+	l.enforceHardCap()
 	_, pending := statPath(l.rotatedPath())
 	active, _ := statPath(l.activePath())
 	switch {
@@ -46,7 +49,6 @@ func (l *Log) check(ctx context.Context) {
 	case !pending && active.size >= l.cfg.RotateBytes:
 		l.rotate(ctx)
 	}
-	l.enforceHardCap()
 	l.bytes.Store(l.totalBytes())
 }
 

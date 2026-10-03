@@ -114,3 +114,32 @@ func TestCheckTruncatesRotatedFileFirst(t *testing.T) {
 		t.Fatal("active file truncated although the total was under the cap")
 	}
 }
+
+// TestHardCapHoldsWhileFlushHangs: a slow control connection must not delay
+// the hard cap, which the run volume's headroom is sized for at one check.
+func TestHardCapHoldsWhileFlushHangs(t *testing.T) {
+	t.Parallel()
+	l, _ := newTestLog(t, Config{RotateBytes: 1 << 30, HardCapBytes: 2048})
+	m := newFakeMysqld(t, l.cfg.Dir)
+	writeUntil(m, l.activePath(), 2048)
+	if err := os.Rename(l.activePath(), l.rotatedPath()); err != nil {
+		t.Fatal(err)
+	}
+	l.setFlushed(false) // a rotation whose flush has not happened yet
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	l.flush = func(ctx context.Context) error {
+		close(entered)
+		<-release
+		return errors.New("timed out")
+	}
+	done := make(chan struct{})
+	go func() { l.check(context.Background()); close(done) }()
+	<-entered
+	st, _ := statPath(l.rotatedPath())
+	close(release)
+	<-done
+	if st.size != 0 {
+		t.Fatalf("rotated file was %d bytes while the flush hung, want it truncated first", st.size)
+	}
+}
