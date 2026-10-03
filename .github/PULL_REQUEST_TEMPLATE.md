@@ -13,5 +13,5 @@
 - [ ] Commits are signed off (`git commit -s`, see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 - [ ] Commit messages follow Conventional Commits.
 - [ ] `make lint test` passes locally.
-- [ ] Regenerated CRDs/RBAC with `make manifests generate` if API types changed.
+- [ ] Regenerated CRDs/RBAC and the API reference with `make manifests generate api-docs` if API types changed.
 - [ ] Documentation updated if behavior changed.

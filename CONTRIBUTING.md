@@ -27,10 +27,10 @@ Use the feature request template. Describe the problem you are trying to solve, 
 The project is built with [Kubebuilder](https://book.kubebuilder.io). You need `go`, `docker`, `kubectl`, `kind`, and `make`, plus `cert-manager` in any cluster you deploy to.
 
 ```bash
-make manifests generate   # Regenerate CRDs, RBAC, and DeepCopy after editing API types
-make lint-fix             # Auto-fix style
-make test                 # Unit tests (Ginkgo + Gomega on envtest)
-make run                  # Run the controller against your current kubeconfig
+make manifests generate api-docs   # Regenerate CRDs, RBAC, DeepCopy and the API reference after editing API types
+make lint-fix                      # Auto-fix style
+make test                          # Unit tests (Ginkgo + Gomega on envtest)
+make run                           # Run the controller against your current kubeconfig
 ```
 
 Run `make help` for the full list of targets. The [README](README.md) has a Kind-based quickstart.
@@ -57,7 +57,7 @@ ephemeral Kind cluster, so they never destabilise the shared suite operator.
 1. Fork the repo and branch off `main`.
 2. Make your change. Keep commits small and focused.
 3. Run `make lint test` and make sure both pass.
-4. If you touched API types, run `make manifests generate` and commit the regenerated files.
+4. If you touched API types, run `make manifests generate api-docs` and commit the regenerated files.
 5. Open the PR against `main` and fill in the template.
 
 Keep the PR scoped to one thing. If you find an unrelated issue along the way, note it or open a separate PR rather than folding it in.

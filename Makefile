@@ -196,6 +196,7 @@ docs-install: ## Install Docusaurus documentation dependencies.
 	NO_UPDATE_NOTIFIER=1 $(NPM) --prefix docs install
 
 CRD_REF_DOCS_CONFIG ?= config/crd-ref-docs/config.yaml
+CRD_REF_DOCS_TEMPLATES ?= config/crd-ref-docs/templates
 
 .PHONY: docs-build
 docs-build: ## Build the Docusaurus documentation site.
@@ -208,9 +209,8 @@ api-docs: crd-ref-docs ## Generate API reference documentation from CRDs.
 		--source-path api \
 		--renderer markdown \
 		--max-depth 10 \
-		--output-path docs/src/api-reference-generated.md
-	@echo "Generated docs/src/api-reference-generated.md"
-	@echo "Review the output and merge narrative sections from docs/src/api-reference.md"
+		--templates-dir $(CRD_REF_DOCS_TEMPLATES) \
+		--output-path docs/src/api-reference.md
 
 .PHONY: docs-serve
 docs-serve: docs-build ## Serve the built Docusaurus documentation site locally.
