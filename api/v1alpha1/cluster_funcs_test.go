@@ -947,8 +947,9 @@ var _ = Describe("Binlog archive object store", func() {
 		cluster.Spec.ExternalClusters = []ExternalCluster{{Name: "prod", BinlogObjectStore: bad()}}
 		cluster.SetDefaults()
 
-		var fields []string
-		for _, e := range cluster.Validate() {
+		errs := cluster.Validate()
+		fields := make([]string, 0, len(errs))
+		for _, e := range errs {
 			fields = append(fields, e.Field)
 		}
 		Expect(fields).To(ContainElements(

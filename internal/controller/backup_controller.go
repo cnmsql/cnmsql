@@ -174,11 +174,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.InstanceName = sourceInstance
 		status.DestinationPath = keys.ArchiveURI
 		status.ObjectStore = store
-		// PITR from this backup replays the cluster's archive, which a per-Backup
-		// spec.objectStore override does not move.
-		if cluster.IsArchivingEnabled() {
-			status.BinlogObjectStore = cluster.BinlogObjectStore().DeepCopy()
-		}
+		status.BinlogObjectStore = anchoredBinlogObjectStore(cluster)
 		status.Error = ""
 		setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionTrue, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
 		setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionFalse, backupPhaseRunning, "Backup worker Job is running", backup.Generation)
@@ -589,6 +585,16 @@ func backupObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 		}
 	}
 	return env
+}
+
+// anchoredBinlogObjectStore is the archive store a backup taken now is anchored
+// to: the cluster's, which a per-Backup spec.objectStore override does not
+// move. Nil when the cluster does not archive.
+func anchoredBinlogObjectStore(cluster *mysqlv1alpha1.Cluster) *mysqlv1alpha1.S3ObjectStore {
+	if !cluster.IsArchivingEnabled() {
+		return nil
+	}
+	return cluster.BinlogObjectStore().DeepCopy()
 }
 
 // objectStoreLocationEnv is backupObjectStoreEnv plus the bucket and path, for

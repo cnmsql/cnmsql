@@ -191,6 +191,9 @@ func TestPlanRetention(t *testing.T) {
 	})
 }
 
+const emptyListing = `<?xml version="1.0" encoding="UTF-8"?>` +
+	`<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`
+
 // recordingS3 accepts every request and records "METHOD /path".
 func recordingS3(t *testing.T) (*httptest.Server, func() []string) {
 	t.Helper()
@@ -204,7 +207,7 @@ func recordingS3(t *testing.T) (*httptest.Server, func() []string) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`))
+		_, _ = w.Write([]byte(emptyListing))
 	}))
 	t.Cleanup(server.Close)
 	return server, func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(seen) }
