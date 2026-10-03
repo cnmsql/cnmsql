@@ -42,12 +42,12 @@ type tailer struct {
 	resume Cursor
 	// skipIno is a finished rotated file that could not be unlinked.
 	skipIno uint64
-	// truncations is the Log's truncation count the tailer last saw.
+	// truncations is the truncation count of f the tailer last saw.
 	truncations uint64
 }
 
 func newTailer(l *Log, resume Cursor) *tailer {
-	return &tailer{l: l, lastSize: -1, resume: resume, truncations: l.truncations.Load()}
+	return &tailer{l: l, lastSize: -1, resume: resume}
 }
 
 func (t *tailer) run(ctx context.Context) {
@@ -79,11 +79,9 @@ func (t *tailer) poll(ctx context.Context) {
 		t.close()
 		return
 	}
-	truncations := t.l.truncations.Load()
+	truncations := t.l.truncationsOf(t.ino)
 	if truncations != t.truncations || st.size < t.off || (t.lastSize >= 0 && st.size < t.lastSize) {
-		// The watchdog truncated a file; what was held is gone. When the
-		// truncated file is not this one, re-reading from 0 only repeats work
-		// the parse would redo anyway, so a single rule covers both files.
+		// The watchdog truncated this file; what was held is gone.
 		t.truncations = truncations
 		t.off, t.lastSize, t.held = 0, -1, nil
 		t.publish()
@@ -149,6 +147,7 @@ func (t *tailer) open() bool {
 			continue
 		}
 		t.f, t.ino, t.off, t.lastSize, t.held = f, st.ino, 0, -1, nil
+		t.truncations = t.l.truncationsOf(st.ino)
 		if t.resume.Inode == st.ino && t.resume.Offset <= st.size {
 			t.off = t.resume.Offset
 		}
@@ -189,6 +188,7 @@ func (t *tailer) finishRotated() {
 		if err := os.Remove(t.l.rotatedPath()); err != nil {
 			t.l.log.Error(err, "Could not delete the rotated slow log")
 			t.skipIno = t.ino
+			t.l.finished.Store(t.ino)
 		}
 	}
 	t.close()

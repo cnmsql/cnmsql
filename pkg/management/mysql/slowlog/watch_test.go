@@ -143,3 +143,50 @@ func TestHardCapHoldsWhileFlushHangs(t *testing.T) {
 		t.Fatalf("rotated file was %d bytes while the flush hung, want it truncated first", st.size)
 	}
 }
+
+// A rotated file the tailer finished but could not delete holds nothing
+// unread. Truncating it at the hard cap must count no dropped bytes and must
+// not rewind the file the tailer is reading.
+func TestTruncatingAFinishedRotatedFile(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	l, rec := newTestLog(t, Config{RotateBytes: 1 << 30, HardCapBytes: 300})
+	m := newFakeMysqld(t, l.cfg.Dir)
+	tl := newTailer(l, Cursor{})
+	ctx := context.Background()
+
+	m.slow("a")
+	tl.poll(ctx)
+	tl.poll(ctx)
+	l.setFlushed(false)
+	if err := os.Rename(l.activePath(), l.rotatedPath()); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.flush(ctx)
+	l.setFlushed(true)
+
+	// The tailer finishes .1 but cannot unlink it.
+	if err := os.Chmod(l.cfg.Dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(l.cfg.Dir, 0o700) })
+	tl.poll(ctx)
+	if _, ok := statPath(l.rotatedPath()); !ok {
+		t.Fatal("expected the rotated file to survive the failed unlink")
+	}
+
+	m.slow("b")
+	tl.poll(ctx)
+	tl.poll(ctx)
+	expectQueries(t, rec, "a", "b")
+
+	l.check(ctx) // over the cap: truncates the finished .1 only
+	if got := l.Stats().DroppedBytes; got != 0 {
+		t.Errorf("dropped = %d bytes for a file that was fully read", got)
+	}
+	tl.poll(ctx)
+	tl.poll(ctx)
+	expectQueries(t, rec, "a", "b")
+}

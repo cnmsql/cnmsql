@@ -83,7 +83,8 @@ func TestTailerRestartsAfterTruncation(t *testing.T) {
 	if err := os.Truncate(l.activePath(), 0); err != nil {
 		t.Fatal(err)
 	}
-	l.truncations.Add(1)
+	st, _ := statPath(l.activePath())
+	l.noteTruncation(st.ino)
 	m.slow("b") // O_APPEND: lands at the new end, offset 0
 	tl.poll(ctx)
 	tl.poll(ctx)

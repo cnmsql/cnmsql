@@ -137,10 +137,14 @@ type Log struct {
 	entries   atomic.Uint64
 	dropped   atomic.Uint64
 	rotations atomic.Uint64
-	// truncations counts the watchdog's truncations. A truncated file can be
-	// refilled to its old size before the next poll, so the tailer cannot rely
-	// on the size shrinking to notice.
-	truncations atomic.Uint64
+	// truncations counts the watchdog's truncations per inode. A truncated
+	// file can be refilled to its old size before the next poll, so the tailer
+	// cannot rely on the size shrinking to notice, and it must only rewind when
+	// its own file was truncated.
+	truncations map[uint64]uint64
+	// finished is a rotated file the tailer read to the end but could not
+	// delete; truncating it drops nothing.
+	finished atomic.Uint64
 }
 
 // New returns a Log for cfg. It does nothing until DrainLeftovers or Start.
@@ -197,6 +201,34 @@ func (l *Log) setFlushed(v bool) {
 	l.mu.Lock()
 	l.flushed = v
 	l.mu.Unlock()
+}
+
+// noteTruncation records that the watchdog truncated the file with inode ino.
+func (l *Log) noteTruncation(ino uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.truncations == nil {
+		l.truncations = make(map[uint64]uint64)
+	}
+	// Only the active and rotated files can be truncated or read, so counts for
+	// any other inode are stale: drop them before the map grows.
+	if len(l.truncations) > 8 {
+		active, _ := statPath(l.activePath())
+		rotated, _ := statPath(l.rotatedPath())
+		for k := range l.truncations {
+			if k != active.ino && k != rotated.ino && k != ino {
+				delete(l.truncations, k)
+			}
+		}
+	}
+	l.truncations[ino]++
+}
+
+// truncationsOf returns how many times the file with inode ino was truncated.
+func (l *Log) truncationsOf(ino uint64) uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.truncations[ino]
 }
 
 // Stats returns the current counters.

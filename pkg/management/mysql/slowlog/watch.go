@@ -101,7 +101,7 @@ func (l *Log) enforceHardCap() {
 			l.log.Error(err, "Could not truncate the slow log", "file", path)
 			continue
 		}
-		l.truncations.Add(1)
+		l.noteTruncation(st.ino)
 		unread := l.unread(st)
 		l.dropped.Add(uint64(unread))
 		l.log.Info("Truncated the slow log to stay under its size cap", "file", path, "droppedBytes", unread)
@@ -116,6 +116,9 @@ func (l *Log) totalBytes() int64 {
 
 // unread is how much of a file the tailer has not emitted yet.
 func (l *Log) unread(st fileStat) int64 {
+	if st.ino == l.finished.Load() {
+		return 0
+	}
 	if c := l.Cursor(); c.Inode == st.ino && c.Offset <= st.size {
 		return st.size - c.Offset
 	}
