@@ -42,7 +42,7 @@ func TestToolFlagsDefaultEmpty(t *testing.T) {
 func TestBinlogStoreFromEnvFallsBackToBase(t *testing.T) {
 	t.Setenv(objectstore.EnvBucket, "backups")
 	t.Setenv(objectstore.EnvPath, "base")
-	client, store, err := binlogStoreFromEnv()
+	client, store, err := binlogStoreFromEnv(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestBinlogStoreFromEnvSeparate(t *testing.T) {
 	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvEndpoint), "http://127.0.0.1:9")
 	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvBucket), "binlogs")
 	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvPath), "archive")
-	client, store, err := binlogStoreFromEnv()
+	client, store, err := binlogStoreFromEnv(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,5 +68,18 @@ func TestBinlogStoreFromEnvSeparate(t *testing.T) {
 	}
 	if store.Bucket != "binlogs" || store.Path != "archive" {
 		t.Fatalf("store = %+v, want the binlog bucket/path", store)
+	}
+}
+
+func TestBinlogStoreFromEnvSkippedWithoutReplay(t *testing.T) {
+	t.Setenv(objectstore.EnvBucket, "backups")
+	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvEndpoint), "http://127.0.0.1:9")
+	t.Setenv(objectstore.BinlogEnvName(objectstore.EnvBucket), "binlogs")
+	client, _, err := binlogStoreFromEnv(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client != nil {
+		t.Fatal("a restore without replay must not build a client for the archive store")
 	}
 }

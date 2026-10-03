@@ -204,16 +204,20 @@ func TestResolveRecoveryBinlogStore(t *testing.T) {
 	t.Parallel()
 
 	base := &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "base"}
+	otherCreds := mysqlv1alpha1.S3Credentials{
+		AccessKeyID: &mysqlv1alpha1.SecretKeySelector{Name: "other-s3", Key: "access"},
+	}
 	tests := []struct {
 		name        string
 		binlogStore *mysqlv1alpha1.S3ObjectStore
+		noTarget    bool
 		wantBucket  string
 		wantTwinEnv bool
 	}{
 		{name: "backup without a recorded archive store uses the base store", wantBucket: "backups"},
 		{
 			name:        "same location with other credentials is one store",
-			binlogStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "/base/"},
+			binlogStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "/base/", Credentials: otherCreds},
 			wantBucket:  "backups",
 		},
 		{
@@ -222,6 +226,12 @@ func TestResolveRecoveryBinlogStore(t *testing.T) {
 			wantBucket:  "binlogs",
 			wantTwinEnv: true,
 		},
+		{
+			name:        "a restore without a target does not need the archive store",
+			binlogStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "binlogs", Path: "archive"},
+			noTarget:    true,
+			wantBucket:  "binlogs",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,6 +239,11 @@ func TestResolveRecoveryBinlogStore(t *testing.T) {
 			backup := recoveryBackupFixture(base.DeepCopy(), nil)
 			backup.Status.BinlogObjectStore = tc.binlogStore
 			cluster := recoveryTargetClusterFixture(nil)
+			if !tc.noTarget {
+				cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &mysqlv1alpha1.RecoveryTarget{
+					TargetGTID: "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5",
+				}
+			}
 			scheme := testScheme(t)
 			r := &ClusterReconciler{
 				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(backup).Build(),

@@ -618,12 +618,14 @@ func binlogObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 }
 
 // recoveryStoreEnv renders a restore Job's object-store environment: the base
-// backup's store, plus the binary-log archive's store when it is a different
-// location. A single store renders exactly what it rendered before archive
-// stores could be separated.
-func recoveryStoreEnv(base, binlogs mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
+// backup's store, plus the binary-log archive's store when the restore replays
+// binlogs and the archive is a different location. A restore without replay
+// never reads the archive, so it does not depend on that store's Secrets. A
+// single store renders exactly what it rendered before archive stores could be
+// separated.
+func recoveryStoreEnv(base, binlogs mysqlv1alpha1.S3ObjectStore, replay bool) []corev1.EnvVar {
 	env := objectStoreLocationEnv(base)
-	if !base.SameLocation(&binlogs) {
+	if replay && !base.SameLocation(&binlogs) {
 		env = append(env, binlogObjectStoreEnv(binlogs)...)
 	}
 	return env

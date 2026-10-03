@@ -210,7 +210,20 @@ func TestResolveRawS3RecoveryBinlogObjectStore(t *testing.T) {
 	cluster.Spec.ExternalClusters[0].BinlogObjectStore = &mysqlv1alpha1.S3ObjectStore{
 		Bucket: "binlogs", Path: "archive", Endpoint: server.URL,
 	}
+
+	// Restoring to the end of the base backup reads no binlog.
 	plan, err := rawRecoveryReconciler(t).resolveRecovery(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envValue(plan.StoreEnv, "cnmsql_BINLOG_S3_PATH"); got != "" {
+		t.Fatalf("a restore without a target must not need the archive store, got path env %q", got)
+	}
+
+	cluster.Spec.Bootstrap.Recovery.RecoveryTarget = &mysqlv1alpha1.RecoveryTarget{
+		TargetGTID: "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5",
+	}
+	plan, err = rawRecoveryReconciler(t).resolveRecovery(context.Background(), cluster)
 	if err != nil {
 		t.Fatal(err)
 	}

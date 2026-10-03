@@ -77,7 +77,7 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			binlogClient, binlogStore, err := binlogStoreFromEnv()
+			binlogClient, binlogStore, err := binlogStoreFromEnv(sourceCluster != "")
 			if err != nil {
 				return err
 			}
@@ -181,11 +181,12 @@ func NewCommand() *cobra.Command {
 }
 
 // binlogStoreFromEnv returns the client and bucket/path of the binary-log
-// archive. The restore Job carries cnmsql_BINLOG_S3_* only when the archive is
-// in a different store from the base backup; otherwise the layout comes from
-// cnmsql_S3_* and the client is nil, so restore reuses the base-backup client.
-func binlogStoreFromEnv() (*objectstore.Client, mysqlv1alpha1.S3ObjectStore, error) {
-	if !objectstore.HasBinlogStoreEnv() {
+// archive. The restore Job carries cnmsql_BINLOG_S3_* only when it replays
+// binlogs from a store other than the base backup's; otherwise the layout
+// comes from cnmsql_S3_* and the client is nil, so restore reuses the
+// base-backup client. Without replay no archive client is built.
+func binlogStoreFromEnv(replay bool) (*objectstore.Client, mysqlv1alpha1.S3ObjectStore, error) {
+	if !replay || !objectstore.HasBinlogStoreEnv() {
 		return nil, objectstore.StoreFromEnv(), nil
 	}
 	client, err := objectstore.NewClient(objectstore.BinlogConfigFromEnv())
