@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -115,10 +117,41 @@ func reExecPath(path string, mysqldPID int) error {
 	if mysqldPID <= 0 {
 		return fmt.Errorf("re-exec for in-place upgrade: invalid mysqld pid %d", mysqldPID)
 	}
-	if err := syscall.Exec(path, os.Args, reexecEnv(mysqldPID)); err != nil {
+	reExecParticipantsMu.Lock()
+	participants := slices.Clone(reExecParticipants)
+	reExecParticipantsMu.Unlock()
+	var extra []string
+	for _, p := range participants {
+		extra = append(extra, p.PrepareReExec()...)
+	}
+	if err := syscall.Exec(path, os.Args, reexecEnv(mysqldPID, extra...)); err != nil {
+		for _, p := range participants {
+			p.ReExecFailed()
+		}
 		return fmt.Errorf("re-exec %s for in-place upgrade: %w", path, err)
 	}
 	return nil
+}
+
+// ReExecParticipant is state the manager hands to its replacement image across
+// an in-place re-exec. PrepareReExec quiesces it and returns environment
+// entries for the new image; ReExecFailed resumes it when the exec did not
+// happen.
+type ReExecParticipant interface {
+	PrepareReExec() []string
+	ReExecFailed()
+}
+
+var (
+	reExecParticipantsMu sync.Mutex
+	reExecParticipants   []ReExecParticipant
+)
+
+// RegisterReExecParticipant adds p to every later in-place re-exec.
+func RegisterReExecParticipant(p ReExecParticipant) {
+	reExecParticipantsMu.Lock()
+	defer reExecParticipantsMu.Unlock()
+	reExecParticipants = append(reExecParticipants, p)
 }
 
 // WriteInstanceManager streams a new instance-manager binary from r into
@@ -203,18 +236,27 @@ func readPIDFileFIFOFD(pidFilePath string) (int, error) {
 	return 0, fmt.Errorf("pidfile %s has no fd= entry for FIFO re-adoption", pidFilePath)
 }
 
-// reexecEnv returns the current environment with AdoptMysqldPIDEnv set (replacing
-// any existing entry) to the mysqld PID the re-exec'd image must adopt. Split out
-// from ReExecForUpgrade so the env wiring is unit-testable without an execve.
-func reexecEnv(mysqldPID int) []string {
-	prefix := AdoptMysqldPIDEnv + "="
-	value := prefix + strconv.Itoa(mysqldPID)
-	env := os.Environ()
-	for i, kv := range env {
-		if len(kv) >= len(prefix) && kv[:len(prefix)] == prefix {
-			env[i] = value
+// reexecEnv returns the current environment with AdoptMysqldPIDEnv set to the
+// mysqld PID the re-exec'd image must adopt, and every extra KEY=VALUE entry
+// set, each replacing an existing entry for its key. Split out from
+// reExecPath so the env wiring is unit-testable without an execve.
+func reexecEnv(mysqldPID int, extra ...string) []string {
+	env := setEnv(os.Environ(), AdoptMysqldPIDEnv+"="+strconv.Itoa(mysqldPID))
+	for _, kv := range extra {
+		env = setEnv(env, kv)
+	}
+	return env
+}
+
+// setEnv sets the KEY=VALUE entry kv in env, replacing an entry for KEY.
+func setEnv(env []string, kv string) []string {
+	key, _, _ := strings.Cut(kv, "=")
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = kv
 			return env
 		}
 	}
-	return append(env, value)
+	return append(env, kv)
 }

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
@@ -127,4 +128,29 @@ func TestPodSpecHasNoBootstrapContainers(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRunVolumeIsMemoryBackedAndCapped asserts the run volume, which holds
+// the slow log, is a tmpfs the kernel caps at 32Mi (design 037): past the cap
+// mysqld gets ENOSPC, which only drops slow log entries, instead of the
+// eviction a disk-backed sizeLimit triggers.
+func TestRunVolumeIsMemoryBackedAndCapped(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	plan := testPlan()
+	spec := (&ClusterReconciler{}).podSpec(cluster, plan, plan.instanceFor(cluster, 1))
+	for _, v := range spec.Volumes {
+		if v.Name != runVolumeName {
+			continue
+		}
+		ed := v.EmptyDir
+		if ed == nil || ed.Medium != corev1.StorageMediumMemory {
+			t.Fatalf("run volume = %+v, want a memory-backed emptyDir", v.VolumeSource)
+		}
+		if ed.SizeLimit == nil || ed.SizeLimit.Cmp(resource.MustParse("32Mi")) != 0 {
+			t.Fatalf("run volume sizeLimit = %v, want 32Mi", ed.SizeLimit)
+		}
+		return
+	}
+	t.Fatal("pod spec has no run volume")
 }

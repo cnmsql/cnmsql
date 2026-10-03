@@ -253,3 +253,95 @@ spec:
     disableDefaultQueries: false
     metricsQueriesTTL: 1m
 ```
+
+## Slow query log
+
+The slow query log is off by default. Turn it on, and choose what counts as
+slow, with ordinary parameters:
+
+```yaml
+spec:
+  mysql:
+    parameters:
+      slow_query_log: "ON"
+      long_query_time: "0.5"   # seconds
+```
+
+`log_slow_verbosity`, `log_slow_extra`, `log_queries_not_using_indexes`,
+`log_slow_admin_statements`, `min_examined_row_limit` and `log_slow_rate_limit`
+work the same way. Like any change to `spec.mysql.parameters`, changing one
+of them restarts the instances one at a time, replicas first. To apply it to
+the running servers before their restart, run `kubectl cnmsql reload` (see
+[Reload MySQL parameters](./operations.md#reload-mysql-parameters)).
+
+### Reading it
+
+The instance manager reads the log and writes every entry to the instance
+container's output as one JSON record. Any log collector picks them up, and
+you can read them without exec:
+
+```sh
+kubectl logs <cluster>-1 -c mysql | grep '"msg":"Slow query"'
+```
+
+```json
+{"level":"info","ts":"2026-10-03T14:12:25Z","logger":"mysqld.slowlog","msg":"Slow query",
+ "time":"2026-10-03T14:12:24.630320Z","user":"app","host":"localhost","db":"app",
+ "query_time":0.52,"lock_time":0.000001,"rows_sent":1,"rows_examined":120000,
+ "query":"SELECT * FROM orders WHERE note LIKE '%late%'",
+ "attributes":{"Full_scan":true}}
+```
+
+| field | meaning |
+|---|---|
+| `time` | when the server logged the entry; absent on most MariaDB entries, which only carry it when the second changes |
+| `user`, `host`, `db` | who ran it and in which database |
+| `query_time`, `lock_time` | seconds |
+| `rows_sent`, `rows_examined`, `rows_affected`, `bytes_sent`, `thread_id` | as reported by the server |
+| `admin` | `true` for administrative commands such as `Quit` |
+| `query` | the statement, cut at 64 KiB (`query_truncated: true` when cut) |
+| `attributes` | every other value the server wrote, such as the `log_slow_verbosity` and `log_slow_extra` metrics |
+
+### Storage and limits
+
+The log is written to `/var/run/mysqld/mysqld-slow.log`. That directory is a
+memory-backed volume capped at 32 MiB, so the log never touches the data
+volume and cannot fill a disk. Up to 32 MiB of it counts against the instance
+container's memory limit; in normal use it is a few MiB. Size
+`resources.limits.memory` with that in mind.
+
+The instance manager rotates the file at 4 MiB. Rotation uses
+`FLUSH LOCAL SLOW LOGS`, which is not written to the binary log, so it never
+creates a transaction on a replica. If records cannot be written out fast
+enough, the manager deletes unread entries once the log reaches 24 MiB rather
+than let it grow. Queries are never slowed down by it: when the volume is full,
+mysqld drops slow log entries and carries on.
+
+Delivery is at-least-once: entries the manager had not finished writing out
+before a container restart are written again after it.
+
+`slow_query_log_file` and `log_output` are managed by the operator. Setting
+either in `spec.mysql.parameters` blocks the cluster.
+
+| metric | type | meaning |
+|---|---|---|
+| `mysql_instance_slow_log_bytes` | gauge | size of the slow log files |
+| `mysql_instance_slow_log_entries_total` | counter | records written out |
+| `mysql_instance_slow_log_dropped_bytes_total` | counter | bytes deleted before they were read |
+| `mysql_instance_slow_log_rotations_total` | counter | completed rotations |
+
+### Sensitive data
+
+Statements carry their literals, which can include personal data and tokens.
+Turning the slow log on sends them to wherever your cluster ships logs. Raise
+`long_query_time` or set `log_slow_rate_limit` to log less.
+
+MySQL removes passwords from account statements before logging them. MariaDB
+does not, so the instance manager replaces password literals with `<secret>`
+on both engines: `IDENTIFIED BY`, `IDENTIFIED VIA … USING`, `SET PASSWORD`, and
+`MASTER_PASSWORD` / `SOURCE_PASSWORD` / `PASSWORD =` assignments. This covers
+the statements the operator itself sends for managed roles and replication. It
+is best-effort: a password inside other SQL is logged as written.
+
+A statement is free text, so one that contains a line such as `# User@Host:`
+can be split into two records.

@@ -56,6 +56,8 @@ type logicalImage struct {
 	version string
 	flavor  engine.Flavor
 	cnf     string
+	// runArgs are extra flags for `instance run`, each with a leading space.
+	runArgs string
 }
 
 func mariadbImageRepo() string {
@@ -257,8 +259,8 @@ manager instance initdb --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --database=app --owner=appuser --control-user=control --server-version=%[3]s --credentials-source=env
 %[5]sexec manager instance run --mysqld=/usr/sbin/mysqld --config=/tmp/my.cnf \
   --data-dir=/var/lib/mysql --socket=/tmp/mysql.sock --server-version=%[3]s \
-  --instance-name=%[4]s --control-user=control --web-addr=:8080 --credentials-source=env
-`, img.flavor, img.cnf, img.version, img.name, importStep, logicalDumpPassword)
+  --instance-name=%[4]s --control-user=control --web-addr=:8080 --credentials-source=env%[7]s
+`, img.flavor, img.cnf, img.version, img.name, importStep, logicalDumpPassword, img.runArgs)
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{

@@ -117,6 +117,10 @@ documentation applies without change:
 - Automatic failover, replica rejoin, and broken-replica re-initialization.
 - Storage resize and autoscaling.
 - Rolling instance upgrades with primary switchover.
+- The [slow query log](monitoring.md#slow-query-log). `log_slow_query` works
+  like `slow_query_log`, and `log_slow_query_file` is managed by the operator
+  like `slow_query_log_file`. MariaDB writes passwords into the slow log as
+  given; the instance manager replaces them with `<secret>`.
 
 ## Database and user management
 
