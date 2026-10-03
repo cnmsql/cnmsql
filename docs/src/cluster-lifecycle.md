@@ -139,7 +139,21 @@ The first instance can start in one of two supported ways.
 
 `bootstrap.initdb` creates a new MySQL data directory, initializes the root and
 application users, creates the application database, and applies optional
-post-init SQL.
+post-init SQL:
+
+```yaml
+spec:
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      secret:
+        name: app-credentials
+      postInitSQL:
+        - CREATE TABLE app.ready (id int primary key)
+      characterSet: utf8mb4
+      collation: utf8mb4_0900_ai_ci
+```
 
 `bootstrap.recovery.backup` restores from a `Backup` object into an empty PVC;
 `bootstrap.recovery.source` restores directly from an object-store bucket by
@@ -147,7 +161,13 @@ referencing an `externalClusters` entry. A raw-S3 recovery discovers the latest
 or named (`backupID`) base backup in the destination, needing no source
 `Cluster` or `Backup` CR to exist. When a recovery target is present, PITR
 planning and binlog replay run before the recovered mysqld is started as the new
-primary.
+primary. [Physical backup and recovery](./backup-recovery.md) and
+[Point-in-time recovery](./pitr.md) cover both paths and the recovery targets.
+
+Each `externalClusters` entry names an object store holding another cluster's
+backups. `bootstrap.recovery.source`, `bootstrap.import.source` and a
+`LogicalRestore`'s `spec.source` refer to an entry by name, and the name is the
+key prefix the backups sit under.
 
 Replicas do not run `initdb`. They join by pulling an XtraBackup stream from
 the current primary over the instance-manager mTLS endpoint, preparing it, and
@@ -185,11 +205,34 @@ spec:
     semiSync:
       enabled: true
       timeoutMillis: 1000
+      dataDurability: preferred
+    additionalConfigFiles:
+      custom.cnf: |
+        [mysqld]
+        sort_buffer_size=4M
 ```
 
 The operator owns settings required for replication, backup, PITR, and lifecycle
 control. User parameters are applied under the mysqld section, but managed keys
 are protected by the renderer.
+
+The operator checks `spec.mysql.parameters` before it provisions anything. Keys
+are compared case-insensitively, and dashes match underscores (`log-bin` is
+`log_bin`).
+
+A denied key sets the cluster to `phase: Blocked` with a reason naming the key.
+Denied keys are the ones the operator manages itself (replication identity,
+topology, TLS material, binlog durability) and the ones that would move on-disk
+paths or expose the administrative interface, for example `server_id`,
+`gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`,
+`socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`,
+`admin_address`, `admin_ssl_cert`, `tls_ciphersuites`, `skip_replica_start` and
+`auto_generate_certs`. `require_secure_transport` is allowed: whether clients
+must use TLS is your choice.
+
+A deprecated key is accepted, and the operator emits a `DeprecatedParameter`
+Warning event with the current spelling: `slave_parallel_workers` becomes
+`replica_parallel_workers`, and `master_info_repository` is gone from 8.0.23.
 
 Scheduling and pod shape are controlled through the Cluster spec:
 `resources`, `affinity`, `topologySpreadConstraints`, `priorityClassName`,
@@ -236,6 +279,23 @@ whose replication has aborted with a recorded error (`replicationBrokenInstances
 This holds even before the cluster first finishes provisioning, so a replica that
 comes up but cannot replicate is reported instead of looking like it is still
 bootstrapping.
+
+The Cluster sets these condition types:
+
+| Condition | True when |
+|-----------|-----------|
+| `Ready` | The desired topology is available. |
+| `Progressing` | The cluster is being created, cloned, restored, or is changing primary. |
+| `Degraded` | The cluster failed to reach or keep its desired state. |
+| `ImageReady` | The image the cluster resolves to was probed and accepted as `status.targetImage`. False while a new image is probed or after it was rejected; the cluster then stays on its previous image. |
+| `BootstrapFailed` | An instance's bootstrap Job failed and was not replaced. See [Instance bootstrap](#instance-bootstrap). |
+| `DumpAccountReady` | The `cnmsql_dump` account exists on the primary with the password from the `<cluster>-dump` Secret, so logical backups can run. |
+| `MetricsAccountReady` | The `cnmsql_metrics` account exists on the primary with its built-in grants plus exactly those in `spec.monitoring.privileges`. |
+| `StoragePressure` | An instance's data volume is at least 85% full. See [Storage](./storage.md#the-storagepressure-condition). |
+| `BinlogPurgeHeld` | The purge gate has kept the same archived binary log for a while because an instance has not applied it. The message names the instances. Absent when the gate is off. |
+
+`Backup` and `LogicalRestore` use `Ready`, `Progressing` and `Degraded` with the
+same meaning. `Database` and `DatabaseUser` set `Ready` only.
 
 ## Scale behavior
 
