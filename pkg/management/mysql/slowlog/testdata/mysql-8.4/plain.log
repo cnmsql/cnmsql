@@ -1,0 +1,118 @@
+# Time: 2026-10-03T14:12:24.630320Z
+# User@Host: root[root] @ localhost []  Id:     9
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000028  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 119
+SET timestamp=1791036744;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:12:24.661539Z
+# User@Host: root[root] @ localhost []  Id:     9
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.031161  Lock_time: 0.000002  Rows_sent: 0  Rows_examined: 0  Rows_affected: 1  Bytes_sent: 11
+SET timestamp=1791036744;
+CREATE DATABASE IF NOT EXISTS shop;
+# Time: 2026-10-03T14:12:24.697803Z
+# User@Host: root[root] @ localhost []  Id:     9
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.036242  Lock_time: 0.000004  Rows_sent: 0  Rows_examined: 0  Rows_affected: 0  Bytes_sent: 11
+SET timestamp=1791036744;
+CREATE TABLE IF NOT EXISTS shop.t (id INT PRIMARY KEY, v VARCHAR(20));
+# Time: 2026-10-03T14:12:24.709411Z
+# User@Host: root[root] @ localhost []  Id:     9
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.011583  Lock_time: 0.000002  Rows_sent: 0  Rows_examined: 0  Rows_affected: 2  Bytes_sent: 50
+SET timestamp=1791036744;
+REPLACE INTO shop.t VALUES (1,'a'),(2,'b');
+# Time: 2026-10-03T14:12:24.709468Z
+# User@Host: root[root] @ localhost []  Id:     9
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000001  Lock_time: 0.000000  Rows_sent: 0  Rows_examined: 0  Rows_affected: 2  Bytes_sent: 0
+SET timestamp=1791036744;
+# administrator command: Quit;
+# Time: 2026-10-03T14:12:24.714436Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Schema: shop  Last_errno: 0  Killed: 0
+# Query_time: 0.000049  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 119
+use shop;
+SET timestamp=1791036744;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:12:24.714572Z
+# User@Host: root[root] @ localhost []  Id:    10
+# Schema: shop  Last_errno: 0  Killed: 0
+# Query_time: 0.000082  Lock_time: 0.000001  Rows_sent: 1  Rows_examined: 2  Rows_affected: 0  Bytes_sent: 94
+SET timestamp=1791036744;
+SELECT * FROM t WHERE v = 'a';
+# Time: 2026-10-03T14:12:24.719382Z
+# User@Host: root[root] @ localhost []  Id:    11
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000030  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 119
+SET timestamp=1791036744;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:12:24.719532Z
+# User@Host: root[root] @ localhost []  Id:    11
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000099  Lock_time: 0.000001  Rows_sent: 2  Rows_examined: 2  Rows_affected: 0  Bytes_sent: 102
+SET timestamp=1791036744;
+SELECT id,
+       v
+  FROM shop.t
+ WHERE id > 0;
+# Time: 2026-10-03T14:12:24.724456Z
+# User@Host: root[root] @ localhost []  Id:    12
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000029  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 119
+SET timestamp=1791036744;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:12:24.736786Z
+# User@Host: root[root] @ localhost []  Id:    12
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.012284  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 126
+SET timestamp=1791036744;
+SELECT 'it''s; # not a header', SLEEP(0.01);
+# Time: 2026-10-03T14:12:24.736858Z
+# User@Host: root[root] @ localhost []  Id:    12
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000001  Lock_time: 0.000000  Rows_sent: 0  Rows_examined: 0  Rows_affected: 0  Bytes_sent: 0
+SET timestamp=1791036744;
+# administrator command: Quit;
+# Time: 2026-10-03T14:12:24.741273Z
+# User@Host: root[root] @ localhost []  Id:    13
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000028  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 119
+SET timestamp=1791036744;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:12:24.741334Z
+# User@Host: root[root] @ localhost []  Id:    13
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000013  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 49
+SET timestamp=1791036744;
+SELECT 1;
+# Time: 2026-10-03T14:12:24.741366Z
+# User@Host: root[root] @ localhost []  Id:    13
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000011  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 49
+SET timestamp=1791036744;
+SELECT 2;
+# Time: 2026-10-03T14:12:24.741405Z
+# User@Host: root[root] @ localhost []  Id:    13
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000001  Lock_time: 0.000000  Rows_sent: 0  Rows_examined: 0  Rows_affected: 0  Bytes_sent: 0
+SET timestamp=1791036744;
+# administrator command: Quit;
+# Time: 2026-10-03T14:12:24.745911Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000027  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 1  Rows_affected: 0  Bytes_sent: 119
+SET timestamp=1791036744;
+select @@version_comment limit 1;
+# Time: 2026-10-03T14:12:24.808577Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.062619  Lock_time: 0.000013  Rows_sent: 0  Rows_examined: 0  Rows_affected: 0  Bytes_sent: 264
+SET timestamp=1791036744;
+OPTIMIZE TABLE shop.t;
+# Time: 2026-10-03T14:12:24.808698Z
+# User@Host: root[root] @ localhost []  Id:    14
+# Schema:   Last_errno: 0  Killed: 0
+# Query_time: 0.000002  Lock_time: 0.000000  Rows_sent: 0  Rows_examined: 0  Rows_affected: 0  Bytes_sent: 0
+SET timestamp=1791036744;
+# administrator command: Quit;

@@ -1,0 +1,58 @@
+# User@Host: root[root] @ localhost []
+# Thread_id: 4  Schema:   QC_hit: No
+# Query_time: 0.000153  Lock_time: 0.000000  Rows_sent: 0  Rows_examined: 0
+# Rows_affected: 1  Bytes_sent: 11
+SET timestamp=1791036792;
+CREATE DATABASE IF NOT EXISTS shop;
+# User@Host: root[root] @ localhost []
+# Thread_id: 4  Schema:   QC_hit: No
+# Query_time: 0.004226  Lock_time: 0.000053  Rows_sent: 0  Rows_examined: 0
+# Rows_affected: 0  Bytes_sent: 11
+SET timestamp=1791036792;
+CREATE TABLE IF NOT EXISTS shop.t (id INT PRIMARY KEY, v VARCHAR(20));
+# User@Host: root[root] @ localhost []
+# Thread_id: 4  Schema:   QC_hit: No
+# Query_time: 0.001036  Lock_time: 0.000656  Rows_sent: 0  Rows_examined: 0
+# Rows_affected: 2  Bytes_sent: 50
+SET timestamp=1791036792;
+REPLACE INTO shop.t VALUES (1,'a'),(2,'b');
+# User@Host: root[root] @ localhost []
+# Thread_id: 5  Schema: shop  QC_hit: No
+# Query_time: 0.000164  Lock_time: 0.000059  Rows_sent: 1  Rows_examined: 2
+# Rows_affected: 0  Bytes_sent: 104
+use `shop`;
+SET timestamp=1791036792;
+SELECT * FROM t WHERE v = 'a';
+# User@Host: root[root] @ localhost []
+# Thread_id: 6  Schema:   QC_hit: No
+# Query_time: 0.000551  Lock_time: 0.000044  Rows_sent: 2  Rows_examined: 2
+# Rows_affected: 0  Bytes_sent: 112
+SET timestamp=1791036792;
+SELECT id,
+       v
+  FROM shop.t
+ WHERE id > 0;
+# User@Host: root[root] @ localhost []
+# Thread_id: 7  Schema:   QC_hit: No
+# Query_time: 0.010119  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 0
+# Rows_affected: 0  Bytes_sent: 136
+SET timestamp=1791036792;
+SELECT 'it''s; # not a header', SLEEP(0.01);
+# User@Host: root[root] @ localhost []
+# Thread_id: 8  Schema:   QC_hit: No
+# Query_time: 0.000033  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 0
+# Rows_affected: 0  Bytes_sent: 58
+SET timestamp=1791036792;
+SELECT 1;
+# User@Host: root[root] @ localhost []
+# Thread_id: 8  Schema:   QC_hit: No
+# Query_time: 0.000013  Lock_time: 0.000000  Rows_sent: 1  Rows_examined: 0
+# Rows_affected: 0  Bytes_sent: 58
+SET timestamp=1791036792;
+SELECT 2;
+# User@Host: root[root] @ localhost []
+# Thread_id: 9  Schema:   QC_hit: No
+# Query_time: 0.010526  Lock_time: 0.009604  Rows_sent: 0  Rows_examined: 0
+# Rows_affected: 0  Bytes_sent: 276
+SET timestamp=1791036792;
+OPTIMIZE TABLE shop.t;
