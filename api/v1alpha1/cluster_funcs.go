@@ -158,10 +158,16 @@ func (cluster *Cluster) SetDefaults() {
 		if spec.Backup.ObjectStore != nil {
 			spec.Backup.ObjectStore.SetDefaults()
 		}
+		if ca := spec.Backup.ContinuousArchiving; ca != nil && ca.ObjectStore != nil {
+			ca.ObjectStore.SetDefaults()
+		}
 	}
 	for i := range spec.ExternalClusters {
 		if spec.ExternalClusters[i].ObjectStore != nil {
 			spec.ExternalClusters[i].ObjectStore.SetDefaults()
+		}
+		if spec.ExternalClusters[i].BinlogObjectStore != nil {
+			spec.ExternalClusters[i].BinlogObjectStore.SetDefaults()
 		}
 	}
 }
@@ -174,6 +180,21 @@ func (store *S3ObjectStore) SetDefaults() {
 	if store.SignatureVersion == "" {
 		store.SignatureVersion = SignatureVersionV4
 	}
+}
+
+// Location identifies where the store's objects live, as
+// "<endpoint>/<bucket>/<path>". Two stores with the same location hold the
+// same objects whatever credentials reach them. Nil yields "".
+func (store *S3ObjectStore) Location() string {
+	if store == nil {
+		return ""
+	}
+	return strings.TrimSuffix(store.Endpoint, "/") + "/" + store.Bucket + "/" + strings.Trim(store.Path, "/")
+}
+
+// SameLocation reports whether both stores address the same objects.
+func (store *S3ObjectStore) SameLocation(other *S3ObjectStore) bool {
+	return store.Location() == other.Location()
 }
 
 // Validate returns the validation errors for an object store. It rejects the
@@ -267,6 +288,8 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	for i := range spec.ExternalClusters {
 		allErrs = append(allErrs, spec.ExternalClusters[i].ObjectStore.Validate(
 			specPath.Child("externalClusters").Index(i).Child("objectStore"))...)
+		allErrs = append(allErrs, spec.ExternalClusters[i].BinlogObjectStore.Validate(
+			specPath.Child("externalClusters").Index(i).Child("binlogObjectStore"))...)
 	}
 
 	return allErrs
@@ -884,6 +907,8 @@ func (spec *ClusterSpec) validateBackup(path *field.Path) field.ErrorList {
 	if spec.Backup.ContinuousArchiving == nil {
 		return allErrs
 	}
+	allErrs = append(allErrs, spec.Backup.ContinuousArchiving.ObjectStore.Validate(
+		path.Child("continuousArchiving", "objectStore"))...)
 	if spec.Backup.ContinuousArchiving.Enabled && spec.Backup.ObjectStore == nil {
 		allErrs = append(allErrs, field.Invalid(
 			path.Child("continuousArchiving", "enabled"), true,
@@ -1058,6 +1083,15 @@ func (spec *ClusterSpec) FindExternalCluster(name string) *ExternalCluster {
 	return nil
 }
 
+// GetBinlogObjectStore returns the store holding the external cluster's
+// binary-log archive: BinlogObjectStore when set, otherwise ObjectStore.
+func (ext *ExternalCluster) GetBinlogObjectStore() *S3ObjectStore {
+	if ext.BinlogObjectStore != nil {
+		return ext.BinlogObjectStore
+	}
+	return ext.ObjectStore
+}
+
 // GetEnableSuperuserAccess returns whether superuser (root) access is enabled,
 // resolving the default.
 func (cluster *Cluster) GetEnableSuperuserAccess() bool {
@@ -1154,6 +1188,19 @@ func (cluster *Cluster) IsArchivingEnabled() bool {
 	ca := cluster.ContinuousArchiving()
 	return ca != nil && ca.Enabled &&
 		cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil
+}
+
+// BinlogObjectStore returns the object store the binary-log archive is written
+// to: continuousArchiving.objectStore when set, otherwise backup.objectStore.
+// Nil when neither is configured.
+func (cluster *Cluster) BinlogObjectStore() *S3ObjectStore {
+	if cluster.Spec.Backup == nil {
+		return nil
+	}
+	if ca := cluster.Spec.Backup.ContinuousArchiving; ca != nil && ca.ObjectStore != nil {
+		return ca.ObjectStore
+	}
+	return cluster.Spec.Backup.ObjectStore
 }
 
 // ArchiveRPOSeconds returns the configured RPO bound in seconds, defaulting to
