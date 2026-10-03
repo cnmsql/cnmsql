@@ -22,28 +22,28 @@ import (
 	"os"
 	"time"
 
-	mysqllog "github.com/percona/go-mysql/log"
-	"github.com/percona/go-mysql/log/slow"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog/internal/slowparse"
 )
 
 // parseFrom parses f from offset to its end and calls fn with every entry, in
-// order. fn returning false stops the parse. The library reads to EOF and
+// order. fn returning false stops the parse. The parser reads to EOF and
 // stops; it emits the entry it was reading at EOF even if mysqld has not
 // finished writing it, which the tailer accounts for.
-func parseFrom(f *os.File, offset int64, fn func(*mysqllog.Event) bool) error {
+func parseFrom(f *os.File, offset int64, fn func(*slowparse.Event) bool) error {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return err
 	}
-	p := slow.NewSlowLogParser(f, mysqllog.Options{
+	p := slowparse.NewParser(f, slowparse.Options{
 		StartOffset: uint64(offset),
 		// MariaDB writes "# Time: YYMMDD HH:MM:SS" in server time; instance
 		// containers run in UTC.
 		DefaultLocation: time.UTC,
+		MaxQueryBytes:   MaxQueryBytes,
 	})
 	errc := make(chan error, 1)
 	go func() { errc <- runParser(p) }()
 	stopped := false
-	for e := range p.EventChan() {
+	for e := range p.Events() {
 		if stopped {
 			continue
 		}
@@ -56,9 +56,9 @@ func parseFrom(f *os.File, offset int64, fn func(*mysqllog.Event) bool) error {
 }
 
 // runParser runs p to completion and turns a parser panic into an error. The
-// library panics on an entry it cannot account for; its deferred close of the
-// event channel still runs, so the caller's range loop ends.
-func runParser(p *slow.SlowLogParser) (err error) {
+// parser's deferred close of the event channel still runs, so the caller's
+// range loop ends.
+func runParser(p *slowparse.Parser) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("slow log parser: %v", r)

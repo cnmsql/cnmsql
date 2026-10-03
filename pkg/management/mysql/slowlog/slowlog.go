@@ -30,8 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog/internal/slowparse"
 	"github.com/go-logr/logr"
-	mysqllog "github.com/percona/go-mysql/log"
 )
 
 const (
@@ -169,7 +169,7 @@ func New(cfg Config) *Log {
 func (l *Log) activePath() string  { return filepath.Join(l.cfg.Dir, FileName) }
 func (l *Log) rotatedPath() string { return l.activePath() + ".1" }
 
-func (l *Log) emit(e *mysqllog.Event) {
+func (l *Log) emit(e *slowparse.Event) {
 	l.log.Info("Slow query", keysAndValues(e)...)
 	l.entries.Add(1)
 }

@@ -175,16 +175,24 @@ under 8 Mi.
 
 A new package, wired from `instance/runner.go`. It has three parts.
 
-**Parser.** `github.com/percona/go-mysql/log/slow` (BSD-3-Clause, maintained,
-the parser behind Percona PMM's query analytics). It parsed every entry of every
+**Parser.** A fork of `github.com/percona/go-mysql/log/slow` (BSD-3-Clause,
+maintained, the parser behind Percona PMM's query analytics), kept in-tree in
+`slowlog/internal/slowparse` with its license. Upstream builds a statement by
+concatenating strings line by line, which is quadratic: a 200k-line `IN` list
+took 18 seconds, long enough for the start-up drain to outlast the startup
+probe and crash-loop the instance. The fork caps the statement at 64 KiB in a
+builder and flags it as truncated. It also ends an entry only at `# Time:` or
+`# User@Host:`; upstream ended it at any `# <Capital>` line, which cut a
+statement at a SQL comment line. The parser handles every entry of every
 fixture from the six images, including MySQL's ISO 8601 `# Time:`, MariaDB's
 `# explain:` lines and `# administrator command:` bodies. It reports each
 entry's byte `Offset`, which the tailer uses as its resume point.
+
 `github.com/go-mysql/slowlog` was considered and rejected: it is GPL-3.0, it
 loses the timestamp of every MySQL 8.x entry, and it copies MariaDB's
 `# explain:` rows into the statement text.
 
-The library parses a file from an offset to EOF and does not tail. Two of its
+The parser reads a file from an offset to EOF and does not tail. Two of its
 behaviours shape the tailer:
 
 - At EOF it emits the entry it was reading, even if mysqld has not finished
@@ -352,7 +360,7 @@ log. The docs mention it.
 ## Testing
 
 - **Unit, records:** the six images' plain and verbose fixtures, in
-  `pkg/management/mysql/slowlog/testdata/`, go through the library and the
+  `pkg/management/mysql/slowlog/testdata/`, go through the parser and the
   record mapping. Every fixture yields one record per `# User@Host:` line, and
   known entries map to the expected fields on both engines. Also covered: the
   64 KiB cap, admin commands, and dropping `Start`/`End`.

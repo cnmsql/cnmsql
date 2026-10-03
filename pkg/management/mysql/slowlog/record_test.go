@@ -24,18 +24,18 @@ import (
 	"time"
 	"unicode/utf8"
 
-	mysqllog "github.com/percona/go-mysql/log"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog/internal/slowparse"
 )
 
-func parseFixture(t *testing.T, path string) []*mysqllog.Event {
+func parseFixture(t *testing.T, path string) []*slowparse.Event {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	var events []*mysqllog.Event
-	if err := parseFrom(f, 0, func(e *mysqllog.Event) bool {
+	var events []*slowparse.Event
+	if err := parseFrom(f, 0, func(e *slowparse.Event) bool {
 		events = append(events, e)
 		return true
 	}); err != nil {
@@ -44,7 +44,7 @@ func parseFixture(t *testing.T, path string) []*mysqllog.Event {
 	return events
 }
 
-func record(e *mysqllog.Event) map[string]any {
+func record(e *slowparse.Event) map[string]any {
 	kv := keysAndValues(e)
 	m := make(map[string]any, len(kv)/2)
 	for i := 0; i+1 < len(kv); i += 2 {
@@ -53,7 +53,7 @@ func record(e *mysqllog.Event) map[string]any {
 	return m
 }
 
-func findRecord(t *testing.T, events []*mysqllog.Event, match func(map[string]any) bool) map[string]any {
+func findRecord(t *testing.T, events []*slowparse.Event, match func(map[string]any) bool) map[string]any {
 	t.Helper()
 	for _, e := range events {
 		if r := record(e); match(r) {
@@ -141,7 +141,7 @@ func TestAdminCommandRecord(t *testing.T) {
 
 func TestUnparsedExtraMetricsAreLeftOut(t *testing.T) {
 	t.Parallel()
-	e := mysqllog.NewEvent()
+	e := slowparse.NewEvent()
 	e.Query = "SELECT 1"
 	e.NumberMetrics["Start"] = 0
 	e.NumberMetrics["End"] = 0
@@ -166,7 +166,7 @@ func TestCapQuery(t *testing.T) {
 	if !truncated || len(q) > MaxQueryBytes || !utf8.ValidString(q) {
 		t.Errorf("capQuery: len=%d truncated=%v valid=%v", len(q), truncated, utf8.ValidString(q))
 	}
-	e := mysqllog.NewEvent()
+	e := slowparse.NewEvent()
 	e.Query = long
 	if r := record(e); r["query_truncated"] != true {
 		t.Error("record lacks query_truncated for a capped query")
@@ -240,7 +240,7 @@ func TestRedactSecrets(t *testing.T) {
 			t.Errorf("redactSecrets(%q)\n got %q\nwant %q", tc.in, got, tc.want)
 		}
 	}
-	e := mysqllog.NewEvent()
+	e := slowparse.NewEvent()
 	e.Query = "CREATE USER a IDENTIFIED BY 'pw'"
 	if q := record(e)["query"]; q != "CREATE USER a IDENTIFIED BY <secret>" {
 		t.Errorf("record query = %q, want the password redacted", q)

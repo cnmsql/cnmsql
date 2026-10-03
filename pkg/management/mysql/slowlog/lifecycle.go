@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	mysqllog "github.com/percona/go-mysql/log"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog/internal/slowparse"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/diskusage"
 )
@@ -119,7 +119,7 @@ func (l *Log) drainFile(path string) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	if err := parseFrom(f, 0, func(e *mysqllog.Event) bool {
+	if err := parseFrom(f, 0, func(e *slowparse.Event) bool {
 		l.emit(e)
 		return true
 	}); err != nil {

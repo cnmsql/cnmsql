@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	mysqllog "github.com/percona/go-mysql/log"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog/internal/slowparse"
 )
 
 // tailer follows the slow log. It owns its fields; the Log only sees the
@@ -37,7 +37,7 @@ type tailer struct {
 	lastSize int64
 	// held is the last entry of the previous parse. mysqld may still have been
 	// writing it, so it is emitted once the file stops growing.
-	held *mysqllog.Event
+	held *slowparse.Event
 	// resume is the handed-over cursor, applied to the first file opened.
 	resume Cursor
 	// skipIno is a finished rotated file that could not be unlinked.
@@ -106,8 +106,8 @@ func (t *tailer) poll(ctx context.Context) {
 // parse reads from off to the end of the file, emits every entry but the last
 // and holds the last one.
 func (t *tailer) parse(ctx context.Context, size int64) {
-	var prev *mysqllog.Event
-	err := parseFrom(t.f, t.off, func(e *mysqllog.Event) bool {
+	var prev *slowparse.Event
+	err := parseFrom(t.f, t.off, func(e *slowparse.Event) bool {
 		if ctx.Err() != nil {
 			return false
 		}

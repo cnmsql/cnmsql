@@ -21,7 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	mysqllog "github.com/percona/go-mysql/log"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog/internal/slowparse"
 )
 
 // MaxQueryBytes caps the statement text one record carries. A multi-megabyte
@@ -43,7 +43,7 @@ var (
 )
 
 // keysAndValues renders one parsed entry as the key/value pairs of its record.
-func keysAndValues(e *mysqllog.Event) []any {
+func keysAndValues(e *slowparse.Event) []any {
 	kv := make([]any, 0, 28)
 	if !e.Ts.IsZero() {
 		kv = append(kv, "time", e.Ts.UTC().Format(time.RFC3339Nano))
@@ -88,7 +88,7 @@ func keysAndValues(e *mysqllog.Event) []any {
 	}
 	query, truncated := capQuery(redactSecrets(e.Query))
 	kv = append(kv, "query", query)
-	if truncated {
+	if truncated || e.QueryTruncated {
 		kv = append(kv, "query_truncated", true)
 	}
 	if len(attributes) > 0 {

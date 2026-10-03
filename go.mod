@@ -15,7 +15,6 @@ require (
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/onsi/ginkgo/v2 v2.33.0
 	github.com/onsi/gomega v1.40.0
-	github.com/percona/go-mysql v0.0.0-20260721111653-2a02c0e64767
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
@@ -65,7 +64,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-ole/go-ole v1.3.0 // indirect
+	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-openapi/jsonpointer v1.0.2 // indirect
 	github.com/go-openapi/jsonreference v1.0.2 // indirect
 	github.com/go-openapi/swag v0.29.2 // indirect
