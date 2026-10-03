@@ -285,7 +285,9 @@ func (p *Parser) parseMetrics(line string) {
 		case smv[1] == "Log_slow_rate_type":
 			p.event.RateType = smv[2]
 		case smv[1] == "Log_slow_rate_limit":
-			val, _ := strconv.ParseUint(smv[2], 10, 64)
+			// cnmsql: parse at the platform's uint size so the conversion
+			// cannot overflow on 32-bit builds.
+			val, _ := strconv.ParseUint(smv[2], 10, strconv.IntSize)
 			p.event.RateLimit = uint(val)
 		default:
 			val, _ := strconv.ParseUint(smv[2], 10, 64)
