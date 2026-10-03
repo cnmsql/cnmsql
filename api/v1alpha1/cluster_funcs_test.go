@@ -930,6 +930,25 @@ var _ = Describe("Binlog archive object store", func() {
 		Expect(cluster.Spec.ExternalClusters[0].BinlogObjectStore.SignatureVersion).To(Equal(SignatureVersionV4))
 	})
 
+	It("accepts a raw object-store recovery target without a backup store of its own", func() {
+		cluster := &Cluster{Spec: ClusterSpec{
+			ImageName: "percona/percona-server:8.0",
+			Instances: 1,
+			Storage:   StorageConfiguration{Size: "1Gi"},
+			Bootstrap: &BootstrapConfiguration{Recovery: &BootstrapRecovery{
+				Source:         "prod",
+				RecoveryTarget: &RecoveryTarget{TargetGTID: "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5"},
+			}},
+			ExternalClusters: []ExternalCluster{{
+				Name:              "prod",
+				ObjectStore:       &S3ObjectStore{Bucket: "backups"},
+				BinlogObjectStore: &S3ObjectStore{Bucket: "binlogs"},
+			}},
+		}}
+		cluster.SetDefaults()
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
 	It("validates the archive stores like the other object stores", func() {
 		bad := func() *S3ObjectStore {
 			sse := "rot13"

@@ -1002,9 +1002,10 @@ func (spec *ClusterSpec) validateRecovery(path *field.Path) field.ErrorList {
 	}
 	tPath := path.Child("recoveryTarget")
 
-	// A point-in-time target is replayed from the binlog archive, which only
-	// exists when continuous archiving is configured against an object store.
-	if spec.Backup == nil || spec.Backup.ObjectStore == nil {
+	// A point-in-time target is replayed from the binlog archive. A raw
+	// object-store recovery reads it from the externalClusters entry checked
+	// above; a Backup-based recovery needs an object store on this cluster.
+	if rec.Source == "" && (spec.Backup == nil || spec.Backup.ObjectStore == nil) {
 		allErrs = append(allErrs, field.Invalid(
 			tPath, target,
 			"recoveryTarget requires backup.objectStore to be configured for binlog replay"))
