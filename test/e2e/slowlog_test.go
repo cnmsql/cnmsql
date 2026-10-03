@@ -46,6 +46,35 @@ var _ = Describe("Slow query log", Ordered, Label("feature"), func() {
 	It("reaches the instance logs on MariaDB", func() {
 		expectSlowQueryInLogs("slowlog-mariadb", "mariadb", mariadbImage, mariadbExec)
 	})
+	It("follows slow_query_log when it is turned off and back on", func() {
+		const name = "slowlog-toggle"
+		manifest := slowLogClusterManifest(name, "mysql", instanceImage)
+		applyManifest(name, manifest)
+		DeferCleanup(func() { deleteManifest(name, manifest) })
+		expectClusterReady(name, 1, 15*time.Minute)
+
+		By("turning the slow log off")
+		pod := setSlowQueryLog(name, "OFF")
+		off := "cnmsql-slowlog-e2e-off"
+		_, err := mysqlExec(pod, "app", appPassword(name), "app", fmt.Sprintf("SELECT SLEEP(0.5), '%s'", off))
+		Expect(err).NotTo(HaveOccurred())
+		Consistently(func(g Gomega) {
+			logs, err := kubectl("logs", pod, "-n", testNamespace, "-c", "mysql")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(slowQueryRecordFor(logs, off)).To(BeNil(), "slow query logged while the slow log is off")
+		}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+		By("turning it back on")
+		pod = setSlowQueryLog(name, "ON")
+		on := "cnmsql-slowlog-e2e-on"
+		_, err = mysqlExec(pod, "app", appPassword(name), "app", fmt.Sprintf("SELECT SLEEP(0.5), '%s'", on))
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			logs, err := kubectl("logs", pod, "-n", testNamespace, "-c", "mysql")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(slowQueryRecordFor(logs, on)).NotTo(BeNil(), "no slow query record for %s", on)
+		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	})
 })
 
 func expectSlowQueryInLogs(name, flavor, image string, exec func(pod, user, password, database, sql string) (string, error)) {
@@ -76,6 +105,35 @@ func expectSlowQueryInLogs(name, flavor, image string, exec func(pod, user, pass
 		g.Expect(r["user"]).To(Equal("app"))
 		g.Expect(r["query_time"]).To(BeNumerically(">=", 0.5))
 	}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+}
+
+// setSlowQueryLog sets slow_query_log on a one-instance cluster and waits for
+// the change to land. A parameter change rolls the instance, so it waits for a
+// new Pod to be ready and returns its name.
+func setSlowQueryLog(name, value string) string {
+	pod := clusterPrimary(name)
+	uid, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+	Expect(err).NotTo(HaveOccurred())
+	_, err = kubectl("patch", "cluster", name, "-n", testNamespace, "--type", "merge",
+		"-p", fmt.Sprintf(`{"spec":{"mysql":{"parameters":{"slow_query_log":%q}}}}`, value))
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		now, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(now).NotTo(Equal(uid), "the instance was not rolled")
+	}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
+	expectClusterReady(name, 1, 15*time.Minute)
+
+	want := "1"
+	if value == "OFF" {
+		want = "0"
+	}
+	Eventually(func(g Gomega) {
+		out, err := mysqlExec(pod, "app", appPassword(name), "", "SELECT @@GLOBAL.slow_query_log")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(out)).To(Equal(want))
+	}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	return pod
 }
 
 // slowQueryRecordFor returns the "Slow query" record whose query names marker.
