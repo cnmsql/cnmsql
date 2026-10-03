@@ -129,12 +129,17 @@ func dumpBackupDiagnostics(backup string) {
 	dumpE2EDiagnostics()
 }
 
-// readArchiveIndex fetches and decodes the cluster-level binlog archive index
-// (`<cluster>/binlogs/_index.json`) from object storage. A missing index (the
-// archiver has not written one yet) surfaces as an error so callers can poll.
+// readArchiveIndex fetches the archive index from the suite's bucket.
 func readArchiveIndex(cluster string) (objectstore.ArchiveIndex, error) {
+	return readArchiveIndexIn(objectStoreBucket, cluster)
+}
+
+// readArchiveIndexIn fetches and decodes the cluster-level binlog archive index
+// (`<cluster>/binlogs/_index.json`) from bucket. A missing index (the archiver
+// has not written one yet) surfaces as an error so callers can poll.
+func readArchiveIndexIn(bucket, cluster string) (objectstore.ArchiveIndex, error) {
 	var idx objectstore.ArchiveIndex
-	key := objectKey("%s/binlogs/_index.json", cluster)
+	key := fmt.Sprintf("%s:%s/%s/binlogs/_index.json", s3Remote, bucket, cluster)
 	out, err := rcloneExec("cat", key)
 	if err != nil {
 		return idx, fmt.Errorf("reading archive index %s: %w (%s)", key, err, out)
@@ -234,6 +239,19 @@ func expectMariadbArchiveCovers(cluster, want string, timeout time.Duration) {
 
 func expectFlavorArchiveCovers(cluster string, flavor engine.Flavor, want string, timeout time.Duration) {
 	GinkgoHelper()
+	expectFlavorArchiveCoversIn(objectStoreBucket, cluster, flavor, want, timeout)
+}
+
+// expectArchiveCoversIn is expectArchiveCovers for an archive kept in bucket.
+func expectArchiveCoversIn(bucket, cluster, want string, timeout time.Duration) {
+	GinkgoHelper()
+	expectFlavorArchiveCoversIn(bucket, cluster, engine.FlavorMySQL, want, timeout)
+}
+
+// expectFlavorArchiveCoversIn is expectFlavorArchiveCovers for an archive kept
+// in bucket.
+func expectFlavorArchiveCoversIn(bucket, cluster string, flavor engine.Flavor, want string, timeout time.Duration) {
+	GinkgoHelper()
 	// An empty want would make containment trivially true: the assertion would
 	// pass without proving anything. Every caller captures a GTID position after a
 	// seed+flush, so it must be non-empty; refuse the vacuous case loudly.
@@ -243,7 +261,7 @@ func expectFlavorArchiveCovers(cluster string, flavor engine.Flavor, want string
 	Expect(err).NotTo(HaveOccurred())
 	timeout = e2eTimeout(timeout)
 	Eventually(func(g Gomega) {
-		idx, err := readArchiveIndex(cluster)
+		idx, err := readArchiveIndexIn(bucket, cluster)
 		// The archiver writes the index only after it ships a rotated file, so a
 		// missing index usually means it has shipped nothing. Its own reported
 		// failure reason is far more actionable than the client's "not found", so
