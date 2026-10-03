@@ -267,9 +267,12 @@ spec:
       long_query_time: "0.5"   # seconds
 ```
 
-Both are applied without a restart. `log_slow_verbosity`, `log_slow_extra`,
-`log_queries_not_using_indexes`, `log_slow_admin_statements`,
-`min_examined_row_limit` and `log_slow_rate_limit` work the same way.
+`log_slow_verbosity`, `log_slow_extra`, `log_queries_not_using_indexes`,
+`log_slow_admin_statements`, `min_examined_row_limit` and `log_slow_rate_limit`
+work the same way. Like any change to `spec.mysql.parameters`, changing one
+of them restarts the instances one at a time, replicas first. To apply it to
+the running servers before their restart, run `kubectl cnmsql reload` (see
+[Reload MySQL parameters](./operations.md#reload-mysql-parameters)).
 
 ### Reading it
 

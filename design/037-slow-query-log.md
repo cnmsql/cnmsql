@@ -106,7 +106,8 @@ free in the volume (see *Volume budget*).
 ### Configuration surface
 
 There is no new API field. `slow_query_log` (and MariaDB's `log_slow_query`)
-stays a user parameter, applied at runtime by the existing `Reload`. So are
+stays a user parameter. Like any parameter change it rolls the instances, and
+`kubectl cnmsql reload` applies it to the running servers first. So are
 `long_query_time`, `log_slow_verbosity`, `log_slow_extra`,
 `log_queries_not_using_indexes`, `log_slow_admin_statements`,
 `min_examined_row_limit` and `log_slow_rate_limit`.
