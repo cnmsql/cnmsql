@@ -568,3 +568,36 @@ func TestRemovedUserParametersWarns(t *testing.T) {
 		t.Errorf("warning does not mention the removed key: %q", warnings[0])
 	}
 }
+
+func TestRenderSlowLogSettings(t *testing.T) {
+	c := baseConfig()
+	out := mustRender(t, c)
+	assertNotContains(t, out, "slow_query_log_file")
+	assertNotContains(t, out, "log_output")
+
+	c.SlowLogFile = "/var/run/mysqld/mysqld-slow.log"
+	out = mustRender(t, c)
+	assertContains(t, out, "slow_query_log_file = /var/run/mysqld/mysqld-slow.log")
+	assertContains(t, out, "log_output = FILE")
+}
+
+func TestSlowLogKeysAreManaged(t *testing.T) {
+	for _, key := range []string{"slow_query_log_file", "slow-query-log-file", "log_slow_query_file", "LOG_OUTPUT", "log-output"} {
+		if !IsManagedKey(key) {
+			t.Errorf("IsManagedKey(%q) = false", key)
+		}
+		c := baseConfig()
+		c.UserParameters = map[string]string{key: "x"}
+		if _, err := c.Render(); err == nil {
+			t.Errorf("Render() accepted managed parameter %q", key)
+		}
+	}
+}
+
+func TestSlowQueryLogStaysAUserParameter(t *testing.T) {
+	c := baseConfig()
+	c.UserParameters = map[string]string{"slow_query_log": "ON", "log_slow_query": "ON", "long_query_time": "0.5"}
+	out := mustRender(t, c)
+	assertContains(t, out, "slow_query_log = ON")
+	assertContains(t, out, "long_query_time = 0.5")
+}

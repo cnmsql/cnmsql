@@ -98,6 +98,11 @@ type ServerConfig struct {
 	DataDir string
 	Socket  string
 	Port    int
+	// SlowLogFile is where mysqld writes its slow query log, on the run volume.
+	// The instance manager tails and rotates it (design 037). When set,
+	// log_output is pinned to FILE so the log cannot move to the mysql.slow_log
+	// table on the data volume.
+	SlowLogFile string
 	// ReportHost is the address replicas report to the source.
 	ReportHost string
 	// BinlogFormat is the binary log format (ROW/STATEMENT/MIXED).
@@ -219,6 +224,11 @@ var managedKeys = map[string]struct{}{
 	"max_binlog_size":            {},
 	"binlog_expire_logs_seconds": {},
 	keyExpireLogsDays:            {},
+	// The slow log lives on the capped run volume and is tailed by the instance
+	// manager (design 037); log_slow_query_file is MariaDB's name for it.
+	"slow_query_log_file": {},
+	"log_slow_query_file": {},
+	"log_output":          {},
 }
 
 // deniedKeys are [mysqld] keys that the operator does not itself set but which
@@ -236,7 +246,6 @@ var deniedKeys = map[string]struct{}{
 	"log_bin_basename":       {},
 	"relay_log_basename":     {},
 	"general_log_file":       {},
-	"slow_query_log_file":    {},
 	"server_uuid":            {},
 	"skip_slave_start":       {},
 	"skip_replica_start":     {},
@@ -499,6 +508,12 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 		{"server-id", strconv.Itoa(c.ServerID)},
 		{"datadir", c.DataDir},
 		{"socket", c.Socket},
+	}
+	if c.SlowLogFile != "" {
+		pairs = append(pairs,
+			pair{"slow_query_log_file", c.SlowLogFile},
+			pair{"log_output", "FILE"},
+		)
 	}
 	// GTID mode is engine-divergent: MySQL uses gtid_mode/enforce_gtid_consistency,
 	// which MariaDB's server rejects as unknown variables. Engine-aware callers
