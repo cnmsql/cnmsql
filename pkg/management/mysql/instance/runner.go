@@ -46,6 +46,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/metrics"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/slowlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver/metricserver"
@@ -141,6 +142,12 @@ type RunOptions struct {
 	SmartShutdownTimeout time.Duration
 	// ReadyTimeout bounds waiting for the control connection after start.
 	ReadyTimeout time.Duration
+	// SlowLogDir holds the slow log mysqld writes (design 037). Defaults to the
+	// pidfile's directory, the run volume.
+	SlowLogDir string
+	// SlowLogRotateBytes overrides the slow log rotation threshold; tests use
+	// it to force rotations. Zero keeps slowlog.DefaultRotateBytes.
+	SlowLogRotateBytes int64
 }
 
 func (o *RunOptions) applyDefaults() {
@@ -153,6 +160,9 @@ func (o *RunOptions) applyDefaults() {
 		} else {
 			o.PIDFile = "/var/run/mysqld/mysqld.pid"
 		}
+	}
+	if o.SlowLogDir == "" {
+		o.SlowLogDir = filepath.Dir(o.PIDFile)
 	}
 	if o.ShutdownTimeout == 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout
@@ -373,6 +383,23 @@ func Run(ctx context.Context, opts RunOptions) error {
 		writeTerminationMessage(log, "corruption marker present from an earlier start")
 	}
 
+	// The slow log sits on the run volume, which survives a container restart.
+	// Drain what the previous run left before mysqld starts, so a full volume
+	// cannot keep MySQL from writing its socket lock file (design 037).
+	slowCfg := slowlog.Config{
+		Dir:         opts.SlowLogDir,
+		Logger:      slowlog.NewRecordLogger(os.Stderr),
+		RotateBytes: opts.SlowLogRotateBytes,
+	}
+	if adopting {
+		slowCfg.Cursor = slowlog.CursorFromEnv()
+	}
+	slowLog := slowlog.New(slowCfg)
+	if !adopting {
+		slowLog.DrainLeftovers()
+		_ = os.Remove(opts.PIDFile + ".tmp")
+	}
+
 	sup := NewDetachedSupervisor(opts.MysqldPath, args,
 		WithDetachedShutdownTimeout(opts.ShutdownTimeout),
 		WithFIFO(fifoLog),
@@ -425,6 +452,12 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	log.Info("Connected to mysqld control interface")
 	defer func() { _ = db.Close() }()
+
+	slowLog.Start(ctx, func(ctx context.Context) error {
+		_, err := db.ExecContext(ctx, slowlog.FlushStatement)
+		return err
+	})
+	RegisterReExecParticipant(slowLog)
 
 	// mysqld started cleanly, so whatever the previous diagnosis was, it no
 	// longer holds — the volume was replaced by a re-clone, or the earlier
@@ -665,6 +698,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	metricsCollectors := []prometheus.Collector{
 		exporter,
 		metrics.NewVolumeCollector(opts.DataDir),
+		metrics.NewSlowLogCollector(slowLog.Stats),
 	}
 	if heartbeatLoop != nil {
 		metricsCollectors = append(metricsCollectors, heartbeat.NewCollector(heartbeatLoop))

@@ -50,6 +50,7 @@ func NewCommand() *cobra.Command {
 		webAddr          string
 		healthAddr       string
 		metricsAddr      string
+		slowLogRotate    int64
 		metricsTLS       bool
 		serverCert       string
 		serverKey        string
@@ -201,6 +202,7 @@ func NewCommand() *cobra.Command {
 				WebserverAddr:         webAddr,
 				HealthAddr:            healthAddr,
 				MetricsAddr:           metricsAddr,
+				SlowLogRotateBytes:    slowLogRotate,
 				MetricsTLS:            metricsTLS,
 				Backup:                backup,
 				Archiving:             archive,
@@ -243,6 +245,9 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&webAddr, "web-addr", ":8080", "Control API listen address")
 	cmd.Flags().StringVar(&healthAddr, "health-addr", ":8081", "Plain HTTP health probe listen address")
 	cmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":9187", "Metrics listen address")
+	cmd.Flags().Int64Var(&slowLogRotate, "slow-log-rotate-bytes", 0,
+		"Slow log rotation threshold in bytes (testing only; 0 keeps the default)")
+	_ = cmd.Flags().MarkHidden("slow-log-rotate-bytes")
 	cmd.Flags().BoolVar(&metricsTLS, "metrics-tls", false, "Serve metrics over mutual TLS using the control API certificate and client CA (scrapers must present a client cert)")
 	cmd.Flags().StringVar(&serverCert, "tls-cert", "", "Control API server certificate (enables mTLS)")
 	cmd.Flags().StringVar(&serverKey, "tls-key", "", "Control API server key")
