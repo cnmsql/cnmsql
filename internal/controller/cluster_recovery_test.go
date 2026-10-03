@@ -199,3 +199,58 @@ func TestResolveRecoveryBackupObjectStore(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveRecoveryBinlogStore(t *testing.T) {
+	t.Parallel()
+
+	base := &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "base"}
+	tests := []struct {
+		name        string
+		binlogStore *mysqlv1alpha1.S3ObjectStore
+		wantBucket  string
+		wantTwinEnv bool
+	}{
+		{name: "backup without a recorded archive store uses the base store", wantBucket: "backups"},
+		{
+			name:        "same location with other credentials is one store",
+			binlogStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "/base/"},
+			wantBucket:  "backups",
+		},
+		{
+			name:        "recorded archive store wins",
+			binlogStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "binlogs", Path: "archive"},
+			wantBucket:  "binlogs",
+			wantTwinEnv: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			backup := recoveryBackupFixture(base.DeepCopy(), nil)
+			backup.Status.BinlogObjectStore = tc.binlogStore
+			cluster := recoveryTargetClusterFixture(nil)
+			scheme := testScheme(t)
+			r := &ClusterReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(backup).Build(),
+				Scheme: scheme,
+			}
+			plan, err := r.resolveRecovery(context.Background(), cluster)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.BinlogStore.Bucket != tc.wantBucket {
+				t.Fatalf("binlog store bucket = %q, want %q", plan.BinlogStore.Bucket, tc.wantBucket)
+			}
+			if got := envValue(plan.StoreEnv, "cnmsql_S3_BUCKET"); got != "backups" {
+				t.Fatalf("base bucket env = %q", got)
+			}
+			twin := envValue(plan.StoreEnv, "cnmsql_BINLOG_S3_BUCKET")
+			if tc.wantTwinEnv && twin != tc.wantBucket {
+				t.Fatalf("binlog bucket env = %q, want %q", twin, tc.wantBucket)
+			}
+			if !tc.wantTwinEnv && twin != "" {
+				t.Fatalf("binlog env rendered for a single store: %q", twin)
+			}
+		})
+	}
+}

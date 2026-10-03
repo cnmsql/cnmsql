@@ -316,3 +316,20 @@ func TestObserveArchivingFromGroupElectedPrimary(t *testing.T) {
 		t.Fatalf("archiving = %+v, want the elected primary's archiver state", got)
 	}
 }
+
+func TestArchivingEnvUsesSeparateArchiveStore(t *testing.T) {
+	cluster := archivingCluster()
+	cluster.Spec.Backup.ContinuousArchiving.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket: "binlogs", Path: "archive", Endpoint: "http://archive:8333",
+	}
+	env := runEnv(cluster, testPlan())
+	if got := envValue(env, "cnmsql_S3_BUCKET"); got != "binlogs" {
+		t.Fatalf("archiver bucket = %q, want the archive store", got)
+	}
+	if got := envValue(env, "cnmsql_S3_PATH"); got != "archive" {
+		t.Fatalf("archiver path = %q", got)
+	}
+	if got := envValue(env, "cnmsql_S3_ENDPOINT"); got != "http://archive:8333" {
+		t.Fatalf("archiver endpoint = %q", got)
+	}
+}

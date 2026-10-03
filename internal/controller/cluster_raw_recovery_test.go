@@ -120,6 +120,12 @@ func TestResolveRawS3RecoveryLatest(t *testing.T) {
 	if want := "clusters/prod/new/metadata.json"; plan.MetadataKey != want {
 		t.Fatalf("expected metadata key %q, got %q", want, plan.MetadataKey)
 	}
+	if plan.BinlogStore.Bucket != "cluster-backups" {
+		t.Fatalf("without binlogObjectStore the archive is in the base store, got %q", plan.BinlogStore.Bucket)
+	}
+	if got := envValue(plan.StoreEnv, "cnmsql_BINLOG_S3_BUCKET"); got != "" {
+		t.Fatalf("no binlog env expected, got %q", got)
+	}
 }
 
 func TestResolveRawS3RecoveryByID(t *testing.T) {
@@ -191,5 +197,27 @@ func TestResolveRawS3RecoveryTarget(t *testing.T) {
 	}
 	if !plan.HasTarget || plan.TargetGTID == "" {
 		t.Fatalf("expected PITR target to flow through, got %+v", plan)
+	}
+}
+
+func TestResolveRawS3RecoveryBinlogObjectStore(t *testing.T) {
+	t.Parallel()
+
+	server := rawS3Server(t, rawList, rawMetadata())
+	defer server.Close()
+
+	cluster := rawRecoveryCluster(server.URL, "")
+	cluster.Spec.ExternalClusters[0].BinlogObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket: "binlogs", Path: "archive", Endpoint: server.URL,
+	}
+	plan, err := rawRecoveryReconciler(t).resolveRecovery(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Store.Bucket != "cluster-backups" || plan.BinlogStore.Bucket != "binlogs" {
+		t.Fatalf("stores = base %q / binlog %q", plan.Store.Bucket, plan.BinlogStore.Bucket)
+	}
+	if got := envValue(plan.StoreEnv, "cnmsql_BINLOG_S3_PATH"); got != "archive" {
+		t.Fatalf("binlog path env = %q", got)
 	}
 }

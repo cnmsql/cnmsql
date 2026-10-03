@@ -586,6 +586,38 @@ func backupObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
 	return env
 }
 
+// objectStoreLocationEnv is backupObjectStoreEnv plus the bucket and path, for
+// consumers that build object keys themselves (the archiver, restore).
+func objectStoreLocationEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
+	return append(backupObjectStoreEnv(store),
+		corev1.EnvVar{Name: objectstore.EnvBucket, Value: store.Bucket},
+		corev1.EnvVar{Name: objectstore.EnvPath, Value: store.Path},
+	)
+}
+
+// binlogObjectStoreEnv renders store under the cnmsql_BINLOG_S3_* names, the
+// second object store a restore Job reads when the binary-log archive is not
+// kept with the base backups.
+func binlogObjectStoreEnv(store mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
+	env := objectStoreLocationEnv(store)
+	for i := range env {
+		env[i].Name = objectstore.BinlogEnvName(env[i].Name)
+	}
+	return env
+}
+
+// recoveryStoreEnv renders a restore Job's object-store environment: the base
+// backup's store, plus the binary-log archive's store when it is a different
+// location. A single store renders exactly what it rendered before archive
+// stores could be separated.
+func recoveryStoreEnv(base, binlogs mysqlv1alpha1.S3ObjectStore) []corev1.EnvVar {
+	env := objectStoreLocationEnv(base)
+	if !base.SameLocation(&binlogs) {
+		env = append(env, binlogObjectStoreEnv(binlogs)...)
+	}
+	return env
+}
+
 func secretKeyEnv(name string, selector mysqlv1alpha1.SecretKeySelector) corev1.EnvVar {
 	return corev1.EnvVar{
 		Name: name,

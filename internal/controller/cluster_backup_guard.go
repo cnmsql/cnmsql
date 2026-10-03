@@ -116,7 +116,9 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 		return recoveryTargetCheck{}
 	}
 
-	store := plan.Recovery.Store
+	// The target is checked against the archive index, which lives in the
+	// binary-log archive store.
+	store := plan.Recovery.BinlogStore
 	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, &store)
 	if err != nil {
 		return recoveryTargetCheck{Retry: err}
