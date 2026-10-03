@@ -59,15 +59,18 @@ type Supervisor interface {
 // Controller is the concrete webserver.InstanceController backed by a local
 // mysqld connection.
 type Controller struct {
-	name       string
-	conn       pool.Connection
-	repl       *replication.Manager
-	gr         *groupreplication.Manager
-	users      *user.Manager
-	version    version.Version
-	versionStr string
-	expected   webserver.Role
-	supervisor Supervisor
+	name  string
+	conn  pool.Connection
+	repl  *replication.Manager
+	gr    *groupreplication.Manager
+	users *user.Manager
+	// metricsUser is the local account custom monitoring queries run as. Empty
+	// disables POST /monitoring/account.
+	metricsUser string
+	version     version.Version
+	versionStr  string
+	expected    webserver.Role
+	supervisor  Supervisor
 	// groupReplication enables the Group Replication code paths (status GR block,
 	// start/bootstrap). It stays false for async clusters so the async status path
 	// is untouched and never queries the GR tables.
@@ -1021,6 +1024,30 @@ func (c *Controller) DropUser(ctx context.Context, req user.DropUserRequest) err
 // ListUsers reports the managed MySQL users and their attributes.
 func (c *Controller) ListUsers(ctx context.Context) (*user.ListUsersResponse, error) {
 	return c.users.ListUsers(ctx)
+}
+
+// SetMetricsUser names the local account custom monitoring queries run as,
+// which POST /monitoring/account manages.
+func (c *Controller) SetMetricsUser(name string) {
+	c.metricsUser = name
+}
+
+// EnsureMetricsAccount makes the metrics account exist and hold its base
+// grants plus exactly the requested extra grants.
+func (c *Controller) EnsureMetricsAccount(
+	ctx context.Context,
+	req user.MetricsAccountRequest,
+) (*user.MetricsAccountResponse, error) {
+	resp, err := c.users.EnsureMetricsAccount(ctx, c.metricsUser, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Created || len(resp.Granted) > 0 || len(resp.Revoked) > 0 {
+		logf.FromContext(ctx).WithName("instance-controller").Info("Reconciled the metrics account",
+			"instance", c.name, "user", c.metricsUser, "created", resp.Created,
+			"granted", resp.Granted, "revoked", resp.Revoked)
+	}
+	return resp, nil
 }
 
 // CreateDatabase creates a MySQL schema.

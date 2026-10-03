@@ -19,7 +19,10 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 )
 
 // bodyActionHandler maps a JSON-bodied command to 200 OK, 400 on a malformed
@@ -44,6 +47,32 @@ func bodyActionHandler[T any](action func(context.Context, T) error) http.Handle
 func resultHandler[R any](produce func(context.Context) (R, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		result, err := produce(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			writeError(w, err)
+		}
+	}
+}
+
+// bodyResultHandler decodes a JSON body, runs the action and serves its JSON
+// result. A malformed body or a user.InvalidRequestError is a 400; any other
+// error is a 500.
+func bodyResultHandler[T, R any](action func(context.Context, T) (R, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req T
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := action(r.Context(), req)
+		if invalid, ok := errors.AsType[*user.InvalidRequestError](err); ok {
+			http.Error(w, invalid.Error(), http.StatusBadRequest)
+			return
+		}
 		if err != nil {
 			writeError(w, err)
 			return

@@ -83,6 +83,9 @@ type InstanceController interface {
 	DropDatabase(ctx context.Context, req user.DropDatabaseRequest) error
 	// ListDatabases reports the user-managed MySQL schemas.
 	ListDatabases(ctx context.Context) (*user.ListDatabasesResponse, error)
+	// EnsureMetricsAccount makes the local metrics account exist and hold its
+	// base grants plus exactly the requested extra grants.
+	EnsureMetricsAccount(ctx context.Context, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error)
 	// SetAsPrimary performs a planned Group Replication primary change to the
 	// member with the given server_uuid via group_replication_set_as_primary.
 	SetAsPrimary(ctx context.Context, memberUUID string) error
@@ -147,6 +150,7 @@ func Handler(controller InstanceController) http.Handler {
 	mux.HandleFunc("POST /database/create", bodyActionHandler(controller.CreateDatabase))
 	mux.HandleFunc("POST /database/drop", bodyActionHandler(controller.DropDatabase))
 	mux.HandleFunc("GET /database/list", resultHandler(controller.ListDatabases))
+	mux.HandleFunc("POST /monitoring/account", bodyResultHandler(controller.EnsureMetricsAccount))
 	mux.HandleFunc("POST /group/set-as-primary", groupSetAsPrimaryHandler(controller))
 	mux.HandleFunc("POST /group/set-communication-protocol", groupSetCommunicationProtocolHandler(controller))
 	if streamer, ok := controller.(BackupStreamer); ok {

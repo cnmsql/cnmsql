@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -223,11 +224,11 @@ func BootstrapStatements(p BootstrapParams) ([]string, error) {
 	// localhost so socket auth can stay passwordless inside the Pod.
 	if p.MetricsUser != "" {
 		account := fmt.Sprintf("'%s'@'localhost'", escapeName(p.MetricsUser))
-		stmts = append(stmts,
-			d.createUserAtHost(p.MetricsUser, "localhost", ""),
-			fmt.Sprintf("GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO %s", account),
-			fmt.Sprintf("GRANT SELECT ON performance_schema.* TO %s", account),
-		)
+		stmts = append(stmts, d.createUserAtHost(p.MetricsUser, "localhost", ""))
+		for _, g := range engine.MetricsAccountBaseGrants() {
+			stmts = append(stmts, fmt.Sprintf("GRANT %s ON %s TO %s",
+				strings.Join(g.Privileges, ", "), g.On, account))
+		}
 	}
 
 	stmts = append(stmts, "FLUSH PRIVILEGES")

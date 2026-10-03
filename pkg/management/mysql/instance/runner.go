@@ -460,6 +460,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		_ = sup.Shutdown(ctx)
 		return err
 	}
+	controller.SetMetricsUser(opts.MetricsUser)
 	if opts.GroupReplication {
 		controller.EnableGroupReplication()
 	}

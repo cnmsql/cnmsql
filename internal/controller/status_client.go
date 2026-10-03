@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -113,6 +114,27 @@ func (c *HTTPControlClient) Reload(ctx context.Context, cluster *mysqlv1alpha1.C
 		return nil, fmt.Errorf("instance /reload returned %s", resp.Status)
 	}
 	var result webserver.ReloadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// EnsureMetricsAccount reconciles the metrics account's grants on the named
+// instance and reports what changed.
+func (c *HTTPControlClient) EnsureMetricsAccount(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error) {
+	resp, err := c.do(ctx, cluster, instanceName, http.MethodPost, "/monitoring/account", req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("instance /monitoring/account returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var result user.MetricsAccountResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/credentials"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -234,7 +235,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&socket, "socket", "/var/run/mysqld/mysqld.sock", "Unix socket path")
 	cmd.Flags().StringVar(&serverVersion, "server-version", "", "Override the server version (default: what the mysqld binary reports)")
 	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Instance name reported in status")
-	cmd.Flags().StringVar(&metricsUser, "metrics-user", "cnmsql_metrics",
+	cmd.Flags().StringVar(&metricsUser, "metrics-user", engine.MetricsAccountName,
 		"Local passwordless account custom monitoring queries run as")
 	cmd.Flags().StringVar(&controlUser, "control-user", "root", "Privileged user for the control connection")
 	cmd.Flags().StringVar(&adminAddress, "admin-address", "", "Administrative interface address (8.0.14+)")

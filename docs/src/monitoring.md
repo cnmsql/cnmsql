@@ -169,23 +169,48 @@ earlier row, or whose label value is not valid UTF-8, is dropped and sets
 
 Each instance runs the queries on its own server as `cnmsql_metrics`, a
 passwordless account that only accepts connections from inside the Pod over
-the local socket. It has `PROCESS`, `REPLICATION CLIENT` and
-`REPLICATION SLAVE` on all databases and `SELECT` on `performance_schema`, and
-nothing else. To query your own tables, grant it read access on the primary.
-The grant replicates to every instance and stays in place until you revoke
-it:
+the local socket. It always has `PROCESS`, `REPLICATION CLIENT` and
+`REPLICATION SLAVE` on all databases and `SELECT` on `performance_schema`.
 
-```bash
-NS=<namespace> CLUSTER=<cluster>
-POD=$(kubectl -n $NS get cluster $CLUSTER -o jsonpath='{.status.currentPrimary}')
-PASS=$(kubectl -n $NS get secret $CLUSTER-root -o jsonpath='{.data.password}' | base64 -d)
-kubectl -n $NS exec $POD -c mysql -- mysql -uroot -p"$PASS" \
-  -e "GRANT SELECT ON app.* TO 'cnmsql_metrics'@'localhost'"
+To query your own tables, list the grants it needs under
+`spec.monitoring.privileges`:
+
+```yaml
+spec:
+  monitoring:
+    customQueriesConfigMap:
+      - name: cluster-sample-monitoring
+        key: queries.yaml
+    privileges:
+      - privileges: [SELECT]
+        on: app.*
+      - privileges: [SELECT, SHOW VIEW]
+        on: reports.daily
 ```
 
-The operator does not manage these grants. Managed roles and `DatabaseUser`
-resources cannot change `cnmsql_metrics`, because it is a reserved account. A
-grant run from `postInitSQL` also works, but only on a new cluster.
+The operator applies them on the primary, and replication carries them to
+every instance. It checks the account on every resync: a grant revoked by
+hand comes back, and the account is recreated if it was dropped, including
+on clusters created before it existed. The `MetricsAccountReady` condition
+on the Cluster reports the outcome, and an event lists each change.
+
+The list is authoritative. Any other grant on `cnmsql_metrics`, whether it
+came from a manual `GRANT` or from `postInitSQL`, is revoked. The built-in
+grants above are never revoked, even if you list one and remove it later.
+`PROXY` grants are the exception: the operator's control account cannot
+revoke them, so the condition reads `ApplyFailed` until you revoke one by
+hand.
+
+Only `SELECT` and `SHOW VIEW` are accepted, on a database (`db.*`) or a
+table (`db.table`). The webhook refuses `*.*` and the `mysql` schema, since
+`mysql.user` holds password hashes. MySQL reads `_` in a database name as a
+one-character wildcard, so `my_app.*` also covers `myXapp`, and a name that
+`_` would let match `mysql` is refused as well. `information_schema` is
+readable without a grant and cannot be listed. A table-level grant needs the
+table to exist: until it does, the condition reads `ApplyFailed`, and the
+other grants and revokes are still applied. Managed roles and `DatabaseUser`
+resources still cannot change `cnmsql_metrics`, because it is a reserved
+account.
 
 The queries use a separate connection from the instance manager's control
 account, so a slow query cannot hold up health checks or failover. Each query
@@ -193,9 +218,9 @@ is cancelled after 10 seconds.
 
 Queries run in a read-only transaction, but that does not stop a statement
 that commits implicitly, such as `CREATE USER`. The privileges of
-`cnmsql_metrics` are what limit the damage a query can do, so grant it only
-read access. Anyone who can edit a referenced ConfigMap can run SQL as that
-account; use `customQueriesSecret`, which takes the same `name`/`key` pairs,
+`cnmsql_metrics` are what limit the damage a query can do, which is why
+`spec.monitoring.privileges` only accepts read access. Anyone who can edit a
+referenced ConfigMap can run SQL as that account; use `customQueriesSecret`, which takes the same `name`/`key` pairs,
 for queries that should stay private.
 
 ### Loading and updates

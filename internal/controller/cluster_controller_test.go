@@ -141,6 +141,10 @@ func (readyStatusClient) ListDatabases(context.Context, *mysqlv1alpha1.Cluster, 
 	return &user.ListDatabasesResponse{}, nil
 }
 
+func (readyStatusClient) EnsureMetricsAccount(context.Context, *mysqlv1alpha1.Cluster, string, user.MetricsAccountRequest) (*user.MetricsAccountResponse, error) {
+	return &user.MetricsAccountResponse{}, nil
+}
+
 func (readyStatusClient) SetSemiSyncWaitForReplicaCount(context.Context, *mysqlv1alpha1.Cluster, string, int) error {
 	return nil
 }
@@ -175,6 +179,10 @@ type recordingControlClient struct {
 	databases       []string
 	createdDatabase []user.CreateDatabaseRequest
 	droppedDatabase []user.DropDatabaseRequest
+
+	metricsAccount     []user.MetricsAccountRequest
+	metricsAccountResp *user.MetricsAccountResponse
+	metricsAccountErr  error
 
 	semiSyncWaits map[string]int
 	reloaded      map[string]webserver.ReloadRequest
@@ -270,6 +278,17 @@ func (c *recordingControlClient) DropDatabase(_ context.Context, _ *mysqlv1alpha
 
 func (c *recordingControlClient) ListDatabases(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string) (*user.ListDatabasesResponse, error) {
 	return &user.ListDatabasesResponse{Databases: c.databases}, nil
+}
+
+func (c *recordingControlClient) EnsureMetricsAccount(_ context.Context, _ *mysqlv1alpha1.Cluster, _ string, req user.MetricsAccountRequest) (*user.MetricsAccountResponse, error) {
+	c.metricsAccount = append(c.metricsAccount, req)
+	if c.metricsAccountErr != nil {
+		return nil, c.metricsAccountErr
+	}
+	if c.metricsAccountResp != nil {
+		return c.metricsAccountResp, nil
+	}
+	return &user.MetricsAccountResponse{}, nil
 }
 
 func (c *recordingControlClient) SetSemiSyncWaitForReplicaCount(_ context.Context, _ *mysqlv1alpha1.Cluster, instanceName string, count int) error {

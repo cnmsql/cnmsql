@@ -259,6 +259,7 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateBackup(specPath.Child("backup"))...)
 	allErrs = append(allErrs, spec.validateManagedServices(specPath.Child("managed", "services"))...)
 	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
+	allErrs = append(allErrs, spec.validateMonitoringPrivileges(specPath.Child("monitoring", "privileges"))...)
 	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
 	allErrs = append(allErrs, spec.validateFlavor(specPath)...)
 	allErrs = append(allErrs, cluster.validateFailoverPolicy(specPath.Child("failoverPolicy"))...)
@@ -798,6 +799,27 @@ func isReservedRoleName(name string) bool {
 		return true
 	}
 	return strings.HasPrefix(name, "mysql.") || strings.HasPrefix(name, "cnmsql_")
+}
+
+// validateMonitoringPrivileges checks the extra grants for the metrics
+// account: read-only privileges on a database or table, never *.* or the
+// mysql schema. The instance manager applies the same rules.
+func (spec *ClusterSpec) validateMonitoringPrivileges(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if spec.Monitoring == nil {
+		return allErrs
+	}
+	for i := range spec.Monitoring.Privileges {
+		grant := &spec.Monitoring.Privileges[i]
+		entry := path.Index(i)
+		if err := engine.ValidateMetricsPrivilegeNames(grant.Privileges); err != nil {
+			allErrs = append(allErrs, field.Invalid(entry.Child("privileges"), grant.Privileges, err.Error()))
+		}
+		if _, err := engine.ParseMetricsGrantTarget(grant.On); err != nil {
+			allErrs = append(allErrs, field.Invalid(entry.Child("on"), grant.On, err.Error()))
+		}
+	}
+	return allErrs
 }
 
 // validateManagedServices checks the user-defined service exposition: the rw

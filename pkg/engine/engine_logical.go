@@ -189,7 +189,7 @@ func (mysqlLogicalTool) ParseSnapshotPosition(comments string) (BinlogInfo, erro
 func (mysqlLogicalTool) DumpAccountGrants(version.Version) []AccountGrant {
 	return []AccountGrant{{
 		Privileges: []string{privSelect, "SHOW VIEW", "TRIGGER", "EVENT", "RELOAD", "REPLICATION CLIENT"},
-		On:         "*.*",
+		On:         GlobalGrantTarget,
 	}}
 }
 
@@ -232,7 +232,7 @@ func (mariadbLogicalTool) DumpAccountGrants(v version.Version) []AccountGrant {
 	if v.AtLeast(11, 3, 0) {
 		privs = append(privs, "SHOW CREATE ROUTINE")
 	}
-	return []AccountGrant{{Privileges: privs, On: "*.*"}}
+	return []AccountGrant{{Privileges: privs, On: GlobalGrantTarget}}
 }
 
 // DumpAccountRevokes is empty: MariaDB has no partial_revokes.
