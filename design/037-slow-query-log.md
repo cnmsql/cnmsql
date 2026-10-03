@@ -1,6 +1,6 @@
 # 037 — Usable slow query log
 
-Status: proposed (2026-10-03)
+Status: accepted (2026-10-03)
 
 Issue #177.
 
@@ -21,7 +21,7 @@ datadir:
 ## Goals
 
 - Per-cluster on/off, declared in the Cluster.
-- Every slow query reaches the instance container's stdout as one structured
+- Every slow query reaches the instance container's output as one structured
   record, so `kubectl logs` and any log collector pick it up. No `exec`.
 - A hard bound on the space the slow log can use, enforced by the kernel. A full
   slow log never affects queries, never fills a PVC and never evicts the Pod.
@@ -218,7 +218,7 @@ bytes as dropped, so a malformed region cannot stall it.
 
 **Watchdog.** A separate goroutine that runs every second and only uses `stat`,
 `statfs`, `rename`, `truncate` and the control connection. It never waits on the
-tailer, so the bound holds even when stdout is backpressured.
+tailer, so the bound holds even when writing records is backpressured.
 
 1. If the active file is ≥ 4 Mi and no `.1` exists: rename the active file to
    `.1`, then run `FLUSH LOCAL SLOW LOGS` on the control connection. If the
@@ -254,7 +254,7 @@ container restart delivery is at-least-once, and the docs say so.
 **In-place manager upgrade.** Before `execve`, the re-exec path stops the
 tailer and the watchdog and asks for the tailer's cursor, `<inode>:<offset>` of
 the first entry it has not emitted. The stop waits at most five seconds; a
-tailer stuck on stdout hands over the cursor of the entry it was emitting, so
+tailer stuck writing a record hands over the cursor of the entry it was emitting, so
 that entry is emitted again after the exec. The cursor travels in the
 `CNMSQL_SLOWLOG_CURSOR` environment variable, set next to the existing
 `CNMYSQL_ADOPT_MYSQLD_PID`. If the exec fails, the tailer and watchdog resume.
@@ -270,11 +270,18 @@ involved, so a full volume cannot break the handoff.
 
 ### Record format
 
-One record per entry on the instance container's stdout, through the manager's
-logger:
+One record per entry on the instance container's output (stderr, like the rest
+of the manager's logs):
 
 - logger: `mysqld.slowlog`
 - msg: `Slow query`
+
+Records go through their own JSON logger in the manager's format (`level`,
+RFC 3339 `ts`, `logger`, `msg`), not through the manager's logger. In
+production mode controller-runtime's logger keeps 100 identical messages per
+second and then 1 in 100; every record has the same message, so on a busy
+server it dropped most of them (the integration test lost 199 of 300 before the
+change).
 
 | field | from | type |
 |---|---|---|
@@ -310,7 +317,7 @@ the same `mysql_instance_` prefix:
 
 | what happens | result |
 |---|---|
-| stdout backpressured | the tailer stalls; the watchdog rotates and then truncates; entries are dropped and counted; queries unaffected |
+| log output backpressured | the tailer stalls; the watchdog rotates and then truncates; entries are dropped and counted; queries unaffected |
 | `FLUSH LOCAL SLOW LOGS` fails | retried every second; at the hard cap the active file is truncated in place |
 | manager wedged | nothing enforces the reserve, so the slow log can fill all 32 Mi; mysqld drops entries and queries are unaffected; a wedged manager fails its probes, and the container restart's start-up cleanup frees the volume before mysqld starts again |
 | container restart | leftover files are drained and deleted before mysqld starts; at-least-once delivery |
