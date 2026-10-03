@@ -54,9 +54,9 @@ spec:
   reclaimPolicy: retain    # keep the MySQL account when this object is deleted
   grants:
     - privileges: [SELECT]
-      on: "sales.*"
+      "on": "sales.*"
     - privileges: [SELECT]
-      on: "marketing.*"
+      "on": "marketing.*"
 ```
 
 The operator finds the cluster's primary, creates the account if absent, and
@@ -175,12 +175,12 @@ spec:
     - privileges: [SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX,
         REFERENCES, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW,
         SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER]
-      on: "*.*"
+      "on": "*.*"
   revokes:
     - privileges: [INSERT, UPDATE, DELETE, CREATE, DROP, ALTER]
-      on: "mysql.*"
+      "on": "mysql.*"
     - privileges: [INSERT, UPDATE, DELETE, CREATE, DROP, ALTER]
-      on: "sys.*"
+      "on": "sys.*"
 ```
 
 `kubectl cnmsql databaseuser dbaas` scaffolds exactly this (grants + revokes), so
