@@ -28,6 +28,15 @@
         'digest',
       ],
     },
+    // @docusaurus/theme-mermaid declares a peer range of ^0.1.9 on layout-elk,
+    // so 0.2.x makes npm refuse to resolve the docs lockfile. Lift this once a
+    // theme-mermaid release accepts 0.2.
+    {
+      matchPackageNames: [
+        '@mermaid-js/layout-elk',
+      ],
+      allowedVersions: '<0.2.0',
+    },
   ],
   // The kind_versions.json *array* (the spread of k8s minors the e2e matrix
   // sweeps) is NOT managed here: Renovate would collapse every entry onto the
