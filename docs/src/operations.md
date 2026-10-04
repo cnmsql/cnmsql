@@ -64,6 +64,15 @@ slsa-verifier verify-artifact "$ARCHIVE" \
 On macOS, use `shasum -a 256 --ignore-missing -c checksums.txt` instead of
 `sha256sum`.
 
+The operator image `ghcr.io/cnmsql/cnmsql` is signed the same way by the build
+workflow, on every push to `main` and every release tag:
+
+```bash
+cosign verify ghcr.io/cnmsql/cnmsql:${VERSION#v} \
+  --certificate-identity "https://github.com/cnmsql/cnmsql/.github/workflows/build.yml@refs/tags/${VERSION}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 Most commands accept an optional `CLUSTER` argument. When you omit it, the
 plugin picks the only cluster in the current namespace. If the namespace holds
 several clusters, read-only commands (`status`, `logs`, `metrics`) warn and pick
