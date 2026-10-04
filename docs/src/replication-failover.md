@@ -410,6 +410,16 @@ The operator then:
 `spec.maxSwitchoverDelay` bounds how long the target may take to catch up before
 the switchover is aborted and surfaced as blocked.
 
+While the target promotes itself (step 4), it briefly reports not ready with its
+replication stopped. The operator recognizes this window by the primary Lease,
+which the target acquires right before it promotes. As long as the target holds
+the Lease, the switchover reports `Switchover` and automatic failover waits
+instead of electing another replica. `spec.maxSwitchoverDelay` bounds this wait
+too. Once the delay has passed, failover elects another replica if the old
+primary has already stepped down; otherwise the target is fenced and the
+switchover is aborted. Clusters with the primary Lease disabled have no
+such signal, so failover may still fire during the promotion.
+
 ## Automatic failover
 
 Automatic failover begins when the established primary is unreachable or not

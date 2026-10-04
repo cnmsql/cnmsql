@@ -19,9 +19,13 @@ package async
 import (
 	"context"
 	"testing"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -54,16 +58,40 @@ func drainCluster() *mysqlv1alpha1.Cluster {
 	return cluster
 }
 
-func newDrainReconciler(t *testing.T, cluster *mysqlv1alpha1.Cluster) (*Reconciler, *record.FakeRecorder) {
+// newDrainReconciler builds a reconciler over a fake client holding cluster
+// plus any extra objects the caller needs, e.g. the cluster's primary Lease.
+func newDrainReconciler(
+	t *testing.T,
+	cluster *mysqlv1alpha1.Cluster,
+	extras ...client.Object,
+) (*Reconciler, *record.FakeRecorder) {
 	t.Helper()
 	scheme := testScheme(t)
 	recorder := record.NewFakeRecorder(8)
-	client := fake.NewClientBuilder().
+	objects := append([]client.Object{cluster}, extras...)
+	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(cluster).
+		WithObjects(objects...).
 		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
 		Build()
-	return NewReconciler(client, scheme, nil, recorder, ""), recorder
+	return NewReconciler(fakeClient, scheme, nil, recorder, ""), recorder
+}
+
+// primaryLeaseFor returns the cluster's primary Lease as the mid-Promote window
+// presents it: held and freshly renewed by holder, the lease the target
+// acquires right before Promote and renews while the handoff progresses. Pass
+// an expired or foreign holder to model the machinery having given up.
+func primaryLeaseFor(cluster *mysqlv1alpha1.Cluster, holder string, renewed time.Time) *coordinationv1.Lease {
+	duration := int32(primaryLeaseDuration / time.Second)
+	renewTime := metav1.NewMicroTime(renewed)
+	return &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: primaryLeaseName(cluster), Namespace: cluster.Namespace},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			LeaseDurationSeconds: &duration,
+			RenewTime:            &renewTime,
+		},
+	}
 }
 
 func TestReconcileDrainSwitchoverPromotesSafeReplica(t *testing.T) {
