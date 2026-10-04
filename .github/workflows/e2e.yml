@@ -45,7 +45,7 @@ jobs:
       kindEnabled: ${{ steps.generate.outputs.kindEnabled }}
     steps:
     - name: Clone the code
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
@@ -107,7 +107,7 @@ jobs:
       host: ${{ steps.host.outputs.label }}
     steps:
     - name: Clone the code
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
         ref: ${{ github.event.inputs.pr_sha || github.ref }}
@@ -203,7 +203,7 @@ jobs:
       E2E_REGISTRY_MIRRORS: ${{ github.repository_owner == 'cnmsql' && 'true' || 'false' }}
     steps:
     - name: Clone the code
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
         ref: ${{ github.event.inputs.pr_sha || github.ref }}
