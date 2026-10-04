@@ -19,7 +19,9 @@ package async
 import (
 	"context"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -128,6 +130,24 @@ func switchoverCluster() *mysqlv1alpha1.Cluster {
 	return cluster
 }
 
+// midPromotionState is switchoverState with the target caught mid-Promote and a
+// third, healthy replica the election can fall back to. Readiness gates on the
+// replication threads, so the target reports a not-ready replica with its
+// threads stopped (replication still configured, role not yet primary).
+func midPromotionState() topology.FailoverState {
+	state := switchoverState()
+	state.InstanceNames = append(state.InstanceNames, drainThird)
+	target := state.Instances[drainReplica]
+	target.Ready = false
+	target.IORunning = false
+	target.SQLRunning = false
+	state.Instances[drainReplica] = target
+	state.Instances[drainThird] = topology.FailoverInstance{
+		Ready: true, Replica: true, Role: "replica", SQLRunning: true, IORunning: true, GTID: "uuid:1-10",
+	}
+	return state
+}
+
 // TestReconcileFailoverDefersToInFlightSwitchover pins the race between the
 // planned switchover path and the reactive failover path: once the switchover
 // demotes the old primary, it reports a replica role with its lease released,
@@ -205,6 +225,157 @@ func TestReconcileFailoverDefersWhenSwitchoverTargetAlreadyPromoted(t *testing.T
 	if got.Status.PrimaryFailingSince != nil {
 		t.Fatal("failover recorded the demoted primary as failing")
 	}
+}
+
+// TestReconcileFailoverDefersWhileSwitchoverTargetPromotes covers the window
+// the target's in-Pod reconciler is mid-Promote. Readiness folds replication
+// health in (Readyz fails while the threads are down or the source metadata is
+// reset), so through the whole window the manager reports the target not-ready:
+// a replica with its threads stopped after STOP REPLICA, then an unknown role
+// with no replication at all after the reset, until the role flips to primary.
+// That snapshot reads exactly like an unfit switchover target. The primary
+// Lease the target acquires right before Promote is what distinguishes the
+// machinery in motion from a stalled handoff; failing over here would move
+// targetPrimary to another replica mid-handoff and stamp an emergency
+// FailingOver over a planned drain switchover.
+func TestReconcileFailoverDefersWhileSwitchoverTargetPromotes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	state := midPromotionState()
+	r, recorder := newDrainReconciler(t, cluster, primaryLeaseFor(cluster, drainReplica, time.Now()))
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 3,
+		Observed:  state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled {
+		t.Fatal("expected failover to defer while the switchover target is mid-promotion")
+	}
+	if result.Phase != nil && result.Phase.Phase == topology.PhaseFailingOver {
+		t.Fatalf("Phase = %q, want no failover phase during the target's promotion", result.Phase.Phase)
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("expected no failover event during the target's promotion, got %q", ev)
+	default:
+	}
+}
+
+// TestReconcileFailoverFiresWhenSwitchoverTargetLeaseExpired bounds the
+// mid-promotion deferral from below: a promotion that fails before resetting
+// its replica metadata wedges the target behind its own stopped SQL thread, so
+// it stops renewing the lease it acquired for the promotion. Once the lease
+// lapses, the machinery has visibly given up and failover must recover.
+func TestReconcileFailoverFiresWhenSwitchoverTargetLeaseExpired(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	state := midPromotionState()
+	expired := time.Now().Add(-2 * primaryLeaseDuration)
+	r, recorder := newDrainReconciler(t, cluster, primaryLeaseFor(cluster, drainReplica, expired))
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 3,
+		Observed:  state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected failover to fire once the target's lease has expired")
+	}
+	if got := failedOverTo(t, ctx, r, cluster); got != drainThird {
+		t.Fatalf("TargetPrimary = %q, want the election to pick %s", got, drainThird)
+	}
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("expected a failover event to be recorded")
+	}
+}
+
+// TestReconcileFailoverFiresWhenLeaseHeldByAnotherInstance pins the holder
+// check: the deferral follows the lease's holder, not its mere existence. A
+// lease naming some other instance says nothing about the target's promotion.
+func TestReconcileFailoverFiresWhenLeaseHeldByAnotherInstance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	state := midPromotionState()
+	r, recorder := newDrainReconciler(t, cluster, primaryLeaseFor(cluster, drainThird, time.Now()))
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 3,
+		Observed:  state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected failover to fire when the lease is held by another instance")
+	}
+	if got := failedOverTo(t, ctx, r, cluster); got != drainThird {
+		t.Fatalf("TargetPrimary = %q, want the election to pick %s", got, drainThird)
+	}
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("expected a failover event to be recorded")
+	}
+}
+
+// TestReconcileFailoverFiresWhenLeaseHeldPastMaxSwitchoverDelay bounds the
+// mid-promotion deferral from above: a promotion that fails after resetting
+// its replica metadata retries and renews the lease forever, so lease expiry
+// never comes. maxSwitchoverDelay, measured from targetPrimaryTimestamp, ends
+// the wait — and failing over is the recovery, because once targetPrimary
+// moves away the stuck instance goes down the follow path.
+func TestReconcileFailoverFiresWhenLeaseHeldPastMaxSwitchoverDelay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	cluster.Spec.MaxSwitchoverDelay = 30
+	started := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	cluster.Status.TargetPrimaryTimestamp = &started
+	state := midPromotionState()
+	r, recorder := newDrainReconciler(t, cluster, primaryLeaseFor(cluster, drainReplica, time.Now()))
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 3,
+		Observed:  state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected failover to fire once maxSwitchoverDelay has passed on a lease-held promotion")
+	}
+	if got := failedOverTo(t, ctx, r, cluster); got != drainThird {
+		t.Fatalf("TargetPrimary = %q, want the election to pick %s", got, drainThird)
+	}
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("expected a failover event to be recorded")
+	}
+}
+
+// failedOverTo reads back the Cluster and returns the target the failover
+// recorded, so the firing tests can assert the election moved targetPrimary.
+func failedOverTo(t *testing.T, ctx context.Context, r *Reconciler, cluster *mysqlv1alpha1.Cluster) string {
+	t.Helper()
+	got := &mysqlv1alpha1.Cluster{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != topology.PhaseFailingOver {
+		t.Fatalf("Phase = %q, want %q", got.Status.Phase, topology.PhaseFailingOver)
+	}
+	return got.Status.TargetPrimary
 }
 
 // TestReconcileFailoverFiresWhenSwitchoverTargetUnfit makes sure the deferral

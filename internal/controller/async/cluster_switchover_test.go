@@ -206,8 +206,11 @@ func TestReconcileSwitchoverPromotedTargetEscalatesAfterMaxDelay(t *testing.T) {
 }
 
 // TestReconcileSwitchoverStillBlocksOnUnfitTarget keeps the refusal honest: a
-// target that is not a fit replica (here, a broken replication thread) is a
-// real block and must keep reporting Blocked.
+// target that is not reporting ready, with no primary Lease held, is a
+// promotion the machinery is not working on, so the switchover cannot complete
+// and Blocked is the honest report. (Mid-Promote reports not-ready too, but
+// holds the lease — that case is pinned by
+// TestReconcileSwitchoverReportsMidPromotionTargetAsProgressing.)
 func TestReconcileSwitchoverStillBlocksOnUnfitTarget(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -232,7 +235,7 @@ func TestReconcileSwitchoverStillBlocksOnUnfitTarget(t *testing.T) {
 		InstanceNames: []string{drainPrimary, drainReplica},
 		Instances: map[string]topology.FailoverInstance{
 			drainPrimary: {Ready: true, Primary: true, Role: "primary"},
-			drainReplica: {Ready: true, Replica: true, Role: "replica", IORunning: true, SQLRunning: false},
+			drainReplica: {Ready: false, Replica: true, Role: "replica"},
 		},
 	}
 
@@ -245,5 +248,113 @@ func TestReconcileSwitchoverStillBlocksOnUnfitTarget(t *testing.T) {
 	}
 	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
 		t.Fatalf("Phase = %+v, want Blocked", result.Phase)
+	}
+}
+
+// TestReconcileSwitchoverReportsMidPromotionTargetAsProgressing pins the other
+// half of the same window: while the target's in-Pod reconciler runs Promote,
+// the manager reports it not-ready — a replica whose replication threads are
+// stopped (or an unknown role with no replication at all after the reset),
+// because readiness folds replication health in. The switchover is succeeding,
+// not blocked: with the target holding the primary lease it acquired right
+// before Promote, the phase must read Switchover (Progressing), which is also
+// what keeps the phase from flapping through Warning Blocked mid-drain.
+func TestReconcileSwitchoverReportsMidPromotionTargetAsProgressing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cluster := testCluster()
+	cluster.Status.CurrentPrimary = drainPrimary
+	cluster.Status.TargetPrimary = drainReplica
+	cluster.Status.TargetPrimaryTimestamp = &metav1.Time{Time: time.Now()}
+
+	r, _ := newDrainReconciler(t, cluster, primaryLeaseFor(cluster, drainReplica, time.Now()))
+
+	observed := topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Instances: map[string]topology.FailoverInstance{
+			drainPrimary: {Ready: true, Primary: false, Role: "replica"},
+			drainReplica: {Ready: false, Replica: true, Role: "replica", IORunning: false, SQLRunning: false},
+		},
+	}
+
+	result, err := r.ReconcileSwitchover(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected the in-flight switchover to be handled")
+	}
+	if result.Phase == nil || result.Phase.Phase != topology.PhaseSwitchover {
+		t.Fatalf("Phase = %+v, want Switchover", result.Phase)
+	}
+	if !result.Phase.Progressing {
+		t.Fatal("expected the mid-promotion target to report Progressing")
+	}
+}
+
+// TestReconcileSwitchoverAbortsStuckLeaseHeldPromotion bounds the mid-promotion
+// wait: a promotion that fails after resetting its replica metadata retries and
+// renews the lease forever, so the lease alone never expires. Past
+// maxSwitchoverDelay the switchover aborts — safe, because the target never
+// took the role — fencing the target and pointing targetPrimary back, which
+// lets the reactive failover path recover.
+func TestReconcileSwitchoverAbortsStuckLeaseHeldPromotion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cluster := testCluster()
+	cluster.Spec.MaxSwitchoverDelay = 30
+	cluster.Status.CurrentPrimary = drainPrimary
+	cluster.Status.TargetPrimary = drainReplica
+	// Started well beyond maxSwitchoverDelay, so this pass aborts.
+	started := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	cluster.Status.TargetPrimaryTimestamp = &started
+
+	targetPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: drainReplica, Namespace: cluster.Namespace}}
+	lease := primaryLeaseFor(cluster, drainReplica, time.Now())
+	r, recorder := newDrainReconciler(t, cluster, targetPod, lease)
+
+	observed := topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Instances: map[string]topology.FailoverInstance{
+			drainPrimary: {Ready: true, Primary: false, Role: "replica"},
+			drainReplica: {Ready: false, Replica: true, Role: "replica", IORunning: false, SQLRunning: false},
+		},
+	}
+
+	result, err := r.ReconcileSwitchover(ctx, cluster, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected the aborted switchover to be handled")
+	}
+
+	pod := &corev1.Pod{}
+	err = r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: drainReplica}, pod)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("target pod get after abort: got err %v, want NotFound (fenced)", err)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary != drainPrimary {
+		t.Fatalf("TargetPrimary = %q, want it restored to %s", got.Status.TargetPrimary, drainPrimary)
+	}
+	if got.Status.TargetPrimaryTimestamp != nil {
+		t.Fatal("TargetPrimaryTimestamp = set, want it cleared by the abort")
+	}
+	if got.Status.Phase != topology.PhaseBlocked {
+		t.Fatalf("Phase = %q, want %q", got.Status.Phase, topology.PhaseBlocked)
+	}
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("expected the abort to record an event")
 	}
 }

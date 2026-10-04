@@ -55,11 +55,23 @@ func (r *Reconciler) ReconcileFailover(
 	// is the promotion machinery, not an emergency, that hands the role to the
 	// target. Failover firing in that window stamps an emergency FailingOver
 	// over a planned handoff (a node drain produces this reliably). Defer while
-	// the target is fit to receive the role: it promotes itself through the
-	// switchover path, and a switchover that stalls is aborted by
-	// maxSwitchoverDelay, which points targetPrimary back and reopens this path.
+	// the handoff is moving: the target is a fit replica, holds the primary
+	// lease it acquired to promote itself, or has already promoted and is only
+	// waiting for status.currentPrimary to catch up.
 	knownDiverged := append(slices.Clone(observed.Diverged), cluster.Status.DivergedInstances...)
-	if switchoverInFlight(cluster, observed, knownDiverged) {
+	// The lease tells the "target is promoting" state apart when its own status
+	// cannot: mid-Promote the target reports not-ready with a stopped or
+	// unconfigured replica state, which validateSwitchoverTarget reads as an
+	// unfit target. The lease is bounded by maxSwitchoverDelay measured from
+	// targetPrimaryTimestamp: a promotion that fails after resetting its
+	// replica metadata retries (and renews the lease) forever, and failing over
+	// is the recovery there — once targetPrimary moves away, the stuck instance
+	// goes down the follow path.
+	targetHoldsLease, err := r.targetHoldsPromotionLease(ctx, cluster, knownDiverged)
+	if err != nil {
+		return topology.FailoverResult{Handled: true}, err
+	}
+	if switchoverInFlight(cluster, observed, knownDiverged, targetHoldsLease) {
 		return topology.FailoverResult{}, nil
 	}
 
@@ -183,15 +195,73 @@ func (r *Reconciler) ReconcileFailover(
 	return topology.FailoverResult{Handled: true, RequeueAfter: request.ProvisioningRetry}, nil
 }
 
+// targetHoldsPromotionLease reports whether an in-flight switchover request's
+// target currently holds the primary Lease — the operator-visible proof the
+// promotion machinery is working on the handoff, covering the mid-Promote
+// window the target's own status cannot (it reports not-ready with a stopped
+// or unconfigured replica state while promoting). The signal is bounded by
+// maxSwitchoverDelay measured from targetPrimaryTimestamp: a promotion that
+// fails after resetting its replica metadata retries and renews the lease
+// forever, and the timestamp bound is what ends the wait there.
+func (r *Reconciler) targetHoldsPromotionLease(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	knownDiverged []string,
+) (bool, error) {
+	target := cluster.Status.TargetPrimary
+	if target == "" || target == cluster.Status.CurrentPrimary || slices.Contains(knownDiverged, target) {
+		return false, nil
+	}
+	lease, err := r.PrimaryLeaseStatus(ctx, cluster, target)
+	if err != nil {
+		return false, err
+	}
+	if !lease.Held {
+		return false, nil
+	}
+	if maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second; maxDelay > 0 &&
+		cluster.Status.TargetPrimaryTimestamp != nil &&
+		time.Since(cluster.Status.TargetPrimaryTimestamp.Time) > maxDelay {
+		return false, nil
+	}
+	return true, nil
+}
+
 // switchoverInFlight reports whether a planned switchover is being driven to a
-// fit target: either the target is a healthy replica awaiting promotion, or it
-// has already promoted itself and only status.currentPrimary still names the
-// old primary. A diverged target is never in flight — the in-Pod reconciler
-// refuses to promote it, so deferring would strand the cluster with no writable
-// primary and the failover path must keep ownership (and refuse loudly when no
-// safe replica exists). An unfit target reopens the failover path for the same
-// reason: the switchover cannot complete without it.
-func switchoverInFlight(cluster *mysqlv1alpha1.Cluster, observed topology.FailoverState, knownDiverged []string) bool {
+// fit target, covering every state the handoff passes through:
+//
+//   - a healthy replica awaiting promotion (validateSwitchoverTarget passes),
+//   - the target mid-Promote: the in-Pod reconciler has stopped its replication
+//     (or reset it) but has not flipped the role yet, so the manager reports a
+//     replica with its threads down — or an unknown role with no replication at
+//     all — and readiness, which folds replication health in, reports false
+//     through the whole window. The primary Lease the target acquires right
+//     before Promote is the only operator-visible signal in that state, so the
+//     caller passes whether the target holds it (targetHoldsLease),
+//   - the target already promoted, waiting for status.currentPrimary to catch
+//     up (ready and reporting primary).
+//
+// A diverged target is never in flight — the in-Pod reconciler refuses to
+// promote it, so deferring would strand the cluster with no writable primary
+// and the failover path must keep ownership (and refuse loudly when no safe
+// replica exists). A target that reports none of the shapes above — gone, not
+// ready, no lease — reopens the failover path for the same reason: the
+// switchover cannot complete without it.
+//
+// The lease signal is bounded by maxSwitchoverDelay in the caller: a promotion
+// that fails before resetting its replica metadata wedges the target behind
+// its own stopped SQL thread, which stops the lease renewals and reopens this
+// path within the lease duration; a promotion that fails after the reset
+// retries and renews the lease forever, and the timestamp bound is what ends
+// the wait there. Clusters with the primary lease disabled keep the
+// pre-existing gap: nothing distinguishes their mid-Promote instant from an
+// unfit target, and failover may fire in it.
+func switchoverInFlight(
+	cluster *mysqlv1alpha1.Cluster,
+	observed topology.FailoverState,
+	knownDiverged []string,
+	targetHoldsLease bool,
+) bool {
 	target := cluster.Status.TargetPrimary
 	if target == "" || target == cluster.Status.CurrentPrimary {
 		return false
@@ -200,6 +270,9 @@ func switchoverInFlight(cluster *mysqlv1alpha1.Cluster, observed topology.Failov
 		return false
 	}
 	if validateSwitchoverTarget(observed, target) == nil {
+		return true
+	}
+	if targetHoldsLease {
 		return true
 	}
 	status, ok := observed.Instances[target]

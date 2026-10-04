@@ -82,6 +82,41 @@ func (r *Reconciler) ReconcileSwitchover(
 				},
 			}, nil
 		}
+		// The target mid-Promote reports neither of the shapes above: between
+		// stopping its replication and flipping the role, the manager reports a
+		// replica whose threads are down — or an unknown role with no
+		// replication at all once the source metadata is reset — and readiness,
+		// which folds replication health in, is false through the whole window.
+		// Reporting Blocked there emitted the same Warning event on every
+		// planned switchover. The primary Lease the target acquires right before
+		// Promote is the proof the machinery holds the handoff, so a held lease
+		// reports Progressing. A promotion that fails after resetting its
+		// replica metadata retries and renews the lease forever, so the wait is
+		// bounded by maxSwitchoverDelay like every other switchover: the target
+		// never took the role, so aborting (fencing it and pointing
+		// targetPrimary back) is safe and lets failover recover.
+		lease, lerr := r.PrimaryLeaseStatus(ctx, cluster, target)
+		if lerr != nil {
+			return topology.FailoverResult{}, lerr
+		}
+		if lease.Held {
+			startedAt, serr := r.ensureSwitchoverStarted(ctx, cluster)
+			if serr != nil {
+				return topology.FailoverResult{}, serr
+			}
+			maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second
+			if maxDelay > 0 && time.Since(startedAt) > maxDelay {
+				return r.abortSwitchover(ctx, cluster, current, target)
+			}
+			return topology.FailoverResult{
+				Handled: true,
+				Phase: &topology.OperationPhase{
+					Phase:       topology.PhaseSwitchover,
+					Reason:      fmt.Sprintf("Switching over to %s: waiting for the target to promote itself", target),
+					Progressing: true,
+				},
+			}, nil
+		}
 		return topology.FailoverResult{
 			Handled: true,
 			Phase: &topology.OperationPhase{
