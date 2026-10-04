@@ -73,12 +73,24 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        # SPDX SBOM and SLSA provenance per platform, attached to the index as
+        # attestation manifests, the same as the cnmsql/containers images.
+        sbom: true
+        provenance: mode=max
 
     # Every tag points at the same multi-platform index, so signing its digest
-    # covers them all. Keyless: the certificate is recorded in the public Rekor
-    # transparency log.
-    - name: Sign the image
+    # covers them all; --recursive also signs each platform manifest and the
+    # attestation manifests in it. Keyless: the certificate is recorded in the
+    # public Rekor transparency log. The signature is checked against this
+    # workflow's identity before the job succeeds.
+    - name: Sign and verify the image
       env:
         IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmsql
         DIGEST: ${{ steps.build.outputs.digest }}
-      run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+      run: |
+        set -euo pipefail
+        cosign sign --yes --recursive "${IMAGE}@${DIGEST}"
+        cosign verify "${IMAGE}@${DIGEST}" \
+          --certificate-identity "${IDENTITY}" \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null

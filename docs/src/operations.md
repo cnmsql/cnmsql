@@ -65,12 +65,22 @@ On macOS, use `shasum -a 256 --ignore-missing -c checksums.txt` instead of
 `sha256sum`.
 
 The operator image `ghcr.io/cnmsql/cnmsql` is signed the same way by the build
-workflow, on every push to `main` and every release tag:
+workflow, on every push to `main` and every release tag. It also carries an
+SPDX SBOM and SLSA provenance for each platform:
 
 ```bash
 cosign verify ghcr.io/cnmsql/cnmsql:${VERSION#v} \
   --certificate-identity "https://github.com/cnmsql/cnmsql/.github/workflows/build.yml@refs/tags/${VERSION}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Inspect the attestations with Docker Buildx:
+
+```bash
+docker buildx imagetools inspect ghcr.io/cnmsql/cnmsql:${VERSION#v} \
+  --format '{{ json .SBOM }}'        # SPDX SBOM per platform
+docker buildx imagetools inspect ghcr.io/cnmsql/cnmsql:${VERSION#v} \
+  --format '{{ json .Provenance }}'  # SLSA provenance per platform
 ```
 
 Most commands accept an optional `CLUSTER` argument. When you omit it, the
