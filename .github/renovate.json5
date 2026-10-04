@@ -28,6 +28,14 @@
         'digest',
       ],
     },
+    // slsa-verifier only trusts provenance from a generator referenced by tag,
+    // so this reusable workflow must not be pinned to a digest.
+    {
+      matchPackageNames: [
+        'slsa-framework/slsa-github-generator',
+      ],
+      pinDigests: false,
+    },
     // @docusaurus/theme-mermaid declares a peer range of ^0.1.9 on layout-elk,
     // so 0.2.x makes npm refuse to resolve the docs lockfile. Lift this once a
     // theme-mermaid release accepts 0.2.

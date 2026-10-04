@@ -16,6 +16,73 @@ curl -sSfL https://github.com/cnmsql/cnmsql/raw/main/hack/install-cnmsql-plugin.
 The script downloads the latest release, verifies its checksum, and installs the
 plugin along with a `kubectl_complete-cnmsql` shim for shell tab completion.
 
+### Verify a release
+
+A checksum match only proves the download was not corrupted. Each release also
+carries two attestations that tie the archives to this repository's release
+workflow:
+
+- `checksums.txt.sig` and `checksums.txt.pem`: a keyless
+  [cosign](https://github.com/sigstore/cosign) signature over `checksums.txt`,
+  recorded in the public Rekor transparency log.
+- `kubectl-cnmsql.intoto.jsonl` (from v0.9.0): [SLSA](https://slsa.dev) build
+  provenance for every archive, recording the workflow, commit and tag that
+  built it.
+
+Download the archive for your platform and the release metadata:
+
+```bash
+VERSION=v0.9.0
+ARCHIVE=kubectl-cnmsql_${VERSION#v}_linux_amd64.tar.gz
+BASE=https://github.com/cnmsql/cnmsql/releases/download/${VERSION}
+for f in "$ARCHIVE" checksums.txt checksums.txt.sig checksums.txt.pem kubectl-cnmsql.intoto.jsonl; do
+  curl -sSfLO "$BASE/$f"
+done
+```
+
+Check the signature on `checksums.txt`, then the archive against it:
+
+```bash
+cosign verify-blob checksums.txt \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-identity "https://github.com/cnmsql/cnmsql/.github/workflows/release.yml@refs/tags/${VERSION}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --ignore-missing -c checksums.txt
+```
+
+Check the provenance with
+[slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
+
+```bash
+slsa-verifier verify-artifact "$ARCHIVE" \
+  --provenance-path kubectl-cnmsql.intoto.jsonl \
+  --source-uri github.com/cnmsql/cnmsql \
+  --source-tag "$VERSION"
+```
+
+On macOS, use `shasum -a 256 --ignore-missing -c checksums.txt` instead of
+`sha256sum`.
+
+The operator image `ghcr.io/cnmsql/cnmsql` is signed the same way by the build
+workflow, on every push to `main` and every release tag. It also carries an
+SPDX SBOM and SLSA provenance for each platform:
+
+```bash
+cosign verify ghcr.io/cnmsql/cnmsql:${VERSION#v} \
+  --certificate-identity "https://github.com/cnmsql/cnmsql/.github/workflows/build.yml@refs/tags/${VERSION}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Inspect the attestations with Docker Buildx:
+
+```bash
+docker buildx imagetools inspect ghcr.io/cnmsql/cnmsql:${VERSION#v} \
+  --format '{{ json .SBOM }}'        # SPDX SBOM per platform
+docker buildx imagetools inspect ghcr.io/cnmsql/cnmsql:${VERSION#v} \
+  --format '{{ json .Provenance }}'  # SLSA provenance per platform
+```
+
 Most commands accept an optional `CLUSTER` argument. When you omit it, the
 plugin picks the only cluster in the current namespace. If the namespace holds
 several clusters, read-only commands (`status`, `logs`, `metrics`) warn and pick

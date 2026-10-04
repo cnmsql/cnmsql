@@ -25,6 +25,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Needed for cosign keyless signing via the GitHub Actions OIDC identity.
+      id-token: write
     steps:
     - name: Clone the code
       uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -36,6 +38,9 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
     - name: Log in to ${{ env.REGISTRY }}
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -57,6 +62,7 @@ jobs:
           type=sha,format=short
 
     - name: Build and push
+      id: build
       uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
       with:
         context: .
@@ -67,3 +73,24 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        # SPDX SBOM and SLSA provenance per platform, attached to the index as
+        # attestation manifests, the same as the cnmsql/containers images.
+        sbom: true
+        provenance: mode=max
+
+    # Every tag points at the same multi-platform index, so signing its digest
+    # covers them all; --recursive also signs each platform manifest and the
+    # attestation manifests in it. Keyless: the certificate is recorded in the
+    # public Rekor transparency log. The signature is checked against this
+    # workflow's identity before the job succeeds.
+    - name: Sign and verify the image
+      env:
+        IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cnmsql
+        DIGEST: ${{ steps.build.outputs.digest }}
+        IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+      run: |
+        set -euo pipefail
+        cosign sign --yes --recursive "${IMAGE}@${DIGEST}"
+        cosign verify "${IMAGE}@${DIGEST}" \
+          --certificate-identity "${IDENTITY}" \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null

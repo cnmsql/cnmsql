@@ -15,6 +15,8 @@ jobs:
       contents: write
       # Needed for cosign keyless signing via the GitHub Actions OIDC identity.
       id-token: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
     - name: Clone the code
       uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -41,6 +43,7 @@ jobs:
         GITHUB_REPO: ${{ github.repository }}
 
     - name: Run GoReleaser
+      id: goreleaser
       uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
       with:
         distribution: goreleaser
@@ -48,6 +51,36 @@ jobs:
         args: release --clean --release-notes=RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # checksums.txt lists every release archive in sha256sum format, which is
+    # exactly what the SLSA generator takes as its subjects.
+    - name: Generate provenance subjects
+      id: hash
+      env:
+        ARTIFACTS: ${{ steps.goreleaser.outputs.artifacts }}
+      run: |
+        set -euo pipefail
+        checksum_file=$(echo "$ARTIFACTS" | jq -r '.[] | select(.type == "Checksum") | .path')
+        echo "hashes=$(base64 -w0 < "$checksum_file")" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    name: Generate SLSA provenance
+    needs: goreleaser
+    permissions:
+      # Needed to read the workflow path.
+      actions: read
+      # Needed to sign the provenance via the GitHub Actions OIDC identity.
+      id-token: write
+      # Needed to attach the provenance to the release.
+      contents: write
+    # Must be referenced by tag, not SHA: slsa-verifier rejects provenance from
+    # a generator pinned by digest. Scorecard's Pinned-Dependencies check makes
+    # an exception for this workflow, and renovate.json5 keeps it unpinned.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.goreleaser.outputs.hashes }}
+      provenance-name: kubectl-cnmsql.intoto.jsonl
+      upload-assets: true
 
   announce:
     name: Announce release on PRs
