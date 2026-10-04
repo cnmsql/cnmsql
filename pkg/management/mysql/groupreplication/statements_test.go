@@ -84,10 +84,17 @@ func TestSetAsPrimaryStatementQuotesUUID(t *testing.T) {
 }
 
 func TestSetCommunicationProtocolStatement(t *testing.T) {
-	got := SetCommunicationProtocolStatement(version.Version{Major: 8, Minor: 4, Patch: 0})
-	want := "SELECT group_replication_set_communication_protocol('8.4.0')"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+	for _, tc := range []struct {
+		v    version.Version
+		want string
+	}{
+		{version.Version{Major: 8, Minor: 4, Patch: 0}, "SELECT group_replication_set_communication_protocol('8.4.0')"},
+		// Calendar versions (YY.M.P) keep the same three-part shape.
+		{version.Version{Major: 26, Minor: 10, Patch: 1}, "SELECT group_replication_set_communication_protocol('26.10.1')"},
+	} {
+		if got := SetCommunicationProtocolStatement(tc.v); got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
 	}
 }
 

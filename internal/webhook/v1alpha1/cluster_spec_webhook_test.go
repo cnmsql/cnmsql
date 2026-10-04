@@ -172,6 +172,38 @@ func TestClusterSpecValidator(t *testing.T) {
 			allowed: false,
 		},
 		{
+			// MySQL calendar releases (YY.M) are not MariaDB series, so the
+			// flavor check must not reject them as one (#185).
+			name: "mysql calendar series is not a MariaDB series",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("26.7")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMySQL
+				return c
+			}(),
+			allowed: true,
+		},
+		{
+			name: "mysql cannot use a MariaDB series outside its chain",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("11.8")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMySQL
+				return c
+			}(),
+			allowed: false,
+		},
+		{
+			name: "mariadb cannot use a MySQL innovation series",
+			op:   admissionv1.Create,
+			new: func() *mysqlv1alpha1.Cluster {
+				c := catalogCluster("9.6")
+				c.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+				return c
+			}(),
+			allowed: false,
+		},
+		{
 			name: "mysql cannot use MariaDB series",
 			op:   admissionv1.Create,
 			new: func() *mysqlv1alpha1.Cluster {

@@ -730,8 +730,10 @@ func (spec *ClusterSpec) validateReplication(path *field.Path) field.ErrorList {
 }
 
 // validateFlavor checks cross-field flavor constraints: a MariaDB flavor cannot
-// target a MySQL series (major 8 or 9), and a MySQL flavor cannot target a
-// MariaDB series (major >= 10).
+// target a MySQL series, and a MySQL flavor cannot target a MariaDB series.
+// Which engine owns a series comes from the engine upgrade chains
+// (engine.SeriesFlavor); a series neither chain claims, such as a MySQL calendar
+// release (26.7), is not a flavor mismatch.
 func (spec *ClusterSpec) validateFlavor(path *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 	flavor := spec.Flavor
@@ -744,13 +746,9 @@ func (spec *ClusterSpec) validateFlavor(path *field.Path) field.ErrorList {
 		return allErrs
 	}
 
-	// The flavor/series split is hardcoded on the major version rather than
-	// derived from engine.UpgradeChain()/Series (the plan's preferred source of
-	// truth) because the MariaDB engine still delegates to the MySQL chain until
-	// M-MDB.3 lands the real one; consulting it now would give wrong answers.
-	// TODO(M-MDB.3): switch to the engine chain once MariaDB has its own.
-	isMySQLSeries := series.Major == 8 || series.Major == 9
-	isMariaDBSeries := series.Major >= 10
+	owner, claimed := engine.SeriesFlavor(series)
+	isMySQLSeries := claimed && owner == engine.FlavorMySQL
+	isMariaDBSeries := claimed && owner == engine.FlavorMariaDB
 
 	switch {
 	case flavor == FlavorMariaDB && isMySQLSeries:

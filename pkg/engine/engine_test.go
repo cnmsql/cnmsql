@@ -16,7 +16,11 @@ limitations under the License.
 
 package engine
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
+)
 
 func TestForFlavor(t *testing.T) {
 	tests := []struct {
@@ -55,6 +59,39 @@ func TestForFlavor(t *testing.T) {
 			}
 			if e.GTID() == nil {
 				t.Error("GTID() = nil")
+			}
+		})
+	}
+}
+
+func TestSeriesFlavor(t *testing.T) {
+	tests := []struct {
+		series     string
+		wantFlavor Flavor
+		wantOK     bool
+	}{
+		{series: "8.0", wantFlavor: FlavorMySQL, wantOK: true},
+		{series: "8.4", wantFlavor: FlavorMySQL, wantOK: true},
+		{series: "9.7", wantFlavor: FlavorMySQL, wantOK: true},
+		// Innovation series outside the chain still belong to MySQL.
+		{series: "9.6", wantFlavor: FlavorMySQL, wantOK: true},
+		{series: "10.11", wantFlavor: FlavorMariaDB, wantOK: true},
+		{series: "11.8", wantFlavor: FlavorMariaDB, wantOK: true},
+		{series: "12.3", wantFlavor: FlavorMariaDB, wantOK: true},
+		// MySQL calendar versions (YY.M) are unclaimed until a calendar series
+		// joins the chain; they must not be read as MariaDB.
+		{series: "26.7", wantOK: false},
+		{series: "5.7", wantOK: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.series, func(t *testing.T) {
+			v, err := version.Parse(tc.series)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := SeriesFlavor(v.Series())
+			if ok != tc.wantOK || got != tc.wantFlavor {
+				t.Errorf("SeriesFlavor(%s) = (%q, %v), want (%q, %v)", tc.series, got, ok, tc.wantFlavor, tc.wantOK)
 			}
 		})
 	}
