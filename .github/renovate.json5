@@ -12,6 +12,23 @@
   labels: [
     'automated',
   ],
+  // One PR for every non-breaking update (minor, patch, and action/image digest
+  // refreshes) instead of one PR per dependency. Major updates still get their
+  // own PR so a breaking change can be reviewed and reverted on its own.
+  packageRules: [
+    {
+      groupName: 'all non-major dependencies',
+      groupSlug: 'all-non-major',
+      matchPackageNames: [
+        '*',
+      ],
+      matchUpdateTypes: [
+        'minor',
+        'patch',
+        'digest',
+      ],
+    },
+  ],
   // The kind_versions.json *array* (the spread of k8s minors the e2e matrix
   // sweeps) is NOT managed here: Renovate would collapse every entry onto the
   // single newest tag. It is refreshed by .github/workflows/k8s-versions-check.yml.
