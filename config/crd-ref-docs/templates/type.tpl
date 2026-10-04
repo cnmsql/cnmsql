@@ -2,7 +2,12 @@
 {{- $type := . -}}
 {{- if markdownShouldRenderType $type -}}
 
+{{- /* Top-level CRD kinds get a level-3 heading so only they appear in the table of contents. */}}
+{{- if and $type.GVK (not (hasSuffix "List" $type.Name)) -}}
+### {{ $type.Name }}
+{{- else -}}
 #### {{ $type.Name }}
+{{- end }}
 
 {{ if $type.IsAlias }}_Underlying type:_ _{{ markdownRenderTypeLink $type.UnderlyingType  }}_{{ end }}
 
