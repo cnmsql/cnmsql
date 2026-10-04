@@ -202,6 +202,15 @@ func (v Version) HasGroupReplicationClone() bool {
 	return v.AtLeast(8, 0, 17)
 }
 
+// GroupReplicationDefaultsToMySQLStack reports whether the server's default
+// group_replication_communication_stack is MYSQL rather than XCOM. MySQL 26.7,
+// the first calendar-versioned release, flipped the default; every earlier
+// release defaults to XCOM. All members of a group must share one stack, so a
+// member on such a server must pin XCOM to keep joining a group of older members.
+func (v Version) GroupReplicationDefaultsToMySQLStack() bool {
+	return v.AtLeast(26, 7, 0)
+}
+
 // GroupReplicationRequiresNoBinlogChecksum reports whether Group Replication
 // requires binlog_checksum=NONE. Versions before 8.0.21 reject a non-NONE
 // checksum when starting the group; 8.0.21+ tolerate the default CRC32, so the

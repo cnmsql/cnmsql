@@ -493,6 +493,27 @@ func TestRenderGroupReplicationOmitsClonePluginBelowFloor(t *testing.T) {
 	assertNotContains(t, mustRender(t, c), "mysql_clone.so")
 }
 
+func TestRenderGroupReplicationPinsXComStack(t *testing.T) {
+	// MySQL 26.7 flipped the default communication stack to MYSQL. A member on
+	// such a server must stay on XCom, or it cannot join a group of older members
+	// during a rolling series upgrade.
+	for _, v := range []string{"26.7.0", "26.10.1", "28.4.0"} {
+		c := grConfig()
+		c.Version = v
+		assertContains(t, mustRender(t, c), "group_replication_communication_stack = XCOM")
+	}
+}
+
+func TestRenderGroupReplicationOmitsStackWhereXComIsDefault(t *testing.T) {
+	// Up to 9.7 the default is already XCOM; leaving the key out keeps existing
+	// members' config, and so their Pods, unchanged.
+	for _, v := range []string{"8.0.22", "8.4.5", "9.7.0"} {
+		c := grConfig()
+		c.Version = v
+		assertNotContains(t, mustRender(t, c), "group_replication_communication_stack")
+	}
+}
+
 func TestRenderGroupReplicationNeverBootstrapsOrStartsOnBoot(t *testing.T) {
 	// The two split-brain-critical defaults: the operator controls start, and
 	// bootstrap is never a config-file default (it would re-bootstrap each boot).

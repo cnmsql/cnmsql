@@ -654,6 +654,15 @@ func (c *ServerConfig) groupReplicationSettings(ver version.Version) []pair {
 		{"group_replication_enforce_update_everywhere_checks", "OFF"},
 	}
 
+	// The group always runs on the XCom stack: local_address and the seeds name
+	// DefaultGroupReplicationPort, and members are admitted by
+	// group_replication_ip_allowlist, neither of which the MySQL stack uses. The
+	// stack is only rendered where the server's default is no longer XCOM, so
+	// older servers keep a byte-identical config and are not rolled for it.
+	if ver.GroupReplicationDefaultsToMySQLStack() {
+		pairs = append(pairs, pair{"group_replication_communication_stack", "XCOM"})
+	}
+
 	if gr.Consistency != "" {
 		pairs = append(pairs, pair{"group_replication_consistency", gr.Consistency})
 	}

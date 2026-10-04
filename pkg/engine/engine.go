@@ -239,6 +239,23 @@ func MustForFlavor(f Flavor) Engine {
 	return e
 }
 
+// SeriesFlavor reports which engine a release series belongs to, judged by the
+// leading version component of each engine's upgrade chain: MySQL owns 8 and 9,
+// MariaDB owns 10, 11 and 12. A series whose leading component appears in no
+// chain (e.g. a MySQL calendar release such as 26.7 before any calendar series
+// is supported) is unclaimed and returns false, so callers must not read it as
+// belonging to the other engine.
+func SeriesFlavor(series version.Version) (Flavor, bool) {
+	for _, e := range []Engine{mysqlEngine{}, mariadbEngine{}} {
+		for _, s := range e.UpgradeChain() {
+			if s.Major == series.Major {
+				return e.Flavor(), true
+			}
+		}
+	}
+	return "", false
+}
+
 // --- MySQL engine ---
 
 type mysqlEngine struct{}

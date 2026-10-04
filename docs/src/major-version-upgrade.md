@@ -152,8 +152,18 @@ operator upgrade, the only way is a [logical backup](logical-backups.md) of the
 9.6 cluster loaded into a new 9.7 cluster; see
 [Moving to another server series](logical-backups.md#moving-to-another-server-series).
 
-Future innovation releases (9.8 onward, 10.x) are not supported until they
-become an LTS series.
+## Calendar-versioned releases (26.x)
+
+After 9.7, MySQL numbers releases by date as `YY.M.P`: 26.7.0 (July 2026) is
+the first. `YY.M` is the series and `P` the patch, so the upgrade rules above
+apply unchanged: one series at a time, patches within a series unrestricted.
+
+The number no longer says whether a release is LTS or Innovation. 26.7 is an
+Innovation release and is not supported. cnmsql adds the first calendar LTS
+series after 9.7 in the chain once Oracle announces it and Percona ships Percona
+Server and XtraBackup for it. Until then, a Cluster on a 26.x series has no
+supported upgrade path in or out, and cannot take physical backups or add
+replicas, because XtraBackup does not copy servers newer than itself.
 
 ## Troubleshooting
 

@@ -29,6 +29,9 @@ func TestParse(t *testing.T) {
 		{"8.4", 8, 4, 0, false},
 		{"v9.0.1", 9, 0, 1, false},
 		{"8.0.23", 8, 0, 23, false},
+		{"26.7.0", 26, 7, 0, false},   // calendar version YY.M.P
+		{"26.10.1", 26, 10, 1, false}, // two-digit month is a whole minor, not 26.1
+		{"26.7-1", 26, 7, 0, false},   // image tag: build suffix dropped, series kept
 		{"", 0, 0, 0, true},
 		{"abc", 0, 0, 0, true},
 		{"8.x.1", 0, 0, 0, true},
@@ -130,6 +133,10 @@ func TestCheckUpgrade(t *testing.T) {
 		{"8.4.3", "8.0.36", true},   // downgrade
 		{"5.7.44", "8.0.36", true},  // source series outside chain
 		{"8.4.3", "10.0.0", true},   // target series outside chain
+		// Calendar versioning: 26.7 is an Innovation release, so it is not in the
+		// chain (D20) and no 9.7 -> 26.7 hop is offered.
+		{"9.7.1", "26.7.0", true},
+		{"26.7.0", "26.7.1", false}, // patch bump within a calendar series is a no-op
 	}
 	for _, tc := range cases {
 		err := CheckUpgrade(mustParse(tc.from), mustParse(tc.to))
@@ -139,5 +146,20 @@ func TestCheckUpgrade(t *testing.T) {
 		if !tc.wantErr && err != nil {
 			t.Errorf("CheckUpgrade(%s -> %s): unexpected error: %v", tc.from, tc.to, err)
 		}
+	}
+}
+
+func TestCalendarSeriesOrdering(t *testing.T) {
+	// YY.M compares month numerically: 26.10 is after 26.4, and every calendar
+	// release is past every 8.x / 9.x feature gate.
+	oct := Version{Major: 26, Minor: 10}
+	if !oct.AtLeast(26, 4, 0) {
+		t.Error("26.10 should be at least 26.4")
+	}
+	if !oct.AtLeast(9, 7, 0) || !oct.HasAdminInterface() || !oct.UsesResetBinaryLogsAndGtids() {
+		t.Error("26.10 should pass the 8.x / 9.x feature gates")
+	}
+	if got := (Version{Major: 26, Minor: 10, Patch: 3}).Series(); got != oct {
+		t.Errorf("Series() = %v, want 26.10", got)
 	}
 }
