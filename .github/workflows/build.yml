@@ -43,7 +43,7 @@ jobs:
       uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
     - name: Log in to ${{ env.REGISTRY }}
-      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
