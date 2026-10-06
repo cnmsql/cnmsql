@@ -367,4 +367,16 @@ const (
 	// binary log for a while because some instance has not applied it yet. The
 	// message names the instances. It is absent when the purge gate is off.
 	ConditionBinlogPurgeHeld = "BinlogPurgeHeld"
+
+	// ConditionArchiveForked is True while some binary-log archive segment
+	// holds transactions the surviving timeline never executed (a dead branch
+	// left by a lagged promotion). Point-in-time recovery to a time or to the
+	// latest point leaves them out. It turns False once retention drops the
+	// last forked segment, and is absent when continuous archiving is off.
+	ConditionArchiveForked = "ArchiveForked"
+
+	// EventMariaDBTimelineTruncated is the Warning event reason emitted when
+	// the MariaDB primary timeline reached its ceiling and dropped history an
+	// instance position or archive segment still referenced.
+	EventMariaDBTimelineTruncated = "MariaDBTimelineTruncated"
 )
