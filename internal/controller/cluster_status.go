@@ -624,6 +624,20 @@ func carryForks(out, prior *mysqlv1alpha1.ContinuousArchivingStatus) {
 	out.OldestSegmentPosition = prior.OldestSegmentPosition
 }
 
+// applyArchivingStatus records the archiving status the observation produced.
+// A status patch made without observing the instances (an early return of the
+// reconcile) carries none; it keeps the last report, whose fork records and
+// frontier still describe the archive, rather than wiping it until the next
+// full pass. Turning archiving off clears it.
+func applyArchivingStatus(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
+	switch {
+	case !latest.IsArchivingEnabled():
+		latest.Status.ContinuousArchiving = nil
+	case observed.ContinuousArchiving != nil:
+		latest.Status.ContinuousArchiving = observed.ContinuousArchiving
+	}
+}
+
 // eventArchiveMoved is the Warning event reason for a change of the archive
 // destination.
 const eventArchiveMoved = "ArchiveMoved"
@@ -735,7 +749,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 		GroupReplication: observed.GroupReplication,
 	})
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)
-	latest.Status.ContinuousArchiving = observed.ContinuousArchiving
+	applyArchivingStatus(latest, observed)
 	if observed.MariaDBTimeline.Observed {
 		latest.Status.MariaDBTimeline = observed.MariaDBTimeline.Timeline
 	}

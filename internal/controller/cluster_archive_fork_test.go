@@ -159,3 +159,29 @@ func TestArchiveForkedConditionKeptWithoutAnObservation(t *testing.T) {
 		t.Fatalf("condition = %+v, want it kept True", cond)
 	}
 }
+
+// A pass that did not observe the instances keeps the last reported archiving
+// status instead of wiping it; turning archiving off clears it.
+func TestApplyArchivingStatus(t *testing.T) {
+	detected := metav1.NewTime(time.Date(2026, 10, 6, 11, 0, 0, 0, time.UTC))
+	reported := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected}
+
+	cluster := forkCluster()
+	cluster.Status.ContinuousArchiving = reported
+	applyArchivingStatus(cluster, observedCluster{})
+	if cluster.Status.ContinuousArchiving != reported {
+		t.Fatalf("status = %+v, want the last report kept", cluster.Status.ContinuousArchiving)
+	}
+
+	fresh := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true}
+	applyArchivingStatus(cluster, observedCluster{ContinuousArchiving: fresh})
+	if cluster.Status.ContinuousArchiving != fresh {
+		t.Fatal("a full observation must replace the status")
+	}
+
+	cluster.Spec.Backup.ContinuousArchiving.Enabled = false
+	applyArchivingStatus(cluster, observedCluster{})
+	if cluster.Status.ContinuousArchiving != nil {
+		t.Fatal("archiving off must clear the status")
+	}
+}
