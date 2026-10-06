@@ -69,6 +69,17 @@ type Archiver struct {
 	// their archived copy, so a steady-state pass costs one stat per file instead
 	// of re-decoding and re-hashing the whole retained set on every tick.
 	verified map[string]archivedStamp
+	// deferredScans memoizes the scan of files a drain filter deferred. A
+	// disowned tail is deferred forever, and decoding it with mysqlbinlog on
+	// every tick would cost a full read of the file every poll interval.
+	deferredScans map[string]scannedStamp
+}
+
+// scannedStamp is a scan result together with the identity of the file it was
+// taken from.
+type scannedStamp struct {
+	info os.FileInfo
+	scan ScanResult
 }
 
 // archivedStamp records the identity a file had when it was proven archived,
@@ -78,6 +89,11 @@ type Archiver struct {
 type archivedStamp struct {
 	info os.FileInfo
 	meta objectstore.BinlogMetadata
+}
+
+// matches reports whether a file is still the one a scan was taken from.
+func (s scannedStamp) matches(fi os.FileInfo) bool {
+	return archivedStamp{info: s.info}.matches(fi)
 }
 
 // matches reports whether a file is still the one this stamp was taken from.
@@ -135,17 +151,18 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		newSet = newMysqlGTIDSet
 	}
 	return &Archiver{
-		store:        opts.Store,
-		objectStore:  opts.ObjectStore,
-		clusterName:  opts.ClusterName,
-		instanceName: opts.InstanceName,
-		serverUUID:   opts.ServerUUID,
-		binlogDir:    opts.BinlogDir,
-		scan:         opts.Scan,
-		now:          now,
-		newSet:       newSet,
-		forks:        opts.Forks,
-		verified:     make(map[string]archivedStamp),
+		store:         opts.Store,
+		objectStore:   opts.ObjectStore,
+		clusterName:   opts.ClusterName,
+		instanceName:  opts.InstanceName,
+		serverUUID:    opts.ServerUUID,
+		binlogDir:     opts.BinlogDir,
+		scan:          opts.Scan,
+		now:           now,
+		newSet:        newSet,
+		forks:         opts.Forks,
+		verified:      make(map[string]archivedStamp),
+		deferredScans: make(map[string]scannedStamp),
 	}, nil
 }
 
@@ -167,7 +184,15 @@ type ArchiveResult struct {
 	// ForkCheck reports the fork check run with the pass's last index write;
 	// nil when the pass wrote no index.
 	ForkCheck *ForkReport
+	// Deferred names the file a drain filter refused, which stopped the pass;
+	// empty when nothing was deferred.
+	Deferred string
 }
+
+// FileFilter decides whether a file about to be uploaded may enter the archive,
+// given its scan. Refusing defers the file and stops the pass there, so a later
+// file never moves the frontier past it.
+type FileFilter func(name string, scan ScanResult) (bool, error)
 
 // ForkReport is the outcome of one fork check over the archive index.
 type ForkReport struct {
@@ -196,7 +221,25 @@ type ArchivedFile struct {
 // per-segment status as it goes. The active log is never touched. It returns
 // the resulting frontier or the first error; on error the frontier is not
 // advanced past the file that failed.
-func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (result ArchiveResult, err error) {
+func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (ArchiveResult, error) {
+	return a.archivePending(ctx, logs, nil, a.forks)
+}
+
+// DrainPending is ArchivePending for a former primary draining the tail it
+// stranded: every file to upload must pass allow first, and the index writes
+// run no fork check. A demoted instance is not the authority on what the
+// surviving timeline holds; judging the live primary's segment against its own
+// executed set would record transactions it simply has not replicated yet.
+func (a *Archiver) DrainPending(ctx context.Context, logs []BinaryLog, allow FileFilter) (ArchiveResult, error) {
+	return a.archivePending(ctx, logs, allow, nil)
+}
+
+// ChecksForks reports whether this archiver runs fork checks at all.
+func (a *Archiver) ChecksForks() bool { return a.forks != nil }
+
+func (a *Archiver) archivePending(
+	ctx context.Context, logs []BinaryLog, allow FileFilter, forks ForkSource,
+) (result ArchiveResult, err error) {
 	bucket := a.objectStore.Bucket
 
 	status, err := a.loadStatus(ctx, bucket)
@@ -214,7 +257,7 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (result
 		CoveredGTIDSet:     status.CoveredGTIDSet,
 	}
 
-	pass := &forkPass{source: a.forks}
+	pass := &forkPass{source: forks}
 	defer func() { result.ForkCheck = pass.report }()
 	for _, l := range Archivable(logs) {
 		select {
@@ -223,9 +266,13 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (result
 		default:
 		}
 
-		meta, archived, err := a.archiveFile(ctx, bucket, l)
+		meta, archived, deferred, err := a.archiveFile(ctx, bucket, l, allow)
 		if err != nil {
 			return result, err
+		}
+		if deferred {
+			result.Deferred = l.Name
+			return result, nil
 		}
 		if archived {
 			result.Archived = append(result.Archived, l.Name)
@@ -281,11 +328,26 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (result
 }
 
 // archiveFile archives a single rotated file. It returns the file's manifest,
-// whether it was freshly uploaded (false ⇒ already archived), and any error.
+// whether it was freshly uploaded (false ⇒ already archived), whether allow
+// deferred it (nothing uploaded), and any error.
 // Commit order is bytes → manifest, so a present manifest means a complete
 // archive; a present body without manifest is a partial upload that is retried.
 func (a *Archiver) archiveFile(
-	ctx context.Context, bucket string, l BinaryLog,
+	ctx context.Context, bucket string, l BinaryLog, allow FileFilter,
+) (objectstore.BinlogMetadata, bool, bool, error) {
+	meta, archived, err := a.archiveFileAllowed(ctx, bucket, l, allow)
+	if errors.Is(err, errDeferred) {
+		return objectstore.BinlogMetadata{}, false, true, nil
+	}
+	return meta, archived, false, err
+}
+
+// errDeferred is archiveFileAllowed's internal signal that allow refused the
+// file.
+var errDeferred = errors.New("binlog: file deferred")
+
+func (a *Archiver) archiveFileAllowed(
+	ctx context.Context, bucket string, l BinaryLog, allow FileFilter,
 ) (objectstore.BinlogMetadata, bool, error) {
 	keys, err := objectstore.BuildBinlogKeys(a.objectStore, a.clusterName, a.serverUUID, l.Name)
 	if err != nil {
@@ -334,10 +396,25 @@ func (a *Archiver) archiveFile(
 		return prior, false, nil
 	}
 
-	scanRes, err := a.scan(ctx, path)
-	if err != nil {
-		return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: scanning %q: %w", l.Name, err)
+	var scanRes ScanResult
+	if cached, ok := a.deferredScans[l.Name]; ok && cached.matches(st) {
+		scanRes = cached.scan
+	} else {
+		if scanRes, err = a.scan(ctx, path); err != nil {
+			return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: scanning %q: %w", l.Name, err)
+		}
 	}
+	if allow != nil {
+		ok, err := allow(l.Name, scanRes)
+		if err != nil {
+			return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: evaluating %q for the archive: %w", l.Name, err)
+		}
+		if !ok {
+			a.deferredScans[l.Name] = scannedStamp{info: st, scan: scanRes}
+			return objectstore.BinlogMetadata{}, false, errDeferred
+		}
+	}
+	delete(a.deferredScans, l.Name)
 	sum, size, err := hashFile(path)
 	if err != nil {
 		return objectstore.BinlogMetadata{}, false, err
