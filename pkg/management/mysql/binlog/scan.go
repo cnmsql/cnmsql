@@ -277,7 +277,10 @@ func scanMariaDB(r io.Reader) (ScanResult, error) {
 // starts at StartPos includes the transaction; replay that stops at StartPos
 // excludes it (and everything after).
 type TxnBoundary struct {
-	Domain   uint32
+	Domain uint32
+	// Server is the GTID's server component, so a boundary names a transaction
+	// and not only a sequence: across a fork two servers reuse a sequence.
+	Server   uint32
 	Seq      uint64
 	StartPos int64
 }
@@ -304,8 +307,9 @@ func scanMariaDBBoundaries(r io.Reader) ([]TxnBoundary, error) {
 		// mariadbGTIDEventRe, so it only advances prevEnd.
 		if g := mariadbGTIDEventRe.FindStringSubmatch(line); g != nil {
 			domain, _ := strconv.ParseUint(g[1], 10, 32)
+			server, _ := strconv.ParseUint(g[2], 10, 32)
 			seq, _ := strconv.ParseUint(g[3], 10, 64)
-			out = append(out, TxnBoundary{Domain: uint32(domain), Seq: seq, StartPos: prevEnd})
+			out = append(out, TxnBoundary{Domain: uint32(domain), Server: uint32(server), Seq: seq, StartPos: prevEnd})
 		}
 		if p := endLogPosRe.FindStringSubmatch(line); p != nil {
 			if v, err := strconv.ParseInt(p[1], 10, 64); err == nil {
