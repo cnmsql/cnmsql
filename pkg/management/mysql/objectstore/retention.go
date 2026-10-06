@@ -180,12 +180,16 @@ func (plan *RetentionPlan) applyBinlogGC(binlogs []BinlogEntry, index *ArchiveIn
 }
 
 // rewriteIndex returns a copy of index with the deleted binlog basenames removed
-// from each segment; segments left with no binlogs are dropped.
+// from each segment; segments left with no binlogs are dropped, taking their
+// fork records with them.
 func rewriteIndex(index *ArchiveIndex, deleted map[string]map[string]struct{}) *ArchiveIndex {
 	out := &ArchiveIndex{
 		ClusterName:    index.ClusterName,
 		CoveredGTIDSet: index.CoveredGTIDSet,
 		UpdatedAt:      time.Now().UTC(),
+		// Segments are copied whole below, so their fork records survive; the
+		// index-level stamp has to be carried explicitly.
+		ForkCheck: index.ForkCheck,
 	}
 	for _, seg := range index.Segments {
 		set := deleted[seg.ServerUUID]
