@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -190,6 +191,11 @@ type ObservationInput struct {
 	// cleared once positively proven re-converged against a live primary, so this
 	// preserves the flags when the primary's GTID is unavailable for comparison.
 	PriorDivergedInstances []string
+	// MariaDBTimeline is the cluster's MariaDB primary timeline after this
+	// observation, nil on MySQL, on replica clusters and before one exists.
+	// It tells a forked former primary from a lagging one, which position
+	// containment cannot.
+	MariaDBTimeline engine.MariaDBTimeline
 }
 
 // Observation is the topology-specific portion of the operator's observed
