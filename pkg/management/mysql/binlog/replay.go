@@ -46,6 +46,11 @@ var (
 	// GTID sets plus the anchor, i.e. a segment is missing or the timeline forked
 	// rather than nesting. Recovery refuses to straddle it.
 	ErrForkedTimeline = errors.New("binlog: archive timeline is forked or has a gap")
+	// ErrBackupOnDeadBranch is returned for a targetTime or latest recovery
+	// whose base backup already holds transactions the archive records as
+	// disowned: the backup was taken on a dead branch, and replay cannot remove
+	// what it already contains.
+	ErrBackupOnDeadBranch = errors.New("binlog: base backup was taken on a dead branch of the timeline")
 )
 
 // gtidOps abstracts GTID-set operations needed for replay planning. MySQL uses
@@ -233,6 +238,11 @@ type ReplaySegment struct {
 	ServerUUID string
 	// Files are the binlog basenames to replay, in sequence order.
 	Files []string
+	// GTIDSet is the segment's archived coverage (its position on MariaDB).
+	GTIDSet string
+	// Fork is the segment's fork record, if any: the transactions it archived
+	// that the surviving timeline disowned.
+	Fork *objectstore.ArchiveFork
 }
 
 // ReplayPlan is the ordered set of segments to download and the GTID/time bounds
@@ -279,6 +289,15 @@ type ReplayPlan struct {
 	MariaDBAnchorSeq uint64
 	// MariaDBTargetSeq is the sequence to recover up to, inclusive.
 	MariaDBTargetSeq uint64
+
+	// Forks are the fork records of the planned segments, for the restore log.
+	Forks []SegmentFork
+	// ForkChecked is false when no primary has fork-checked the index (an
+	// archive written before fork checks existed).
+	ForkChecked bool
+	// Warnings are planning concerns worth logging that do not stop recovery,
+	// such as a targetGTID naming disowned transactions.
+	Warnings []string
 }
 
 // PlanReplay turns the cluster archive index, the base backup's anchor GTID, and
@@ -292,8 +311,69 @@ type ReplayPlan struct {
 // / ErrForkedTimeline instead.
 //
 // PlanReplay uses MySQL GTID semantics; for MariaDB use PlanReplayWithModel.
+//
+// Fork records apply to a targetTime or latest recovery: their transactions
+// join ExcludeGTIDs, so a forked archive recovers the state the cluster
+// actually served, and a base backup holding any of them fails with
+// ErrBackupOnDeadBranch. A targetGTID is applied as given; when it names
+// disowned transactions the plan carries a warning.
 func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget) (ReplayPlan, error) {
-	return planReplayWithOps(idx, anchorGTID, target, newMysqlGTIDSet)
+	plan, err := planReplayWithOps(idx, anchorGTID, target, newMysqlGTIDSet)
+	if err != nil {
+		return ReplayPlan{}, err
+	}
+	if err := applyMySQLForks(idx, anchorGTID, target, &plan); err != nil {
+		return ReplayPlan{}, err
+	}
+	return plan, nil
+}
+
+// applyMySQLForks folds the archive's fork records into a MySQL replay plan.
+func applyMySQLForks(idx *objectstore.ArchiveIndex, anchor string, target RecoveryTarget, plan *ReplayPlan) error {
+	var disowned []string
+	for _, seg := range idx.Segments {
+		if seg.Fork != nil && seg.Fork.GTIDSet != "" {
+			disowned = append(disowned, seg.Fork.GTIDSet)
+		}
+	}
+	allForks, err := replication.UnionGTIDStrings(disowned...)
+	if err != nil {
+		return fmt.Errorf("binlog: parsing fork records: %w", err)
+	}
+
+	if target.GTID != "" {
+		mixed, err := replication.IntersectsGTIDStrings(plan.IncludeGTIDs, allForks)
+		if err != nil {
+			return fmt.Errorf("binlog: comparing target with fork records: %w", err)
+		}
+		if mixed {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+				"recovery targetGTID includes transactions the surviving timeline disowned (%s); "+
+					"together with transactions written after the failover it recovers a state that never existed",
+				allForks))
+		}
+		return nil
+	}
+
+	onDeadBranch, err := replication.DifferenceGTIDStrings(allForks, plan.ExcludeGTIDs)
+	if err != nil {
+		return fmt.Errorf("binlog: comparing anchor with fork records: %w", err)
+	}
+	if onDeadBranch != allForks {
+		held, _ := replication.DifferenceGTIDStrings(allForks, onDeadBranch)
+		return fmt.Errorf("%w: it holds the disowned transactions %s", ErrBackupOnDeadBranch, held)
+	}
+
+	exclude := []string{plan.ExcludeGTIDs}
+	for _, seg := range plan.Segments {
+		if seg.Fork != nil && seg.Fork.GTIDSet != "" {
+			exclude = append(exclude, seg.Fork.GTIDSet)
+		}
+	}
+	if plan.ExcludeGTIDs, err = replication.UnionGTIDStrings(exclude...); err != nil {
+		return fmt.Errorf("binlog: merging fork records into the exclude set: %w", err)
+	}
+	return nil
 }
 
 // PlanReplayWithModel is PlanReplay using the given MariaDB GTID model for domain-
@@ -344,12 +424,11 @@ func planReplayWithOps(
 		if !segSet.IsEmpty() && frontier.Contains(segSet) {
 			continue
 		}
-		plan.Segments = append(plan.Segments, ReplaySegment{
-			ServerUUID: seg.ServerUUID,
-			Files:      append([]string(nil), seg.Binlogs...),
-		})
+		plan.Segments = append(plan.Segments, replaySegment(seg))
 		frontier.Union(segSet)
 	}
+	plan.ForkChecked = idx.ForkCheck != nil
+	plan.Forks = plannedForks(idx, plan.Segments)
 
 	if idx.CoveredGTIDSet != "" {
 		covered := newSet()
@@ -365,6 +444,30 @@ func planReplayWithOps(
 		return ReplayPlan{}, err
 	}
 	return plan, nil
+}
+
+// replaySegment copies an index segment into a plan entry.
+func replaySegment(seg *objectstore.ArchiveSegment) ReplaySegment {
+	return ReplaySegment{
+		ServerUUID: seg.ServerUUID,
+		Files:      append([]string(nil), seg.Binlogs...),
+		GTIDSet:    seg.GTIDSet,
+		Fork:       seg.Fork,
+	}
+}
+
+// plannedForks lists the fork records of the planned segments.
+func plannedForks(idx *objectstore.ArchiveIndex, planned []ReplaySegment) []SegmentFork {
+	var out []SegmentFork
+	for _, fork := range SegmentForks(idx) {
+		for _, seg := range planned {
+			if seg.ServerUUID == fork.ServerUUID {
+				out = append(out, fork)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // planReplayWithoutFrontier builds a replay plan without the strict GTID
@@ -385,11 +488,10 @@ func planReplayWithoutFrontier(
 		if len(seg.Binlogs) == 0 {
 			continue
 		}
-		plan.Segments = append(plan.Segments, ReplaySegment{
-			ServerUUID: seg.ServerUUID,
-			Files:      append([]string(nil), seg.Binlogs...),
-		})
+		plan.Segments = append(plan.Segments, replaySegment(seg))
 	}
+	plan.ForkChecked = idx.ForkCheck != nil
+	plan.Forks = plannedForks(idx, plan.Segments)
 
 	switch {
 	case target.GTID != "":
@@ -488,10 +590,7 @@ func SelectMariadbSegments(
 		}
 		used[best] = true
 		current = ivs[best].end
-		out = append(out, ReplaySegment{
-			ServerUUID: ivs[best].seg.ServerUUID,
-			Files:      append([]string(nil), ivs[best].seg.Binlogs...),
-		})
+		out = append(out, replaySegment(ivs[best].seg))
 	}
 	return out, nil
 }

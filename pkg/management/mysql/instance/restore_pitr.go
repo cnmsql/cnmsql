@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
@@ -159,9 +160,10 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 	} else {
 		plan, err = binlog.PlanReplay(&index, anchor.GTIDSet, o.Target)
 		if err != nil {
-			return fmt.Errorf("pitr: planning replay: %w", err)
+			return fmt.Errorf("pitr: planning replay from base backup %s: %w", o.MetadataKey, err)
 		}
 	}
+	logReplayForks(log, plan)
 	if len(plan.Segments) == 0 {
 		log.Info("No archived binlogs to replay; data is already at the recovery target")
 		return nil
@@ -180,6 +182,23 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		"stopDatetime", plan.StopDatetime, "includeGTIDs", plan.IncludeGTIDs)
 
 	return o.applyReplay(ctx, bt, eng, plan, files)
+}
+
+// logReplayForks records which fork records the plan applied, the warnings it
+// raised, and whether the archive was ever fork-checked. None of these stop
+// recovery.
+func logReplayForks(log logr.Logger, plan binlog.ReplayPlan) {
+	for _, fork := range plan.Forks {
+		log.Info("Excluding transactions the surviving timeline disowned",
+			"segment", fork.ServerUUID, "instance", fork.InstanceName, "gtids", fork.GTIDs,
+			"detectedAt", fork.DetectedAt)
+	}
+	for _, warning := range plan.Warnings {
+		log.Info("Point-in-time recovery warning", "warning", warning)
+	}
+	if !plan.ForkChecked {
+		log.Info("Archive not fork-checked: no primary has written the index since fork checks shipped")
+	}
 }
 
 // readAnchorGTID parses the base backup's binlog-info file and returns the
