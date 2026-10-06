@@ -74,6 +74,12 @@ func toEngineTimeline(epochs []mysqlv1alpha1.MariaDBEpoch) engine.MariaDBTimelin
 // gtid_slave_pos, which stays at what it inherited because a primary's own
 // writes do not advance it, so reading it late is harmless.
 //
+// The first epoch is the exception. Its primary did not necessarily author the
+// history it holds: a cluster bootstrapped from a backup holds the source
+// cluster's transactions under other server ids, and a cluster upgraded
+// mid-life holds history no epoch observed. So the first epoch starts at the
+// primary's current position, and everything before it gets no verdict.
+//
 // Replica clusters do not record a timeline: their designated primary
 // replicates from the source cluster, so authorship is not theirs to track.
 func nextMariaDBTimeline(cluster *mysqlv1alpha1.Cluster, observed observedCluster, now time.Time) timelineUpdate {
@@ -84,10 +90,14 @@ func nextMariaDBTimeline(cluster *mysqlv1alpha1.Cluster, observed observedCluste
 	timeline := slices.Clone(cluster.Status.MariaDBTimeline)
 	if status, ok := observed.StatusByInstance[observed.PrimaryName]; ok && writablePrimary(status) &&
 		(len(timeline) == 0 || timeline[len(timeline)-1].Instance != observed.PrimaryName) {
+		handoff := status.GTIDSlavePos
+		if len(timeline) == 0 {
+			handoff = status.GTIDExecuted
+		}
 		timeline = append(timeline, mysqlv1alpha1.MariaDBEpoch{
 			Instance: observed.PrimaryName,
 			ServerID: status.ServerID,
-			Handoff:  canonicalMariaDBPosition(status.GTIDSlavePos),
+			Handoff:  canonicalMariaDBPosition(handoff),
 			Since:    metav1.NewTime(now),
 		})
 	}

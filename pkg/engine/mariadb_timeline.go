@@ -200,11 +200,16 @@ func (t MariaDBTimeline) Judge(pos string) (onTimeline, known bool, err error) {
 	return true, true, nil
 }
 
-// DeadAfter returns, for a transaction off the timeline, the sequence the
-// surviving timeline inherited from its author: the handoff of the epoch that
-// ended g.Server's last authorship before g. Every transaction that author
-// holds in the domain past it is disowned. ok is false when g is on the
-// timeline, has no verdict, or its author was never observed as primary.
+// DeadAfter returns, for a transaction off the timeline, the sequence past
+// which everything its author holds in the domain is disowned. ok is false
+// when g is on the timeline or has no verdict.
+//
+// That sequence is the latest point the author could legitimately have reached
+// before g: the end of the last epoch it authored, or of the last stretch whose
+// successor inherited from it (an unobserved primary's stretch may be its own).
+// Without either, it is the timeline's floor: every sequence above it is
+// attributed to another author. The floor case is what keeps a dead branch
+// detectable once the operator pruned the epoch its author held.
 func (t MariaDBTimeline) DeadAfter(g MariaDBGTID) (uint64, bool) {
 	on, known := t.Verdict(g)
 	if on || !known {
@@ -212,12 +217,12 @@ func (t MariaDBTimeline) DeadAfter(g MariaDBGTID) (uint64, bool) {
 	}
 	v := t.domain(g.Domain)
 	i := v.containing(g.Seq)
-	for j := i - 1; j >= 0; j-- {
-		if t[j].ServerID == g.Server && v.starts[j] < g.Seq {
-			return v.starts[j+1], true
+	for k := i - 1; k >= 0; k-- {
+		if t[k].ServerID == g.Server || v.handoffServer[k+1] == g.Server {
+			return v.starts[k+1], true
 		}
 	}
-	return 0, false
+	return v.starts[0], true
 }
 
 // PruneResult is the outcome of PruneMariaDBTimeline.

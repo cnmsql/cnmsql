@@ -210,7 +210,16 @@ func TestMariaDBTimelineDeadAfter(t *testing.T) {
 		{"failback interim tail", failback, "0-2-301", 300, true},
 		{"on the timeline", lagged, "0-2-300", 0, false},
 		{"no verdict", MariaDBTimeline{{ServerID: 2, Handoff: "0-1-218"}}, "0-1-100", 0, false},
-		{"server never primary", lagged, "0-7-219", 0, false},
+		// With the genesis epoch pruned, the author's own epoch is gone; the
+		// floor is still a sound cut, since everything above it is attributed.
+		{"author's epoch pruned", MariaDBTimeline{{ServerID: 2, Handoff: "0-1-218"}}, "0-1-219", 218, true},
+		// A timeline known from genesis attributes every sequence: a server that
+		// never authored any of them holds only disowned transactions.
+		{"server never primary", lagged, "0-7-219", 0, true},
+		// An unobserved primary's stretch: its successor inherited 0-7-305, so
+		// 7's transactions up to there may be canonical and only those past it
+		// are disowned.
+		{"unobserved author", MariaDBTimeline{{ServerID: 1}, {ServerID: 3, Handoff: "0-7-305"}}, "0-7-400", 305, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

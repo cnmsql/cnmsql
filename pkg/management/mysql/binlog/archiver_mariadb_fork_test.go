@@ -123,17 +123,19 @@ func TestMariaDBForkCheckKeepsTheLowerAfterSeq(t *testing.T) {
 	}
 }
 
-// History the timeline cannot judge records nothing: below its floor, or
-// authored by a server it never saw as primary.
-func TestMariaDBForkCheckWithoutVerdictRecordsNothing(t *testing.T) {
+// History below the timeline's floor gets no verdict and records nothing; a
+// dead branch above it is still recorded after the operator pruned the epoch
+// its author held, cut at the floor.
+func TestMariaDBForkCheckOnAPrunedTimeline(t *testing.T) {
 	t.Parallel()
-	floor := engine.MariaDBTimeline{{ServerID: 2, Handoff: "0-1-218"}}
-	idx := checkMariaDB(t, floor, mariadbSegment("token-old", "0-1-100"), mariadbSegment("token-unseen", "0-1-219"),
+	pruned := engine.MariaDBTimeline{{ServerID: 2, Handoff: "0-1-218"}}
+	idx := checkMariaDB(t, pruned, mariadbSegment("token-below", "0-1-100"), mariadbSegment("token-old", "0-1-219"),
 		mariadbSegment("token-new", "0-2-300"))
-	for _, token := range []string{"token-old", "token-unseen"} {
-		if fork := segmentByUUID(t, idx, token).Fork; fork != nil {
-			t.Fatalf("%s: no verdict must record nothing, got %+v", token, fork)
-		}
+	if fork := segmentByUUID(t, idx, "token-below").Fork; fork != nil {
+		t.Fatalf("no verdict must record nothing, got %+v", fork)
+	}
+	if fork := segmentByUUID(t, idx, "token-old").Fork; fork == nil || fork.AfterSeq[0] != 218 {
+		t.Fatalf("fork = %+v, want the dead branch cut at the floor 218", fork)
 	}
 }
 

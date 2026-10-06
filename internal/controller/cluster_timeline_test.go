@@ -250,3 +250,33 @@ func TestTimelineCeilingTruncatesAndNamesWhatItPinned(t *testing.T) {
 		t.Fatal("no event without truncation")
 	}
 }
+
+// A first primary did not necessarily author the history it holds: a cluster
+// bootstrapped from a backup holds the source cluster's transactions, under
+// another server id, and a cluster upgraded mid-life holds history no epoch saw.
+// The first epoch therefore starts at the primary's current position, so that
+// history gets no verdict instead of being attributed to the first primary.
+func TestTimelineFirstEpochStartsAtThePrimaryPosition(t *testing.T) {
+	o := observedPrimary("demo-1", 7, "", map[string]string{"demo-1": "0-1-500", "demo-2": "0-1-500"})
+	o.StatusByInstance["demo-1"].GTIDExecuted = "0-1-500"
+	update := nextMariaDBTimeline(mariadbTimelineCluster(), o, timelineNow)
+	if len(update.Timeline) != 1 || update.Timeline[0].Handoff != "0-1-500" {
+		t.Fatalf("timeline = %v, want the first epoch to start at 0-1-500", timelineInstances(update.Timeline))
+	}
+	// The restored replica, cloned at the source's position, is not judged off.
+	if _, known, _ := update.engineTimeline().Judge("0-1-500"); known {
+		t.Fatal("history from before the first epoch must get no verdict")
+	}
+	if on, known, _ := update.engineTimeline().Judge("0-7-501"); !on || !known {
+		t.Fatal("the first primary's own writes are on the timeline")
+	}
+
+	// Later epochs keep the inherited position.
+	cluster := mariadbTimelineCluster(update.Timeline...)
+	next := observedPrimary("demo-2", 8, "0-7-600", map[string]string{"demo-1": "0-7-600", "demo-2": "0-8-700"})
+	next.StatusByInstance["demo-2"].GTIDExecuted = "0-8-700"
+	update = nextMariaDBTimeline(cluster, next, timelineNow)
+	if got := update.Timeline[len(update.Timeline)-1].Handoff; got != "0-7-600" {
+		t.Fatalf("a successor's handoff = %q, want its gtid_slave_pos 0-7-600", got)
+	}
+}
