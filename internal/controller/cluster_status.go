@@ -941,6 +941,11 @@ func applyArchiveForkedCondition(latest *mysqlv1alpha1.Cluster) {
 		apimeta.RemoveStatusCondition(&latest.Status.Conditions, mysqlv1alpha1.ConditionArchiveForked)
 		return
 	}
+	if latest.Status.ContinuousArchiving == nil {
+		// No observation of the archive this pass (an early return of the
+		// reconcile): nothing says the archive changed.
+		return
+	}
 	condition := metav1.Condition{
 		Type:               mysqlv1alpha1.ConditionArchiveForked,
 		Status:             metav1.ConditionFalse,

@@ -145,3 +145,17 @@ func TestArchiveForkedEventOnlyOnTransition(t *testing.T) {
 		t.Fatal("no event without a fork")
 	}
 }
+
+// A status patch made without observing the instances (an early return of the
+// reconcile) carries no archiving status. It must leave the condition as it
+// was, not report the archive unforked and re-fire the event later.
+func TestArchiveForkedConditionKeptWithoutAnObservation(t *testing.T) {
+	cluster := forkCluster("u1:219")
+	applyArchiveForkedCondition(cluster)
+	cluster.Status.ContinuousArchiving = nil
+	applyArchiveForkedCondition(cluster)
+	cond := apimeta.FindStatusCondition(cluster.Status.Conditions, mysqlv1alpha1.ConditionArchiveForked)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %+v, want it kept True", cond)
+	}
+}
