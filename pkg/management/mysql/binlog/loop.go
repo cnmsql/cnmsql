@@ -352,8 +352,10 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 		l.logger.Error(report.Err, "Could not check the archive for forks")
 		return out, report.Err
 	}
-	out.Forks = report.Forks
-	out.OldestSegmentPosition = report.OldestSegmentPosition
+	if report.Read {
+		out.Forks = report.Forks
+		out.OldestSegmentPosition = report.OldestSegmentPosition
+	}
 	if report.Checked {
 		l.forkChecked = true
 		out.ForkCheckedAt = report.CheckedAt

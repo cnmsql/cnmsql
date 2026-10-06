@@ -172,3 +172,55 @@ func TestLoopWithoutForkSourceSkipsTheCheck(t *testing.T) {
 		t.Fatalf("an idle primary without a fork source read the index %d times", store.gets-before)
 	}
 }
+
+// A primary with no fork-check authority (a MariaDB replica cluster's
+// designated primary has no timeline) retries the check on every writable
+// pass, but must not read the index to find out it cannot judge it. The forks
+// an archive pass read keep being reported.
+func TestLoopWithoutAuthorityDoesNotReadTheIndex(t *testing.T) {
+	t.Parallel()
+	store := &indexReadCounter{memStore: newMemStore()}
+	old := oldSegment(otherUUID + ":1-219")
+	old.Fork = &objectstore.ArchiveFork{GTIDSet: otherUUID + ":219"}
+	seedIndex(t, store, objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{old}})
+	calls := 0
+	none := func(context.Context) (ForkJudge, error) { calls++; return nil, nil }
+	loop, mock := idleLoop(t, store, none)
+	loop.state.Forks = []SegmentFork{{ServerUUID: "old-identity", GTIDs: otherUUID + ":219"}}
+
+	for range 3 {
+		expectWritable(mock, true)
+		runTick(loop)
+	}
+	if calls != 3 {
+		t.Fatalf("authority asked %d times over 3 passes, want 3", calls)
+	}
+	if reads := store.reads; reads != 0 {
+		t.Fatalf("the index was read %d times without an authority to judge it", reads)
+	}
+	if got := loop.State(); len(got.Forks) != 1 || !got.ForkCheckedAt.IsZero() {
+		t.Fatalf("state = %+v, want the known forks kept and no check reported", got)
+	}
+}
+
+// indexReadCounter counts the reads of the archive index only.
+type indexReadCounter struct {
+	*memStore
+	reads int
+}
+
+func (c *indexReadCounter) count(key string) {
+	if strings.HasSuffix(key, objectstore.ArchiveIndexName) {
+		c.reads++
+	}
+}
+
+func (c *indexReadCounter) Exists(ctx context.Context, bucket, key string) (bool, error) {
+	c.count(key)
+	return c.memStore.Exists(ctx, bucket, key)
+}
+
+func (c *indexReadCounter) GetJSON(ctx context.Context, bucket, key string, v any) error {
+	c.count(key)
+	return c.memStore.GetJSON(ctx, bucket, key, v)
+}

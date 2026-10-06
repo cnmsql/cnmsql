@@ -200,6 +200,9 @@ type ForkReport struct {
 	// authority; CheckedAt is when.
 	Checked   bool
 	CheckedAt time.Time
+	// Read is true when the report comes from a read of the index, so Forks and
+	// OldestSegmentPosition describe it; false when nothing was read.
+	Read bool
 	// Forks are the fork records the index carries after the check (or as read,
 	// when no check ran), not only those this check added.
 	Forks []SegmentFork
@@ -614,6 +617,7 @@ func (a *Archiver) checkForks(
 ) (bool, ForkReport) {
 	report := ForkReport{}
 	finish := func() ForkReport {
+		report.Read = true
 		report.Forks = SegmentForks(index)
 		report.OldestSegmentPosition = OldestSegmentPosition(index.Segments)
 		return report
@@ -665,7 +669,23 @@ func (a *Archiver) checkForks(
 // promotion, failback or restart checks the archive without waiting for the
 // next rotation. It writes the index only when a record grew or the index has
 // never been checked. With no index yet there is nothing to check.
+//
+// The authority is taken before the index is read: without one (a MariaDB
+// primary that has no timeline) there is nothing to judge, and reading the
+// index on every pass to find that out would cost a round trip each time.
 func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
+	if a.forks == nil {
+		return ForkReport{}, nil
+	}
+	pass := &forkPass{source: a.forks}
+	judge, err := pass.load(ctx)
+	if err != nil {
+		err = fmt.Errorf("binlog: reading fork check authority: %w", err)
+		return ForkReport{Err: err}, err
+	}
+	if judge == nil {
+		return ForkReport{}, nil
+	}
 	bucket := a.objectStore.Bucket
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
 	exists, err := a.store.Exists(ctx, bucket, key)
@@ -679,7 +699,7 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 	if err := a.store.GetJSON(ctx, bucket, key, &index); err != nil {
 		return ForkReport{}, fmt.Errorf("binlog: reading archive index: %w", err)
 	}
-	grew, report := a.checkForks(ctx, &index, &forkPass{source: a.forks})
+	grew, report := a.checkForks(ctx, &index, pass)
 	if report.Err != nil {
 		return report, report.Err
 	}
