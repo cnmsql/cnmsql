@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -446,5 +447,83 @@ func TestReconcileFailoverFiresWhenSwitchoverTargetDiverged(t *testing.T) {
 	}
 	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
 		t.Fatalf("Phase = %v, want %q", result.Phase, topology.PhaseBlocked)
+	}
+}
+
+// fencedPrimaryState is the state a manual fence produces when the primary's
+// manager misses the operator's status poll: the fence annotation is on the
+// Pod (so the observation reports the instance fenced), but the control API
+// timed out, leaving the primary absent from the instance statuses. The
+// replica is healthy and caught up. This is the state a single overloaded
+// status poll produces in the window between the annotation and the fence ack.
+func fencedPrimaryState() topology.FailoverState {
+	return topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Fenced:        []string{drainPrimary},
+		Instances: map[string]topology.FailoverInstance{
+			drainReplica: {Ready: true, Replica: true, Role: "replica", SQLRunning: true, IORunning: true, GTID: "uuid:1-10"},
+		},
+	}
+}
+
+// fencedPrimaryCluster is the cluster in the same window, with the primary's
+// Pod carrying the fence annotation.
+func fencedPrimaryCluster() *mysqlv1alpha1.Cluster {
+	cluster := drainCluster()
+	return cluster
+}
+
+func annotatedPrimaryPod(cluster *mysqlv1alpha1.Cluster, name string) *corev1.Pod {
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:        name,
+		Namespace:   cluster.Namespace,
+		Annotations: map[string]string{"cnmsql.cnmsql.co/fencing": "true"},
+	}}
+}
+
+// TestReconcileFailoverLeavesAFencePendingOnThePrimary pins the fence/failover
+// race: a transient status failure (or a lease between renewals) makes the
+// fenced-but-running primary read as dead, and with failoverDelay 0 the
+// emergency path fires on the very pass that should have acknowledged the
+// fence. Promoting in that window deletes the annotated Pod, so the manual
+// fence loses its annotation and can never be acknowledged in
+// status.fencedInstances — the exact failure the archive-fork e2e specs hit.
+func TestReconcileFailoverLeavesAFencePendingOnThePrimary(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := fencedPrimaryCluster()
+	primaryPod := annotatedPrimaryPod(cluster, drainPrimary)
+	replicaPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: drainReplica, Namespace: cluster.Namespace}}
+	// The lease is held by the primary but between renewals, as the 15s lease
+	// renewed on the role reconciler's slower cadence routinely is.
+	lease := primaryLeaseFor(cluster, drainPrimary, time.Now().Add(-20*time.Second))
+	r, recorder := newDrainReconciler(t, cluster, primaryPod, replicaPod, lease)
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 2,
+		Observed:  fencedPrimaryState(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary == drainReplica {
+		t.Fatal("failover promoted while the primary's manual fence was still pending")
+	}
+	if got.Status.LastFailoverTimestamp != nil {
+		t.Fatal("failover recorded a promotion while the fence was still pending")
+	}
+	if result.Handled {
+		t.Fatal("the fence is not an outage; failover must leave the pass to the fence ack")
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("expected no failover event while the fence is pending, got %q", ev)
+	default:
 	}
 }
