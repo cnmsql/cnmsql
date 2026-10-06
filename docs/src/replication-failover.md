@@ -614,7 +614,9 @@ handoff up to the next entry's.
 - An entry is appended when the operator first observes a writable primary whose
   name differs from the last entry's (failover, switchover, failback, or the
   first primary of the cluster), in the same reconcile and before divergence is
-  judged.
+  judged. The first entry starts at the primary's current position rather than
+  its `gtid_slave_pos`: a cluster restored from a backup, or one that ran before
+  the timeline existed, holds history its first primary did not author.
 - A position is **off the timeline** when the entry whose range holds its
   sequence names another server. A replica off the timeline is marked diverged
   as soon as it is reachable, before it tries to replicate, so a forked former

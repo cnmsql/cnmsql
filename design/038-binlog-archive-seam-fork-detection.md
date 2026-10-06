@@ -221,7 +221,12 @@ it appends an epoch, before computing divergence in the same pass.
 `gtid_slave_pos` is the right handoff, and reading it late is harmless:
 promotion stops replication, and a primary's own writes advance
 `gtid_binlog_pos`, not `gtid_slave_pos`, so on a primary it stays at what it
-inherited.
+inherited. The first epoch of a timeline is the exception: its primary did not
+necessarily author the history it holds (a cluster bootstrapped from a backup
+holds the source cluster's transactions under other server ids, a cluster
+upgraded mid-life holds history no epoch observed), so its handoff is the
+primary's `gtid_current_pos` at first observation, and everything before it
+gets no verdict.
 
 **Verdict.** For a GTID `d-s-n`, find the epoch whose range in `d` contains `n`:
 
@@ -295,9 +300,12 @@ the timeline from the Cluster view it already follows (`clusterFloor` exposes
 `status.mariadbTimeline`). For every other segment and domain `d`, take the
 segment's position `d-s-n`:
 
-- off the timeline → record `AfterSeq[d]` = the `Handoff[d]` of the epoch that
-  ended `s`'s authorship before `n`, keeping the lower value if one is recorded
-  already;
+- off the timeline → record `AfterSeq[d]` = the latest point `s` could
+  legitimately have reached before `n`: the `Handoff[d]` of the epoch that
+  ended an epoch `s` authored, or a stretch whose successor inherited from `s`;
+  without either, the timeline's floor (everything above it is attributed to
+  another author, which keeps the check working once pruning dropped `s`'s
+  epoch). Keep the lower value if one is recorded already;
 - on the timeline, or no verdict → nothing.
 
 This covers what a frontier taken from the checking primary alone could not:
