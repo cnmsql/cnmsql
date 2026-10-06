@@ -27,6 +27,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
@@ -70,9 +71,11 @@ type clusterFloor struct {
 
 // floorView is the part of a Cluster the floor reads.
 type floorView struct {
-	instances []string
-	diverged  []string
-	positions map[string]string
+	instances      []string
+	diverged       []string
+	positions      map[string]string
+	currentPrimary string
+	timeline       engine.MariaDBTimeline
 }
 
 func newClusterFloor(instance string) *clusterFloor {
@@ -81,11 +84,46 @@ func newClusterFloor(instance string) *clusterFloor {
 
 // Observe records the latest Cluster read by the role reconciler.
 func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
+	var timeline engine.MariaDBTimeline
+	for _, epoch := range cluster.Status.MariaDBTimeline {
+		timeline = append(timeline, engine.MariaDBEpoch{ServerID: epoch.ServerID, Handoff: epoch.Handoff})
+	}
 	f.latest.Store(&floorView{
-		instances: slices.Clone(cluster.Status.InstanceNames),
-		diverged:  slices.Clone(cluster.Status.DivergedInstances),
-		positions: maps.Clone(cluster.Status.GTIDExecutedByInstance),
+		instances:      slices.Clone(cluster.Status.InstanceNames),
+		diverged:       slices.Clone(cluster.Status.DivergedInstances),
+		positions:      maps.Clone(cluster.Status.GTIDExecutedByInstance),
+		currentPrimary: cluster.Status.CurrentPrimary,
+		timeline:       timeline,
 	})
+}
+
+// Primary implements binlog.ClusterView: status.currentPrimary and the
+// position the operator last recorded for it. The record only understates
+// what the primary holds (gtid_executed only grows), which is the safe
+// direction for the drain gate.
+func (f *clusterFloor) Primary() (string, string, bool) {
+	view := f.latest.Load()
+	if view == nil || view.currentPrimary == "" {
+		return "", "", false
+	}
+	position, ok := view.positions[view.currentPrimary]
+	return view.currentPrimary, position, ok
+}
+
+// Diverged implements binlog.ClusterView.
+func (f *clusterFloor) Diverged(name string) bool {
+	view := f.latest.Load()
+	return view != nil && slices.Contains(view.diverged, name)
+}
+
+// Timeline implements binlog.ClusterView: status.mariadbTimeline, absent on
+// MySQL and replica clusters.
+func (f *clusterFloor) Timeline() (engine.MariaDBTimeline, bool) {
+	view := f.latest.Load()
+	if view == nil || len(view.timeline) == 0 {
+		return nil, false
+	}
+	return view.timeline, true
 }
 
 // Positions implements binlog.ReplicaFloor. Every expected instance but this
@@ -167,7 +205,7 @@ func startArchiver(
 	db *sql.DB,
 	identityQuery string,
 	repl *replication.Manager,
-	floor binlog.ReplicaFloor,
+	floor *clusterFloor,
 ) (*binlog.Loop, <-chan error, error) {
 	log := logf.FromContext(ctx).WithName("archiver")
 	store, err := objectstore.NewClientFromEnv()
@@ -193,6 +231,7 @@ func startArchiver(
 		BinlogDir:    cfg.BinlogDir,
 		Scan:         binlog.MysqlbinlogScanner(cfg.MysqlbinlogPath, cfg.MariaDB),
 		NewSet:       cfg.newGTIDSet(),
+		Forks:        forkSource(reader, floor, cfg.MariaDB),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -206,6 +245,9 @@ func startArchiver(
 		Purge:         cfg.Purge,
 		Floor:         floor,
 		Replication:   replicaProbe{repl: repl},
+		Cluster:       floor,
+		Instance:      cfg.InstanceName,
+		MariaDB:       cfg.MariaDB,
 	})
 
 	errCh := make(chan error, 1)
@@ -219,27 +261,71 @@ func startArchiver(
 	return loop, errCh, nil
 }
 
-// archivingStatusProvider adapts a Loop's State to the webserver status shape.
-func archivingStatusProvider(loop *binlog.Loop) func() *webserver.ArchivingStatus {
-	return func() *webserver.ArchivingStatus {
-		s := loop.State()
-		out := &webserver.ArchivingStatus{
-			Active:             s.Active,
-			LastArchivedBinlog: s.LastArchivedBinlog,
-			LastArchivedGTID:   s.LastArchivedGTID,
-			PendingFiles:       s.PendingFiles,
-			LastError:          s.LastError,
-			PurgeHeldBy:        s.PurgeHeldBy,
+// forkSource returns the authority the primary's fork check compares archive
+// segments against: MySQL gtid_executed, or the MariaDB primary timeline from
+// the Cluster (with the primary's own position recorded for audit). Before the
+// operator has recorded a timeline there is no MariaDB authority, and the
+// check is skipped rather than guessed.
+func forkSource(reader *binlog.Reader, floor *clusterFloor, mariadb bool) binlog.ForkSource {
+	if !mariadb {
+		return func(ctx context.Context) (binlog.ForkJudge, error) {
+			executed, err := reader.ExecutedGTIDSet(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return binlog.NewMySQLForkJudge(executed)
 		}
-		if !s.PurgeHeldSince.IsZero() {
-			out.PurgeHeldSince = s.PurgeHeldSince.UTC().Format(time.RFC3339)
+	}
+	return func(ctx context.Context) (binlog.ForkJudge, error) {
+		timeline, ok := floor.Timeline()
+		if !ok {
+			return nil, nil
 		}
-		if !s.LastArchivedTime.IsZero() {
-			out.LastArchivedTime = s.LastArchivedTime.UTC().Format(time.RFC3339)
+		position, err := reader.CurrentPosition(ctx)
+		if err != nil {
+			return nil, err
 		}
-		if !s.LastErrorTime.IsZero() {
-			out.LastErrorTime = s.LastErrorTime.UTC().Format(time.RFC3339)
-		}
-		return out
+		return binlog.NewMariaDBForkJudge(timeline, position), nil
 	}
 }
+
+// archivingStatusProvider adapts a Loop's State to the webserver status shape.
+func archivingStatusProvider(loop *binlog.Loop) func() *webserver.ArchivingStatus {
+	return func() *webserver.ArchivingStatus { return archivingStatus(loop.State()) }
+}
+
+// archivingStatus converts an archiver state to the webserver status shape.
+func archivingStatus(s binlog.State) *webserver.ArchivingStatus {
+	out := &webserver.ArchivingStatus{
+		Active:                s.Active,
+		LastArchivedBinlog:    s.LastArchivedBinlog,
+		LastArchivedGTID:      s.LastArchivedGTID,
+		PendingFiles:          s.PendingFiles,
+		LastError:             s.LastError,
+		PurgeHeldBy:           s.PurgeHeldBy,
+		OldestSegmentPosition: s.OldestSegmentPosition,
+		DeferredFile:          s.DeferredFile,
+	}
+	if !s.PurgeHeldSince.IsZero() {
+		out.PurgeHeldSince = rfc3339(s.PurgeHeldSince)
+	}
+	if !s.LastArchivedTime.IsZero() {
+		out.LastArchivedTime = rfc3339(s.LastArchivedTime)
+	}
+	if !s.LastErrorTime.IsZero() {
+		out.LastErrorTime = rfc3339(s.LastErrorTime)
+	}
+	if !s.ForkCheckedAt.IsZero() {
+		out.ForkCheckedAt = rfc3339(s.ForkCheckedAt)
+	}
+	for _, fork := range s.Forks {
+		entry := webserver.ArchiveForkStatus{Segment: fork.ServerUUID, InstanceName: fork.InstanceName, GTIDs: fork.GTIDs}
+		if !fork.DetectedAt.IsZero() {
+			entry.DetectedAt = rfc3339(fork.DetectedAt)
+		}
+		out.Forks = append(out.Forks, entry)
+	}
+	return out
+}
+
+func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }

@@ -220,6 +220,31 @@ type ArchivingStatus struct {
 	// file started being held.
 	PurgeHeldBy    []string `json:"purgeHeldBy,omitempty"`
 	PurgeHeldSince string   `json:"purgeHeldSince,omitempty"`
+	// Forks are the fork records the archive index carried at this primary's
+	// last read of it: transactions a segment archived that the surviving
+	// timeline never executed.
+	Forks []ArchiveForkStatus `json:"forks,omitempty"`
+	// ForkCheckedAt (RFC3339) is when this primary last ran a fork check over
+	// the index; empty until it has, in which case Forks may be stale.
+	ForkCheckedAt string `json:"forkCheckedAt,omitempty"`
+	// OldestSegmentPosition (MariaDB) is the lowest position any archive
+	// segment reached, per domain.
+	OldestSegmentPosition string `json:"oldestSegmentPosition,omitempty"`
+	// DeferredFile is the stranded binlog a former primary's drain keeps
+	// deferring because the surviving timeline does not provably hold it.
+	DeferredFile string `json:"deferredFile,omitempty"`
+}
+
+// ArchiveForkStatus is one segment's fork record.
+type ArchiveForkStatus struct {
+	// Segment is the archive identity of the segment holding the dead branch,
+	// InstanceName the instance that wrote it.
+	Segment      string `json:"segment"`
+	InstanceName string `json:"instanceName,omitempty"`
+	// GTIDs is the disowned set (MySQL) or range (MariaDB).
+	GTIDs string `json:"gtids"`
+	// DetectedAt (RFC3339) is when the record was first written.
+	DetectedAt string `json:"detectedAt,omitempty"`
 }
 
 // ReplicationStatus captures the replica-side replication state, derived from
