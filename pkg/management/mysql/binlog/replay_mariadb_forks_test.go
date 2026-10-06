@@ -98,7 +98,7 @@ func TestApplyMariadbForksDropsLaterFilesOfTheSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var paths []string
+	paths := make([]string, 0, len(got))
 	for _, f := range got {
 		paths = append(paths, f.Path)
 	}
@@ -236,7 +236,8 @@ func TestPlanMariadbPositionalMatchesTheFilesVariant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := PlanMariadbPositionalFiles([]PositionalFile{{Path: "x", Boundaries: b[0]}, {Path: "y", Boundaries: b[1]}}, 0, 1, 5)
+	pf := []PositionalFile{{Path: "x", Boundaries: b[0]}, {Path: "y", Boundaries: b[1]}}
+	files, err := PlanMariadbPositionalFiles(pf, 0, 1, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +326,8 @@ func TestPlanMariadbReplay(t *testing.T) {
 
 func TestPrepareMariadbPositionalRefusesADeadBranchBackup(t *testing.T) {
 	t.Parallel()
-	if _, err := PrepareMariadbPositional(mariadbForkIndex(), "0-1-220", RecoveryTarget{}); !errors.Is(err, ErrBackupOnDeadBranch) {
+	_, err := PrepareMariadbPositional(mariadbForkIndex(), "0-1-220", RecoveryTarget{})
+	if !errors.Is(err, ErrBackupOnDeadBranch) {
 		t.Fatalf("err = %v, want ErrBackupOnDeadBranch", err)
 	}
 	// The successor's own 220 is canonical.
@@ -355,7 +357,9 @@ func TestPrepareMariadbPositionalMultiDomain(t *testing.T) {
 // A GTID-less archive (old 10.11 backups) has no ranges to plan on.
 func TestPrepareMariadbPositionalGTIDLessArchive(t *testing.T) {
 	t.Parallel()
-	idx := &objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{{ServerUUID: "a", Binlogs: []string{"binlog.000001"}}}}
+	idx := &objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{
+		{ServerUUID: "a", Binlogs: []string{"binlog.000001"}},
+	}}
 	p, err := PrepareMariadbPositional(idx, "", RecoveryTarget{})
 	if err != nil || p.Enabled {
 		t.Fatalf("setup = %+v, err = %v", p, err)

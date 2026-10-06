@@ -18,6 +18,7 @@ package binlog
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
@@ -466,7 +467,9 @@ func PrepareMariadbPositional(
 // capSegments returns copies of the index segments whose range end in the
 // domain stops at the fork cut, and the sequence segment selection has to
 // reach: the target, or for time and latest the highest sequence left.
-func capSegments(index []objectstore.ArchiveSegment, segs []ReplaySegment, p MariadbPositional) ([]objectstore.ArchiveSegment, uint64) {
+func capSegments(
+	index []objectstore.ArchiveSegment, segs []ReplaySegment, p MariadbPositional,
+) ([]objectstore.ArchiveSegment, uint64) {
 	holder, branchCut := branchHolder(segs, p.Domain, p.Target)
 	capped := make([]objectstore.ArchiveSegment, len(index))
 	var highest uint64
@@ -536,7 +539,7 @@ func archiveDomains(idx *objectstore.ArchiveIndex) []uint32 {
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 

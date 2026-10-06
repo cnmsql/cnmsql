@@ -77,7 +77,8 @@ func TestLoopChecksForksOnFirstWritablePass(t *testing.T) {
 	if src.calls != 1 {
 		t.Fatalf("first writable pass read the authority %d times, want 1", src.calls)
 	}
-	if fork := segmentByUUID(t, readIndex(t, store), "old-identity").Fork; fork == nil || fork.GTIDSet != otherUUID+":219" {
+	fork := segmentByUUID(t, readIndex(t, store), "old-identity").Fork
+	if fork == nil || fork.GTIDSet != otherUUID+":219" {
 		t.Fatalf("fork = %+v", fork)
 	}
 	state := loop.State()

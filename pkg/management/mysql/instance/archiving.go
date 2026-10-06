@@ -84,7 +84,7 @@ func newClusterFloor(instance string) *clusterFloor {
 
 // Observe records the latest Cluster read by the role reconciler.
 func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
-	var timeline engine.MariaDBTimeline
+	timeline := make(engine.MariaDBTimeline, 0, len(cluster.Status.MariaDBTimeline))
 	for _, epoch := range cluster.Status.MariaDBTimeline {
 		timeline = append(timeline, engine.MariaDBEpoch{ServerID: epoch.ServerID, Handoff: epoch.Handoff})
 	}

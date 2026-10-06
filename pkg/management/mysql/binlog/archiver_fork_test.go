@@ -99,7 +99,8 @@ func archiveOne(t *testing.T, store Store, forks ForkSource) (*Archiver, Archive
 	writeBinlog(t, dir, "binlog.000001", "one")
 	writeBinlog(t, dir, "binlog.000002", "active")
 	a := newForkArchiver(t, store, dir, staticScan(map[string]string{"binlog.000001": testUUID + ":1-5"}), forks)
-	res, err := a.ArchivePending(context.Background(), MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}}))
+	logs := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})
+	res, err := a.ArchivePending(context.Background(), logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +335,9 @@ func TestArchiverReadsAuthorityOncePerPass(t *testing.T) {
 	a := newForkArchiver(t, store, dir, staticScan(map[string]string{
 		"binlog.000001": testUUID + ":1-3", "binlog.000002": testUUID + ":4-6", "binlog.000003": testUUID + ":7-9",
 	}), src.source)
-	logs := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}, {Name: "binlog.000003"}, {Name: "binlog.000004"}})
+	logs := MarkActive([]BinaryLog{
+		{Name: "binlog.000001"}, {Name: "binlog.000002"}, {Name: "binlog.000003"}, {Name: "binlog.000004"},
+	})
 	if _, err := a.ArchivePending(context.Background(), logs); err != nil {
 		t.Fatal(err)
 	}

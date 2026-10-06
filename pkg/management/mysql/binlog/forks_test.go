@@ -117,7 +117,9 @@ func TestMergeFork(t *testing.T) {
 	if err != nil || !grew {
 		t.Fatalf("first record must grow: %v %v", grew, err)
 	}
-	want := &objectstore.ArchiveFork{GTIDSet: testUUID + ":219", AuthorityGTIDSet: "auth1", DetectedAt: first, DetectedBy: "p/1"}
+	want := &objectstore.ArchiveFork{
+		GTIDSet: testUUID + ":219", AuthorityGTIDSet: "auth1", DetectedAt: first, DetectedBy: "p/1",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("record = %+v, want %+v", got, want)
 	}
@@ -140,7 +142,8 @@ func TestMergeFork(t *testing.T) {
 	}
 
 	maria, _, _ := mergeFork(nil, &objectstore.ArchiveFork{AfterSeq: map[uint32]uint64{0: 300}}, "a", first, "p/1")
-	lower, grew, _ := mergeFork(maria, &objectstore.ArchiveFork{AfterSeq: map[uint32]uint64{0: 250, 1: 9}}, "b", later, "q/2")
+	delta := &objectstore.ArchiveFork{AfterSeq: map[uint32]uint64{0: 250, 1: 9}}
+	lower, grew, _ := mergeFork(maria, delta, "b", later, "q/2")
 	if !grew || !reflect.DeepEqual(lower.AfterSeq, map[uint32]uint64{0: 250, 1: 9}) {
 		t.Fatalf("afterSeq = %v, want the lower value kept and the new domain added", lower.AfterSeq)
 	}

@@ -327,14 +327,14 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 	if err != nil {
 		return ReplayPlan{}, err
 	}
-	if err := applyMySQLForks(idx, anchorGTID, target, &plan); err != nil {
+	if err := applyMySQLForks(idx, target, &plan); err != nil {
 		return ReplayPlan{}, err
 	}
 	return plan, nil
 }
 
 // applyMySQLForks folds the archive's fork records into a MySQL replay plan.
-func applyMySQLForks(idx *objectstore.ArchiveIndex, anchor string, target RecoveryTarget, plan *ReplayPlan) error {
+func applyMySQLForks(idx *objectstore.ArchiveIndex, target RecoveryTarget, plan *ReplayPlan) error {
 	var disowned []string
 	for _, seg := range idx.Segments {
 		if seg.Fork != nil && seg.Fork.GTIDSet != "" {
@@ -768,21 +768,6 @@ func firstAfterInFile(list []TxnBoundary, domain uint32, seq uint64) (int64, boo
 		}
 	}
 	return 0, false
-}
-
-// maxSeqInDomain returns the highest sequence archived for the domain.
-func maxSeqInDomain(boundaries [][]TxnBoundary, domain uint32) (uint64, bool) {
-	var max uint64
-	var found bool
-	for _, list := range boundaries {
-		for _, b := range list {
-			if b.Domain == domain && (!found || b.Seq > max) {
-				max = b.Seq
-				found = true
-			}
-		}
-	}
-	return max, found
 }
 
 func applyTargetWithOps(

@@ -62,7 +62,7 @@ func observedPrimary(primary string, server uint32, slavePos string, positions m
 }
 
 func timelineInstances(tl []mysqlv1alpha1.MariaDBEpoch) []string {
-	var out []string
+	out := make([]string, 0, len(tl))
 	for _, e := range tl {
 		out = append(out, fmt.Sprintf("%s/%d/%s", e.Instance, e.ServerID, e.Handoff))
 	}
@@ -214,7 +214,7 @@ func TestTimelinePruningIgnoresUnknownPositions(t *testing.T) {
 }
 
 func TestTimelineCeilingTruncatesAndNamesWhatItPinned(t *testing.T) {
-	var epochs []mysqlv1alpha1.MariaDBEpoch
+	epochs := make([]mysqlv1alpha1.MariaDBEpoch, 0, engine.MariaDBTimelineCeiling)
 	for i := range engine.MariaDBTimelineCeiling {
 		epochs = append(epochs, epoch(fmt.Sprintf("demo-%d", i%2+1), uint32(i%2+1), fmt.Sprintf("0-%d-%d", (i+1)%2+1, i*10)))
 	}

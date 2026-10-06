@@ -239,7 +239,7 @@ func (s GTIDSet) Union(other GTIDSet) {
 func (s GTIDSet) Difference(other GTIDSet) GTIDSet {
 	out := GTIDSet{}
 	for uuid, intervals := range s {
-		var kept []GTIDInterval
+		kept := make([]GTIDInterval, 0, len(intervals))
 		for _, iv := range intervals {
 			kept = append(kept, iv.minus(other[uuid])...)
 		}

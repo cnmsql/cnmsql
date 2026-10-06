@@ -53,7 +53,9 @@ func mariadbSegment(token, position string) objectstore.ArchiveSegment {
 	return objectstore.ArchiveSegment{ServerUUID: token, Binlogs: []string{"binlog.000001"}, GTIDSet: position}
 }
 
-func checkMariaDB(t *testing.T, timeline engine.MariaDBTimeline, segs ...objectstore.ArchiveSegment) objectstore.ArchiveIndex {
+func checkMariaDB(
+	t *testing.T, timeline engine.MariaDBTimeline, segs ...objectstore.ArchiveSegment,
+) objectstore.ArchiveIndex {
 	t.Helper()
 	store := newMemStore()
 	seedIndex(t, store, objectstore.ArchiveIndex{Segments: segs})
@@ -140,7 +142,9 @@ func TestMariaDBForkCheckWithoutVerdictRecordsNothing(t *testing.T) {
 func TestMariaDBForkCheckWaitsForATimeline(t *testing.T) {
 	t.Parallel()
 	store := newMemStore()
-	seedIndex(t, store, objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{mariadbSegment("token-old", "0-1-219")}})
+	seedIndex(t, store, objectstore.ArchiveIndex{
+		Segments: []objectstore.ArchiveSegment{mariadbSegment("token-old", "0-1-219")},
+	})
 	report, err := mariadbForkArchiver(t, store, nil, "0-2-300").CheckForks(context.Background())
 	if err != nil || report.Checked {
 		t.Fatalf("report = %+v, err = %v", report, err)

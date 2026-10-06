@@ -45,6 +45,11 @@ func (v *fakeView) Timeline() (engine.MariaDBTimeline, bool) {
 	return v.timeline, v.hasTimeline
 }
 
+// strandedSeed is the listing a former primary had while it archived.
+func strandedSeed() []BinaryLog {
+	return MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})
+}
+
 // drainTick runs one non-writable tick of a demoted former primary named
 // demo-1 whose source accepted it.
 func drainTick(t *testing.T, loop *Loop, mock sqlmock.Sqlmock) {
@@ -174,7 +179,8 @@ func TestDrainStopsAtTheFirstDeferredFile(t *testing.T) {
 		"binlog.000002": testUUID + ":4-9",
 		"binlog.000003": otherUUID + ":1-2",
 	}))
-	if _, err := arch.ArchivePending(context.Background(), MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})); err != nil {
+	seed := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})
+	if _, err := arch.ArchivePending(context.Background(), seed); err != nil {
 		t.Fatal(err)
 	}
 	view := &fakeView{primary: "demo-2", position: testUUID + ":1-3," + otherUUID + ":1-2", known: true}
@@ -212,7 +218,7 @@ func TestDrainScansADeferredFileOnce(t *testing.T) {
 	arch := newTestArchiver(t, newMemStore(), dir, countingScan(staticScan(map[string]string{
 		shippedLog: testUUID + ":1-3", strandedLog: testUUID + ":4-9",
 	}), &scans))
-	if _, err := arch.ArchivePending(context.Background(), MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})); err != nil {
+	if _, err := arch.ArchivePending(context.Background(), strandedSeed()); err != nil {
 		t.Fatal(err)
 	}
 	scans = 0
@@ -243,7 +249,7 @@ func TestDrainNeverRunsTheForkCheck(t *testing.T) {
 	src := &executedSource{executed: testUUID + ":1-9"}
 	scan := staticScan(map[string]string{shippedLog: testUUID + ":1-3", strandedLog: testUUID + ":4-9"})
 	seedArch := newForkArchiver(t, store, dir, scan, nil)
-	if _, err := seedArch.ArchivePending(context.Background(), MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})); err != nil {
+	if _, err := seedArch.ArchivePending(context.Background(), strandedSeed()); err != nil {
 		t.Fatal(err)
 	}
 	arch := newForkArchiver(t, store, dir, scan, src.source)
@@ -286,7 +292,7 @@ func mariadbDrainFixture(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Archiver, *me
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := arch.ArchivePending(context.Background(), MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})); err != nil {
+	if _, err := arch.ArchivePending(context.Background(), strandedSeed()); err != nil {
 		t.Fatal(err)
 	}
 	return db, mock, arch, store

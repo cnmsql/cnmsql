@@ -877,7 +877,8 @@ func TestStatusMariaDBReportsTimelineInputs(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	mock.MatchExpectationsInOrder(false)
-	c, err := NewController("cluster-1", db, "11.4.2", webserver.RoleUnknown, nil, engine.MustForFlavor(engine.FlavorMariaDB))
+	c, err := NewController("cluster-1", db, "11.4.2", webserver.RoleUnknown, nil,
+		engine.MustForFlavor(engine.FlavorMariaDB))
 	if err != nil {
 		t.Fatal(err)
 	}

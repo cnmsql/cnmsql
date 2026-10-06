@@ -104,7 +104,10 @@ func TestMariaSeqForDomain(t *testing.T) {
 func TestAnchorSeqFromBoundaries(t *testing.T) {
 	t.Parallel()
 	// {Domain, Seq, StartPos}
-	bounds := []TxnBoundary{{Domain: 0, Seq: 1, StartPos: 325}, {Domain: 0, Seq: 2, StartPos: 500}, {Domain: 0, Seq: 3, StartPos: 831}, {Domain: 1, Seq: 9, StartPos: 900}}
+	bounds := []TxnBoundary{
+		{Domain: 0, Seq: 1, StartPos: 325}, {Domain: 0, Seq: 2, StartPos: 500},
+		{Domain: 0, Seq: 3, StartPos: 831}, {Domain: 1, Seq: 9, StartPos: 900},
+	}
 	tests := []struct {
 		name   string
 		domain uint32
@@ -222,7 +225,10 @@ func TestPlanMariadbPositional(t *testing.T) {
 				// 2/binlog.000001: rotation only, no transactions
 				{},
 				// 2/binlog.000002: re-log 0-1-15..26 then 0-2-27..57
-				{{Domain: 0, Seq: 15, StartPos: 339}, {Domain: 0, Seq: 26, StartPos: 60000}, {Domain: 0, Seq: 27, StartPos: 61000}, {Domain: 0, Seq: 57, StartPos: 284000}},
+				{
+					{Domain: 0, Seq: 15, StartPos: 339}, {Domain: 0, Seq: 26, StartPos: 60000},
+					{Domain: 0, Seq: 27, StartPos: 61000}, {Domain: 0, Seq: 57, StartPos: 284000},
+				},
 				// 2/binlog.000003: 0-2-58..62 (past the target)
 				{{Domain: 0, Seq: 58, StartPos: 339}, {Domain: 0, Seq: 62, StartPos: 34000}},
 			},
