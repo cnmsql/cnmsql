@@ -383,7 +383,7 @@ than the timeline, which gate 2 already governs.
 | 6 | Failback, dead tail: A → S → A, S crashed with `2:301` uploaded, A promoted at `2:300` | A's first writable pass records `{2:301}` on S's segment (§2, §4). |
 | 7 | An unreachable replica's stale position holds the dead tail | Not read: gate 4 uses the primary's position only. |
 | 8 | Scale-down / unknown positions | Only the primary's position matters; unknown ⇒ defer until the next refresh. |
-| 9 | Index write race (primary, drain, retention) | A lost drain write re-folds on the next tick; a lost fork record is re-detected on the primary's next pass. Convergent. If-Match CAS is a separate follow-up. |
+| 9 | Index write race (primary, drain, retention) | Every index write is a compare-and-swap (`If-Match` on the read ETag, `If-None-Match: *` to create); a loser re-reads and re-applies its change, so retention's drop of a forked segment is never undone by a stale copy. On a store without conditional PUTs (501), writes fall back to unconditional: a lost drain write re-folds on the next tick, a lost fork record is re-detected on the primary's next pass. |
 | 10 | Group Replication | No async replication is configured, so `Streaming()` is false and the drain is inert. Each GR primary runs the fork check; transactions carry the group UUID, so a fork needs a forced-quorum split brain, which set semantics catch. |
 | 11 | MariaDB successor dies before writing the index; R promoted from it | The timeline holds S's epoch (or marks its stretch unknown). R's check records the fork on the old segment if S's epoch was observed; otherwise the restore backstop (§6) fails closed. |
 | 12 | MariaDB forked old primary returns, then the current primary dies | Marked diverged on first contact by the timeline verdict (§3), so `candidateEligible` never offers it to the failover. |
@@ -578,7 +578,11 @@ target contains the anchor, as today.
 - A disowned transaction is recoverable only if it reached the archive before
   the crash (case 4) and only via an explicit `targetGTID`. The drain never
   ships one, by design.
-- The index read-modify-write race predates this change and now has three
-  writers (primary, drain, operator retention). A lost write delays a fork
-  record by one pass but cannot ship a disowned transaction. An If-Match/CAS
-  hardening of `PutJSON` is a separate follow-up (provider-dependent; see 027).
+- The index has three writers (primary, drain, operator retention). They
+  write it with S3 conditional PUTs (`objectstore.UpdateArchiveIndex`), and a
+  loser rebases its change on the winner's index. A store that does not
+  implement conditional PUTs (501) gets unconditional writes, the behavior
+  before this change: a lost write delays a fork record by one pass and can
+  bring a segment retention dropped back until the next retention pass, but
+  cannot ship a disowned transaction. A store that silently ignores the
+  headers behaves the same way (see 027).

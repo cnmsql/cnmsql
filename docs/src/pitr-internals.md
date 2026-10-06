@@ -227,9 +227,15 @@ segment's `fork` record, which only ever grows.
   the segment holds past it is disowned. History the timeline has no verdict on
   records nothing.
 
-A lost write (the index read-modify-write race with a drain or retention) only
-delays a record by one pass: the transactions are still disowned, so the next
-check finds them again.
+The primary, a draining former primary and retention all write the index, so
+every index write is a compare-and-swap: an S3 conditional PUT (`If-Match` on
+the ETag it read, `If-None-Match: *` to create it). A writer that loses the race
+re-reads the index and re-applies its change on top of the winner's, so neither
+change is lost, and a primary holding a stale copy cannot bring back a segment
+retention just dropped. A store that does not implement conditional PUTs
+answers 501 and gets unconditional writes from then on; there a lost write only
+delays a fork record by one pass, because the transactions are still disowned
+and the next check finds them again.
 
 The primary reports the records it read in its archiving status, and the
 operator mirrors them into `status.continuousArchiving.forkGTIDs` and
