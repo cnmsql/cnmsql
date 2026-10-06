@@ -865,3 +865,58 @@ func TestStatusStillFailsOnUnclassifiedErrors(t *testing.T) {
 		t.Fatal("a failure mysqld did not cause must stay an error")
 	}
 }
+
+// A MariaDB instance reports the two values the operator's primary timeline is
+// built from: gtid_slave_pos (what a new primary inherited) and server_id (the
+// author component of its GTIDs), plus the replica's I/O error number for the
+// 1236 divergence backstop.
+func TestStatusMariaDBReportsTimelineInputs(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	mock.MatchExpectationsInOrder(false)
+	c, err := NewController("cluster-1", db, "11.4.2", webserver.RoleUnknown, nil, engine.MustForFlavor(engine.FlavorMariaDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery("SELECT @@GLOBAL.read_only").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	for range 2 {
+		mock.ExpectQuery("SHOW SLAVE STATUS").WillReturnRows(
+			sqlmock.NewRows([]string{"Master_Host", "Slave_IO_Running", "Slave_SQL_Running", "Last_IO_Errno", "Last_IO_Error"}).
+				AddRow("cluster-2.svc", "No", "Yes", "1236", "Got fatal error 1236"))
+	}
+	mock.ExpectPing()
+	mock.ExpectQuery("SELECT @@GLOBAL.version").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("11.4.2-MariaDB"))
+	mock.ExpectQuery("SELECT @@gtid_current_pos").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0-1-219"))
+	mock.ExpectQuery("SELECT @@GLOBAL.gtid_slave_pos").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("0-1-200"))
+	mock.ExpectQuery("SELECT @@GLOBAL.server_id").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("3"))
+
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.GTIDSlavePos != "0-1-200" || status.ServerID != 3 {
+		t.Fatalf("gtidSlavePos = %q, serverID = %d", status.GTIDSlavePos, status.ServerID)
+	}
+	if status.Replication == nil || status.Replication.LastIOErrno != 1236 {
+		t.Fatalf("replication = %+v, want lastIOErrno 1236", status.Replication)
+	}
+}
+
+// MySQL has no gtid_slave_pos; the fields stay empty and no query is issued.
+func TestStatusMySQLOmitsTimelineInputs(t *testing.T) {
+	c, mock := newController(t, nil)
+	expectStatusQueries(mock, false, false, false)
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(sqlmock.NewRows([]string{"Source_Host"}))
+	expectBestEffortQueries(mock)
+	status, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.GTIDSlavePos != "" || status.ServerID != 0 {
+		t.Fatalf("mysql status reported mariadb fields: %+v", status)
+	}
+}

@@ -73,6 +73,13 @@ type Status struct {
 	GTIDExecuted string `json:"gtidExecuted,omitempty"`
 	GTIDPurged   string `json:"gtidPurged,omitempty"`
 
+	// GTIDSlavePos (MariaDB) is @@gtid_slave_pos: what this server last
+	// replicated, which on a new primary is what it inherited. ServerID
+	// (MariaDB) is @@server_id, the author component of the GTIDs it writes.
+	// The operator builds the MariaDB primary timeline from both.
+	GTIDSlavePos string `json:"gtidSlavePos,omitempty"`
+	ServerID     uint32 `json:"serverID,omitempty"`
+
 	// Replication holds replica-side details; nil on a primary.
 	Replication *ReplicationStatus `json:"replication,omitempty"`
 
@@ -227,6 +234,8 @@ type ReplicationStatus struct {
 	SecondsBehindSource *int64 `json:"secondsBehindSource,omitempty"`
 	// LastError holds the last replication error, if any.
 	LastError string `json:"lastError,omitempty"`
+	// LastIOErrno is the I/O thread's last error number, 0 when none.
+	LastIOErrno int `json:"lastIOErrno,omitempty"`
 	// RetrievedGTIDSet and ExecutedGTIDSet from the replica's perspective.
 	RetrievedGTIDSet string `json:"retrievedGtidSet,omitempty"`
 }
