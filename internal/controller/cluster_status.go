@@ -131,6 +131,9 @@ type observedCluster struct {
 	// BootstrapJobs are the cluster's running and failed instance bootstrap
 	// Jobs (design 031).
 	BootstrapJobs []bootstrapJobState
+	// MariaDBTimeline is the primary timeline after this observation (MariaDB
+	// only), recorded before divergence is judged against it.
+	MariaDBTimeline timelineUpdate
 }
 
 // observe polls every desired instance and aggregates cluster-level readiness.
@@ -227,6 +230,9 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 		}
 	}
 
+	// Record a change of primary before judging divergence, so a forked former
+	// primary is judged against the epoch that disowned it.
+	observed.MariaDBTimeline = nextMariaDBTimeline(cluster, observed, time.Now())
 	topologyObservation := r.topologyReconciler(cluster).Observe(topologyObservationInput(observed, cluster, cluster.Status.GroupReplication, cluster.Status.DivergedInstances))
 	if topologyObservation.PrimaryAuthoritative {
 		observed.PrimaryName = topologyObservation.PrimaryName
@@ -730,6 +736,9 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	})
 	latest.Status.Certificates = r.certificateStatus(ctx, latest, observed.Plan)
 	latest.Status.ContinuousArchiving = observed.ContinuousArchiving
+	if observed.MariaDBTimeline.Observed {
+		latest.Status.MariaDBTimeline = observed.MariaDBTimeline.Timeline
+	}
 	latest.Status.OperatorExecutableHash = r.OperatorExecutableHash
 	if len(observed.ExecutableHashByInstance) > 0 {
 		latest.Status.ExecutableHashByInstance = observed.ExecutableHashByInstance
@@ -822,6 +831,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	r.recordPhaseEvents(latest, before, observed, wasStoragePressured)
 	r.recordBinlogPurgeHeldEvent(latest, wasPurgeHeld)
 	r.recordArchiveForkedEvent(latest, wasForked)
+	r.recordTimelineTruncatedEvent(latest, observed.MariaDBTimeline)
 	r.recordArchiveMovedEvent(latest, before)
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
