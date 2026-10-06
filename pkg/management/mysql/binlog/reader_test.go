@@ -123,3 +123,32 @@ func TestReaderFlushAndPurge(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The MySQL fork check compares archive segments against gtid_executed; mysqld
+// wraps long sets across lines, which the reader must hand back intact for the
+// parser to strip.
+func TestReaderExecutedGTIDSet(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery(`SELECT @@GLOBAL\.gtid_executed`).WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("a:1-5,\nb:1-3"))
+	mock.ExpectQuery(`SELECT @@GLOBAL\.gtid_current_pos`).WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("0-2-300"))
+
+	r := NewReader(db)
+	got, err := r.ExecutedGTIDSet(context.Background())
+	if err != nil || got != "a:1-5,\nb:1-3" {
+		t.Fatalf("ExecutedGTIDSet = %q, %v", got, err)
+	}
+	pos, err := r.CurrentPosition(context.Background())
+	if err != nil || pos != "0-2-300" {
+		t.Fatalf("CurrentPosition = %q, %v", pos, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

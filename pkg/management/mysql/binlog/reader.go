@@ -161,3 +161,23 @@ func (r *Reader) PurgeLogsTo(ctx context.Context, upTo string) error {
 	}
 	return nil
 }
+
+// ExecutedGTIDSet returns the MySQL server's @@GLOBAL.gtid_executed: the
+// authority the fork check compares foreign archive segments against.
+func (r *Reader) ExecutedGTIDSet(ctx context.Context) (string, error) {
+	return r.scalar(ctx, "SELECT @@GLOBAL.gtid_executed")
+}
+
+// CurrentPosition returns the MariaDB server's @@GLOBAL.gtid_current_pos,
+// recorded as the audit authority of a MariaDB fork check.
+func (r *Reader) CurrentPosition(ctx context.Context) (string, error) {
+	return r.scalar(ctx, "SELECT @@GLOBAL.gtid_current_pos")
+}
+
+func (r *Reader) scalar(ctx context.Context, query string) (string, error) {
+	var value sql.NullString
+	if err := r.conn.QueryRowContext(ctx, query).Scan(&value); err != nil {
+		return "", fmt.Errorf("binlog: %s: %w", query, err)
+	}
+	return value.String, nil
+}
