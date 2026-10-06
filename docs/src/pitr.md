@@ -470,6 +470,37 @@ The `ContinuousArchiving` condition is healthy when the primary reports no
 archiver failure. `pendingFiles` is visible archive lag; a growing value means
 the object-store path, network, or archiver throughput should be inspected.
 
+### Forked archives
+
+A lagged failover can leave transactions in the archive that the surviving
+cluster never executed: the old primary shipped them, then crashed before its
+successor received them. The new primary detects them and records them on the
+archive segment that holds them. The cluster then reports:
+
+- `status.continuousArchiving.forkGTIDs`: one entry per forked segment, the
+  MySQL GTID set or a MariaDB range such as `0-1-219..0-1-225`;
+- `status.continuousArchiving.forkDetectedAt`;
+- the `ArchiveForked` condition, True with a Warning event when the first fork
+  is recorded, and False once retention removes the last forked segment.
+
+```bash
+kubectl get cluster <name> \
+  -o jsonpath='{.status.conditions[?(@.type=="ArchiveForked")].message}'
+```
+
+Recovery treats those transactions as a dead branch:
+
+- `targetTime` and latest (`recoveryTarget: {}` or `targetImmediate`) leave them
+  out, so the recovered data matches what the cluster actually served.
+- A base backup that already contains one was taken on the dead branch: those
+  targets fail with `ErrBackupOnDeadBranch`. Recover from another backup.
+- `targetGTID` is applied as written. Name the dead transactions (on MariaDB,
+  the dead server id and sequence) to recover that branch deliberately, for
+  example to inspect what the failover lost.
+
+Nothing else is needed: archiving keeps working, and the condition clears on
+its own when the forked segment ages out of the retention window.
+
 The operator performs an up-front PITR satisfiability check before provisioning a
 recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 `_index.json` coverage. Checks that require the base backup anchor, such as
@@ -485,8 +516,8 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
   restore only to the backup's consistency point.
 - Configure credentials or IAM so instance pods can write the source archive and
   recovery Jobs can read it.
-- Monitor the `ContinuousArchiving` condition, `pendingFiles`, object-store
-  errors, and failover events.
+- Monitor the `ContinuousArchiving` and `ArchiveForked` conditions,
+  `pendingFiles`, object-store errors, and failover events.
 - Choose base-backup frequency and `targetRPOSeconds` together. The former
   mostly controls replay length/RTO; the latter controls how much recent work can
   remain in the active, not-yet-archived binlog.
