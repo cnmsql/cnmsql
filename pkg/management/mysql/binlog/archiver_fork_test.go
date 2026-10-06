@@ -345,3 +345,35 @@ func TestArchiverReadsAuthorityOncePerPass(t *testing.T) {
 		t.Fatalf("authority read %d times in one pass, want 1", src.calls)
 	}
 }
+
+// The archiver writes the index with a compare-and-swap. When retention drops
+// a forked segment between the archiver's read and its write, the archiver
+// rebases its fold on retention's index instead of writing back the copy it
+// read, which would resurrect the segment and its fork record.
+func TestArchiverRebasesTheIndexOnAConcurrentWrite(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	old := oldSegment(otherUUID + ":1-219")
+	old.Fork = &objectstore.ArchiveFork{GTIDSet: otherUUID + ":219"}
+	seedIndex(t, store, objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{old}})
+	indexKey := testObjectStore.Bucket + "/" + objectstore.ArchiveIndexKey(testObjectStore, "demo")
+	store.beforeConditionalPut = func(key string) {
+		if key != indexKey {
+			return
+		}
+		store.beforeConditionalPut = nil
+		seedIndex(t, store, objectstore.ArchiveIndex{}) // retention dropped every segment
+	}
+	src := &executedSource{executed: otherUUID + ":1-218," + testUUID + ":1-5"}
+
+	archiveOne(t, store, src.source)
+
+	idx := readIndex(t, store)
+	if _, ok := idx.Segment("old-identity"); ok {
+		t.Fatalf("the archiver resurrected the dropped segment: %+v", idx.Segments)
+	}
+	own, ok := idx.Segment(testUUID)
+	if !ok || len(own.Binlogs) != 1 {
+		t.Fatalf("the archiver's own fold was lost: %+v", idx.Segments)
+	}
+}

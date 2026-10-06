@@ -220,6 +220,11 @@ func (c *indexReadCounter) Exists(ctx context.Context, bucket, key string) (bool
 	return c.memStore.Exists(ctx, bucket, key)
 }
 
+func (c *indexReadCounter) GetJSONVersion(ctx context.Context, bucket, key string, v any) (string, bool, error) {
+	c.count(key)
+	return c.memStore.GetJSONVersion(ctx, bucket, key, v)
+}
+
 func (c *indexReadCounter) GetJSON(ctx context.Context, bucket, key string, v any) error {
 	c.count(key)
 	return c.memStore.GetJSON(ctx, bucket, key, v)

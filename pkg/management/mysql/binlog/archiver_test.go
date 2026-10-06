@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -31,12 +32,38 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
-// memStore is an in-memory Store for archiver tests.
+// memStore is an in-memory Store for archiver tests. Every write bumps the
+// object's version, which the conditional writes compare against.
+// beforeConditionalPut, when set, runs before a conditional write, so a test
+// can play a concurrent writer between the archiver's read and its write.
 type memStore struct {
-	objects map[string][]byte
+	objects              map[string][]byte
+	versions             map[string]int
+	beforeConditionalPut func(key string)
 }
 
-func newMemStore() *memStore { return &memStore{objects: map[string][]byte{}} }
+func newMemStore() *memStore {
+	return &memStore{objects: map[string][]byte{}, versions: map[string]int{}}
+}
+
+func (m *memStore) GetJSONVersion(_ context.Context, bucket, key string, v any) (string, bool, error) {
+	data, ok := m.objects[bucket+"/"+key]
+	if !ok {
+		return "", false, nil
+	}
+	return strconv.Itoa(m.versions[bucket+"/"+key]), true, json.Unmarshal(data, v)
+}
+
+func (m *memStore) PutJSONIf(ctx context.Context, bucket, key string, v any, etag string) error {
+	if m.beforeConditionalPut != nil {
+		m.beforeConditionalPut(bucket + "/" + key)
+	}
+	_, exists := m.objects[bucket+"/"+key]
+	if (etag == "" && exists) || (etag != "" && etag != strconv.Itoa(m.versions[bucket+"/"+key])) {
+		return objectstore.ErrPreconditionFailed
+	}
+	return m.PutJSON(ctx, bucket, key, v)
+}
 
 func (m *memStore) Upload(_ context.Context, bucket, key string, r io.Reader, _ int64, _ string) error {
 	data, err := io.ReadAll(r)
@@ -53,6 +80,7 @@ func (m *memStore) PutJSON(_ context.Context, bucket, key string, v any) error {
 		return err
 	}
 	m.objects[bucket+"/"+key] = data
+	m.versions[bucket+"/"+key]++
 	return nil
 }
 
@@ -349,6 +377,16 @@ func (c *countingStore) PutJSON(ctx context.Context, bucket, key string, v any) 
 func (c *countingStore) GetJSON(ctx context.Context, bucket, key string, v any) error {
 	c.gets++
 	return c.memStore.GetJSON(ctx, bucket, key, v)
+}
+
+func (c *countingStore) GetJSONVersion(ctx context.Context, bucket, key string, v any) (string, bool, error) {
+	c.gets++
+	return c.memStore.GetJSONVersion(ctx, bucket, key, v)
+}
+
+func (c *countingStore) PutJSONIf(ctx context.Context, bucket, key string, v any, etag string) error {
+	c.puts++
+	return c.memStore.PutJSONIf(ctx, bucket, key, v, etag)
 }
 
 func (c *countingStore) Exists(ctx context.Context, bucket, key string) (bool, error) {

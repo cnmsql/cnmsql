@@ -219,6 +219,9 @@ type Client struct {
 	// listV1 is set once a ListObjectsV2 call has been rejected by the endpoint,
 	// after which every listing uses the V1 API. See listObjects.
 	listV1 atomic.Bool
+	// unconditional is set once the endpoint rejected a conditional PUT as not
+	// implemented, after which PutJSONIf writes unconditionally. See PutJSONIf.
+	unconditional atomic.Bool
 }
 
 // NewClient builds an object-store client from cfg.

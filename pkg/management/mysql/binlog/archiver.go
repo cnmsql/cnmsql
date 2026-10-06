@@ -37,12 +37,15 @@ import (
 var ErrCollision = errors.New("binlog: archive key already holds a different object")
 
 // Store is the subset of objectstore.Client the archiver needs. It is an
-// interface so the archiver is unit-testable with an in-memory fake.
+// interface so the archiver is unit-testable with an in-memory fake. The index
+// is written through its versioned methods (objectstore.UpdateArchiveIndex),
+// since the primary, a draining former primary and retention all write it.
 type Store interface {
 	Upload(ctx context.Context, bucket, key string, r io.Reader, size int64, contentType string) error
 	PutJSON(ctx context.Context, bucket, key string, v any) error
 	GetJSON(ctx context.Context, bucket, key string, v any) error
 	Exists(ctx context.Context, bucket, key string) (bool, error)
+	objectstore.VersionedStore
 }
 
 // Scanner extracts a file's GTID/timestamp summary. The real implementation
@@ -512,16 +515,33 @@ func (a *Archiver) updateIndex(
 	ctx context.Context, bucket string, status objectstore.ArchiveStatus, fileName, fileGTIDSet string, pass *forkPass,
 ) error {
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
-	var index objectstore.ArchiveIndex
-	exists, err := a.store.Exists(ctx, bucket, key)
+	// The fold re-runs on a fresh copy whenever another writer got in first,
+	// so it is a pure function of the index it is handed.
+	err := objectstore.UpdateArchiveIndex(ctx, a.store, bucket, key,
+		func(index *objectstore.ArchiveIndex, _ bool) (bool, error) {
+			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
+				return false, err
+			}
+			// This write carries a fresh copy of the index anyway, so check the
+			// seams on it: a fork that landed late, or a record lost to a racing
+			// writer, is caught on the primary's next write.
+			_, report := a.checkForks(ctx, index, pass)
+			if report.Checked {
+				index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
+			}
+			pass.report = &report
+			return true, nil
+		})
 	if err != nil {
-		return err
+		return fmt.Errorf("binlog: updating archive index: %w", err)
 	}
-	if exists {
-		if err := a.store.GetJSON(ctx, bucket, key, &index); err != nil {
-			return fmt.Errorf("binlog: reading archive index: %w", err)
-		}
-	}
+	return nil
+}
+
+// foldFile adds one archived file and its coverage to the index.
+func (a *Archiver) foldFile(
+	index *objectstore.ArchiveIndex, status objectstore.ArchiveStatus, fileName, fileGTIDSet string,
+) error {
 	index.ClusterName = a.clusterName
 
 	seg, ok := index.Segment(a.serverUUID)
@@ -566,19 +586,6 @@ func (a *Archiver) updateIndex(
 	}
 	index.CoveredGTIDSet = cumulative.String()
 	index.UpdatedAt = a.now()
-
-	// This write carries a fresh copy of the index anyway, so check the seams
-	// on it: a fork that landed late, or a record lost to a racing writer, is
-	// caught on the primary's next write.
-	_, report := a.checkForks(ctx, &index, pass)
-	if report.Checked {
-		index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
-	}
-	pass.report = &report
-
-	if err := a.store.PutJSON(ctx, bucket, key, &index); err != nil {
-		return fmt.Errorf("binlog: writing archive index: %w", err)
-	}
 	return nil
 }
 
@@ -686,30 +693,31 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 	if judge == nil {
 		return ForkReport{}, nil
 	}
-	bucket := a.objectStore.Bucket
+	var report ForkReport
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
-	exists, err := a.store.Exists(ctx, bucket, key)
+	err = objectstore.UpdateArchiveIndex(ctx, a.store, a.objectStore.Bucket, key,
+		func(index *objectstore.ArchiveIndex, exists bool) (bool, error) {
+			if !exists {
+				report = ForkReport{}
+				return false, nil
+			}
+			var grew bool
+			grew, report = a.checkForks(ctx, index, pass)
+			if report.Err != nil {
+				return false, report.Err
+			}
+			if !report.Checked || (!grew && index.ForkCheck != nil) {
+				return false, nil
+			}
+			index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
+			index.UpdatedAt = a.now()
+			return true, nil
+		})
 	if err != nil {
-		return ForkReport{}, err
-	}
-	if !exists {
-		return ForkReport{}, nil
-	}
-	var index objectstore.ArchiveIndex
-	if err := a.store.GetJSON(ctx, bucket, key, &index); err != nil {
-		return ForkReport{}, fmt.Errorf("binlog: reading archive index: %w", err)
-	}
-	grew, report := a.checkForks(ctx, &index, pass)
-	if report.Err != nil {
-		return report, report.Err
-	}
-	if !report.Checked || (!grew && index.ForkCheck != nil) {
-		return report, nil
-	}
-	index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
-	index.UpdatedAt = a.now()
-	if err := a.store.PutJSON(ctx, bucket, key, &index); err != nil {
-		return report, fmt.Errorf("binlog: writing archive index: %w", err)
+		if report.Err == nil {
+			report.Err = err
+		}
+		return report, err
 	}
 	return report, nil
 }
