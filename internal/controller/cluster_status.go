@@ -236,7 +236,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	// picked up while polling can be any member, and only the elected one runs
 	// the archiver.
 	if cluster.IsArchivingEnabled() {
-		observed.ContinuousArchiving = aggregateArchiving(observed)
+		observed.ContinuousArchiving = aggregateArchiving(observed, cluster.Status.ContinuousArchiving)
 		observed.ContinuousArchiving.Destination = archiveDestination(cluster)
 	}
 	observed.GroupReplication = topologyObservation.GroupReplication
@@ -569,10 +569,19 @@ func unreadyInstanceNames(observed observedCluster) []string {
 // primary instance's reported archiver state. Archiving is authoritative only
 // on the primary (the single writer), so that is the instance whose frontier
 // the cluster surfaces.
-func aggregateArchiving(observed observedCluster) *mysqlv1alpha1.ContinuousArchivingStatus {
+//
+// The fork fields are the exception: they describe the archive, not the
+// primary, and change only when a primary's fork check says so. Until the
+// current primary has run one (it is unreachable, just promoted, or restarted)
+// prior's fields carry over, so a failover does not briefly report an
+// unforked archive.
+func aggregateArchiving(
+	observed observedCluster, prior *mysqlv1alpha1.ContinuousArchivingStatus,
+) *mysqlv1alpha1.ContinuousArchivingStatus {
 	out := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true}
 	status, ok := observed.StatusByInstance[observed.PrimaryName]
 	if !ok || status.Archiving == nil {
+		carryForks(out, prior)
 		return out
 	}
 	a := status.Archiving
@@ -584,7 +593,29 @@ func aggregateArchiving(observed observedCluster) *mysqlv1alpha1.ContinuousArchi
 	out.LastFailureTime = parseInstanceTime(a.LastErrorTime)
 	out.PurgeHeldBy = a.PurgeHeldBy
 	out.PurgeHeldSince = parseInstanceTime(a.PurgeHeldSince)
+	if a.ForkCheckedAt == "" {
+		carryForks(out, prior)
+		return out
+	}
+	out.OldestSegmentPosition = a.OldestSegmentPosition
+	for _, fork := range a.Forks {
+		out.ForkGTIDs = append(out.ForkGTIDs, fork.GTIDs)
+		if at := parseInstanceTime(fork.DetectedAt); at != nil &&
+			(out.ForkDetectedAt == nil || at.Before(out.ForkDetectedAt)) {
+			out.ForkDetectedAt = at
+		}
+	}
 	return out
+}
+
+// carryForks copies the fork fields of the last reported archiving status.
+func carryForks(out, prior *mysqlv1alpha1.ContinuousArchivingStatus) {
+	if prior == nil {
+		return
+	}
+	out.ForkGTIDs = prior.ForkGTIDs
+	out.ForkDetectedAt = prior.ForkDetectedAt
+	out.OldestSegmentPosition = prior.OldestSegmentPosition
 }
 
 // eventArchiveMoved is the Warning event reason for a change of the archive
@@ -706,6 +737,8 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	r.applyContinuousArchivingCondition(latest, observed)
 	wasPurgeHeld := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionBinlogPurgeHeld)
 	applyBinlogPurgeHeldCondition(latest, time.Now())
+	wasForked := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionArchiveForked)
+	applyArchiveForkedCondition(latest)
 	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             conditionStatus(observed.Ready),
@@ -788,6 +821,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	}
 	r.recordPhaseEvents(latest, before, observed, wasStoragePressured)
 	r.recordBinlogPurgeHeldEvent(latest, wasPurgeHeld)
+	r.recordArchiveForkedEvent(latest, wasForked)
 	r.recordArchiveMovedEvent(latest, before)
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
@@ -884,6 +918,45 @@ func (r *ClusterReconciler) recordBinlogPurgeHeldEvent(latest *mysqlv1alpha1.Clu
 	condition := apimeta.FindStatusCondition(latest.Status.Conditions, mysqlv1alpha1.ConditionBinlogPurgeHeld)
 	if condition != nil && condition.Status == metav1.ConditionTrue {
 		r.Recorder.Event(latest, corev1.EventTypeWarning, mysqlv1alpha1.ConditionBinlogPurgeHeld, condition.Message)
+	}
+}
+
+// applyArchiveForkedCondition reports whether some archive segment holds
+// transactions the surviving timeline never executed. It is kept apart from
+// ContinuousArchiving: archiving keeps working, a fork can stay in the archive
+// for the whole retention window, and a long-lived ContinuousArchiving=False
+// would hide real archiving failures behind it.
+func applyArchiveForkedCondition(latest *mysqlv1alpha1.Cluster) {
+	if !latest.IsArchivingEnabled() {
+		apimeta.RemoveStatusCondition(&latest.Status.Conditions, mysqlv1alpha1.ConditionArchiveForked)
+		return
+	}
+	condition := metav1.Condition{
+		Type:               mysqlv1alpha1.ConditionArchiveForked,
+		Status:             metav1.ConditionFalse,
+		Reason:             "NoFork",
+		Message:            "No archive segment holds transactions the surviving timeline disowned",
+		ObservedGeneration: latest.Generation,
+	}
+	if ca := latest.Status.ContinuousArchiving; ca != nil && len(ca.ForkGTIDs) > 0 {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "DisownedTransactionsArchived"
+		condition.Message = fmt.Sprintf(
+			"The binary-log archive holds transactions the surviving timeline never executed: %s. "+
+				"Point-in-time recovery to a time or to the latest point leaves them out; "+
+				"a targetGTID naming them recovers that branch", strings.Join(ca.ForkGTIDs, "; "))
+	}
+	apimeta.SetStatusCondition(&latest.Status.Conditions, condition)
+}
+
+// recordArchiveForkedEvent warns once when a fork is first reported.
+func (r *ClusterReconciler) recordArchiveForkedEvent(latest *mysqlv1alpha1.Cluster, wasForked bool) {
+	if r.Recorder == nil || wasForked {
+		return
+	}
+	condition := apimeta.FindStatusCondition(latest.Status.Conditions, mysqlv1alpha1.ConditionArchiveForked)
+	if condition != nil && condition.Status == metav1.ConditionTrue {
+		r.Recorder.Event(latest, corev1.EventTypeWarning, mysqlv1alpha1.ConditionArchiveForked, condition.Message)
 	}
 }
 

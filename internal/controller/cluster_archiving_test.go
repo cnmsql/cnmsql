@@ -143,7 +143,7 @@ func TestAggregateArchivingFromPrimary(t *testing.T) {
 			}},
 		},
 	}
-	got := aggregateArchiving(observed)
+	got := aggregateArchiving(observed, nil)
 	if !got.Enabled || got.LastArchivedBinlog != "binlog.000005" || got.PendingFiles != 1 {
 		t.Fatalf("aggregated = %+v", got)
 	}
@@ -165,7 +165,7 @@ func TestAggregateArchivingCarriesPurgeHold(t *testing.T) {
 			}},
 		},
 	}
-	got := aggregateArchiving(observed)
+	got := aggregateArchiving(observed, nil)
 	if !slices.Equal(got.PurgeHeldBy, []string{"demo-3"}) || got.PurgeHeldSince == nil ||
 		!got.PurgeHeldSince.Time.Equal(time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)) {
 		t.Fatalf("aggregated = %+v", got)
