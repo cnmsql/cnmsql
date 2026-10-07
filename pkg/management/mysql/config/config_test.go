@@ -624,3 +624,14 @@ func TestSlowQueryLogStaysAUserParameter(t *testing.T) {
 	assertContains(t, out, "slow_query_log = ON")
 	assertContains(t, out, "long_query_time = 0.5")
 }
+
+// A second replication domain would make the binlog archive multi-domain,
+// where recovery cannot leave a dead branch out.
+func TestGTIDDomainIDIsDenied(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"gtid_domain_id", "gtid-domain-id"} {
+		if !IsDeniedKey(key) {
+			t.Errorf("%s must be denied", key)
+		}
+	}
+}

@@ -241,6 +241,16 @@ type ArchivingStatus struct {
 	Gaps []string `json:"gaps,omitempty"`
 	// CoveredGTIDSet (MySQL) is everything the archive holds.
 	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
+	// MariaDBTimeline is the primary timeline the archive carries; the
+	// operator seeds an empty status.mariadbTimeline from it.
+	MariaDBTimeline []ArchiveEpochStatus `json:"mariadbTimeline,omitempty"`
+}
+
+// ArchiveEpochStatus is one epoch of the archived MariaDB primary timeline.
+type ArchiveEpochStatus struct {
+	Instance string `json:"instance,omitempty"`
+	ServerID uint32 `json:"serverID"`
+	Handoff  string `json:"handoff,omitempty"`
 }
 
 // ArchiveForkStatus is one segment's fork record.

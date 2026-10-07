@@ -209,6 +209,19 @@ type ArchiveIndex struct {
 	// recoverable: transactions committed in between may sit in a binary log
 	// the archive never received.
 	ArchivedThrough time.Time `json:"archivedThrough,omitempty"`
+	// MariaDBTimeline is the MariaDB primary timeline (who authored each
+	// stretch of sequence numbers), oldest first, as the primary last wrote it.
+	// Restore has no Cluster to read it from, and the Cluster's copy is lost
+	// with its status; this one travels with the archive.
+	MariaDBTimeline []ArchiveEpoch `json:"mariadbTimeline,omitempty"`
+}
+
+// ArchiveEpoch is one change of primary on a MariaDB cluster (see
+// v1alpha1.MariaDBEpoch).
+type ArchiveEpoch struct {
+	Instance string `json:"instance,omitempty"`
+	ServerID uint32 `json:"serverID"`
+	Handoff  string `json:"handoff,omitempty"`
 }
 
 // ArchiveDisowned is the index-level record of disowned transactions.

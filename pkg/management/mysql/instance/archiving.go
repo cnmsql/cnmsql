@@ -77,6 +77,7 @@ type floorView struct {
 	currentPrimary string
 	generation     int64
 	timeline       engine.MariaDBTimeline
+	epochs         []objectstore.ArchiveEpoch
 }
 
 func newClusterFloor(instance string) *clusterFloor {
@@ -86,8 +87,10 @@ func newClusterFloor(instance string) *clusterFloor {
 // Observe records the latest Cluster read by the role reconciler.
 func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
 	timeline := make(engine.MariaDBTimeline, 0, len(cluster.Status.MariaDBTimeline))
+	epochs := make([]objectstore.ArchiveEpoch, 0, len(cluster.Status.MariaDBTimeline))
 	for _, epoch := range cluster.Status.MariaDBTimeline {
 		timeline = append(timeline, engine.MariaDBEpoch{ServerID: epoch.ServerID, Handoff: epoch.Handoff})
+		epochs = append(epochs, objectstore.ArchiveEpoch{Instance: epoch.Instance, ServerID: epoch.ServerID, Handoff: epoch.Handoff})
 	}
 	f.latest.Store(&floorView{
 		instances:      slices.Clone(cluster.Status.InstanceNames),
@@ -96,6 +99,7 @@ func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
 		currentPrimary: cluster.Status.CurrentPrimary,
 		generation:     cluster.Status.CurrentPrimaryGeneration,
 		timeline:       timeline,
+		epochs:         epochs,
 	})
 }
 
@@ -120,6 +124,16 @@ func (f *clusterFloor) Authority() (int64, bool) {
 		return 0, false
 	}
 	return view.generation, true
+}
+
+// Epochs returns status.mariadbTimeline with instance names, as the archive
+// stores it.
+func (f *clusterFloor) Epochs() []objectstore.ArchiveEpoch {
+	view := f.latest.Load()
+	if view == nil {
+		return nil
+	}
+	return view.epochs
 }
 
 // Diverged implements binlog.ClusterView.
@@ -306,6 +320,9 @@ func forkSource(reader *binlog.Reader, floor *clusterFloor, mariadb bool) binlog
 		if err != nil {
 			return nil, err
 		}
+		if epochs := floor.Epochs(); len(epochs) == len(timeline) {
+			return binlog.NewMariaDBArchiveJudge(epochs, position), nil
+		}
 		return binlog.NewMariaDBForkJudge(timeline, position), nil
 	}
 }
@@ -329,6 +346,11 @@ func archivingStatus(s binlog.State) *webserver.ArchivingStatus {
 		DisownedGTIDs:         s.Disowned,
 		Gaps:                  s.Gaps,
 		CoveredGTIDSet:        s.Covered,
+	}
+	for _, e := range s.Timeline {
+		out.MariaDBTimeline = append(out.MariaDBTimeline, webserver.ArchiveEpochStatus{
+			Instance: e.Instance, ServerID: e.ServerID, Handoff: e.Handoff,
+		})
 	}
 	if !s.PurgeHeldSince.IsZero() {
 		out.PurgeHeldSince = rfc3339(s.PurgeHeldSince)

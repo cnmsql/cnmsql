@@ -27,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
@@ -153,6 +154,8 @@ type State struct {
 	// Covered its MySQL covered set, as of the last read.
 	Gaps    []string
 	Covered string
+	// Timeline is the MariaDB primary timeline the archive carries.
+	Timeline []objectstore.ArchiveEpoch
 	// DeferredFile is the stranded file the drain gate keeps deferring because
 	// the surviving timeline does not provably hold it.
 	DeferredFile string
@@ -215,6 +218,7 @@ func (l *Loop) State() State {
 	s.PurgeHeldBy = slices.Clone(s.PurgeHeldBy)
 	s.Forks = slices.Clone(s.Forks)
 	s.Gaps = slices.Clone(s.Gaps)
+	s.Timeline = slices.Clone(s.Timeline)
 	return s
 }
 
@@ -254,6 +258,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.state.Disowned = ""
 		l.state.Gaps = nil
 		l.state.Covered = ""
+		l.state.Timeline = nil
 		l.mu.Unlock()
 		l.forkChecked = false
 		l.flushedAt, l.flushedActive, l.stampedThrough = time.Time{}, "", time.Time{}
@@ -350,6 +355,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		Disowned:              forks.Disowned,
 		Gaps:                  forks.Gaps,
 		Covered:               forks.Covered,
+		Timeline:              forks.Timeline,
 	}
 	if forkErr != nil {
 		l.state.LastError = "checking archive forks: " + forkErr.Error()
@@ -377,6 +383,7 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport, through time.
 		Disowned:              l.state.Disowned,
 		Gaps:                  l.state.Gaps,
 		Covered:               l.state.Covered,
+		Timeline:              l.state.Timeline,
 	}
 	l.mu.Unlock()
 	if !l.archiver.ChecksForks() {
@@ -418,6 +425,7 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport, through time.
 		out.Disowned = report.Disowned
 		out.Gaps = report.Gaps
 		out.Covered = report.Covered
+		out.Timeline = report.Timeline
 	}
 	if len(report.Retracted) > 0 {
 		l.logger.Info("Retracted fork records the surviving timeline holds again", "segments", report.Retracted)

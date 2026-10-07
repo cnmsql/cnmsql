@@ -120,6 +120,11 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 
 	var plan binlog.ReplayPlan
 	if eng.Flavor() == engine.FlavorMariaDB {
+		// The archive carries the primary timeline: judging the segments against
+		// it cuts forks the live check never recorded.
+		if err := binlog.ApplyArchiveTimeline(&index); err != nil {
+			return fmt.Errorf("pitr: judging the archive against its timeline: %w", err)
+		}
 		plan, err = binlog.PlanReplayWithModel(&index, anchor.GTIDSet, o.Target, eng.GTID())
 		if err != nil {
 			return fmt.Errorf("pitr: planning MariaDB replay: %w", err)

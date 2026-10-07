@@ -88,6 +88,9 @@ func nextMariaDBTimeline(cluster *mysqlv1alpha1.Cluster, observed observedCluste
 		return update
 	}
 	timeline := slices.Clone(cluster.Status.MariaDBTimeline)
+	if len(timeline) == 0 {
+		timeline = archivedTimeline(observed, now)
+	}
 	if status, ok := observed.StatusByInstance[observed.PrimaryName]; ok && writablePrimary(status) &&
 		(len(timeline) == 0 || timeline[len(timeline)-1].Instance != observed.PrimaryName) {
 		handoff := status.GTIDSlavePos
@@ -111,6 +114,23 @@ func nextMariaDBTimeline(cluster *mysqlv1alpha1.Cluster, observed observedCluste
 	update.Truncated = pruned.Truncated
 	update.PinnedBy = pruned.PinnedBy
 	return update
+}
+
+// archivedTimeline is the timeline the archive carries, as the primary
+// reports it: the history a Cluster whose status was lost (recreated from a
+// manifest, restored without status) starts from instead of from scratch.
+func archivedTimeline(observed observedCluster, now time.Time) []mysqlv1alpha1.MariaDBEpoch {
+	status, ok := observed.StatusByInstance[observed.PrimaryName]
+	if !ok || status.Archiving == nil || status.Archiving.ForkCheckedAt == "" {
+		return nil
+	}
+	var out []mysqlv1alpha1.MariaDBEpoch
+	for _, e := range status.Archiving.MariaDBTimeline {
+		out = append(out, mysqlv1alpha1.MariaDBEpoch{
+			Instance: e.Instance, ServerID: e.ServerID, Handoff: e.Handoff, Since: metav1.NewTime(now),
+		})
+	}
+	return out
 }
 
 // writablePrimary reports whether an instance status shows a primary the

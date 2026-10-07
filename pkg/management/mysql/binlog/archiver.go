@@ -241,6 +241,8 @@ type ForkReport struct {
 	Covered string
 	// ArchivedThrough is the stamp this check wrote, zero when it wrote none.
 	ArchivedThrough time.Time
+	// Timeline is the MariaDB primary timeline the index carries.
+	Timeline []objectstore.ArchiveEpoch
 	// Read is true when the report comes from a read of the index, so Forks and
 	// OldestSegmentPosition describe it; false when nothing was read.
 	Read bool
@@ -726,6 +728,7 @@ func (a *Archiver) checkForks(
 			report.Disowned = index.Disowned.GTIDSet
 		}
 		report.Gaps = ArchiveGaps(index)
+		report.Timeline = index.MariaDBTimeline
 		if !mariadbArchive(index) {
 			report.Covered = index.CoveredGTIDSet
 		}
@@ -791,6 +794,13 @@ func (a *Archiver) checkForks(
 	if err != nil {
 		report.Err = err
 		return false, finish()
+	}
+	if carrier, ok := judge.(archiveTimeline); ok {
+		timeline := mergeArchiveTimeline(index.MariaDBTimeline, carrier.ArchiveTimeline(), index.Segments)
+		if !slices.Equal(timeline, index.MariaDBTimeline) {
+			index.MariaDBTimeline = timeline
+			changed = true
+		}
 	}
 	for i := range index.Segments {
 		index.Segments[i].Fork = merged[i]

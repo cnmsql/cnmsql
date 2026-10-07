@@ -280,3 +280,30 @@ func TestTimelineFirstEpochStartsAtThePrimaryPosition(t *testing.T) {
 		t.Fatalf("a successor's handoff = %q, want its gtid_slave_pos 0-7-600", got)
 	}
 }
+
+// A Cluster whose status lost its timeline seeds it from the archive the
+// primary reports, instead of restarting history at the current position.
+func TestTimelineSeedsFromTheArchive(t *testing.T) {
+	cluster := mariadbTimelineCluster()
+	// demo-3 still sits before the handoff, which pins the first epoch.
+	observed := observedPrimary("demo-2", 2, "0-1-218", map[string]string{"demo-2": "0-2-300", "demo-3": "0-1-100"})
+	observed.StatusByInstance["demo-2"].Archiving = &webserver.ArchivingStatus{
+		ForkCheckedAt: "2026-10-06T11:00:00Z",
+		MariaDBTimeline: []webserver.ArchiveEpochStatus{
+			{Instance: "demo-1", ServerID: 1},
+			{Instance: "demo-2", ServerID: 2, Handoff: "0-1-218"},
+		},
+	}
+	got := timelineInstances(nextMariaDBTimeline(cluster, observed, timelineNow).Timeline)
+	want := []string{"demo-1/1/", "demo-2/2/0-1-218"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("timeline = %v, want %v (seeded, current primary not duplicated)", got, want)
+	}
+
+	// An archive the primary has not checked yet seeds nothing.
+	observed.StatusByInstance["demo-2"].Archiving.ForkCheckedAt = ""
+	got = timelineInstances(nextMariaDBTimeline(cluster, observed, timelineNow).Timeline)
+	if !slices.Equal(got, []string{"demo-2/2/"}) {
+		t.Fatalf("timeline = %v, want a fresh first epoch", got)
+	}
+}

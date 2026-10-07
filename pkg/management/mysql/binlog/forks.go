@@ -181,10 +181,61 @@ func foldDisowned(
 
 // mariadbForkJudge judges against the primary timeline: a MariaDB position
 // names only the author of its last transaction, and the timeline says who
-// authored each stretch of sequence numbers.
+// authored each stretch of sequence numbers. epochs, when set, is the same
+// timeline with instance names, which the check persists into the archive.
 type mariadbForkJudge struct {
 	timeline engine.MariaDBTimeline
 	position string
+	epochs   []objectstore.ArchiveEpoch
+}
+
+// NewMariaDBArchiveJudge builds a MariaDB judge from the Cluster's timeline,
+// which the check also writes into the archive index.
+func NewMariaDBArchiveJudge(epochs []objectstore.ArchiveEpoch, position string) ForkJudge {
+	return &mariadbForkJudge{timeline: EngineTimeline(epochs), position: position, epochs: epochs}
+}
+
+// EngineTimeline returns the verdict view of archived epochs.
+func EngineTimeline(epochs []objectstore.ArchiveEpoch) engine.MariaDBTimeline {
+	if len(epochs) == 0 {
+		return nil
+	}
+	out := make(engine.MariaDBTimeline, len(epochs))
+	for i, e := range epochs {
+		out[i] = engine.MariaDBEpoch{ServerID: e.ServerID, Handoff: e.Handoff}
+	}
+	return out
+}
+
+// archiveTimeline is a judge that carries a timeline to persist.
+type archiveTimeline interface {
+	ArchiveTimeline() []objectstore.ArchiveEpoch
+}
+
+// ArchiveTimeline implements archiveTimeline.
+func (j *mariadbForkJudge) ArchiveTimeline() []objectstore.ArchiveEpoch { return j.epochs }
+
+// mergeArchiveTimeline returns the timeline to persist: the Cluster's, after
+// whatever older epochs the index holds that the Cluster no longer does (it
+// pruned them, or its status was lost and the timeline restarted), pruned to
+// what the archive's oldest segment still needs and capped like the Cluster's.
+func mergeArchiveTimeline(
+	stored, current []objectstore.ArchiveEpoch, segs []objectstore.ArchiveSegment,
+) []objectstore.ArchiveEpoch {
+	if len(current) == 0 {
+		return stored
+	}
+	merged := slices.Clone(stored)
+	if k := slices.Index(stored, current[0]); k >= 0 {
+		merged = merged[:k]
+	}
+	merged = append(merged, current...)
+	refs := map[string]string{}
+	if oldest := OldestSegmentPosition(segs); oldest != "" {
+		refs["archive"] = oldest
+	}
+	pruned := engine.PruneMariaDBTimeline(EngineTimeline(merged), refs, engine.MariaDBTimelineCeiling)
+	return merged[pruned.Dropped:]
 }
 
 // NewMariaDBForkJudge builds a judge from the cluster's primary timeline and
@@ -219,6 +270,30 @@ func (j *mariadbForkJudge) Judge(seg objectstore.ArchiveSegment) (*objectstore.A
 }
 
 func (j *mariadbForkJudge) Authority() string { return j.position }
+
+// ApplyArchiveTimeline judges every segment of a MariaDB archive against the
+// timeline the archive carries and folds what it disowns into the segments'
+// fork records, in place. Restore runs it before planning, so a fork the live
+// check never recorded (its primary had no verdict yet, or died before writing
+// the index) is cut rather than only detected.
+func ApplyArchiveTimeline(idx *objectstore.ArchiveIndex) error {
+	if idx == nil || len(idx.MariaDBTimeline) == 0 {
+		return nil
+	}
+	judge := NewMariaDBArchiveJudge(idx.MariaDBTimeline, "")
+	for i := range idx.Segments {
+		delta, err := judge.Judge(idx.Segments[i])
+		if err != nil {
+			return err
+		}
+		fork, _, err := mergeFork(idx.Segments[i].Fork, delta, "", time.Time{}, "restore")
+		if err != nil {
+			return err
+		}
+		idx.Segments[i].Fork = fork
+	}
+	return nil
+}
 
 // mergeFork folds a freshly judged delta into a segment's existing record and
 // returns the result, never modifying existing. A record only ever grows: a
