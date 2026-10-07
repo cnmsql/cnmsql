@@ -515,11 +515,13 @@ func (o *RestoreOptions) replayMariadbPositional(
 	}
 
 	for i, chunk := range chunks {
+		// A time target is already a sequence bound (binlog.PlanMariadbReplay):
+		// a per-chunk --stop-datetime could replay past what an earlier chunk
+		// stopped short of.
 		replayArgs, err := binlog.ReplayArgs(binlog.ReplayOptions{
 			Files:         chunk.Files,
 			StartPosition: chunk.StartPosition,
 			StopPosition:  chunk.StopPosition,
-			StopDatetime:  plan.StopDatetime,
 			MariaDB:       true,
 		})
 		if err != nil {

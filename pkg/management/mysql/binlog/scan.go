@@ -283,6 +283,8 @@ type TxnBoundary struct {
 	Server   uint32
 	Seq      uint64
 	StartPos int64
+	// Time is the GTID event's timestamp, which a time target is cut at.
+	Time time.Time
 }
 
 // scanMariaDBBoundaries parses mariadb-binlog output and returns, in file order,
@@ -299,7 +301,8 @@ func scanMariaDBBoundaries(r io.Reader) ([]TxnBoundary, error) {
 	var prevEnd int64 = 4
 	for scanner.Scan() {
 		line := scanner.Text()
-		if eventHeaderRe.FindStringSubmatch(line) == nil {
+		header := eventHeaderRe.FindStringSubmatch(line)
+		if header == nil {
 			continue
 		}
 		// A per-transaction GTID event starts at the previous event's end offset.
@@ -309,7 +312,11 @@ func scanMariaDBBoundaries(r io.Reader) ([]TxnBoundary, error) {
 			domain, _ := strconv.ParseUint(g[1], 10, 32)
 			server, _ := strconv.ParseUint(g[2], 10, 32)
 			seq, _ := strconv.ParseUint(g[3], 10, 64)
-			out = append(out, TxnBoundary{Domain: uint32(domain), Server: uint32(server), Seq: seq, StartPos: prevEnd})
+			b := TxnBoundary{Domain: uint32(domain), Server: uint32(server), Seq: seq, StartPos: prevEnd}
+			if ts, err := time.Parse(eventTimeLayout, header[1]+" "+normalizeClock(header[2])); err == nil {
+				b.Time = ts
+			}
+			out = append(out, b)
 		}
 		if p := endLogPosRe.FindStringSubmatch(line); p != nil {
 			if v, err := strconv.ParseInt(p[1], 10, 64); err == nil {

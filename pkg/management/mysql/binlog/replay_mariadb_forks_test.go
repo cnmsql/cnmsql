@@ -382,3 +382,28 @@ func TestPrepareMariadbPositionalRefusesABackupOnARecordedDeadBranch(t *testing.
 		t.Fatalf("a backup on the surviving branch was refused: %v", err)
 	}
 }
+
+// A time target becomes a sequence bound: a transaction stamped past the
+// target stops replay there, even when a later file (another primary's,
+// whose clock lags) carries earlier stamps.
+func TestMariaDBTimeTargetIsAPrefix(t *testing.T) {
+	t.Parallel()
+	at := func(sec int) time.Time { return time.Date(2026, 10, 7, 12, 0, sec, 0, time.UTC) }
+	files := []PositionalFile{
+		{Path: "a", Segment: "a", Boundaries: []TxnBoundary{
+			{Seq: 11, Server: 1, StartPos: 4, Time: at(1)},
+			{Seq: 12, Server: 1, StartPos: 100, Time: at(30)},
+		}},
+		{Path: "b", Segment: "b", Boundaries: []TxnBoundary{
+			{Seq: 13, Server: 2, StartPos: 4, Time: at(5)},
+		}},
+	}
+	plan := ReplayPlan{Segments: []ReplaySegment{{ServerUUID: "a"}, {ServerUUID: "b"}}, TargetTime: at(10)}
+	chunks, err := PlanMariadbReplay(plan, files, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Files[0] != "a" || chunks[0].StopPosition != 100 {
+		t.Fatalf("chunks = %+v, want file a stopped before seq 12", chunks)
+	}
+}

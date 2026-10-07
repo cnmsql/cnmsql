@@ -270,6 +270,8 @@ type ReplayPlan struct {
 	IncludeGTIDs string
 	// StopDatetime bounds a targetTime recovery ("YYYY-MM-DD HH:MM:SS").
 	StopDatetime string
+	// TargetTime is the targetTime itself, zero for other targets.
+	TargetTime time.Time
 	// AnchorFile is the binlog basename from the backup's binlog-info file; used
 	// for MariaDB positional replay to identify the starting file in the first
 	// segment.
@@ -341,6 +343,11 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 	if err := applyMySQLForks(idx, target, &plan); err != nil {
 		return ReplayPlan{}, err
 	}
+	if target.GTID == "" {
+		if err := checkUnrecordedForks(idx, plan.DisownedGTIDs); err != nil {
+			return ReplayPlan{}, err
+		}
+	}
 	// A latest recovery replays everything planned, so a hole in what the plan
 	// covers is a hole in the result. A time target may stop before it, which
 	// the check after replay settles.
@@ -358,6 +365,56 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 		}
 	}
 	return plan, nil
+}
+
+// checkUnrecordedForks is the MySQL restore backstop for forks no primary
+// recorded (an archive written before fork checks, or a check that never ran).
+// A segment is keyed by the server_uuid that authored its own transactions.
+// When a later segment re-logged some of an earlier segment's own
+// transactions and authored its own afterwards, it took over at the last one
+// it re-logged: the earlier segment's own transactions past that point were
+// never received, a dead branch. The earlier segment holding the later one's
+// transactions means it came back after it (a failback), which gives no
+// verdict. A dead branch the archive does not record fails the recovery with
+// ErrForkedTimeline rather than splicing it in.
+func checkUnrecordedForks(idx *objectstore.ArchiveIndex, recorded string) error {
+	known, err := replication.ParseGTIDSet(recorded)
+	if err != nil {
+		return fmt.Errorf("binlog: parsing disowned set: %w", err)
+	}
+	sets := make([]replication.GTIDSet, len(idx.Segments))
+	for i, seg := range idx.Segments {
+		if sets[i], err = replication.ParseGTIDSet(seg.GTIDSet); err != nil {
+			return fmt.Errorf("binlog: parsing segment %q GTID set: %w", seg.ServerUUID, err)
+		}
+	}
+	for i, earlier := range idx.Segments {
+		author := strings.ToLower(earlier.ServerUUID)
+		own := sets[i][author]
+		if len(own) == 0 {
+			continue
+		}
+		for j := i + 1; j < len(idx.Segments); j++ {
+			successor := strings.ToLower(idx.Segments[j].ServerUUID)
+			relogged := sets[j][author]
+			if len(relogged) == 0 || len(sets[j][successor]) == 0 || len(sets[i][successor]) > 0 {
+				continue
+			}
+			tookOverAt := relogged[len(relogged)-1].End
+			lastOwn := own[len(own)-1].End
+			if lastOwn <= tookOverAt {
+				continue
+			}
+			dead := replication.GTIDSet{}
+			dead.AddInterval(author, replication.GTIDInterval{Start: tookOverAt + 1, End: lastOwn})
+			dead = dead.Intersect(sets[i]).Difference(known)
+			if !dead.IsEmpty() {
+				return fmt.Errorf("%w: segment %s holds %s past the point segment %s took over, "+
+					"and no fork record explains it", ErrForkedTimeline, earlier.ServerUUID, dead, idx.Segments[j].ServerUUID)
+			}
+		}
+	}
+	return nil
 }
 
 // VerifyReplayedGTIDs checks the GTID set a MySQL recovery ended with. Every
@@ -885,6 +942,7 @@ func applyTargetWithOps(
 		plan.IncludeGTIDs = want.String()
 	case target.Time != nil:
 		plan.StopDatetime = target.Time.UTC().Format(stopDatetimeLayout)
+		plan.TargetTime = target.Time.UTC()
 	}
 	return nil
 }

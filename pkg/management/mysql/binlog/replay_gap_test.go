@@ -117,3 +117,32 @@ func TestTimeTargetBeyondArchivedThrough(t *testing.T) {
 		t.Fatalf("an archive without the stamp is not judged: %v", err)
 	}
 }
+
+// The MySQL restore backstop: a dead branch no primary recorded fails closed,
+// a recorded one plans, and a failback gives no verdict.
+func TestUnrecordedMySQLForkFailsClosed(t *testing.T) {
+	t.Parallel()
+	forked := func() *objectstore.ArchiveIndex {
+		return &objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{
+			{ServerUUID: testUUID, Binlogs: []string{"binlog.000001"}, GTIDSet: testUUID + ":1-219"},
+			{ServerUUID: otherUUID, Binlogs: []string{"binlog.000001"}, GTIDSet: testUUID + ":150-218," + otherUUID + ":1-30"},
+		}}
+	}
+	if _, err := PlanReplay(forked(), testUUID+":1-100", RecoveryTarget{}); !errors.Is(err, ErrForkedTimeline) {
+		t.Fatalf("err = %v, want ErrForkedTimeline", err)
+	}
+	recorded := forked()
+	recorded.Segments[0].Fork = &objectstore.ArchiveFork{GTIDSet: testUUID + ":219"}
+	if _, err := PlanReplay(recorded, testUUID+":1-100", RecoveryTarget{}); err != nil {
+		t.Fatalf("a recorded fork must plan: %v", err)
+	}
+	failback := forked()
+	failback.Segments[0].GTIDSet = testUUID + ":1-219," + otherUUID + ":1-30"
+	if _, err := PlanReplay(failback, testUUID+":1-100", RecoveryTarget{}); err != nil {
+		t.Fatalf("a failback must plan: %v", err)
+	}
+	target := testUUID + ":1-219"
+	if _, err := PlanReplay(forked(), testUUID+":1-100", RecoveryTarget{GTID: target}); err != nil {
+		t.Fatalf("an explicit targetGTID is never second-guessed: %v", err)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -167,6 +168,24 @@ func CheckMariadbAuthors(files []PositionalFile, domain uint32, anchorSeq uint64
 		}
 	}
 	return nil
+}
+
+// seqBeforeTime turns a time target into a sequence target: the sequence just
+// before the first transaction, in sequence order past the anchor, stamped at
+// or after the target. Replay is chunked by file, and a --stop-datetime on
+// each chunk would let a later chunk apply transactions an earlier one
+// stopped short of (clocks differ between primaries); a sequence bound keeps
+// the recovered state a prefix of the timeline.
+func seqBeforeTime(files []PositionalFile, domain uint32, anchorSeq, highest uint64, target time.Time) uint64 {
+	first := highest + 1
+	for _, f := range files {
+		for _, b := range f.Boundaries {
+			if b.Domain == domain && b.Seq > anchorSeq && !b.Time.IsZero() && !b.Time.Before(target) && b.Seq < first {
+				first = b.Seq
+			}
+		}
+	}
+	return first - 1
 }
 
 // HighestMariadbSeq returns the highest sequence the files carry in domain.
@@ -354,6 +373,12 @@ func PlanMariadbReplay(plan ReplayPlan, files []PositionalFile, anchorSeq uint64
 			return nil, nil
 		}
 		target = highest
+		if !plan.TargetTime.IsZero() {
+			target = seqBeforeTime(cut, plan.MariaDBDomain, anchorSeq, highest, plan.TargetTime)
+			if target <= anchorSeq {
+				return nil, nil
+			}
+		}
 	}
 	return PlanMariadbPositionalFiles(cut, plan.MariaDBDomain, anchorSeq, target)
 }
