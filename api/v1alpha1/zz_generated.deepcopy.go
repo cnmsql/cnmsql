@@ -667,6 +667,11 @@ func (in *ClusterSpec) DeepCopyInto(out *ClusterSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.EnableFailover != nil {
+		in, out := &in.EnableFailover, &out.EnableFailover
+		*out = new(bool)
+		**out = **in
+	}
 	if in.EnablePrimaryLease != nil {
 		in, out := &in.EnablePrimaryLease, &out.EnablePrimaryLease
 		*out = new(bool)

@@ -98,6 +98,28 @@ func (r *Reconciler) ReconcileFailover(
 		return topology.FailoverResult{}, nil
 	}
 
+	// spec.enableFailover=false fences the whole emergency path: whoever holds
+	// the primary role keeps it. The refusal must not claim the pass (see the
+	// cooldown block below for why), so the rest of the reconcile can still
+	// recreate the failed primary's Pod and it can recover in place. The gate
+	// sits after the deferrals above — a fence being acknowledged or a planned
+	// handoff in flight is not a Blocked incident — and before the failing
+	// marker is stamped, because there is no failoverDelay countdown to run.
+	if !cluster.EnableFailover() {
+		reason := fmt.Sprintf(
+			"Cannot fail over from %s: failover is disabled (spec.enableFailover is false); "+
+				"the failed primary must recover in place or the role must move by manual switchover",
+			observed.PrimaryName)
+		return topology.FailoverResult{
+			Handled: false,
+			Phase: &topology.OperationPhase{
+				Phase:       topology.PhaseBlocked,
+				Reason:      reason,
+				Progressing: true,
+			},
+		}, nil
+	}
+
 	failingSince, err := r.recordPrimaryFailing(ctx, cluster)
 	if err != nil {
 		return topology.FailoverResult{Handled: true}, err

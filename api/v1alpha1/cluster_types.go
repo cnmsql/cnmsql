@@ -262,6 +262,18 @@ type ClusterSpec struct {
 	// +optional
 	FailoverDelay int32 `json:"failoverDelay,omitempty"`
 
+	// EnableFailover, when true (default), lets the operator promote a replica
+	// when the primary becomes unreachable. Set it to false to pin the primary
+	// role to whichever instance currently holds it: the operator promotes
+	// nothing, the failed primary's Pod is still recreated so it can recover in
+	// place, and the cluster reports Blocked until the primary is back or a
+	// manual switchover moves the role. Planned handoffs are unaffected — manual
+	// switchover and enableSwitchoverOnDrain keep working. Group Replication
+	// clusters ignore this switch: the group elects its own primary.
+	// +kubebuilder:default:=true
+	// +optional
+	EnableFailover *bool `json:"enableFailover,omitempty"`
+
 	// EnablePrimaryLease, when true (default), makes the acting primary hold a
 	// per-cluster Lease before accepting writes.
 	// +kubebuilder:default:=true

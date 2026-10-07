@@ -18,6 +18,7 @@ package async
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -447,6 +448,96 @@ func TestReconcileFailoverFiresWhenSwitchoverTargetDiverged(t *testing.T) {
 	}
 	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
 		t.Fatalf("Phase = %v, want %q", result.Phase, topology.PhaseBlocked)
+	}
+}
+
+// deadPrimaryState returns a FailoverState whose primary has dropped out of
+// the instance statuses while a healthy, caught-up replica survives — the
+// state that would otherwise fire an automatic failover.
+func deadPrimaryState() topology.FailoverState {
+	return topology.FailoverState{
+		PrimaryName:   drainPrimary,
+		InstanceNames: []string{drainPrimary, drainReplica},
+		Instances: map[string]topology.FailoverInstance{
+			drainReplica: {Ready: true, Replica: true, Role: "replica", SQLRunning: true, IORunning: true, GTID: "uuid:1-10"},
+		},
+	}
+}
+
+// TestReconcileFailoverDisabledRefusesToPromote pins spec.enableFailover=false:
+// a failed primary is never replaced. The refusal must not claim the reconcile
+// pass (Handled=false, so the pass can still recreate the failed primary's Pod
+// and it can recover in place), must report Blocked with the switch named in
+// the reason, and must leave every promotion marker untouched.
+func TestReconcileFailoverDisabledRefusesToPromote(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := drainCluster()
+	cluster.Spec.EnableFailover = new(false)
+	primaryPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: drainPrimary, Namespace: cluster.Namespace}}
+	r, recorder := newDrainReconciler(t, cluster, primaryPod)
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 2,
+		Observed:  deadPrimaryState(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled {
+		t.Fatal("a disabled failover must not claim the reconcile pass; the failed primary's Pod still needs recreating")
+	}
+	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
+		t.Fatalf("Phase = %v, want %q", result.Phase, topology.PhaseBlocked)
+	}
+	if result.Phase != nil && !strings.Contains(result.Phase.Reason, "enableFailover") {
+		t.Fatalf("PhaseReason = %q, want it to name spec.enableFailover", result.Phase.Reason)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary != drainPrimary {
+		t.Fatalf("TargetPrimary = %q, want a disabled failover to leave the primary in place", got.Status.TargetPrimary)
+	}
+	if got.Status.LastFailoverTimestamp != nil {
+		t.Fatal("a disabled failover must not record a promotion")
+	}
+	if got.Status.PrimaryFailingSince != nil {
+		t.Fatal("a disabled failover must not start the failoverDelay countdown")
+	}
+	pod := &corev1.Pod{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: drainPrimary}, pod); err != nil {
+		t.Fatalf("the failed primary's Pod must survive a disabled failover: %v", err)
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("expected no failover event, got %q", ev)
+	default:
+	}
+}
+
+// TestReconcileFailoverDisabledDefersToInFlightSwitchover keeps the switches
+// independent: manual switchover still works with failover disabled, and while
+// a planned handoff is in flight the disabled-failover gate must not stamp
+// Blocked over it — a planned handoff is not a Blocked incident.
+func TestReconcileFailoverDisabledDefersToInFlightSwitchover(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	cluster.Spec.EnableFailover = new(false)
+	r, _ := newDrainReconciler(t, cluster)
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 2,
+		Observed:  switchoverState(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled || result.Phase != nil {
+		t.Fatalf("expected a clean deferral while a switchover is in flight, got handled=%v phase=%v", result.Handled, result.Phase)
 	}
 }
 

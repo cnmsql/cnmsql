@@ -543,6 +543,13 @@ func (cluster *Cluster) PrimaryStabilityWindow() time.Duration {
 	return cluster.Spec.FailoverPolicy.PrimaryStabilityWindow.Duration
 }
 
+// EnableFailover reports whether the operator may promote a replica when the
+// primary becomes unreachable. It defaults to true; a cluster that sets it to
+// false pins the primary role to its current holder.
+func (cluster *Cluster) EnableFailover() bool {
+	return cluster.Spec.EnableFailover == nil || *cluster.Spec.EnableFailover
+}
+
 func (cluster *Cluster) heartbeat() *ReplicationHeartbeat {
 	if cluster.Spec.Replication == nil {
 		return nil
