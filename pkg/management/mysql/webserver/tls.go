@@ -32,7 +32,9 @@ type TLSOptions struct {
 	// ServerCertFile and ServerKeyFile are the server's certificate and key.
 	ServerCertFile string
 	ServerKeyFile  string
-	// ClientCAFile is the CA bundle used to verify operator client certs.
+	// ClientCAFile is the CA bundle used to verify client certs. Verification
+	// only authenticates: AuthorizeClients decides which routes a verified
+	// client may call.
 	ClientCAFile string
 }
 
@@ -167,7 +169,7 @@ func (m *TLSCertManager) WatchedFiles() []string {
 }
 
 // NewServer builds an http.Server that serves the control API over mTLS on the
-// given address.
+// given address, authorizing each request by its client certificate.
 func NewServer(addr string, controller InstanceController, opts TLSOptions) (*http.Server, error) {
 	tlsConfig, err := opts.mtlsConfig()
 	if err != nil {
@@ -176,7 +178,7 @@ func NewServer(addr string, controller InstanceController, opts TLSOptions) (*ht
 
 	return &http.Server{
 		Addr:              addr,
-		Handler:           Handler(controller),
+		Handler:           AuthorizeClients(Handler(controller)),
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 10 * time.Second,
 	}, nil
@@ -188,7 +190,7 @@ func NewServer(addr string, controller InstanceController, opts TLSOptions) (*ht
 func NewServerDynamic(addr string, controller InstanceController, mgr *TLSCertManager) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           Handler(controller),
+		Handler:           AuthorizeClients(Handler(controller)),
 		TLSConfig:         mgr.TLSConfig(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

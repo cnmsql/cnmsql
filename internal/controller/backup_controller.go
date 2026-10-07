@@ -659,7 +659,7 @@ func backupWorkerVolumes(clusterName string) []corev1.Volume {
 	return []corev1.Volume{
 		{Name: scratchVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "client-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: clusterName + "-client-tls"}}},
-		{Name: clientCAVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: clusterName + "-ca"}}},
+		caCertVolume(clientCAVolumeName, clusterName+"-ca"),
 	}
 }
 

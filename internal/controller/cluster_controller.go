@@ -173,8 +173,11 @@ const (
 	// (managerBinary), is mounted.
 	scratchMountPath   = "/controller"
 	clientCAVolumeName = "client-ca"
-	runVolumeName      = "run"
-	backupVolumeName   = "backup"
+	// caCertKey is the only key of a CA Secret projected into the client-ca
+	// volume.
+	caCertKey        = "ca.crt"
+	runVolumeName    = "run"
+	backupVolumeName = "backup"
 
 	// appLabelValue is the app.kubernetes.io/name (and managed-by) label value.
 	appLabelValue = "cnmsql"

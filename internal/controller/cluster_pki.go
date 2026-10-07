@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 //nolint:goconst // cert-manager spec field names read clearer inline.
@@ -65,7 +66,9 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 
 	// One server certificate per instance. Each cert carries both server- and
 	// client-auth usages so a replica can reuse it to authenticate to the
-	// primary's control API (backup stream) and to mysqld for replication.
+	// primary's control API (backup stream) and to mysqld for replication. The
+	// control API only lets it stream a backup: every other route is reserved
+	// to the operator's certificate (webserver.AuthorizeClients).
 	if needServerCertificates {
 		for i := 1; i <= plan.Instances; i++ {
 			inst := plan.instanceFor(cluster, i)
@@ -92,7 +95,8 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 	}
 	return r.ensureCertManagerResource(ctx, cluster, cluster.Name+"-client", map[string]any{
 		"secretName": plan.ClientTLSSecret,
-		"commonName": "cnmsql-operator",
+		// The instance control API grants its full route set only to this name.
+		"commonName": webserver.OperatorCommonName,
 		"usages": []any{
 			"client auth",
 		},

@@ -1380,3 +1380,20 @@ func TestPhysicalBackupRecordsItsAnchor(t *testing.T) {
 		})
 	}
 }
+
+// The backup and logical-restore worker Jobs verify the instance's server
+// certificate with the cluster CA, but must not receive the CA's private key.
+func TestBackupWorkerVolumesProjectOnlyTheCACertificate(t *testing.T) {
+	t.Parallel()
+	for _, volume := range backupWorkerVolumes("demo") {
+		if volume.Name != clientCAVolumeName {
+			continue
+		}
+		if volume.Secret == nil || volume.Secret.SecretName != "demo-ca" {
+			t.Fatalf("client-ca volume = %#v, want demo-ca secret", volume.Secret)
+		}
+		assertOnlyCACertProjected(t, volume)
+		return
+	}
+	t.Fatal("client-ca volume not found")
+}

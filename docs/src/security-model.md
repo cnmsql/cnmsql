@@ -44,6 +44,25 @@ This channel is used for:
 - backup streaming from an instance;
 - legacy or helper control operations where still present.
 
+### Control API authorization
+
+Verifying the client certificate only proves it was signed by the client CA.
+Instance certificates are signed by that CA too, and carry the client-auth
+usage so a joining replica can stream a base backup from the primary. The
+instance manager therefore also authorizes each request by the verified
+certificate's subject common name:
+
+| Client certificate | Allowed routes |
+|--------------------|----------------|
+| CN `cnmsql-operator` (the `<cluster>-client-tls` Secret) | Every route |
+| Any other certificate the client CA verifies (instance certificates) | `GET /cluster/backup` only |
+
+A compromised instance can still stream a physical backup from another
+instance, which gives it nothing it does not already hold as a replica. It
+cannot promote, demote or restart another instance, manage users or databases,
+load SQL, take a logical dump, or replace another instance's instance-manager
+binary.
+
 The current dynamic-role design keeps primary policy in the operator and lets
 the instance manager converge locally from Cluster status.
 
@@ -95,6 +114,17 @@ spec:
 `kubernetes.io/tls` or `Opaque`, but must contain `ca.crt` with a PEM encoded CA
 certificate. Invalid or missing user-provided Secrets block reconciliation with
 a `Blocked` condition before Pods are created.
+
+`replicationTLSSecret` is the operator's client certificate, so its common name
+must be `cnmsql-operator`. `serverTLSSecret` must not use that common name,
+because instances present their server certificate to each other as a client
+certificate (see [Control API authorization](#control-api-authorization)).
+
+Instance Pods, bootstrap Jobs and worker Jobs mount only the `ca.crt` key of the
+client CA Secret. The CA's private key (`tls.key`, which cert-manager writes
+into the generated `<cluster>-ca` Secret, or any key in a user-provided CA
+Secret) never leaves the operator and cert-manager, so a compromised Pod cannot
+sign itself a certificate with the operator's common name.
 
 `serverAltDNSNames` is appended to the automatically generated service DNS names
 when cnmsql generates server certificates. If you provide `serverTLSSecret`,
@@ -292,7 +322,7 @@ be logged or copied into status.
 | `status.currentPrimaryTimestamp` | Wall-clock timestamp of the last primary promotion | Obscured failure timeline; replay confusion during recovery |
 | MySQL data | Persistent data in PVCs | Data loss, corruption, or exfiltration |
 | Credentials | Root, replication, backup, and application passwords | Unauthorized database access |
-| TLS material | Server and CA certificates | Man-in-the-middle; impersonation |
+| TLS material | Server certificates, the operator client certificate, and the CA private key | Man-in-the-middle; impersonation; with the CA key or the operator certificate, full control of every instance manager |
 | Object-store data | Physical backups and binlog archives | Data loss or exfiltration |
 
 ### Threat actors
@@ -340,6 +370,15 @@ container image, add an ephemeral container, hijack labels or
 ownerReferences, inject a finalizer, forge an operator-trusted annotation,
 or self-issue a `force-*` command to fork the group.
 
+#### Instance cannot drive another instance's control API
+
+Instance Pods mount only `ca.crt` from the CA Secret, so an instance cannot
+mint a certificate with the operator's common name. Its own certificate is
+authorized only to stream a physical backup
+([Control API authorization](#control-api-authorization)), so it cannot
+promote, demote, restart, load SQL into, or replace the instance-manager binary
+of another instance.
+
 #### Scaled-down identities are removed
 
 A ServiceAccount for an instance that no longer exists (cluster scaled
@@ -359,6 +398,12 @@ mapping.
   credentials and RBAC. Kubernetes enforces admission before persistence
   regardless of the caller's network path, so there is no network-level
   bypass.
+- **Worker Jobs hold the operator client certificate**: backup and
+  logical-restore worker Jobs authenticate to the instance manager with
+  `<cluster>-client-tls`, and so does the PodMonitor's Prometheus scrape
+  configuration when monitoring TLS is enabled. Code execution in a worker Job,
+  or read access to that Secret, grants the full control API on every instance
+  of the cluster.
 - **Leaked storage credentials**: continuous archiving credentials are
   mounted into instance Pods. A compromised instance can read or exfiltrate
   object-store credentials and access backup data.
@@ -381,6 +426,7 @@ mapping.
 | Admission webhook | Field-level Pod validation for instance identities | Instance Pod spec/metadata integrity |
 | Owner references | All RBAC resources and SAs are owned by the Cluster CR | Garbage collection on delete |
 | TLS mTLS | Mutual TLS between operator and instance manager | Control-plane channel |
+| Control API authorization | Full route set only for the operator's certificate common name; instance certificates limited to the backup stream | Control-plane actions |
 | MySQL TLS | Replication requires X509 | Replication channel |
 | Secret separation | Root, replication, backup, app accounts use independent Secrets | Credential compartmentalization |
 | NetworkPolicy | (Not shipped yet) | Network-level isolation |
