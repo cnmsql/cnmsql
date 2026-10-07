@@ -51,6 +51,9 @@ type observedCluster struct {
 	ReadyInstances int
 	// InstanceNames are the desired instance names, in ordinal order.
 	InstanceNames []string
+	// PrimaryGTIDReadAt is when the primary's gtid_executed in GTIDByInstance
+	// was read; zero when it was not.
+	PrimaryGTIDReadAt time.Time
 	// GTIDByInstance maps instance name to its gtid_executed set.
 	GTIDByInstance map[string]string
 	// ReplicationLagByInstance maps instance name to its heartbeat reading, in
@@ -227,6 +230,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	if observed.PrimaryName != "" {
 		if status, err := controlClient.Status(ctx, cluster, observed.PrimaryName); err == nil && status.GTIDExecuted != "" {
 			observed.GTIDByInstance[observed.PrimaryName] = status.GTIDExecuted
+			observed.PrimaryGTIDReadAt = time.Now()
 		}
 	}
 
@@ -842,6 +846,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			latest.Status.ReplicationLagUpdatedAt = &metav1.Time{Time: time.Now()}
 		}
 	}
+	r.judgeBackups(ctx, latest, observed)
 	if reflect.DeepEqual(before.Status, latest.Status) {
 		return nil
 	}

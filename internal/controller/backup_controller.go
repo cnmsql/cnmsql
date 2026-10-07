@@ -210,6 +210,19 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 					fmt.Sprintf("The worker Job reported success but its logical.json manifest could not be read from the object store: %v", err))
 			}
 		}
+		// A physical backup's anchor is what point-in-time recovery replays
+		// from, and what the dead-branch check judges. A manifest that cannot
+		// be read at all leaves it unknown rather than failing a good backup.
+		anchor := ""
+		if method != mysqlv1alpha1.BackupMethodLogical {
+			meta, err := r.readBackupMetadata(ctx, backup.Namespace, store, keys)
+			switch {
+			case err == nil:
+				anchor = meta.AnchorGTID
+			case !manifestUnrecoverable(err):
+				return ctrl.Result{}, fmt.Errorf("reading backup metadata: %w", err)
+			}
+		}
 		log.Info("Backup completed", "backup", backup.Name, "job", jobName)
 		return ctrl.Result{}, r.patchBackupStatus(ctx, backup, func(status *mysqlv1alpha1.BackupStatus) {
 			now := metav1.Now()
@@ -218,6 +231,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			status.Error = ""
 			if manifest != nil {
 				applyLogicalManifest(status, manifest)
+			}
+			if anchor != "" {
+				status.EndGTID = anchor
 			}
 			setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, backupPhaseCompleted, "Backup completed", backup.Generation)
 			setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, backupPhaseCompleted, "Backup completed", backup.Generation)

@@ -269,7 +269,7 @@ _Appears in:_
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore records the destination the backup was uploaded to, resolved at<br />backup time from the Backup spec or the referenced Cluster. It is snapshotted<br />so the cleanup finalizer can still locate and remove the archive after the<br />referenced Cluster is gone. |  | Optional: \{\} <br /> |
 | `binlogObjectStore` _[S3ObjectStore](#s3objectstore)_ | BinlogObjectStore records the cluster's binary-log archive store when the<br />backup ran. Point-in-time recovery from this backup replays binlogs from<br />it. Unset on backups taken without continuous archiving or before this<br />field existed, in which case the archive is looked up in ObjectStore. |  | Optional: \{\} <br /> |
 | `sha256` _string_ | SHA256 is the checksum of the uploaded backup artifact. |  | Optional: \{\} <br /> |
-| `beginGTID` _string_ | BeginGTID/EndGTID record the GTID range covered by the backup. For a<br />logical backup both hold the dump's snapshot GTID (MariaDB only), for<br />reference. |  | Optional: \{\} <br /> |
+| `beginGTID` _string_ | BeginGTID/EndGTID record the GTID range covered by the backup. For a<br />physical backup EndGTID is its anchor, the GTID position of its<br />consistent point, which point-in-time recovery replays from. For a<br />logical backup both hold the dump's snapshot GTID (MariaDB only), for<br />reference. |  | Optional: \{\} <br /> |
 | `endGTID` _string_ |  |  | Optional: \{\} <br /> |
 | `beginBinlog` _string_ | BeginBinlog/EndBinlog record the binary log coordinates. For a logical<br />backup both hold the dump's snapshot position (file:position), for<br />reference. |  | Optional: \{\} <br /> |
 | `endBinlog` _string_ |  |  | Optional: \{\} <br /> |

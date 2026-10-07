@@ -40,6 +40,7 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -253,6 +254,10 @@ type ClusterReconciler struct {
 	// APIReader bypasses the controller-runtime cache for narrow reads that
 	// should not start informers, such as checking namespace deletion state.
 	APIReader client.Reader
+	// updateArchiveIndex, when set, replaces the object-store write of the
+	// archive index; tests use it.
+	updateArchiveIndex func(context.Context, *mysqlv1alpha1.Cluster,
+		func(*objectstore.ArchiveIndex, bool) (bool, error)) error
 	// OperatorImageName is the image name the operator controller runs as. It is
 	// injected into instance pods as the bootstrap-controller init container so the
 	// operator and instance manager binaries are always the same version.
@@ -293,6 +298,7 @@ type ClusterReconciler struct {
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=imagecatalogs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusterimagecatalogs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps;pods;pods/status;persistentvolumeclaims;secrets;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete

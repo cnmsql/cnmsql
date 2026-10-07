@@ -263,6 +263,8 @@ type BackupStatus struct {
 	SHA256 string `json:"sha256,omitempty"`
 
 	// BeginGTID/EndGTID record the GTID range covered by the backup. For a
+	// physical backup EndGTID is its anchor, the GTID position of its
+	// consistent point, which point-in-time recovery replays from. For a
 	// logical backup both hold the dump's snapshot GTID (MariaDB only), for
 	// reference.
 	// +optional

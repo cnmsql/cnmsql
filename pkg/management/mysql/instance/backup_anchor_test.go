@@ -101,3 +101,19 @@ func TestTailKeepsTheCoordinateLine(t *testing.T) {
 		t.Fatalf("coordinate line not parseable from retained tail")
 	}
 }
+
+// XtraBackup prints the anchor of a MySQL backup the same way, with a GTID set
+// that wraps over several lines once it names several sources.
+func TestParseXtrabackupBinlogPosMultiSourceGTID(t *testing.T) {
+	t.Parallel()
+	stderr := "2026-10-07T10:00:00.000000-00:00 0 [Note] [MY-011825] [Xtrabackup] MySQL binlog position: " +
+		"filename 'binlog.000004', position '831', GTID of the last change " +
+		"'3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5,\n7f2b1c90-0000-11e1-9e33-c80aa9429562:1-3'\n"
+	file, pos, gtid, ok := parseMariabackupBinlogPos(stderr)
+	if !ok || file != "binlog.000004" || pos != 831 {
+		t.Fatalf("parsed %q %d ok=%v", file, pos, ok)
+	}
+	if !strings.Contains(gtid, "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5") || !strings.Contains(gtid, "7f2b1c90") {
+		t.Fatalf("gtid = %q", gtid)
+	}
+}

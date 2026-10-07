@@ -122,6 +122,28 @@ func (r *BackupReconciler) readLogicalManifest(
 	return &meta, nil
 }
 
+// readBackupMetadata reads a physical backup's metadata.json.
+func (r *BackupReconciler) readBackupMetadata(
+	ctx context.Context,
+	namespace string,
+	store *mysqlv1alpha1.S3ObjectStore,
+	keys objectstore.BackupKeys,
+) (*objectstore.BackupMetadata, error) {
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store)
+	if err != nil {
+		return nil, err
+	}
+	osClient, err := objectstore.NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var meta objectstore.BackupMetadata
+	if err := osClient.GetJSON(ctx, store.Bucket, keys.MetadataKey, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
 // manifestUnrecoverable reports whether a manifest read failed in a way no
 // retry fixes: the object is not there, or it is not a manifest.
 func manifestUnrecoverable(err error) bool {

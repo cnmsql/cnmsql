@@ -383,6 +383,12 @@ const (
 	// archiving is off.
 	ConditionArchiveGap = "ArchiveGap"
 
+	// ConditionDeadBranch is set on a completed physical Backup once its anchor
+	// has been judged against the surviving timeline: True when the backup
+	// holds transactions the timeline disowned (it was taken on the losing side
+	// of a lagged failover), so it cannot recover a time or the latest point.
+	ConditionDeadBranch = "DeadBranch"
+
 	// EventMariaDBTimelineTruncated is the Warning event reason emitted when
 	// the MariaDB primary timeline reached its ceiling and dropped history an
 	// instance position or archive segment still referenced.
