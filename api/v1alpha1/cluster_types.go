@@ -1319,6 +1319,15 @@ type ClusterStatus struct {
 	// +optional
 	CurrentPrimaryTimestamp *metav1.Time `json:"currentPrimaryTimestamp,omitempty"`
 
+	// CurrentPrimaryGeneration counts the changes of currentPrimary: the
+	// instance that records itself as currentPrimary raises it by one in the
+	// same update (the operator does under Group Replication). It fences the
+	// binlog archive: a primary stamps its generation into the archive index,
+	// and a writer with a lower generation, a demoted primary still finishing a
+	// pass, never judges the archive's segments.
+	// +optional
+	CurrentPrimaryGeneration int64 `json:"currentPrimaryGeneration,omitempty"`
+
 	// TargetPrimaryTimestamp is when the current switchover request to
 	// TargetPrimary was started. It bounds the switchover by spec.maxSwitchoverDelay.
 	// +optional

@@ -322,9 +322,10 @@ func TestArchiverForkSourceWithoutAuthoritySkips(t *testing.T) {
 	}
 }
 
-// The authority is snapshotted once per pass, however many files the pass
-// ships, so one pass compares every segment against the same executed set.
-func TestArchiverReadsAuthorityOncePerPass(t *testing.T) {
+// The authority is read for every index write, after the index: a pass that
+// straddles a demotion must not judge segments that appeared after the
+// authority was read.
+func TestArchiverReadsAuthorityPerIndexWrite(t *testing.T) {
 	t.Parallel()
 	store := newMemStore()
 	dir := t.TempDir()
@@ -341,8 +342,8 @@ func TestArchiverReadsAuthorityOncePerPass(t *testing.T) {
 	if _, err := a.ArchivePending(context.Background(), logs); err != nil {
 		t.Fatal(err)
 	}
-	if src.calls != 1 {
-		t.Fatalf("authority read %d times in one pass, want 1", src.calls)
+	if src.calls != 3 {
+		t.Fatalf("authority read %d times for three index writes, want 3", src.calls)
 	}
 }
 

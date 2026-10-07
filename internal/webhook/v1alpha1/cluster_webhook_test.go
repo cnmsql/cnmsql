@@ -162,6 +162,54 @@ func TestClusterStatusValidator(t *testing.T) {
 			allowed: true,
 		},
 		{
+			name:   "instance raises the primary generation by one when promoting itself",
+			user:   "system:serviceaccount:default:demo-1-instance",
+			subRes: "status",
+			old: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-2", "then", "demo-1")
+				c.Status.CurrentPrimaryGeneration = 4
+				return c
+			}(),
+			new: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-1", "now", "demo-1")
+				c.Status.CurrentPrimaryGeneration = 5
+				return c
+			}(),
+			allowed: true,
+		},
+		{
+			name:   "instance may not skip a primary generation",
+			user:   "system:serviceaccount:default:demo-1-instance",
+			subRes: "status",
+			old: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-2", "then", "demo-1")
+				c.Status.CurrentPrimaryGeneration = 4
+				return c
+			}(),
+			new: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-1", "now", "demo-1")
+				c.Status.CurrentPrimaryGeneration = 9
+				return c
+			}(),
+			allowed: false,
+		},
+		{
+			name:   "instance may not move the primary generation without a promotion",
+			user:   "system:serviceaccount:default:demo-1-instance",
+			subRes: "status",
+			old: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-1", "then", "demo-1")
+				c.Status.CurrentPrimaryGeneration = 4
+				return c
+			}(),
+			new: func() *mysqlv1alpha1.Cluster {
+				c := mkCluster("demo-1", "then", "demo-1")
+				c.Status.CurrentPrimaryGeneration = 5
+				return c
+			}(),
+			allowed: false,
+		},
+		{
 			name:    "service account named like instance but with non-numeric ordinal is not an instance",
 			user:    "system:serviceaccount:default:demo-evil-instance",
 			subRes:  "status",

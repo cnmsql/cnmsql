@@ -138,3 +138,24 @@ func TestArchivingStatusProviderReportsForks(t *testing.T) {
 		t.Fatalf("an unchecked state must report no check time: %+v", empty)
 	}
 }
+
+func TestClusterFloorAuthority(t *testing.T) {
+	t.Parallel()
+	floor := newClusterFloor("demo-1")
+	if _, ok := floor.Authority(); ok {
+		t.Fatal("a floor that never saw the Cluster must not claim authority")
+	}
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Status.CurrentPrimary = "demo-0"
+	cluster.Status.CurrentPrimaryGeneration = 3
+	floor.Observe(cluster)
+	if _, ok := floor.Authority(); ok {
+		t.Fatal("an instance the Cluster does not name primary must not claim authority")
+	}
+	cluster.Status.CurrentPrimary = "demo-1"
+	cluster.Status.CurrentPrimaryGeneration = 4
+	floor.Observe(cluster)
+	if gen, ok := floor.Authority(); !ok || gen != 4 {
+		t.Fatalf("Authority() = %d, %v, want 4, true", gen, ok)
+	}
+}

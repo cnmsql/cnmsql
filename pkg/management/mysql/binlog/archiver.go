@@ -36,6 +36,15 @@ import (
 // name) and must surface loudly rather than silently overwrite the archive.
 var ErrCollision = errors.New("binlog: archive key already holds a different object")
 
+// ErrNotCurrentPrimary is returned by a primary archive pass while the
+// instance's Cluster view does not name it status.currentPrimary yet: until
+// then it does not know the generation that fences its index writes.
+var ErrNotCurrentPrimary = errors.New("binlog: the cluster does not name this instance its current primary yet")
+
+// AuthoritySource reports the status.currentPrimaryGeneration of this instance
+// while its Cluster view names it status.currentPrimary; ok is false otherwise.
+type AuthoritySource func() (generation int64, ok bool)
+
 // Store is the subset of objectstore.Client the archiver needs. It is an
 // interface so the archiver is unit-testable with an in-memory fake. The index
 // is written through its versioned methods (objectstore.UpdateArchiveIndex),
@@ -68,6 +77,9 @@ type Archiver struct {
 	// forks snapshots the authority the fork check compares segments against;
 	// nil disables the check.
 	forks ForkSource
+	// authority fences the primary's index writes (see AuthoritySource); nil
+	// treats the archiver as an unfenced primary of generation zero.
+	authority AuthoritySource
 	// verified memoizes files this process has already proven byte-identical to
 	// their archived copy, so a steady-state pass costs one stat per file instead
 	// of re-decoding and re-hashing the whole retained set on every tick.
@@ -137,6 +149,8 @@ type ArchiverOptions struct {
 	// Forks snapshots what the surviving timeline holds for the fork check run
 	// on every index write and by CheckForks. Nil disables fork checks.
 	Forks ForkSource
+	// Authority fences the primary's index writes with its primary generation.
+	Authority AuthoritySource
 }
 
 // NewArchiver builds an Archiver from validated options.
@@ -172,6 +186,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		now:           now,
 		newSet:        newSet,
 		forks:         opts.Forks,
+		authority:     opts.Authority,
 		verified:      make(map[string]archivedStamp),
 		deferredScans: make(map[string]scannedStamp),
 		indexed:       make(map[string]bool),
@@ -212,6 +227,9 @@ type ForkReport struct {
 	// authority; CheckedAt is when.
 	Checked   bool
 	CheckedAt time.Time
+	// Superseded is true when a primary with a newer generation already wrote
+	// the index, so this one did not judge it.
+	Superseded bool
 	// Read is true when the report comes from a read of the index, so Forks and
 	// OldestSegmentPosition describe it; false when nothing was read.
 	Read bool
@@ -237,7 +255,20 @@ type ArchivedFile struct {
 // the resulting frontier or the first error; on error the frontier is not
 // advanced past the file that failed.
 func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (ArchiveResult, error) {
-	return a.archivePending(ctx, logs, nil, a.forks)
+	generation, ok := a.Authority()
+	if !ok {
+		return ArchiveResult{}, ErrNotCurrentPrimary
+	}
+	return a.archivePending(ctx, logs, nil, &forkPass{source: a.forks, primary: true, generation: generation})
+}
+
+// Authority reports the generation this archiver writes the index under as the
+// primary, and whether its Cluster view names it the current primary.
+func (a *Archiver) Authority() (int64, bool) {
+	if a.authority == nil {
+		return 0, true
+	}
+	return a.authority()
 }
 
 // DrainPending is ArchivePending for a former primary draining the tail it
@@ -246,14 +277,14 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 // surviving timeline holds; judging the live primary's segment against its own
 // executed set would record transactions it simply has not replicated yet.
 func (a *Archiver) DrainPending(ctx context.Context, logs []BinaryLog, allow FileFilter) (ArchiveResult, error) {
-	return a.archivePending(ctx, logs, allow, nil)
+	return a.archivePending(ctx, logs, allow, &forkPass{})
 }
 
 // ChecksForks reports whether this archiver runs fork checks at all.
 func (a *Archiver) ChecksForks() bool { return a.forks != nil }
 
 func (a *Archiver) archivePending(
-	ctx context.Context, logs []BinaryLog, allow FileFilter, forks ForkSource,
+	ctx context.Context, logs []BinaryLog, allow FileFilter, pass *forkPass,
 ) (result ArchiveResult, err error) {
 	bucket := a.objectStore.Bucket
 
@@ -272,7 +303,6 @@ func (a *Archiver) archivePending(
 		CoveredGTIDSet:     status.CoveredGTIDSet,
 	}
 
-	pass := &forkPass{source: forks}
 	defer func() { result.ForkCheck = pass.report }()
 	for _, l := range Archivable(logs) {
 		select {
@@ -566,6 +596,9 @@ func (a *Archiver) updateIndex(
 			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
 				return false, err
 			}
+			if pass.primary && pass.generation > index.Generation {
+				index.Generation = pass.generation
+			}
 			// This write carries a fresh copy of the index anyway, so check the
 			// seams on it: a fork that landed late, or a record lost to a racing
 			// writer, is caught on the primary's next write.
@@ -633,25 +666,32 @@ func (a *Archiver) foldFile(
 	return nil
 }
 
-// forkPass snapshots the fork-check authority once per archive pass, so a pass
-// that writes the index for several files compares them all against the same
-// view and reads it only once.
+// forkPass carries what one archive pass writes the index as: the primary of
+// a generation (whose writes stamp it and may run the fork check), or a
+// draining former primary (neither).
 type forkPass struct {
-	source ForkSource
-	loaded bool
-	judge  ForkJudge
-	err    error
-	report *ForkReport
+	source     ForkSource
+	primary    bool
+	generation int64
+	report     *ForkReport
+	// preloaded is an authority read just before the index, used by the first
+	// write attempt instead of reading it again.
+	preloaded ForkJudge
 }
 
+// load reads the fork-check authority. It runs for every index write, after
+// the index was read, so the authority is never older than the segments it
+// judges.
 func (p *forkPass) load(ctx context.Context) (ForkJudge, error) {
-	if !p.loaded {
-		p.loaded = true
-		if p.source != nil {
-			p.judge, p.err = p.source(ctx)
-		}
+	if p.preloaded != nil {
+		judge := p.preloaded
+		p.preloaded = nil
+		return judge, nil
 	}
-	return p.judge, p.err
+	if p.source == nil {
+		return nil, nil
+	}
+	return p.source(ctx)
 }
 
 func (a *Archiver) forkIdentity() string {
@@ -674,6 +714,12 @@ func (a *Archiver) checkForks(
 		return report
 	}
 	if pass.source == nil {
+		return false, finish()
+	}
+	if index.Generation > pass.generation {
+		// A newer primary already wrote the index: this one was demoted and is
+		// finishing a pass. Its authority no longer speaks for the timeline.
+		report.Superseded = true
 		return false, finish()
 	}
 	judge, err := pass.load(ctx)
@@ -728,7 +774,11 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 	if a.forks == nil {
 		return ForkReport{}, nil
 	}
-	pass := &forkPass{source: a.forks}
+	generation, ok := a.Authority()
+	if !ok {
+		return ForkReport{}, ErrNotCurrentPrimary
+	}
+	pass := &forkPass{source: a.forks, primary: true, generation: generation}
 	judge, err := pass.load(ctx)
 	if err != nil {
 		err = fmt.Errorf("binlog: reading fork check authority: %w", err)
@@ -737,6 +787,7 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 	if judge == nil {
 		return ForkReport{}, nil
 	}
+	pass.preloaded = judge
 	var report ForkReport
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
 	err = objectstore.UpdateArchiveIndex(ctx, a.store, a.objectStore.Bucket, key,
@@ -750,9 +801,10 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 			if report.Err != nil {
 				return false, report.Err
 			}
-			if !report.Checked || (!grew && index.ForkCheck != nil) {
+			if !report.Checked || (!grew && index.ForkCheck != nil && index.Generation >= generation) {
 				return false, nil
 			}
+			index.Generation = generation
 			index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
 			index.UpdatedAt = a.now()
 			return true, nil

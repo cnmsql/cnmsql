@@ -346,7 +346,7 @@ func TestTargetPrimaryReplicaCaughtUpPromotes(t *testing.T) {
 		},
 	}}
 	r := newReconciler(t, "demo-2",
-		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1}, local)
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1, CurrentPrimaryGeneration: 7}, local)
 	reconcile(t, r)
 	if !local.promoted {
 		t.Fatal("caught-up target should promote")
@@ -355,6 +355,9 @@ func TestTargetPrimaryReplicaCaughtUpPromotes(t *testing.T) {
 	_ = r.Get(context.Background(), r.ClusterKey, cluster)
 	if cluster.Status.CurrentPrimary != "demo-2" {
 		t.Fatalf("currentPrimary = %q, want demo-2", cluster.Status.CurrentPrimary)
+	}
+	if cluster.Status.CurrentPrimaryGeneration != 8 {
+		t.Fatalf("currentPrimaryGeneration = %d, want 8", cluster.Status.CurrentPrimaryGeneration)
 	}
 }
 

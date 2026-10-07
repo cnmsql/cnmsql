@@ -194,6 +194,10 @@ type ArchiveIndex struct {
 	// ForkCheck records the last fork check a primary ran over the whole index.
 	// nil means no primary has checked this index since fork checks shipped.
 	ForkCheck *ArchiveForkCheck `json:"forkCheck,omitempty"`
+	// Generation is the highest status.currentPrimaryGeneration of a primary
+	// that wrote the index. A writer whose generation is lower is a demoted
+	// primary finishing a pass, and never judges the segments.
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // ArchiveFork names the disowned part of a segment: transactions it archived

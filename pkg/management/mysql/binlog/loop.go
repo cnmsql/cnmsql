@@ -18,6 +18,7 @@ package binlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -265,6 +266,12 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 	}
 
 	res, err := l.archiver.ArchivePending(ctx, logs)
+	if errors.Is(err, ErrNotCurrentPrimary) {
+		// Just promoted: the Cluster view catches up within a reconcile, and
+		// until then the index writes could not be fenced.
+		l.logger.V(1).Info("Waiting for status.currentPrimary to name this instance before archiving")
+		return
+	}
 	if err != nil {
 		l.fail("archiving binary logs", err)
 		return
@@ -351,6 +358,9 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 	if report.Err != nil {
 		l.logger.Error(report.Err, "Could not check the archive for forks")
 		return out, report.Err
+	}
+	if report.Superseded {
+		l.logger.Info("Archive index was written by a newer primary; not judging its segments")
 	}
 	if report.Read {
 		out.Forks = report.Forks

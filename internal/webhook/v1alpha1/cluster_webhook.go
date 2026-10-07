@@ -173,16 +173,33 @@ func (v *ClusterStatusValidator) Handle(ctx context.Context, req admission.Reque
 		}
 	}
 
+	// The primary generation fences the binlog archive, so it must name exactly
+	// one primary: it moves only with a change of currentPrimary, by one.
+	if newStatus.CurrentPrimaryGeneration != oldStatus.CurrentPrimaryGeneration {
+		if newStatus.CurrentPrimary == oldStatus.CurrentPrimary {
+			return admission.Denied(fmt.Sprintf(
+				"instance %q may only change status.currentPrimaryGeneration together with status.currentPrimary", instanceName))
+		}
+		if newStatus.CurrentPrimaryGeneration != oldStatus.CurrentPrimaryGeneration+1 {
+			return admission.Denied(fmt.Sprintf(
+				"instance %q may only raise status.currentPrimaryGeneration by one (from %d), not to %d",
+				instanceName, oldStatus.CurrentPrimaryGeneration, newStatus.CurrentPrimaryGeneration))
+		}
+	}
+
 	// Strip the instance-owned fields and ensure nothing else changed.
 	oldCopy := oldStatus.DeepCopy()
 	newCopy := newStatus.DeepCopy()
 	oldCopy.CurrentPrimary = ""
 	oldCopy.CurrentPrimaryTimestamp = nil
+	oldCopy.CurrentPrimaryGeneration = 0
 	newCopy.CurrentPrimary = ""
 	newCopy.CurrentPrimaryTimestamp = nil
+	newCopy.CurrentPrimaryGeneration = 0
 
 	if !reflect.DeepEqual(oldCopy, newCopy) {
-		return admission.Denied(fmt.Sprintf("instance %q is only allowed to modify status.currentPrimary and status.currentPrimaryTimestamp", instanceName))
+		return admission.Denied(fmt.Sprintf("instance %q is only allowed to modify status.currentPrimary, "+
+			"status.currentPrimaryTimestamp and status.currentPrimaryGeneration", instanceName))
 	}
 
 	return admission.Allowed("")

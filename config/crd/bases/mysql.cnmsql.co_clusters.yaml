@@ -5526,6 +5526,16 @@ spec:
                 description: CurrentPrimary is the name of the instance currently
                   acting as primary.
                 type: string
+              currentPrimaryGeneration:
+                description: |-
+                  CurrentPrimaryGeneration counts the changes of currentPrimary: the
+                  instance that records itself as currentPrimary raises it by one in the
+                  same update (the operator does under Group Replication). It fences the
+                  binlog archive: a primary stamps its generation into the archive index,
+                  and a writer with a lower generation, a demoted primary still finishing a
+                  pass, never judges the archive's segments.
+                format: int64
+                type: integer
               currentPrimaryTimestamp:
                 description: CurrentPrimaryTimestamp is when the current primary was
                   elected.
