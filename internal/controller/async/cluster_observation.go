@@ -17,11 +17,13 @@ limitations under the License.
 package async
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
@@ -70,7 +72,7 @@ func detectDivergedReplicas(input topology.ObservationInput) []string {
 
 	primaryGTID := input.GTIDByInstance[input.PrimaryName]
 	if primaryGTID == "" {
-		return stillPresent(input.PriorDivergedInstances, input.InstanceNames)
+		return holdingDisowned(input, stillPresent(input.PriorDivergedInstances, input.InstanceNames))
 	}
 	prior := map[string]bool{}
 	for _, name := range input.PriorDivergedInstances {
@@ -110,6 +112,30 @@ func detectDivergedReplicas(input topology.ObservationInput) []string {
 			if (err == nil && known && !on) || (prior[name] && !proven) {
 				diverged = append(diverged, name)
 			}
+		}
+	}
+	return holdingDisowned(input, diverged)
+}
+
+// holdingDisowned adds to diverged every MySQL instance whose last known GTID
+// set holds a transaction the archive recorded as disowned. Containment in the
+// primary's set cannot see this when the primary is gone, and a former primary
+// that returns after its successor died would otherwise be a failover
+// candidate that resurrects its dead branch.
+func holdingDisowned(input topology.ObservationInput, diverged []string) []string {
+	if input.DisownedGTIDs == "" || engine.Flavor(input.EngineFlavor) == engine.FlavorMariaDB {
+		return diverged
+	}
+	for _, name := range input.InstanceNames {
+		if name == input.PrimaryName || slices.Contains(diverged, name) {
+			continue
+		}
+		gtid := input.GTIDByInstance[name]
+		if gtid == "" {
+			continue
+		}
+		if holds, err := replication.IntersectsGTIDStrings(gtid, input.DisownedGTIDs); err == nil && holds {
+			diverged = append(diverged, name)
 		}
 	}
 	return diverged

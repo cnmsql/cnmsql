@@ -1723,6 +1723,13 @@ type ContinuousArchivingStatus struct {
 	// timeline back to it.
 	// +optional
 	OldestSegmentPosition string `json:"oldestSegmentPosition,omitempty"`
+
+	// DisownedGTIDs (MySQL) is every transaction the archive recorded as
+	// disowned, including dead branches whose segment retention already
+	// dropped and the dead part of base backups. An instance holding any of
+	// them is diverged.
+	// +optional
+	DisownedGTIDs string `json:"disownedGTIDs,omitempty"`
 }
 
 // MariaDBEpoch is one change of primary on a MariaDB cluster.

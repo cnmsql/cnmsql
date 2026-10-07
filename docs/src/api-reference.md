@@ -730,6 +730,7 @@ _Appears in:_
 | `forkGTIDs` _string array_ | ForkGTIDs lists, one entry per archive segment, the archived<br />transactions the surviving timeline never executed (a dead branch left<br />by a lagged promotion): the MySQL GTID set, or a MariaDB range such as<br />`0-1-219..0-1-225`. Point-in-time recovery to a time or to the latest<br />point leaves them out; an explicit targetGTID can still recover them. |  | Optional: \{\} <br /> |
 | `forkDetectedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | ForkDetectedAt is when the earliest of those records was written. |  | Optional: \{\} <br /> |
 | `oldestSegmentPosition` _string_ | OldestSegmentPosition (MariaDB) is the lowest GTID position any archive<br />segment reached, per domain. The operator keeps the MariaDB primary<br />timeline back to it. |  | Optional: \{\} <br /> |
+| `disownedGTIDs` _string_ | DisownedGTIDs (MySQL) is every transaction the archive recorded as<br />disowned, including dead branches whose segment retention already<br />dropped and the dead part of base backups. An instance holding any of<br />them is diverged. |  | Optional: \{\} <br /> |
 
 
 ### Database

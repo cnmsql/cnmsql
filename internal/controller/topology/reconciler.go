@@ -196,6 +196,10 @@ type ObservationInput struct {
 	// It tells a forked former primary from a lagging one, which position
 	// containment cannot.
 	MariaDBTimeline engine.MariaDBTimeline
+	// DisownedGTIDs (MySQL) is what the binlog archive recorded as disowned.
+	// An instance holding any of it holds a dead branch, which must never be
+	// promoted, whether or not a live primary is there to compare it with.
+	DisownedGTIDs string
 }
 
 // Observation is the topology-specific portion of the operator's observed

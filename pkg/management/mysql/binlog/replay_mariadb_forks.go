@@ -434,7 +434,7 @@ func PrepareMariadbPositional(
 			}
 			return p, nil
 		}
-		if err := checkMariadbAnchor(segs, anchorGTID, p.Domain); err != nil {
+		if err := checkMariadbAnchor(segs, idx.Disowned, anchorGTID, p.Domain); err != nil {
 			return MariadbPositional{}, err
 		}
 	}
@@ -500,7 +500,9 @@ func capSegments(
 // checkMariadbAnchor refuses a time or latest recovery from a base backup whose
 // anchor (server, seq) falls in a recorded fork: the backup holds a disowned
 // transaction, and replay cannot remove it.
-func checkMariadbAnchor(segs []ReplaySegment, anchorGTID string, domain uint32) error {
+func checkMariadbAnchor(
+	segs []ReplaySegment, disowned *objectstore.ArchiveDisowned, anchorGTID string, domain uint32,
+) error {
 	gtids, err := engine.ParseMariaDBPosition(anchorGTID)
 	if err != nil || len(gtids) == 0 {
 		return nil
@@ -508,6 +510,14 @@ func checkMariadbAnchor(segs []ReplaySegment, anchorGTID string, domain uint32) 
 	for _, a := range gtids {
 		if a.Domain != domain {
 			continue
+		}
+		if disowned != nil {
+			for _, r := range disowned.Ranges {
+				if r.Holds(a.Domain, a.Server, a.Seq) {
+					return fmt.Errorf("%w: its position %s is on a dead branch the archive recorded (%d-%d-%d..%d)",
+						ErrBackupOnDeadBranch, a, r.Domain, r.Server, r.After+1, r.Through)
+				}
+			}
 		}
 		for _, seg := range segs {
 			cut, ok := forkCut(seg, domain)

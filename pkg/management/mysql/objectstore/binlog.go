@@ -198,6 +198,60 @@ type ArchiveIndex struct {
 	// that wrote the index. A writer whose generation is lower is a demoted
 	// primary finishing a pass, and never judges the segments.
 	Generation int64 `json:"generation,omitempty"`
+	// Disowned accumulates every transaction recorded as disowned, by a fork
+	// record or by a base backup found on a dead branch. Unlike fork records it
+	// is not attached to a segment, so retention dropping the segment that held
+	// a dead branch does not erase it: a base backup holding that branch is
+	// still refused for a time or latest recovery.
+	Disowned *ArchiveDisowned `json:"disowned,omitempty"`
+}
+
+// ArchiveDisowned is the index-level record of disowned transactions.
+type ArchiveDisowned struct {
+	// GTIDSet (MySQL) is the disowned set.
+	GTIDSet string `json:"gtidSet,omitempty"`
+	// Ranges (MariaDB) name, per domain and authoring server, the disowned
+	// stretches of sequence numbers.
+	Ranges []ArchiveDisownedRange `json:"ranges,omitempty"`
+}
+
+// ArchiveDisownedRange is a MariaDB dead branch: the transactions server
+// authored in domain with a sequence in (After, Through].
+type ArchiveDisownedRange struct {
+	Domain  uint32 `json:"domain"`
+	Server  uint32 `json:"server"`
+	After   uint64 `json:"after"`
+	Through uint64 `json:"through"`
+}
+
+// Holds reports whether the MariaDB range holds the transaction d-s-n.
+func (r ArchiveDisownedRange) Holds(domain, server uint32, seq uint64) bool {
+	return r.Domain == domain && r.Server == server && seq > r.After && seq <= r.Through
+}
+
+// AddRange folds a MariaDB dead branch into the record, merging it with a
+// range of the same domain and server that it overlaps. It reports whether the
+// record grew.
+func (d *ArchiveDisowned) AddRange(r ArchiveDisownedRange) bool {
+	if r.Through <= r.After {
+		return false
+	}
+	for i := range d.Ranges {
+		cur := &d.Ranges[i]
+		if cur.Domain != r.Domain || cur.Server != r.Server || r.After > cur.Through || r.Through < cur.After {
+			continue
+		}
+		grew := false
+		if r.After < cur.After {
+			cur.After, grew = r.After, true
+		}
+		if r.Through > cur.Through {
+			cur.Through, grew = r.Through, true
+		}
+		return grew
+	}
+	d.Ranges = append(d.Ranges, r)
+	return true
 }
 
 // ArchiveFork names the disowned part of a segment: transactions it archived

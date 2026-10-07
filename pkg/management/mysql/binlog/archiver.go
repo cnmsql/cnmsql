@@ -230,6 +230,11 @@ type ForkReport struct {
 	// Superseded is true when a primary with a newer generation already wrote
 	// the index, so this one did not judge it.
 	Superseded bool
+	// Retracted names the segments whose fork record shrank because the
+	// surviving timeline holds some of its transactions again.
+	Retracted []string
+	// Disowned is the index's MySQL disowned set (see ArchiveIndex.Disowned).
+	Disowned string
 	// Read is true when the report comes from a read of the index, so Forks and
 	// OldestSegmentPosition describe it; false when nothing was read.
 	Read bool
@@ -711,6 +716,9 @@ func (a *Archiver) checkForks(
 		report.Read = true
 		report.Forks = SegmentForks(index)
 		report.OldestSegmentPosition = OldestSegmentPosition(index.Segments)
+		if index.Disowned != nil {
+			report.Disowned = index.Disowned.GTIDSet
+		}
 		return report
 	}
 	if pass.source == nil {
@@ -732,33 +740,55 @@ func (a *Archiver) checkForks(
 	}
 
 	now := a.now()
+	retractor, _ := judge.(forkRetractor)
 	merged := make([]*objectstore.ArchiveFork, len(index.Segments))
-	grew := false
+	changed := false
 	for i := range index.Segments {
 		seg := &index.Segments[i]
 		merged[i] = seg.Fork
-		if seg.ServerUUID == a.serverUUID {
+		// Its own segment holds only this instance's binlog, which its
+		// authority contains: nothing there is newly disowned. A record on it
+		// can still be retracted below.
+		if seg.ServerUUID != a.serverUUID {
+			delta, err := judge.Judge(*seg)
+			if err != nil {
+				report.Err = err
+				return false, finish()
+			}
+			fork, grew, err := mergeFork(seg.Fork, delta, judge.Authority(), now, a.forkIdentity())
+			if err != nil {
+				report.Err = err
+				return false, finish()
+			}
+			merged[i] = fork
+			changed = changed || grew
+		}
+		if retractor == nil || merged[i] == nil {
 			continue
 		}
-		delta, err := judge.Judge(*seg)
+		kept, retracted, err := retractFork(merged[i], retractor, judge.Authority())
 		if err != nil {
 			report.Err = err
 			return false, finish()
 		}
-		fork, g, err := mergeFork(seg.Fork, delta, judge.Authority(), now, a.forkIdentity())
-		if err != nil {
-			report.Err = err
-			return false, finish()
+		if retracted {
+			merged[i] = kept
+			changed = true
+			report.Retracted = append(report.Retracted, seg.ServerUUID)
 		}
-		merged[i] = fork
-		grew = grew || g
+	}
+	disowned, disownedChanged, err := foldDisowned(index.Disowned, index.Segments, merged, retractor)
+	if err != nil {
+		report.Err = err
+		return false, finish()
 	}
 	for i := range index.Segments {
 		index.Segments[i].Fork = merged[i]
 	}
+	index.Disowned = disowned
 	report.Checked = true
 	report.CheckedAt = now
-	return grew, finish()
+	return changed || disownedChanged, finish()
 }
 
 // CheckForks runs the fork check over the archive index outside an archive
@@ -796,12 +826,12 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 				report = ForkReport{}
 				return false, nil
 			}
-			var grew bool
-			grew, report = a.checkForks(ctx, index, pass)
+			var changed bool
+			changed, report = a.checkForks(ctx, index, pass)
 			if report.Err != nil {
 				return false, report.Err
 			}
-			if !report.Checked || (!grew && index.ForkCheck != nil && index.Generation >= generation) {
+			if !report.Checked || (!changed && index.ForkCheck != nil && index.Generation >= generation) {
 				return false, nil
 			}
 			index.Generation = generation

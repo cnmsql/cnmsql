@@ -134,6 +134,9 @@ type State struct {
 	Forks                 []SegmentFork
 	ForkCheckedAt         time.Time
 	OldestSegmentPosition string
+	// Disowned is the archive's MySQL disowned set (see
+	// objectstore.ArchiveIndex.Disowned) as of the last read.
+	Disowned string
 	// DeferredFile is the stranded file the drain gate keeps deferring because
 	// the surviving timeline does not provably hold it.
 	DeferredFile string
@@ -231,6 +234,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.state.Forks = nil
 		l.state.ForkCheckedAt = time.Time{}
 		l.state.OldestSegmentPosition = ""
+		l.state.Disowned = ""
 		l.mu.Unlock()
 		l.forkChecked = false
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
@@ -315,6 +319,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		Forks:                 forks.Forks,
 		ForkCheckedAt:         forks.ForkCheckedAt,
 		OldestSegmentPosition: forks.OldestSegmentPosition,
+		Disowned:              forks.Disowned,
 	}
 	if forkErr != nil {
 		l.state.LastError = "checking archive forks: " + forkErr.Error()
@@ -339,6 +344,7 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 		Forks:                 l.state.Forks,
 		ForkCheckedAt:         l.state.ForkCheckedAt,
 		OldestSegmentPosition: l.state.OldestSegmentPosition,
+		Disowned:              l.state.Disowned,
 	}
 	l.mu.Unlock()
 	if !l.archiver.ChecksForks() {
@@ -365,6 +371,10 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 	if report.Read {
 		out.Forks = report.Forks
 		out.OldestSegmentPosition = report.OldestSegmentPosition
+		out.Disowned = report.Disowned
+	}
+	if len(report.Retracted) > 0 {
+		l.logger.Info("Retracted fork records the surviving timeline holds again", "segments", report.Retracted)
 	}
 	if report.Checked {
 		l.forkChecked = true

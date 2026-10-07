@@ -123,3 +123,39 @@ func TestMariaDBDivergedMarkClearsOnlyOnProof(t *testing.T) {
 		t.Fatalf("diverged = %v, without a timeline containment clears as before", got)
 	}
 }
+
+const (
+	oldPrimaryUUID = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	successorUUID  = "7f2b1c90-0000-11e1-9e33-c80aa9429562"
+)
+
+// A MySQL former primary that holds a transaction the archive recorded as
+// disowned is diverged even when the primary is gone and nothing can be
+// compared: it came back after its successor died, and promoting it would
+// resurrect its dead branch.
+func TestMySQLInstanceHoldingADisownedTransactionIsDiverged(t *testing.T) {
+	t.Parallel()
+	in := topology.ObservationInput{
+		PrimaryName:      "demo-2",
+		InstanceNames:    []string{"demo-1", "demo-2", "demo-3"},
+		StatusByInstance: map[string]*webserver.Status{},
+		GTIDByInstance: map[string]string{
+			"demo-1": oldPrimaryUUID + ":1-219",
+			"demo-3": oldPrimaryUUID + ":1-218," + successorUUID + ":1-40",
+		},
+		EngineFlavor:  "mysql",
+		DisownedGTIDs: oldPrimaryUUID + ":219",
+	}
+	if got := detectDivergedReplicas(in); !slices.Equal(got, []string{"demo-1"}) {
+		t.Fatalf("diverged = %v, want [demo-1] with the primary unreachable", got)
+	}
+	in.GTIDByInstance["demo-2"] = oldPrimaryUUID + ":1-218," + successorUUID + ":1-50"
+	if got := detectDivergedReplicas(in); !slices.Equal(got, []string{"demo-1"}) {
+		t.Fatalf("diverged = %v, want [demo-1] with the primary reachable", got)
+	}
+	in.DisownedGTIDs = ""
+	in.GTIDByInstance["demo-2"] = ""
+	if got := detectDivergedReplicas(in); len(got) != 0 {
+		t.Fatalf("diverged = %v, want none without a disowned set or a primary to compare with", got)
+	}
+}

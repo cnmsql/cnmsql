@@ -341,6 +341,11 @@ func applyMySQLForks(idx *objectstore.ArchiveIndex, target RecoveryTarget, plan 
 			disowned = append(disowned, seg.Fork.GTIDSet)
 		}
 	}
+	// The index-level record keeps dead branches whose segment retention
+	// dropped, and dead-branch backup anchors that never reached the archive.
+	if idx.Disowned != nil && idx.Disowned.GTIDSet != "" {
+		disowned = append(disowned, idx.Disowned.GTIDSet)
+	}
 	allForks, err := replication.UnionGTIDStrings(disowned...)
 	if err != nil {
 		return fmt.Errorf("binlog: parsing fork records: %w", err)
@@ -369,12 +374,7 @@ func applyMySQLForks(idx *objectstore.ArchiveIndex, target RecoveryTarget, plan 
 		return fmt.Errorf("%w: it holds the disowned transactions %s", ErrBackupOnDeadBranch, held)
 	}
 
-	exclude := []string{plan.ExcludeGTIDs}
-	for _, seg := range plan.Segments {
-		if seg.Fork != nil && seg.Fork.GTIDSet != "" {
-			exclude = append(exclude, seg.Fork.GTIDSet)
-		}
-	}
+	exclude := []string{plan.ExcludeGTIDs, allForks}
 	if plan.ExcludeGTIDs, err = replication.UnionGTIDStrings(exclude...); err != nil {
 		return fmt.Errorf("binlog: merging fork records into the exclude set: %w", err)
 	}

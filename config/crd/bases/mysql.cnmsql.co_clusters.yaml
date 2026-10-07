@@ -5455,6 +5455,13 @@ spec:
                       (endpoint empty for AWS). A change is reported with an ArchiveMoved
                       Warning event.
                     type: string
+                  disownedGTIDs:
+                    description: |-
+                      DisownedGTIDs (MySQL) is every transaction the archive recorded as
+                      disowned, including dead branches whose segment retention already
+                      dropped and the dead part of base backups. An instance holding any of
+                      them is diverged.
+                    type: string
                   enabled:
                     description: Enabled mirrors whether continuous archiving is configured
                       on.

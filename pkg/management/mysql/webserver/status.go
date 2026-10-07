@@ -233,6 +233,9 @@ type ArchivingStatus struct {
 	// DeferredFile is the stranded binlog a former primary's drain keeps
 	// deferring because the surviving timeline does not provably hold it.
 	DeferredFile string `json:"deferredFile,omitempty"`
+	// DisownedGTIDs (MySQL) is every transaction the archive recorded as
+	// disowned, whether or not its segment is still in the archive.
+	DisownedGTIDs string `json:"disownedGTIDs,omitempty"`
 }
 
 // ArchiveForkStatus is one segment's fork record.

@@ -365,3 +365,20 @@ func TestPrepareMariadbPositionalGTIDLessArchive(t *testing.T) {
 		t.Fatalf("setup = %+v, err = %v", p, err)
 	}
 }
+
+// A dead branch the archive recorded at index level refuses the backup even
+// once retention dropped the segment that held it.
+func TestPrepareMariadbPositionalRefusesABackupOnARecordedDeadBranch(t *testing.T) {
+	t.Parallel()
+	idx := mariadbForkIndex()
+	for i := range idx.Segments {
+		idx.Segments[i].Fork = nil
+	}
+	idx.Disowned = &objectstore.ArchiveDisowned{Ranges: []objectstore.ArchiveDisownedRange{{Domain: 0, Server: 1, After: 218, Through: 225}}}
+	if _, err := PrepareMariadbPositional(idx, "0-1-220", RecoveryTarget{}); !errors.Is(err, ErrBackupOnDeadBranch) {
+		t.Fatalf("err = %v, want ErrBackupOnDeadBranch", err)
+	}
+	if _, err := PrepareMariadbPositional(idx, "0-2-220", RecoveryTarget{}); errors.Is(err, ErrBackupOnDeadBranch) {
+		t.Fatalf("a backup on the surviving branch was refused: %v", err)
+	}
+}

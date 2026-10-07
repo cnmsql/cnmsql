@@ -78,6 +78,106 @@ func (j *mysqlForkJudge) Judge(seg objectstore.ArchiveSegment) (*objectstore.Arc
 
 func (j *mysqlForkJudge) Authority() string { return j.raw }
 
+// Unheld implements forkRetractor.
+func (j *mysqlForkJudge) Unheld(gtidSet string) (string, error) {
+	set, err := replication.ParseGTIDSet(gtidSet)
+	if err != nil {
+		return "", fmt.Errorf("binlog: parsing disowned set: %w", err)
+	}
+	return set.Difference(j.executed).String(), nil
+}
+
+// forkRetractor is a judge that can tell which recorded disowned transactions
+// the surviving timeline does not hold: MySQL names each transaction's author,
+// so a set the authority holds part of again (a former primary that held a
+// dead transaction was promoted after all) is narrowed to what it still lacks.
+// The fencing of the index writes is what makes this safe: only the newest
+// primary judges, and its executed set only grows.
+type forkRetractor interface {
+	// Unheld returns the part of gtidSet the authority does not hold.
+	Unheld(gtidSet string) (string, error)
+}
+
+// retractFork narrows a MySQL fork record to what the authority still lacks. It
+// returns nil when nothing is left, and whether the record shrank.
+func retractFork(
+	fork *objectstore.ArchiveFork, retractor forkRetractor, authority string,
+) (*objectstore.ArchiveFork, bool, error) {
+	if fork == nil || fork.GTIDSet == "" {
+		return fork, false, nil
+	}
+	unheld, err := retractor.Unheld(fork.GTIDSet)
+	if err != nil {
+		return nil, false, err
+	}
+	if unheld == canonicalGTIDSet(fork.GTIDSet) {
+		return fork, false, nil
+	}
+	if unheld == "" && len(fork.AfterSeq) == 0 {
+		return nil, true, nil
+	}
+	kept := *fork
+	kept.GTIDSet = unheld
+	kept.AuthorityGTIDSet = authority
+	return &kept, true, nil
+}
+
+// foldDisowned folds the segments' fork records into the index-level disowned
+// record, narrowing its MySQL set to what the authority still lacks when the
+// judge can tell. forks are the segments' records after this check.
+func foldDisowned(
+	existing *objectstore.ArchiveDisowned, segs []objectstore.ArchiveSegment,
+	forks []*objectstore.ArchiveFork, retractor forkRetractor,
+) (*objectstore.ArchiveDisowned, bool, error) {
+	out := &objectstore.ArchiveDisowned{}
+	before := ""
+	if existing != nil {
+		out.GTIDSet = existing.GTIDSet
+		out.Ranges = slices.Clone(existing.Ranges)
+		before = canonicalGTIDSet(existing.GTIDSet)
+	}
+	changed := false
+	sets := []string{out.GTIDSet}
+	for i, fork := range forks {
+		if fork == nil {
+			continue
+		}
+		if fork.GTIDSet != "" {
+			sets = append(sets, fork.GTIDSet)
+		}
+		for domain, after := range fork.AfterSeq {
+			gtids, err := engine.ParseMariaDBPosition(segs[i].GTIDSet)
+			if err != nil {
+				return nil, false, fmt.Errorf("binlog: parsing position of segment %s: %w", segs[i].ServerUUID, err)
+			}
+			for _, g := range gtids {
+				if g.Domain == domain && out.AddRange(objectstore.ArchiveDisownedRange{
+					Domain: domain, Server: g.Server, After: after, Through: g.Seq,
+				}) {
+					changed = true
+				}
+			}
+		}
+	}
+	union, err := replication.UnionGTIDStrings(sets...)
+	if err != nil {
+		return nil, false, fmt.Errorf("binlog: merging disowned sets: %w", err)
+	}
+	if retractor != nil && union != "" {
+		if union, err = retractor.Unheld(union); err != nil {
+			return nil, false, err
+		}
+	}
+	out.GTIDSet = union
+	if union != before {
+		changed = true
+	}
+	if out.GTIDSet == "" && len(out.Ranges) == 0 {
+		return nil, changed, nil
+	}
+	return out, changed, nil
+}
+
 // mariadbForkJudge judges against the primary timeline: a MariaDB position
 // names only the author of its last transaction, and the timeline says who
 // authored each stretch of sequence numbers.

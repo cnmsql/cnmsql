@@ -326,6 +326,7 @@ func archivingStatus(s binlog.State) *webserver.ArchivingStatus {
 		PurgeHeldBy:           s.PurgeHeldBy,
 		OldestSegmentPosition: s.OldestSegmentPosition,
 		DeferredFile:          s.DeferredFile,
+		DisownedGTIDs:         s.Disowned,
 	}
 	if !s.PurgeHeldSince.IsZero() {
 		out.PurgeHeldSince = rfc3339(s.PurgeHeldSince)

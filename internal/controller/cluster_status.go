@@ -604,6 +604,7 @@ func aggregateArchiving(
 		return out
 	}
 	out.OldestSegmentPosition = a.OldestSegmentPosition
+	out.DisownedGTIDs = a.DisownedGTIDs
 	for _, fork := range a.Forks {
 		out.ForkGTIDs = append(out.ForkGTIDs, fork.GTIDs)
 		if at := parseInstanceTime(fork.DetectedAt); at != nil &&
@@ -622,6 +623,7 @@ func carryForks(out, prior *mysqlv1alpha1.ContinuousArchivingStatus) {
 	out.ForkGTIDs = prior.ForkGTIDs
 	out.ForkDetectedAt = prior.ForkDetectedAt
 	out.OldestSegmentPosition = prior.OldestSegmentPosition
+	out.DisownedGTIDs = prior.DisownedGTIDs
 }
 
 // applyArchivingStatus records the archiving status the observation produced.

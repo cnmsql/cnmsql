@@ -102,9 +102,26 @@ func topologyObservationInput(observed observedCluster, cluster *mysqlv1alpha1.C
 		EngineFlavor:           string(cluster.ResolvedFlavor()),
 		PriorDivergedInstances: priorDiverged,
 		MariaDBTimeline:        observed.MariaDBTimeline.engineTimeline(),
+		DisownedGTIDs:          disownedGTIDs(observed, cluster),
 	}
 	if gr != nil {
 		in.ObservedViewMax = gr.ObservedViewMax
 	}
 	return in
+}
+
+// disownedGTIDs is the archive's MySQL disowned set: the primary's report once
+// it has fork-checked the archive, otherwise the last one recorded in status.
+func disownedGTIDs(observed observedCluster, cluster *mysqlv1alpha1.Cluster) string {
+	if !cluster.IsArchivingEnabled() {
+		return ""
+	}
+	if status, ok := observed.StatusByInstance[observed.PrimaryName]; ok && status.Archiving != nil &&
+		status.Archiving.ForkCheckedAt != "" {
+		return status.Archiving.DisownedGTIDs
+	}
+	if ca := cluster.Status.ContinuousArchiving; ca != nil {
+		return ca.DisownedGTIDs
+	}
+	return ""
 }
