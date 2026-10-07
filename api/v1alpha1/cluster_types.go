@@ -1730,6 +1730,22 @@ type ContinuousArchivingStatus struct {
 	// them is diverged.
 	// +optional
 	DisownedGTIDs string `json:"disownedGTIDs,omitempty"`
+
+	// Gaps lists the stretches of the timeline the archive is missing between
+	// transactions it holds (a MySQL GTID set, or a MariaDB
+	// `domain-first..last` range): point-in-time recovery from a base backup
+	// taken before one of them cannot cross it. They come from a binary log
+	// that left the server before it was archived, typically a successor
+	// cloned after the last archived file whose predecessor then died.
+	// +optional
+	// +listType=atomic
+	Gaps []string `json:"gaps,omitempty"`
+
+	// CoveredGTIDSet (MySQL) is every transaction the archive holds. Failover
+	// prefers, among equally advanced replicas, one whose binary-log history
+	// the archive already covers.
+	// +optional
+	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
 }
 
 // MariaDBEpoch is one change of primary on a MariaDB cluster.

@@ -5449,6 +5449,12 @@ spec:
                   ContinuousArchiving reports the health of continuous binlog archiving when
                   it is enabled.
                 properties:
+                  coveredGTIDSet:
+                    description: |-
+                      CoveredGTIDSet (MySQL) is every transaction the archive holds. Failover
+                      prefers, among equally advanced replicas, one whose binary-log history
+                      the archive already covers.
+                    type: string
                   destination:
                     description: |-
                       Destination is the archive location in use, `<endpoint>/<bucket>/<path>`
@@ -5478,6 +5484,18 @@ spec:
                       by a lagged promotion): the MySQL GTID set, or a MariaDB range such as
                       `0-1-219..0-1-225`. Point-in-time recovery to a time or to the latest
                       point leaves them out; an explicit targetGTID can still recover them.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  gaps:
+                    description: |-
+                      Gaps lists the stretches of the timeline the archive is missing between
+                      transactions it holds (a MySQL GTID set, or a MariaDB
+                      `domain-first..last` range): point-in-time recovery from a base backup
+                      taken before one of them cannot cross it. They come from a binary log
+                      that left the server before it was archived, typically a successor
+                      cloned after the last archived file whose predecessor then died.
                     items:
                       type: string
                     type: array

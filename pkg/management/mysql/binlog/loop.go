@@ -137,6 +137,10 @@ type State struct {
 	// Disowned is the archive's MySQL disowned set (see
 	// objectstore.ArchiveIndex.Disowned) as of the last read.
 	Disowned string
+	// Gaps are the stretches the archive is missing (see ArchiveGaps), and
+	// Covered its MySQL covered set, as of the last read.
+	Gaps    []string
+	Covered string
 	// DeferredFile is the stranded file the drain gate keeps deferring because
 	// the surviving timeline does not provably hold it.
 	DeferredFile string
@@ -198,6 +202,7 @@ func (l *Loop) State() State {
 	s := l.state
 	s.PurgeHeldBy = slices.Clone(s.PurgeHeldBy)
 	s.Forks = slices.Clone(s.Forks)
+	s.Gaps = slices.Clone(s.Gaps)
 	return s
 }
 
@@ -235,6 +240,8 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.state.ForkCheckedAt = time.Time{}
 		l.state.OldestSegmentPosition = ""
 		l.state.Disowned = ""
+		l.state.Gaps = nil
+		l.state.Covered = ""
 		l.mu.Unlock()
 		l.forkChecked = false
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
@@ -320,6 +327,8 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		ForkCheckedAt:         forks.ForkCheckedAt,
 		OldestSegmentPosition: forks.OldestSegmentPosition,
 		Disowned:              forks.Disowned,
+		Gaps:                  forks.Gaps,
+		Covered:               forks.Covered,
 	}
 	if forkErr != nil {
 		l.state.LastError = "checking archive forks: " + forkErr.Error()
@@ -345,6 +354,8 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 		ForkCheckedAt:         l.state.ForkCheckedAt,
 		OldestSegmentPosition: l.state.OldestSegmentPosition,
 		Disowned:              l.state.Disowned,
+		Gaps:                  l.state.Gaps,
+		Covered:               l.state.Covered,
 	}
 	l.mu.Unlock()
 	if !l.archiver.ChecksForks() {
@@ -372,6 +383,8 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 		out.Forks = report.Forks
 		out.OldestSegmentPosition = report.OldestSegmentPosition
 		out.Disowned = report.Disowned
+		out.Gaps = report.Gaps
+		out.Covered = report.Covered
 	}
 	if len(report.Retracted) > 0 {
 		l.logger.Info("Retracted fork records the surviving timeline holds again", "segments", report.Retracted)

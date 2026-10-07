@@ -159,3 +159,51 @@ func TestMySQLInstanceHoldingADisownedTransactionIsDiverged(t *testing.T) {
 		t.Fatalf("diverged = %v, want none without a disowned set or a primary to compare with", got)
 	}
 }
+
+// Among equally advanced candidates, the one whose clone point the archive
+// covers is promoted: the other holds its clone point in no binary log.
+func TestElectionPrefersACandidateTheArchiveCovers(t *testing.T) {
+	t.Parallel()
+	gtid := oldPrimaryUUID + ":1-200"
+	observed := topology.FailoverState{
+		PrimaryName:   "demo-0",
+		InstanceNames: []string{"demo-0", "demo-1", "demo-2"},
+		Instances: map[string]topology.FailoverInstance{
+			"demo-1": {Replica: true, SQLRunning: true, GTID: gtid, GTIDPurged: oldPrimaryUUID + ":1-150"},
+			"demo-2": {Replica: true, SQLRunning: true, GTID: gtid, GTIDPurged: oldPrimaryUUID + ":1-20"},
+		},
+	}
+	model := engine.MustForFlavor(engine.FlavorMySQL).GTID()
+	elect := func(covered string, preferred ...string) string {
+		return SelectFailoverCandidate(Election{
+			Observed: observed, GTID: model, ArchiveCovered: covered, Preferred: preferred,
+		}).Name
+	}
+	if got := elect(oldPrimaryUUID + ":1-100"); got != "demo-2" {
+		t.Fatalf("elected %q, want demo-2 whose clone point the archive covers", got)
+	}
+	if got := elect(""); got != "demo-1" {
+		t.Fatalf("elected %q, want ordinal order without archive coverage", got)
+	}
+	if got := elect(oldPrimaryUUID+":1-100", "demo-1"); got != "demo-1" {
+		t.Fatalf("elected %q, want the explicit preference kept", got)
+	}
+}
+
+func TestArchiveCoversHistory(t *testing.T) {
+	t.Parallel()
+	covered := oldPrimaryUUID + ":40-100"
+	cases := map[string]bool{
+		"":                                true,
+		oldPrimaryUUID + ":1-30":          true, // older than the archive
+		oldPrimaryUUID + ":1-90":          true,
+		oldPrimaryUUID + ":1-150":         false,
+		successorUUID + ":1-10":           true, // a UUID the archive never saw
+		oldPrimaryUUID + ":1-100:120-130": false,
+	}
+	for purged, want := range cases {
+		if got := archiveCoversHistory(covered, purged); got != want {
+			t.Errorf("archiveCoversHistory(%q) = %v, want %v", purged, got, want)
+		}
+	}
+}

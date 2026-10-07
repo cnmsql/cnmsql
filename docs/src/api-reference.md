@@ -731,6 +731,8 @@ _Appears in:_
 | `forkDetectedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | ForkDetectedAt is when the earliest of those records was written. |  | Optional: \{\} <br /> |
 | `oldestSegmentPosition` _string_ | OldestSegmentPosition (MariaDB) is the lowest GTID position any archive<br />segment reached, per domain. The operator keeps the MariaDB primary<br />timeline back to it. |  | Optional: \{\} <br /> |
 | `disownedGTIDs` _string_ | DisownedGTIDs (MySQL) is every transaction the archive recorded as<br />disowned, including dead branches whose segment retention already<br />dropped and the dead part of base backups. An instance holding any of<br />them is diverged. |  | Optional: \{\} <br /> |
+| `gaps` _string array_ | Gaps lists the stretches of the timeline the archive is missing between<br />transactions it holds (a MySQL GTID set, or a MariaDB<br />`domain-first..last` range): point-in-time recovery from a base backup<br />taken before one of them cannot cross it. They come from a binary log<br />that left the server before it was archived, typically a successor<br />cloned after the last archived file whose predecessor then died. |  | Optional: \{\} <br /> |
+| `coveredGTIDSet` _string_ | CoveredGTIDSet (MySQL) is every transaction the archive holds. Failover<br />prefers, among equally advanced replicas, one whose binary-log history<br />the archive already covers. |  | Optional: \{\} <br /> |
 
 
 ### Database

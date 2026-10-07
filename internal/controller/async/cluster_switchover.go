@@ -192,6 +192,7 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 		MaxTransactionsBehind: maxTransactionsBehind(cluster),
 		Preferred:             cluster.PreferredPrimary(),
 		ReferenceGTID:         observed.Instances[current].GTID,
+		ArchiveCovered:        archiveCovered(cluster),
 	}).Name
 	if candidate == "" {
 		// No provably-safe replica: do nothing and let failover handle the primary

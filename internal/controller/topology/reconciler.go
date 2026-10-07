@@ -124,6 +124,9 @@ type FailoverInstance struct {
 	// replica and it applies them before promotion, so the failover bound measures
 	// data loss against the union of GTID and RetrievedGTID, not against GTID alone.
 	RetrievedGTID string
+	// GTIDPurged (MySQL) is the instance's gtid_purged: what it holds without a
+	// binary log for it, such as a clone point.
+	GTIDPurged string
 	// HeartbeatAge is how old the newest heartbeat stamp this instance has applied
 	// is, as the instance itself measured it. Nil when the heartbeat is off or has
 	// never been read.

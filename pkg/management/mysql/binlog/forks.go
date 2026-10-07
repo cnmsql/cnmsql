@@ -17,6 +17,7 @@ limitations under the License.
 package binlog
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -365,4 +366,70 @@ func OldestSegmentPosition(segs []objectstore.ArchiveSegment) string {
 // forkCheckIdentity is how DetectedBy and CheckedBy name a primary.
 func forkCheckIdentity(instance, identity string) string {
 	return instance + "/" + identity
+}
+
+// ArchiveGaps lists the stretches of the timeline the archive is missing
+// between transactions it holds: recovery from a base backup taken before one
+// of them cannot cross it. On MySQL they are the holes of the covered set, per
+// UUID; on MariaDB the gaps between the segments' sequence ranges, per domain,
+// with each segment's range ending at its fork cut. A stretch before the first
+// archived transaction is not a gap: the archive simply starts later.
+func ArchiveGaps(idx *objectstore.ArchiveIndex) []string {
+	if idx == nil || len(idx.Segments) == 0 {
+		return nil
+	}
+	if covered, err := replication.ParseGTIDSet(idx.CoveredGTIDSet); err == nil && !mariadbArchive(idx) {
+		if holes := covered.Holes(); !holes.IsEmpty() {
+			return []string{holes.String()}
+		}
+		return nil
+	}
+	type interval struct{ start, end uint64 }
+	byDomain := map[uint32][]interval{}
+	for _, seg := range idx.Segments {
+		gtids, err := engine.ParseMariaDBPosition(seg.GTIDSet)
+		if err != nil {
+			continue
+		}
+		for _, g := range gtids {
+			start := MariaSeqForDomain(seg.StartGTIDSet, g.Domain)
+			if start == 0 {
+				start = 1
+			}
+			end := g.Seq
+			if seg.Fork != nil {
+				if cut, ok := seg.Fork.AfterSeq[g.Domain]; ok && cut < end {
+					end = cut
+				}
+			}
+			if end >= start {
+				byDomain[g.Domain] = append(byDomain[g.Domain], interval{start, end})
+			}
+		}
+	}
+	var out []string
+	for _, domain := range slices.Sorted(maps.Keys(byDomain)) {
+		ivs := byDomain[domain]
+		slices.SortFunc(ivs, func(a, b interval) int { return cmp.Compare(a.start, b.start) })
+		reached := ivs[0].end
+		for _, iv := range ivs[1:] {
+			if iv.start > reached+1 {
+				out = append(out, fmt.Sprintf("%d-%d..%d", domain, reached+1, iv.start-1))
+			}
+			reached = max(reached, iv.end)
+		}
+	}
+	return out
+}
+
+// mariadbArchive reports whether the index's segments carry MariaDB positions.
+func mariadbArchive(idx *objectstore.ArchiveIndex) bool {
+	for _, seg := range idx.Segments {
+		if seg.GTIDSet == "" {
+			continue
+		}
+		_, err := engine.ParseMariaDBPosition(seg.GTIDSet)
+		return err == nil
+	}
+	return false
 }

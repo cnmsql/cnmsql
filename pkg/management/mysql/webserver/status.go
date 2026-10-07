@@ -236,6 +236,11 @@ type ArchivingStatus struct {
 	// DisownedGTIDs (MySQL) is every transaction the archive recorded as
 	// disowned, whether or not its segment is still in the archive.
 	DisownedGTIDs string `json:"disownedGTIDs,omitempty"`
+	// Gaps are the stretches of the timeline the archive is missing between
+	// transactions it holds: MySQL GTID sets, or MariaDB "domain-first..last".
+	Gaps []string `json:"gaps,omitempty"`
+	// CoveredGTIDSet (MySQL) is everything the archive holds.
+	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
 }
 
 // ArchiveForkStatus is one segment's fork record.

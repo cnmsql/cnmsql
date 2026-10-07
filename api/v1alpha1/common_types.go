@@ -375,6 +375,14 @@ const (
 	// last forked segment, and is absent when continuous archiving is off.
 	ConditionArchiveForked = "ArchiveForked"
 
+	// ConditionArchiveGap is True while the binary-log archive is missing a
+	// stretch of the timeline between transactions it holds that the newest
+	// completed base backup does not hold either, so recovery to the latest
+	// point cannot cross it. When it turns True the operator takes a base
+	// backup, which clears it once it completes. It is absent when continuous
+	// archiving is off.
+	ConditionArchiveGap = "ArchiveGap"
+
 	// EventMariaDBTimelineTruncated is the Warning event reason emitted when
 	// the MariaDB primary timeline reached its ceiling and dropped history an
 	// instance position or archive segment still referenced.

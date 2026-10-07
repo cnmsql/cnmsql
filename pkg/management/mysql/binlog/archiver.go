@@ -235,6 +235,10 @@ type ForkReport struct {
 	Retracted []string
 	// Disowned is the index's MySQL disowned set (see ArchiveIndex.Disowned).
 	Disowned string
+	// Gaps are the stretches of the timeline the archive is missing (see
+	// ArchiveGaps); Covered is the index's MySQL covered set.
+	Gaps    []string
+	Covered string
 	// Read is true when the report comes from a read of the index, so Forks and
 	// OldestSegmentPosition describe it; false when nothing was read.
 	Read bool
@@ -718,6 +722,10 @@ func (a *Archiver) checkForks(
 		report.OldestSegmentPosition = OldestSegmentPosition(index.Segments)
 		if index.Disowned != nil {
 			report.Disowned = index.Disowned.GTIDSet
+		}
+		report.Gaps = ArchiveGaps(index)
+		if !mariadbArchive(index) {
+			report.Covered = index.CoveredGTIDSet
 		}
 		return report
 	}

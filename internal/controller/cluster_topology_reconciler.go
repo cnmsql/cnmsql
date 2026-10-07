@@ -51,6 +51,7 @@ func topologyFailoverState(observed observedCluster) topology.FailoverState {
 			Replica:          status.Role == webserver.RoleReplica,
 			Role:             string(status.Role),
 			GTID:             observed.GTIDByInstance[name],
+			GTIDPurged:       status.GTIDPurged,
 			InPlaceUpgrading: status.InPlaceUpgrading,
 		}
 		if status.Replication != nil {
