@@ -65,7 +65,8 @@ func TestMergeArchiveTimelineKeepsOlderHistory(t *testing.T) {
 		t.Fatalf("merged = %+v, want %+v", got, want)
 	}
 	// The Cluster still holding the stored history replaces it as is.
-	grown := append(append([]objectstore.ArchiveEpoch{}, archivedEpochs...), objectstore.ArchiveEpoch{Instance: "demo-3", ServerID: 3, Handoff: "0-2-400"})
+	grown := append(append([]objectstore.ArchiveEpoch{}, archivedEpochs...),
+		objectstore.ArchiveEpoch{Instance: "demo-3", ServerID: 3, Handoff: "0-2-400"})
 	if got := mergeArchiveTimeline(archivedEpochs, grown, segs); !reflect.DeepEqual(got, grown) {
 		t.Fatalf("merged = %+v, want %+v", got, grown)
 	}

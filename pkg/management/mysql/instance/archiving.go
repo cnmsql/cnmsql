@@ -90,7 +90,9 @@ func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
 	epochs := make([]objectstore.ArchiveEpoch, 0, len(cluster.Status.MariaDBTimeline))
 	for _, epoch := range cluster.Status.MariaDBTimeline {
 		timeline = append(timeline, engine.MariaDBEpoch{ServerID: epoch.ServerID, Handoff: epoch.Handoff})
-		epochs = append(epochs, objectstore.ArchiveEpoch{Instance: epoch.Instance, ServerID: epoch.ServerID, Handoff: epoch.Handoff})
+		epochs = append(epochs, objectstore.ArchiveEpoch{
+			Instance: epoch.Instance, ServerID: epoch.ServerID, Handoff: epoch.Handoff,
+		})
 	}
 	f.latest.Store(&floorView{
 		instances:      slices.Clone(cluster.Status.InstanceNames),

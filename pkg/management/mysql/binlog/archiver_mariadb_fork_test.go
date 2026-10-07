@@ -76,7 +76,9 @@ func TestMariaDBForkCheckDetectsTheDeadBranch(t *testing.T) {
 	if fork == nil || !reflect.DeepEqual(fork.AfterSeq, map[uint32]uint64{0: 218}) || fork.AuthorityGTIDSet != "0-2-300" {
 		t.Fatalf("fork = %+v, want afterSeq {0: 218}", fork)
 	}
-	want := &objectstore.ArchiveDisowned{Ranges: []objectstore.ArchiveDisownedRange{{Domain: 0, Server: 1, After: 218, Through: 219}}}
+	want := &objectstore.ArchiveDisowned{
+		Ranges: []objectstore.ArchiveDisownedRange{{Domain: 0, Server: 1, After: 218, Through: 219}},
+	}
 	if !reflect.DeepEqual(idx.Disowned, want) {
 		t.Fatalf("disowned = %+v, want %+v", idx.Disowned, want)
 	}

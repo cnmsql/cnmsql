@@ -45,7 +45,9 @@ func TestLoopStampsArchivedThrough(t *testing.T) {
 	seedIndex(t, store, objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{oldSegment(otherUUID + ":1-5")}})
 	src := &executedSource{executed: otherUUID + ":1-5," + testUUID + ":1-3"}
 	arch := newForkArchiver(t, store, dir, staticScan(map[string]string{"binlog.000001": testUUID + ":1-3"}), src.source)
-	loop := NewLoop(LoopOptions{Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(), FlushInterval: time.Nanosecond})
+	loop := NewLoop(LoopOptions{
+		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(), FlushInterval: time.Nanosecond,
+	})
 
 	var lastFlush time.Time
 	var lastSize int64

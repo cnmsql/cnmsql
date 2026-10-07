@@ -48,7 +48,10 @@ func TestArchiveGapsMariaDB(t *testing.T) {
 	}
 	// A segment's range ends at its fork cut: the dead part does not bridge.
 	idx = &objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{
-		{ServerUUID: "a", StartGTIDSet: "0-1-1", GTIDSet: "0-1-230", Fork: &objectstore.ArchiveFork{AfterSeq: map[uint32]uint64{0: 218}}},
+		{
+			ServerUUID: "a", StartGTIDSet: "0-1-1", GTIDSet: "0-1-230",
+			Fork: &objectstore.ArchiveFork{AfterSeq: map[uint32]uint64{0: 218}},
+		},
 		{ServerUUID: "b", StartGTIDSet: "0-2-226", GTIDSet: "0-2-300"},
 	}}
 	if got := ArchiveGaps(idx); !slices.Equal(got, []string{"0-219..225"}) {
