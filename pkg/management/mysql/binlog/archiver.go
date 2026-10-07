@@ -76,6 +76,14 @@ type Archiver struct {
 	// disowned tail is deferred forever, and decoding it with mysqlbinlog on
 	// every tick would cost a full read of the file every poll interval.
 	deferredScans map[string]scannedStamp
+	// indexed memoizes the files known to be listed in this instance's index
+	// segment. A file whose manifest landed but whose index write failed is
+	// archived yet unindexed, and recovery reads the index: such a file has to
+	// count as advanced so the pass folds it in. indexSeeded is false until the
+	// memo is seeded from one index read, and again after any failed index
+	// write, since the index may then lack files the memo cannot name.
+	indexed     map[string]bool
+	indexSeeded bool
 }
 
 // scannedStamp is a scan result together with the identity of the file it was
@@ -166,6 +174,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		forks:         opts.Forks,
 		verified:      make(map[string]archivedStamp),
 		deferredScans: make(map[string]scannedStamp),
+		indexed:       make(map[string]bool),
 	}, nil
 }
 
@@ -285,6 +294,15 @@ func (a *Archiver) archivePending(
 		}
 		result.Files = append(result.Files, ArchivedFile{Name: l.Name, GTIDSet: meta.GTIDSet})
 
+		// A file that was already archived is only known to be indexed once the
+		// memo is seeded; seeding costs one index read, so it waits for the first
+		// file that needs it.
+		if !archived && !a.indexed[l.Name] {
+			if err := a.seedIndexed(ctx, bucket); err != nil {
+				return result, err
+			}
+		}
+
 		// Whether freshly archived or already present, fold its coverage into the
 		// segment frontier so a resumed pass converges.
 		fileSet := a.newSet()
@@ -298,9 +316,11 @@ func (a *Archiver) archivePending(
 		// objects on every tick would be two object-store writes per retained file
 		// forever, so only write when this pass actually moved something. A crash
 		// between the manifest and the status write lands here with coverage still
-		// missing, which makes the union change and the writes happen.
+		// missing, which makes the union change and the writes happen. One between
+		// the status and the index write leaves the coverage recorded but the file
+		// unindexed, which the indexed memo catches.
 		advanced := archived || covered.String() != priorCovered ||
-			(status.FirstGTID == "" && meta.FirstGTID != "")
+			(status.FirstGTID == "" && meta.FirstGTID != "") || !a.indexed[l.Name]
 
 		result.LastArchivedBinlog = l.Name
 		if meta.LastGTID != "" {
@@ -326,11 +346,35 @@ func (a *Archiver) archivePending(
 			return result, fmt.Errorf("binlog: writing archive status: %w", err)
 		}
 		if err := a.updateIndex(ctx, bucket, status, l.Name, meta.GTIDSet, pass); err != nil {
+			a.indexSeeded = false
 			return result, err
 		}
+		a.indexed[l.Name] = true
 	}
 
 	return result, nil
+}
+
+// seedIndexed seeds the indexed memo from the archive index, once per process
+// and again after a failed index write.
+func (a *Archiver) seedIndexed(ctx context.Context, bucket string) error {
+	if a.indexSeeded {
+		return nil
+	}
+	var index objectstore.ArchiveIndex
+	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
+	_, exists, err := a.store.GetJSONVersion(ctx, bucket, key, &index)
+	if err != nil {
+		return fmt.Errorf("binlog: reading archive index: %w", err)
+	}
+	a.indexed = make(map[string]bool)
+	if seg, ok := index.Segment(a.serverUUID); exists && ok {
+		for _, name := range seg.Binlogs {
+			a.indexed[name] = true
+		}
+	}
+	a.indexSeeded = true
+	return nil
 }
 
 // archiveFile archives a single rotated file. It returns the file's manifest,
