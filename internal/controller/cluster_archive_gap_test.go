@@ -127,7 +127,8 @@ func TestArchiveGapTakesABackup(t *testing.T) {
 		t.Fatalf("backups = %d, want exactly one", len(backups.Items))
 	}
 	b := backups.Items[0]
-	if b.Spec.Cluster.Name != cluster.Name || b.Labels[archiveGapBackupLabel] != "true" || len(b.OwnerReferences) != 1 {
+	if b.Spec.Cluster.Name != cluster.Name || b.Labels[archiveGapBackupLabel] != "true" || len(b.OwnerReferences) != 1 ||
+		b.Spec.Target != mysqlv1alpha1.BackupTargetPrimary {
 		t.Fatalf("backup = %+v", b.ObjectMeta)
 	}
 	select {

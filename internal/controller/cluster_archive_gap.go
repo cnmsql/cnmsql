@@ -208,9 +208,12 @@ func (r *ClusterReconciler) ensureArchiveGapBackup(ctx context.Context, cluster 
 				archiveGapBackupLabel: "true",
 			},
 		},
+		// On the primary: a replica may be the diverged instance whose loss
+		// left the gap, and a backup of it would sit on a dead branch.
 		Spec: mysqlv1alpha1.BackupSpec{
 			Cluster: mysqlv1alpha1.LocalObjectReference{Name: cluster.Name},
 			Method:  mysqlv1alpha1.BackupMethodXtrabackup,
+			Target:  mysqlv1alpha1.BackupTargetPrimary,
 		},
 	}
 	if err := controllerutil.SetControllerReference(cluster, backup, r.Scheme); err != nil {
