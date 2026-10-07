@@ -426,11 +426,17 @@ func failbackSpec(f forkFlavor, cluster string) {
 		}
 		expectCondition(cluster, "ArchiveForked", "True")
 		if f.mariadb {
-			// The genesis entry may be pruned; the interim epoch and the failback
-			// are what the fork verdict needs.
+			// The failback must be the newest epoch. Older ones go once nothing
+			// references a position at or below the next handoff: with both
+			// instances and the archive past A's failback handoff, even S's epoch
+			// may be pruned, and S's dead branch is then judged against the
+			// timeline's floor. When it is still there, it comes right before.
 			instances := strings.Fields(mustClusterField(cluster, "{.status.mariadbTimeline[*].instance}"))
-			Expect(len(instances)).To(BeNumerically(">=", 2))
-			Expect(instances[len(instances)-2:]).To(Equal([]string{sInst, a}), "the failback must be on the timeline")
+			Expect(instances).NotTo(BeEmpty())
+			Expect(instances[len(instances)-1]).To(Equal(a), "the failback must be on the timeline")
+			if len(instances) >= 2 {
+				Expect(instances[len(instances)-2]).To(Equal(sInst), "the interim epoch must precede the failback")
+			}
 		}
 	})
 
