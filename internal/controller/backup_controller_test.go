@@ -1333,3 +1333,50 @@ func TestBackupRecordsBinlogObjectStore(t *testing.T) {
 		})
 	}
 }
+
+// A completed physical Backup records its anchor from metadata.json, which the
+// dead-branch and archive-gap checks judge. A missing manifest leaves the
+// anchor unknown rather than failing a good backup.
+func TestPhysicalBackupRecordsItsAnchor(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "anchor recorded", status: http.StatusOK, body: `{"backupID":"x","anchorGTID":"u1:1-42"}`, want: "u1:1-42"},
+		{name: "manifest missing", status: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			reconciler, backup := logicalManifestFixture(t, server.URL)
+			physical := &mysqlv1alpha1.Backup{}
+			key := types.NamespacedName{Namespace: backup.Namespace, Name: backup.Name}
+			if err := reconciler.Get(context.Background(), key, physical); err != nil {
+				t.Fatal(err)
+			}
+			physical.Spec.Method = mysqlv1alpha1.BackupMethodXtrabackup
+			if err := reconciler.Update(context.Background(), physical); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+				t.Fatal(err)
+			}
+			updated := &mysqlv1alpha1.Backup{}
+			if err := reconciler.Get(context.Background(), key, updated); err != nil {
+				t.Fatal(err)
+			}
+			if updated.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || updated.Status.EndGTID != tc.want {
+				t.Fatalf("phase = %q endGTID = %q, want Completed and %q", updated.Status.Phase, updated.Status.EndGTID, tc.want)
+			}
+		})
+	}
+}

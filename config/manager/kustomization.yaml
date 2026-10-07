@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: example.com/cnmsql
-  newTag: e2e-local
+  newTag: v0.0.1

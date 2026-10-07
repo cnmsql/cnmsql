@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
@@ -34,10 +35,11 @@ func TestScanMariaDBBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	at := func(sec int) time.Time { return time.Date(2026, 6, 12, 10, 0, sec, 0, time.UTC) }
 	want := []TxnBoundary{
-		{Domain: 0, Server: 1, Seq: 10, StartPos: 299}, // starts where the Gtid_list event ended
-		{Domain: 0, Server: 1, Seq: 11, StartPos: 341},
-		{Domain: 1, Server: 5, Seq: 3, StartPos: 420},
+		{Domain: 0, Server: 1, Seq: 10, StartPos: 299, Time: at(5)}, // starts where the Gtid_list event ended
+		{Domain: 0, Server: 1, Seq: 11, StartPos: 341, Time: at(7)},
+		{Domain: 1, Server: 5, Seq: 3, StartPos: 420, Time: at(9)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("boundaries = %+v, want %+v", got, want)

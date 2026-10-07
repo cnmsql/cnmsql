@@ -123,3 +123,87 @@ func TestMariaDBDivergedMarkClearsOnlyOnProof(t *testing.T) {
 		t.Fatalf("diverged = %v, without a timeline containment clears as before", got)
 	}
 }
+
+const (
+	oldPrimaryUUID = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	successorUUID  = "7f2b1c90-0000-11e1-9e33-c80aa9429562"
+)
+
+// A MySQL former primary that holds a transaction the archive recorded as
+// disowned is diverged even when the primary is gone and nothing can be
+// compared: it came back after its successor died, and promoting it would
+// resurrect its dead branch.
+func TestMySQLInstanceHoldingADisownedTransactionIsDiverged(t *testing.T) {
+	t.Parallel()
+	in := topology.ObservationInput{
+		PrimaryName:      "demo-2",
+		InstanceNames:    []string{"demo-1", "demo-2", "demo-3"},
+		StatusByInstance: map[string]*webserver.Status{},
+		GTIDByInstance: map[string]string{
+			"demo-1": oldPrimaryUUID + ":1-219",
+			"demo-3": oldPrimaryUUID + ":1-218," + successorUUID + ":1-40",
+		},
+		EngineFlavor:  "mysql",
+		DisownedGTIDs: oldPrimaryUUID + ":219",
+	}
+	if got := detectDivergedReplicas(in); !slices.Equal(got, []string{"demo-1"}) {
+		t.Fatalf("diverged = %v, want [demo-1] with the primary unreachable", got)
+	}
+	in.GTIDByInstance["demo-2"] = oldPrimaryUUID + ":1-218," + successorUUID + ":1-50"
+	if got := detectDivergedReplicas(in); !slices.Equal(got, []string{"demo-1"}) {
+		t.Fatalf("diverged = %v, want [demo-1] with the primary reachable", got)
+	}
+	in.DisownedGTIDs = ""
+	in.GTIDByInstance["demo-2"] = ""
+	if got := detectDivergedReplicas(in); len(got) != 0 {
+		t.Fatalf("diverged = %v, want none without a disowned set or a primary to compare with", got)
+	}
+}
+
+// Among equally advanced candidates, the one whose clone point the archive
+// covers is promoted: the other holds its clone point in no binary log.
+func TestElectionPrefersACandidateTheArchiveCovers(t *testing.T) {
+	t.Parallel()
+	gtid := oldPrimaryUUID + ":1-200"
+	observed := topology.FailoverState{
+		PrimaryName:   "demo-0",
+		InstanceNames: []string{"demo-0", "demo-1", "demo-2"},
+		Instances: map[string]topology.FailoverInstance{
+			"demo-1": {Replica: true, SQLRunning: true, GTID: gtid, GTIDPurged: oldPrimaryUUID + ":1-150"},
+			"demo-2": {Replica: true, SQLRunning: true, GTID: gtid, GTIDPurged: oldPrimaryUUID + ":1-20"},
+		},
+	}
+	model := engine.MustForFlavor(engine.FlavorMySQL).GTID()
+	elect := func(covered string, preferred ...string) string {
+		return SelectFailoverCandidate(Election{
+			Observed: observed, GTID: model, ArchiveCovered: covered, Preferred: preferred,
+		}).Name
+	}
+	if got := elect(oldPrimaryUUID + ":1-100"); got != "demo-2" {
+		t.Fatalf("elected %q, want demo-2 whose clone point the archive covers", got)
+	}
+	if got := elect(""); got != "demo-1" {
+		t.Fatalf("elected %q, want ordinal order without archive coverage", got)
+	}
+	if got := elect(oldPrimaryUUID+":1-100", "demo-1"); got != "demo-1" {
+		t.Fatalf("elected %q, want the explicit preference kept", got)
+	}
+}
+
+func TestArchiveCoversHistory(t *testing.T) {
+	t.Parallel()
+	covered := oldPrimaryUUID + ":40-100"
+	cases := map[string]bool{
+		"":                                true,
+		oldPrimaryUUID + ":1-30":          true, // older than the archive
+		oldPrimaryUUID + ":1-90":          true,
+		oldPrimaryUUID + ":1-150":         false,
+		successorUUID + ":1-10":           true, // a UUID the archive never saw
+		oldPrimaryUUID + ":1-100:120-130": false,
+	}
+	for purged, want := range cases {
+		if got := archiveCoversHistory(covered, purged); got != want {
+			t.Errorf("archiveCoversHistory(%q) = %v, want %v", purged, got, want)
+		}
+	}
+}

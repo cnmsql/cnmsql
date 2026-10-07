@@ -19,6 +19,7 @@ package binlog
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -183,9 +184,11 @@ func TestArchiverSkipsOwnSegment(t *testing.T) {
 	}
 }
 
-// A record only grows: an authority that (impossibly) regained a disowned
-// transaction cannot shrink what was already recorded.
-func TestArchiverForkRecordOnlyGrows(t *testing.T) {
+// A MySQL record narrows to what the authority still lacks: when the current
+// primary holds a recorded transaction again (a former primary that held it
+// was promoted after all), leaving it out of a recovery would replay later
+// transactions over a state that never existed.
+func TestArchiverRetractsWhatTheAuthorityHolds(t *testing.T) {
 	t.Parallel()
 	store := newMemStore()
 	old := oldSegment(otherUUID + ":1-221")
@@ -195,9 +198,64 @@ func TestArchiverForkRecordOnlyGrows(t *testing.T) {
 
 	archiveOne(t, store, src.source)
 
-	got := segmentByUUID(t, readIndex(t, store), "old-identity").Fork
-	if got == nil || got.GTIDSet != otherUUID+":219-221" || got.DetectedBy != "demo-2/x" {
-		t.Fatalf("fork = %+v, want 219-221 detected by demo-2/x", got)
+	idx := readIndex(t, store)
+	got := segmentByUUID(t, idx, "old-identity").Fork
+	if got == nil || got.GTIDSet != otherUUID+":221" || got.DetectedBy != "demo-2/x" {
+		t.Fatalf("fork = %+v, want 221 kept, 219-220 retracted, first detection kept", got)
+	}
+	if idx.Disowned == nil || idx.Disowned.GTIDSet != otherUUID+":221" {
+		t.Fatalf("disowned = %+v, want %s:221", idx.Disowned, otherUUID)
+	}
+}
+
+// A record on the primary's own segment is retracted too: it is the one the
+// regained-transaction case leaves behind, and it would otherwise refuse every
+// backup the new primary takes.
+func TestArchiverRetractsOnItsOwnSegment(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	seedIndex(t, store, objectstore.ArchiveIndex{
+		Segments: []objectstore.ArchiveSegment{{
+			ServerUUID: testUUID, InstanceName: "demo-1", GTIDSet: testUUID + ":1-5",
+			Fork: &objectstore.ArchiveFork{GTIDSet: testUUID + ":5", DetectedBy: "demo-2/x"},
+		}},
+		Disowned: &objectstore.ArchiveDisowned{GTIDSet: testUUID + ":5"},
+	})
+	src := &executedSource{executed: testUUID + ":1-5"}
+
+	archiveOne(t, store, src.source)
+
+	idx := readIndex(t, store)
+	if own := segmentByUUID(t, idx, testUUID); own.Fork != nil {
+		t.Fatalf("own segment fork = %+v, want retracted", own.Fork)
+	}
+	if idx.Disowned != nil {
+		t.Fatalf("disowned = %+v, want empty", idx.Disowned)
+	}
+	if _, err := PlanReplay(&idx, testUUID+":1-5", RecoveryTarget{}); err != nil {
+		t.Fatalf("a backup holding the regained transaction must be recoverable: %v", err)
+	}
+}
+
+// The disowned record outlives the segment: retention dropping a forked
+// segment keeps the dead branch it recorded.
+func TestDisownedOutlivesItsSegment(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	seedIndex(t, store, objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{oldSegment(otherUUID + ":1-219")}})
+	src := &executedSource{executed: otherUUID + ":1-218," + testUUID + ":1-5"}
+	archiveOne(t, store, src.source)
+
+	idx := readIndex(t, store)
+	idx.Segments = slices.DeleteFunc(idx.Segments, func(s objectstore.ArchiveSegment) bool {
+		return s.ServerUUID == "old-identity"
+	})
+	if idx.Disowned == nil || idx.Disowned.GTIDSet != otherUUID+":219" {
+		t.Fatalf("disowned = %+v", idx.Disowned)
+	}
+	_, err := PlanReplay(&idx, otherUUID+":1-219", RecoveryTarget{})
+	if !errors.Is(err, ErrBackupOnDeadBranch) {
+		t.Fatalf("err = %v, want ErrBackupOnDeadBranch after retention dropped the segment", err)
 	}
 }
 
@@ -322,9 +380,10 @@ func TestArchiverForkSourceWithoutAuthoritySkips(t *testing.T) {
 	}
 }
 
-// The authority is snapshotted once per pass, however many files the pass
-// ships, so one pass compares every segment against the same executed set.
-func TestArchiverReadsAuthorityOncePerPass(t *testing.T) {
+// The authority is read for every index write, after the index: a pass that
+// straddles a demotion must not judge segments that appeared after the
+// authority was read.
+func TestArchiverReadsAuthorityPerIndexWrite(t *testing.T) {
 	t.Parallel()
 	store := newMemStore()
 	dir := t.TempDir()
@@ -341,8 +400,8 @@ func TestArchiverReadsAuthorityOncePerPass(t *testing.T) {
 	if _, err := a.ArchivePending(context.Background(), logs); err != nil {
 		t.Fatal(err)
 	}
-	if src.calls != 1 {
-		t.Fatalf("authority read %d times in one pass, want 1", src.calls)
+	if src.calls != 3 {
+		t.Fatalf("authority read %d times for three index writes, want 3", src.calls)
 	}
 }
 

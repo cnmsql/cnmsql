@@ -36,6 +36,15 @@ import (
 // name) and must surface loudly rather than silently overwrite the archive.
 var ErrCollision = errors.New("binlog: archive key already holds a different object")
 
+// ErrNotCurrentPrimary is returned by a primary archive pass while the
+// instance's Cluster view does not name it status.currentPrimary yet: until
+// then it does not know the generation that fences its index writes.
+var ErrNotCurrentPrimary = errors.New("binlog: the cluster does not name this instance its current primary yet")
+
+// AuthoritySource reports the status.currentPrimaryGeneration of this instance
+// while its Cluster view names it status.currentPrimary; ok is false otherwise.
+type AuthoritySource func() (generation int64, ok bool)
+
 // Store is the subset of objectstore.Client the archiver needs. It is an
 // interface so the archiver is unit-testable with an in-memory fake. The index
 // is written through its versioned methods (objectstore.UpdateArchiveIndex),
@@ -68,6 +77,9 @@ type Archiver struct {
 	// forks snapshots the authority the fork check compares segments against;
 	// nil disables the check.
 	forks ForkSource
+	// authority fences the primary's index writes (see AuthoritySource); nil
+	// treats the archiver as an unfenced primary of generation zero.
+	authority AuthoritySource
 	// verified memoizes files this process has already proven byte-identical to
 	// their archived copy, so a steady-state pass costs one stat per file instead
 	// of re-decoding and re-hashing the whole retained set on every tick.
@@ -76,6 +88,14 @@ type Archiver struct {
 	// disowned tail is deferred forever, and decoding it with mysqlbinlog on
 	// every tick would cost a full read of the file every poll interval.
 	deferredScans map[string]scannedStamp
+	// indexed memoizes the files known to be listed in this instance's index
+	// segment. A file whose manifest landed but whose index write failed is
+	// archived yet unindexed, and recovery reads the index: such a file has to
+	// count as advanced so the pass folds it in. indexSeeded is false until the
+	// memo is seeded from one index read, and again after any failed index
+	// write, since the index may then lack files the memo cannot name.
+	indexed     map[string]bool
+	indexSeeded bool
 }
 
 // scannedStamp is a scan result together with the identity of the file it was
@@ -129,6 +149,8 @@ type ArchiverOptions struct {
 	// Forks snapshots what the surviving timeline holds for the fork check run
 	// on every index write and by CheckForks. Nil disables fork checks.
 	Forks ForkSource
+	// Authority fences the primary's index writes with its primary generation.
+	Authority AuthoritySource
 }
 
 // NewArchiver builds an Archiver from validated options.
@@ -164,8 +186,10 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		now:           now,
 		newSet:        newSet,
 		forks:         opts.Forks,
+		authority:     opts.Authority,
 		verified:      make(map[string]archivedStamp),
 		deferredScans: make(map[string]scannedStamp),
+		indexed:       make(map[string]bool),
 	}, nil
 }
 
@@ -203,6 +227,22 @@ type ForkReport struct {
 	// authority; CheckedAt is when.
 	Checked   bool
 	CheckedAt time.Time
+	// Superseded is true when a primary with a newer generation already wrote
+	// the index, so this one did not judge it.
+	Superseded bool
+	// Retracted names the segments whose fork record shrank because the
+	// surviving timeline holds some of its transactions again.
+	Retracted []string
+	// Disowned is the index's MySQL disowned set (see ArchiveIndex.Disowned).
+	Disowned string
+	// Gaps are the stretches of the timeline the archive is missing (see
+	// ArchiveGaps); Covered is the index's MySQL covered set.
+	Gaps    []string
+	Covered string
+	// ArchivedThrough is the stamp this check wrote, zero when it wrote none.
+	ArchivedThrough time.Time
+	// Timeline is the MariaDB primary timeline the index carries.
+	Timeline []objectstore.ArchiveEpoch
 	// Read is true when the report comes from a read of the index, so Forks and
 	// OldestSegmentPosition describe it; false when nothing was read.
 	Read bool
@@ -228,7 +268,20 @@ type ArchivedFile struct {
 // the resulting frontier or the first error; on error the frontier is not
 // advanced past the file that failed.
 func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (ArchiveResult, error) {
-	return a.archivePending(ctx, logs, nil, a.forks)
+	generation, ok := a.Authority()
+	if !ok {
+		return ArchiveResult{}, ErrNotCurrentPrimary
+	}
+	return a.archivePending(ctx, logs, nil, &forkPass{source: a.forks, primary: true, generation: generation})
+}
+
+// Authority reports the generation this archiver writes the index under as the
+// primary, and whether its Cluster view names it the current primary.
+func (a *Archiver) Authority() (int64, bool) {
+	if a.authority == nil {
+		return 0, true
+	}
+	return a.authority()
 }
 
 // DrainPending is ArchivePending for a former primary draining the tail it
@@ -237,14 +290,14 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 // surviving timeline holds; judging the live primary's segment against its own
 // executed set would record transactions it simply has not replicated yet.
 func (a *Archiver) DrainPending(ctx context.Context, logs []BinaryLog, allow FileFilter) (ArchiveResult, error) {
-	return a.archivePending(ctx, logs, allow, nil)
+	return a.archivePending(ctx, logs, allow, &forkPass{})
 }
 
 // ChecksForks reports whether this archiver runs fork checks at all.
 func (a *Archiver) ChecksForks() bool { return a.forks != nil }
 
 func (a *Archiver) archivePending(
-	ctx context.Context, logs []BinaryLog, allow FileFilter, forks ForkSource,
+	ctx context.Context, logs []BinaryLog, allow FileFilter, pass *forkPass,
 ) (result ArchiveResult, err error) {
 	bucket := a.objectStore.Bucket
 
@@ -263,7 +316,6 @@ func (a *Archiver) archivePending(
 		CoveredGTIDSet:     status.CoveredGTIDSet,
 	}
 
-	pass := &forkPass{source: forks}
 	defer func() { result.ForkCheck = pass.report }()
 	for _, l := range Archivable(logs) {
 		select {
@@ -285,6 +337,15 @@ func (a *Archiver) archivePending(
 		}
 		result.Files = append(result.Files, ArchivedFile{Name: l.Name, GTIDSet: meta.GTIDSet})
 
+		// A file that was already archived is only known to be indexed once the
+		// memo is seeded; seeding costs one index read, so it waits for the first
+		// file that needs it.
+		if !archived && !a.indexed[l.Name] {
+			if err := a.seedIndexed(ctx, bucket); err != nil {
+				return result, err
+			}
+		}
+
 		// Whether freshly archived or already present, fold its coverage into the
 		// segment frontier so a resumed pass converges.
 		fileSet := a.newSet()
@@ -298,9 +359,11 @@ func (a *Archiver) archivePending(
 		// objects on every tick would be two object-store writes per retained file
 		// forever, so only write when this pass actually moved something. A crash
 		// between the manifest and the status write lands here with coverage still
-		// missing, which makes the union change and the writes happen.
+		// missing, which makes the union change and the writes happen. One between
+		// the status and the index write leaves the coverage recorded but the file
+		// unindexed, which the indexed memo catches.
 		advanced := archived || covered.String() != priorCovered ||
-			(status.FirstGTID == "" && meta.FirstGTID != "")
+			(status.FirstGTID == "" && meta.FirstGTID != "") || !a.indexed[l.Name]
 
 		result.LastArchivedBinlog = l.Name
 		if meta.LastGTID != "" {
@@ -326,11 +389,35 @@ func (a *Archiver) archivePending(
 			return result, fmt.Errorf("binlog: writing archive status: %w", err)
 		}
 		if err := a.updateIndex(ctx, bucket, status, l.Name, meta.GTIDSet, pass); err != nil {
+			a.indexSeeded = false
 			return result, err
 		}
+		a.indexed[l.Name] = true
 	}
 
 	return result, nil
+}
+
+// seedIndexed seeds the indexed memo from the archive index, once per process
+// and again after a failed index write.
+func (a *Archiver) seedIndexed(ctx context.Context, bucket string) error {
+	if a.indexSeeded {
+		return nil
+	}
+	var index objectstore.ArchiveIndex
+	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
+	_, exists, err := a.store.GetJSONVersion(ctx, bucket, key, &index)
+	if err != nil {
+		return fmt.Errorf("binlog: reading archive index: %w", err)
+	}
+	a.indexed = make(map[string]bool)
+	if seg, ok := index.Segment(a.serverUUID); exists && ok {
+		for _, name := range seg.Binlogs {
+			a.indexed[name] = true
+		}
+	}
+	a.indexSeeded = true
+	return nil
 }
 
 // archiveFile archives a single rotated file. It returns the file's manifest,
@@ -522,6 +609,9 @@ func (a *Archiver) updateIndex(
 			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
 				return false, err
 			}
+			if pass.primary && pass.generation > index.Generation {
+				index.Generation = pass.generation
+			}
 			// This write carries a fresh copy of the index anyway, so check the
 			// seams on it: a fork that landed late, or a record lost to a racing
 			// writer, is caught on the primary's next write.
@@ -589,25 +679,32 @@ func (a *Archiver) foldFile(
 	return nil
 }
 
-// forkPass snapshots the fork-check authority once per archive pass, so a pass
-// that writes the index for several files compares them all against the same
-// view and reads it only once.
+// forkPass carries what one archive pass writes the index as: the primary of
+// a generation (whose writes stamp it and may run the fork check), or a
+// draining former primary (neither).
 type forkPass struct {
-	source ForkSource
-	loaded bool
-	judge  ForkJudge
-	err    error
-	report *ForkReport
+	source     ForkSource
+	primary    bool
+	generation int64
+	report     *ForkReport
+	// preloaded is an authority read just before the index, used by the first
+	// write attempt instead of reading it again.
+	preloaded ForkJudge
 }
 
+// load reads the fork-check authority. It runs for every index write, after
+// the index was read, so the authority is never older than the segments it
+// judges.
 func (p *forkPass) load(ctx context.Context) (ForkJudge, error) {
-	if !p.loaded {
-		p.loaded = true
-		if p.source != nil {
-			p.judge, p.err = p.source(ctx)
-		}
+	if p.preloaded != nil {
+		judge := p.preloaded
+		p.preloaded = nil
+		return judge, nil
 	}
-	return p.judge, p.err
+	if p.source == nil {
+		return nil, nil
+	}
+	return p.source(ctx)
 }
 
 func (a *Archiver) forkIdentity() string {
@@ -627,9 +724,23 @@ func (a *Archiver) checkForks(
 		report.Read = true
 		report.Forks = SegmentForks(index)
 		report.OldestSegmentPosition = OldestSegmentPosition(index.Segments)
+		if index.Disowned != nil {
+			report.Disowned = index.Disowned.GTIDSet
+		}
+		report.Gaps = ArchiveGaps(index)
+		report.Timeline = index.MariaDBTimeline
+		if !mariadbArchive(index) {
+			report.Covered = index.CoveredGTIDSet
+		}
 		return report
 	}
 	if pass.source == nil {
+		return false, finish()
+	}
+	if index.Generation > pass.generation {
+		// A newer primary already wrote the index: this one was demoted and is
+		// finishing a pass. Its authority no longer speaks for the timeline.
+		report.Superseded = true
 		return false, finish()
 	}
 	judge, err := pass.load(ctx)
@@ -642,33 +753,62 @@ func (a *Archiver) checkForks(
 	}
 
 	now := a.now()
+	retractor, _ := judge.(forkRetractor)
 	merged := make([]*objectstore.ArchiveFork, len(index.Segments))
-	grew := false
+	changed := false
 	for i := range index.Segments {
 		seg := &index.Segments[i]
 		merged[i] = seg.Fork
-		if seg.ServerUUID == a.serverUUID {
+		// Its own segment holds only this instance's binlog, which its
+		// authority contains: nothing there is newly disowned. A record on it
+		// can still be retracted below.
+		if seg.ServerUUID != a.serverUUID {
+			delta, err := judge.Judge(*seg)
+			if err != nil {
+				report.Err = err
+				return false, finish()
+			}
+			fork, grew, err := mergeFork(seg.Fork, delta, judge.Authority(), now, a.forkIdentity())
+			if err != nil {
+				report.Err = err
+				return false, finish()
+			}
+			merged[i] = fork
+			changed = changed || grew
+		}
+		if retractor == nil || merged[i] == nil {
 			continue
 		}
-		delta, err := judge.Judge(*seg)
+		kept, retracted, err := retractFork(merged[i], retractor, judge.Authority())
 		if err != nil {
 			report.Err = err
 			return false, finish()
 		}
-		fork, g, err := mergeFork(seg.Fork, delta, judge.Authority(), now, a.forkIdentity())
-		if err != nil {
-			report.Err = err
-			return false, finish()
+		if retracted {
+			merged[i] = kept
+			changed = true
+			report.Retracted = append(report.Retracted, seg.ServerUUID)
 		}
-		merged[i] = fork
-		grew = grew || g
+	}
+	disowned, disownedChanged, err := foldDisowned(index.Disowned, index.Segments, merged, retractor)
+	if err != nil {
+		report.Err = err
+		return false, finish()
+	}
+	if carrier, ok := judge.(archiveTimeline); ok {
+		timeline := mergeArchiveTimeline(index.MariaDBTimeline, carrier.ArchiveTimeline(), index.Segments)
+		if !slices.Equal(timeline, index.MariaDBTimeline) {
+			index.MariaDBTimeline = timeline
+			changed = true
+		}
 	}
 	for i := range index.Segments {
 		index.Segments[i].Fork = merged[i]
 	}
+	index.Disowned = disowned
 	report.Checked = true
 	report.CheckedAt = now
-	return grew, finish()
+	return changed || disownedChanged, finish()
 }
 
 // CheckForks runs the fork check over the archive index outside an archive
@@ -681,18 +821,29 @@ func (a *Archiver) checkForks(
 // primary that has no timeline) there is nothing to judge, and reading the
 // index on every pass to find that out would cost a round trip each time.
 func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
+	return a.CheckArchive(ctx, time.Time{})
+}
+
+// CheckArchive is CheckForks that also stamps the index's ArchivedThrough
+// with through when it moves it forward. A zero through stamps nothing.
+func (a *Archiver) CheckArchive(ctx context.Context, through time.Time) (ForkReport, error) {
 	if a.forks == nil {
 		return ForkReport{}, nil
 	}
-	pass := &forkPass{source: a.forks}
+	generation, ok := a.Authority()
+	if !ok {
+		return ForkReport{}, ErrNotCurrentPrimary
+	}
+	pass := &forkPass{source: a.forks, primary: true, generation: generation}
 	judge, err := pass.load(ctx)
 	if err != nil {
 		err = fmt.Errorf("binlog: reading fork check authority: %w", err)
 		return ForkReport{Err: err}, err
 	}
-	if judge == nil {
+	if judge == nil && through.IsZero() {
 		return ForkReport{}, nil
 	}
+	pass.preloaded = judge
 	var report ForkReport
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
 	err = objectstore.UpdateArchiveIndex(ctx, a.store, a.objectStore.Bucket, key,
@@ -701,14 +852,29 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 				report = ForkReport{}
 				return false, nil
 			}
-			var grew bool
-			grew, report = a.checkForks(ctx, index, pass)
+			var changed bool
+			changed, report = a.checkForks(ctx, index, pass)
 			if report.Err != nil {
 				return false, report.Err
 			}
-			if !report.Checked || (!grew && index.ForkCheck != nil) {
+			if report.Superseded {
 				return false, nil
 			}
+			stamp := !through.IsZero() && through.After(index.ArchivedThrough)
+			checkDue := report.Checked && (changed || index.ForkCheck == nil || index.Generation < generation)
+			if !checkDue && !stamp {
+				return false, nil
+			}
+			if stamp {
+				index.ArchivedThrough = through
+				report.ArchivedThrough = through
+			}
+			if !report.Checked {
+				index.Generation = max(index.Generation, generation)
+				index.UpdatedAt = a.now()
+				return true, nil
+			}
+			index.Generation = generation
 			index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
 			index.UpdatedAt = a.now()
 			return true, nil

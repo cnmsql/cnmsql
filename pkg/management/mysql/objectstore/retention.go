@@ -189,14 +189,13 @@ func (plan *RetentionPlan) applyBinlogGC(binlogs []BinlogEntry, index *ArchiveIn
 // from each segment; segments left with no binlogs are dropped, taking their
 // fork records with them.
 func rewriteIndex(index *ArchiveIndex, deleted map[string]map[string]struct{}) *ArchiveIndex {
-	out := &ArchiveIndex{
-		ClusterName:    index.ClusterName,
-		CoveredGTIDSet: index.CoveredGTIDSet,
-		UpdatedAt:      time.Now().UTC(),
-		// Segments are copied whole below, so their fork records survive; the
-		// index-level stamp has to be carried explicitly.
-		ForkCheck: index.ForkCheck,
-	}
+	// Copy every index-level field (fork-check stamp, generation, disowned
+	// set, ...) as is; only the segments are rebuilt. Segments are copied whole
+	// below, so their fork records survive.
+	copied := *index
+	out := &copied
+	out.Segments = nil
+	out.UpdatedAt = time.Now().UTC()
 	for _, seg := range index.Segments {
 		set := deleted[seg.ServerUUID]
 		if set == nil {

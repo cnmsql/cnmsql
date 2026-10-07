@@ -32,6 +32,7 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // fencingAnnotation is the user-owned Pod annotation that fences an instance
@@ -151,6 +152,7 @@ func (r *Reconciler) ReconcileFailover(
 		// The primary is unreachable by now, so its live position is unreadable and
 		// the last persisted snapshot is all there is to measure the gap against.
 		ReferenceGTID:     cluster.Status.GTIDExecutedByInstance[observed.PrimaryName],
+		ArchiveCovered:    archiveCovered(cluster),
 		MaxReplicationLag: cluster.MaxReplicationLag(),
 		PrimaryDownFor:    time.Since(failingSince),
 	})
@@ -449,6 +451,12 @@ type Election struct {
 	// MaxTransactionsBehind bounds how far behind an elected replica may be. Nil
 	// means unbounded, the behaviour of a cluster with no failoverPolicy.
 	MaxTransactionsBehind *int64
+	// ArchiveCovered (MySQL) is everything the binary-log archive holds. Among
+	// candidates the preference ranks alike, one whose gtid_purged the archive
+	// covers is tried first: a replica cloned after the archive's last file
+	// holds its clone point in no binary log, and promoting it leaves a gap in
+	// the archive if the old primary's unarchived tail is lost.
+	ArchiveCovered string
 	// Preferred orders the candidates, most preferred first. It only breaks ties
 	// between replicas that are already safe to promote: a preferred replica that
 	// does not hold every other candidate's transactions still loses to one that
@@ -539,6 +547,7 @@ func SelectFailoverCandidate(e Election) FailoverCandidate {
 		return FailoverCandidate{Reason: lagBlockReason(eligible, timeBehind, *e.MaxReplicationLag)}
 	}
 	eligible = orderByPreference(withinLag, e.Preferred)
+	eligible = orderByArchiveContinuity(eligible, e.Preferred, observed, e.ArchiveCovered)
 
 	for _, candidate := range eligible {
 		dominatesAll := true
@@ -633,6 +642,63 @@ func orderByPreference(candidates, preferred []string) []string {
 		return cmp.Compare(rank(a), rank(b))
 	})
 	return ordered
+}
+
+// orderByArchiveContinuity moves, within each preference rank, the candidates
+// whose binary-log history the archive covers ahead of those it does not (see
+// Election.ArchiveCovered), keeping the order otherwise. It never admits or
+// drops a candidate: availability is not traded for archive continuity, and a
+// gap a promotion leaves is reported and repaired by a base backup.
+func orderByArchiveContinuity(
+	candidates, preferred []string, observed topology.FailoverState, covered string,
+) []string {
+	if covered == "" {
+		return candidates
+	}
+	rank := func(name string) int {
+		if i := slices.Index(preferred, name); i >= 0 {
+			return i
+		}
+		return len(preferred)
+	}
+	continuous := func(name string) int {
+		if archiveCoversHistory(covered, observed.Instances[name].GTIDPurged) {
+			return 0
+		}
+		return 1
+	}
+	ordered := slices.Clone(candidates)
+	slices.SortStableFunc(ordered, func(a, b string) int {
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(continuous(a), continuous(b)))
+	})
+	return ordered
+}
+
+// archiveCoversHistory reports whether the archive holds every transaction of
+// purged that falls in the stretch it archived: for each UUID the archive
+// holds, purged must not reach past its first archived transaction into
+// something the archive lacks. History older than the archive does not count.
+func archiveCoversHistory(covered, purged string) bool {
+	archive, err := replication.ParseGTIDSet(covered)
+	if err != nil {
+		return true
+	}
+	held, err := replication.ParseGTIDSet(purged)
+	if err != nil {
+		return true
+	}
+	for uuid, intervals := range held.Difference(archive) {
+		first := archive[uuid]
+		if len(first) == 0 {
+			continue
+		}
+		for _, iv := range intervals {
+			if iv.End >= first[0].Start {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // withinBound drops candidates lagging by more than maxBehind, returning nothing
@@ -735,4 +801,12 @@ func lagBlockReason(candidates []string, timeBehind map[string]*time.Duration, m
 		"the closest replica (%s) is %s of writes behind the failed primary, more than maxReplicationLag (%s); "+
 			"promoting it would lose those writes",
 		closest, timeBehind[closest].Round(time.Second), maxLag)
+}
+
+// archiveCovered is the archive's MySQL covered set as last reported.
+func archiveCovered(cluster *mysqlv1alpha1.Cluster) string {
+	if ca := cluster.Status.ContinuousArchiving; ca != nil && cluster.IsArchivingEnabled() {
+		return ca.CoveredGTIDSet
+	}
+	return ""
 }

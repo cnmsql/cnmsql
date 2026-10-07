@@ -18,6 +18,7 @@ package binlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
@@ -90,8 +92,20 @@ type Loop struct {
 	mariadb bool
 	// forkChecked is set once a fork check ran in the current writable stretch
 	// of this process; losing writability clears it, so every promotion checks.
-	// Only the Run goroutine touches it.
+	// lastCheck is when the last check ran: an idle primary re-checks every
+	// flush interval, so a late upload or a record a racing writer lost is
+	// still caught. Only the Run goroutine touches them.
 	forkChecked bool
+	lastCheck   time.Time
+	// flushedAt is when this primary last forced a rotation, flushedActive and
+	// flushedSize the active log right after it. Once every rotated log is
+	// shipped, everything committed before flushedAt is archived, and while
+	// the active log has not grown since, everything committed at all.
+	flushedAt     time.Time
+	flushedActive string
+	flushedSize   int64
+	// stampedThrough is the last ArchivedThrough this primary wrote.
+	stampedThrough time.Time
 
 	pollInterval  time.Duration
 	flushInterval time.Duration
@@ -133,6 +147,15 @@ type State struct {
 	Forks                 []SegmentFork
 	ForkCheckedAt         time.Time
 	OldestSegmentPosition string
+	// Disowned is the archive's MySQL disowned set (see
+	// objectstore.ArchiveIndex.Disowned) as of the last read.
+	Disowned string
+	// Gaps are the stretches the archive is missing (see ArchiveGaps), and
+	// Covered its MySQL covered set, as of the last read.
+	Gaps    []string
+	Covered string
+	// Timeline is the MariaDB primary timeline the archive carries.
+	Timeline []objectstore.ArchiveEpoch
 	// DeferredFile is the stranded file the drain gate keeps deferring because
 	// the surviving timeline does not provably hold it.
 	DeferredFile string
@@ -194,6 +217,8 @@ func (l *Loop) State() State {
 	s := l.state
 	s.PurgeHeldBy = slices.Clone(s.PurgeHeldBy)
 	s.Forks = slices.Clone(s.Forks)
+	s.Gaps = slices.Clone(s.Gaps)
+	s.Timeline = slices.Clone(s.Timeline)
 	return s
 }
 
@@ -230,14 +255,20 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.state.Forks = nil
 		l.state.ForkCheckedAt = time.Time{}
 		l.state.OldestSegmentPosition = ""
+		l.state.Disowned = ""
+		l.state.Gaps = nil
+		l.state.Covered = ""
+		l.state.Timeline = nil
 		l.mu.Unlock()
 		l.forkChecked = false
+		l.flushedAt, l.flushedActive, l.stampedThrough = time.Time{}, "", time.Time{}
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
 		*lastFlush = time.Time{}
 		l.drain(ctx)
 		return
 	}
 
+	listedAt := time.Now()
 	logs, err := l.reader.ListBinaryLogs(ctx)
 	if err != nil {
 		l.fail("listing binary logs", err)
@@ -246,30 +277,43 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 
 	// Time-based RPO trigger: if data has accumulated in the active log since the
 	// last flush and the interval elapsed, force a rotation so it becomes
-	// archivable. Avoid churning empty files on an idle cluster.
+	// archivable. Avoid churning empty files on an idle cluster. The first pass
+	// does not know what the active log already holds (a primary that started
+	// with transactions in it), so it rotates once after the interval.
 	active := activeLog(logs)
 	if lastFlush.IsZero() {
 		*lastFlush = time.Now()
-		*lastFlushSize = active.SizeBytes
+		*lastFlushSize = -1
 	} else if time.Since(*lastFlush) >= l.flushInterval && active.SizeBytes > *lastFlushSize {
+		flushedAt := time.Now()
 		if err := l.reader.FlushLogs(ctx); err != nil {
 			l.fail("flushing binary logs", err)
 			return
 		}
 		*lastFlush = time.Now()
+		listedAt = time.Now()
 		if logs, err = l.reader.ListBinaryLogs(ctx); err != nil {
 			l.fail("re-listing binary logs", err)
 			return
 		}
 		*lastFlushSize = activeLog(logs).SizeBytes
+		l.flushedAt = flushedAt
+		l.flushedActive = activeLog(logs).Name
+		l.flushedSize = activeLog(logs).SizeBytes
 	}
 
 	res, err := l.archiver.ArchivePending(ctx, logs)
+	if errors.Is(err, ErrNotCurrentPrimary) {
+		// Just promoted: the Cluster view catches up within a reconcile, and
+		// until then the index writes could not be fenced.
+		l.logger.V(1).Info("Waiting for status.currentPrimary to name this instance before archiving")
+		return
+	}
 	if err != nil {
 		l.fail("archiving binary logs", err)
 		return
 	}
-	forks, forkErr := l.checkForks(ctx, res.ForkCheck)
+	forks, forkErr := l.checkForks(ctx, res.ForkCheck, l.archivedThrough(logs, res, listedAt))
 
 	var held purgeHold
 	if l.purge {
@@ -308,6 +352,10 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		Forks:                 forks.Forks,
 		ForkCheckedAt:         forks.ForkCheckedAt,
 		OldestSegmentPosition: forks.OldestSegmentPosition,
+		Disowned:              forks.Disowned,
+		Gaps:                  forks.Gaps,
+		Covered:               forks.Covered,
+		Timeline:              forks.Timeline,
 	}
 	if forkErr != nil {
 		l.state.LastError = "checking archive forks: " + forkErr.Error()
@@ -326,22 +374,38 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 // archived something; otherwise the first writable pass of a stretch runs the
 // check on its own, so a promotion, failback or restart does not wait for the
 // next rotation. Fields the pass did not refresh carry over from the last one.
-func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error) {
+func (l *Loop) checkForks(ctx context.Context, report *ForkReport, through time.Time) (State, error) {
 	l.mu.Lock()
 	out := State{
 		Forks:                 l.state.Forks,
 		ForkCheckedAt:         l.state.ForkCheckedAt,
 		OldestSegmentPosition: l.state.OldestSegmentPosition,
+		Disowned:              l.state.Disowned,
+		Gaps:                  l.state.Gaps,
+		Covered:               l.state.Covered,
+		Timeline:              l.state.Timeline,
 	}
 	l.mu.Unlock()
 	if !l.archiver.ChecksForks() {
 		return out, nil
 	}
-	if !l.forkChecked && (report == nil || !report.Checked) {
-		r, err := l.archiver.CheckForks(ctx)
+	if report != nil && report.Checked {
+		l.lastCheck = report.CheckedAt
+	}
+	stampDue := !through.IsZero() && through.Sub(l.stampedThrough) >= archivedThroughResolution
+	recheckDue := time.Since(l.lastCheck) >= l.flushInterval
+	if (!l.forkChecked || recheckDue || stampDue) && (report == nil || !report.Checked || stampDue) {
+		if !stampDue {
+			through = time.Time{}
+		}
+		r, err := l.archiver.CheckArchive(ctx, through)
 		if err != nil {
 			l.logger.Error(err, "Could not check the archive for forks")
 			return out, err
+		}
+		l.lastCheck = time.Now()
+		if !r.ArchivedThrough.IsZero() || stampDue {
+			l.stampedThrough = through
 		}
 		report = &r
 	}
@@ -352,9 +416,19 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 		l.logger.Error(report.Err, "Could not check the archive for forks")
 		return out, report.Err
 	}
+	if report.Superseded {
+		l.logger.Info("Archive index was written by a newer primary; not judging its segments")
+	}
 	if report.Read {
 		out.Forks = report.Forks
 		out.OldestSegmentPosition = report.OldestSegmentPosition
+		out.Disowned = report.Disowned
+		out.Gaps = report.Gaps
+		out.Covered = report.Covered
+		out.Timeline = report.Timeline
+	}
+	if len(report.Retracted) > 0 {
+		l.logger.Info("Retracted fork records the surviving timeline holds again", "segments", report.Retracted)
 	}
 	if report.Checked {
 		l.forkChecked = true
@@ -364,6 +438,25 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error
 		}
 	}
 	return out, nil
+}
+
+// archivedThroughResolution bounds how often a primary rewrites the index only
+// to move ArchivedThrough forward.
+const archivedThroughResolution = time.Minute
+
+// archivedThrough returns the time before which everything this primary
+// committed is archived, or zero when it cannot tell: every rotated log has to
+// be shipped, and then everything committed before the last forced rotation
+// is archived, or everything committed before listedAt when the active log has
+// not grown since that rotation.
+func (l *Loop) archivedThrough(logs []BinaryLog, res ArchiveResult, listedAt time.Time) time.Time {
+	if l.flushedActive == "" || res.Deferred != "" || pendingAfter(logs, res.LastArchivedBinlog) > 0 {
+		return time.Time{}
+	}
+	if active := activeLog(logs); active.Name == l.flushedActive && active.SizeBytes == l.flushedSize {
+		return listedAt
+	}
+	return l.flushedAt
 }
 
 // purgePlan is where the purge gate may go this pass.

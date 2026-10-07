@@ -17,6 +17,7 @@ limitations under the License.
 package binlog
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -78,12 +79,163 @@ func (j *mysqlForkJudge) Judge(seg objectstore.ArchiveSegment) (*objectstore.Arc
 
 func (j *mysqlForkJudge) Authority() string { return j.raw }
 
+// Unheld implements forkRetractor.
+func (j *mysqlForkJudge) Unheld(gtidSet string) (string, error) {
+	set, err := replication.ParseGTIDSet(gtidSet)
+	if err != nil {
+		return "", fmt.Errorf("binlog: parsing disowned set: %w", err)
+	}
+	return set.Difference(j.executed).String(), nil
+}
+
+// forkRetractor is a judge that can tell which recorded disowned transactions
+// the surviving timeline does not hold: MySQL names each transaction's author,
+// so a set the authority holds part of again (a former primary that held a
+// dead transaction was promoted after all) is narrowed to what it still lacks.
+// The fencing of the index writes is what makes this safe: only the newest
+// primary judges, and its executed set only grows.
+type forkRetractor interface {
+	// Unheld returns the part of gtidSet the authority does not hold.
+	Unheld(gtidSet string) (string, error)
+}
+
+// retractFork narrows a MySQL fork record to what the authority still lacks. It
+// returns nil when nothing is left, and whether the record shrank.
+func retractFork(
+	fork *objectstore.ArchiveFork, retractor forkRetractor, authority string,
+) (*objectstore.ArchiveFork, bool, error) {
+	if fork == nil || fork.GTIDSet == "" {
+		return fork, false, nil
+	}
+	unheld, err := retractor.Unheld(fork.GTIDSet)
+	if err != nil {
+		return nil, false, err
+	}
+	if unheld == canonicalGTIDSet(fork.GTIDSet) {
+		return fork, false, nil
+	}
+	if unheld == "" && len(fork.AfterSeq) == 0 {
+		return nil, true, nil
+	}
+	kept := *fork
+	kept.GTIDSet = unheld
+	kept.AuthorityGTIDSet = authority
+	return &kept, true, nil
+}
+
+// foldDisowned folds the segments' fork records into the index-level disowned
+// record, narrowing its MySQL set to what the authority still lacks when the
+// judge can tell. forks are the segments' records after this check.
+func foldDisowned(
+	existing *objectstore.ArchiveDisowned, segs []objectstore.ArchiveSegment,
+	forks []*objectstore.ArchiveFork, retractor forkRetractor,
+) (*objectstore.ArchiveDisowned, bool, error) {
+	out := &objectstore.ArchiveDisowned{}
+	before := ""
+	if existing != nil {
+		out.GTIDSet = existing.GTIDSet
+		out.Ranges = slices.Clone(existing.Ranges)
+		before = canonicalGTIDSet(existing.GTIDSet)
+	}
+	changed := false
+	sets := []string{out.GTIDSet}
+	for i, fork := range forks {
+		if fork == nil {
+			continue
+		}
+		if fork.GTIDSet != "" {
+			sets = append(sets, fork.GTIDSet)
+		}
+		for domain, after := range fork.AfterSeq {
+			gtids, err := engine.ParseMariaDBPosition(segs[i].GTIDSet)
+			if err != nil {
+				return nil, false, fmt.Errorf("binlog: parsing position of segment %s: %w", segs[i].ServerUUID, err)
+			}
+			for _, g := range gtids {
+				if g.Domain == domain && out.AddRange(objectstore.ArchiveDisownedRange{
+					Domain: domain, Server: g.Server, After: after, Through: g.Seq,
+				}) {
+					changed = true
+				}
+			}
+		}
+	}
+	union, err := replication.UnionGTIDStrings(sets...)
+	if err != nil {
+		return nil, false, fmt.Errorf("binlog: merging disowned sets: %w", err)
+	}
+	if retractor != nil && union != "" {
+		if union, err = retractor.Unheld(union); err != nil {
+			return nil, false, err
+		}
+	}
+	out.GTIDSet = union
+	if union != before {
+		changed = true
+	}
+	if out.GTIDSet == "" && len(out.Ranges) == 0 {
+		return nil, changed, nil
+	}
+	return out, changed, nil
+}
+
 // mariadbForkJudge judges against the primary timeline: a MariaDB position
 // names only the author of its last transaction, and the timeline says who
-// authored each stretch of sequence numbers.
+// authored each stretch of sequence numbers. epochs, when set, is the same
+// timeline with instance names, which the check persists into the archive.
 type mariadbForkJudge struct {
 	timeline engine.MariaDBTimeline
 	position string
+	epochs   []objectstore.ArchiveEpoch
+}
+
+// NewMariaDBArchiveJudge builds a MariaDB judge from the Cluster's timeline,
+// which the check also writes into the archive index.
+func NewMariaDBArchiveJudge(epochs []objectstore.ArchiveEpoch, position string) ForkJudge {
+	return &mariadbForkJudge{timeline: EngineTimeline(epochs), position: position, epochs: epochs}
+}
+
+// EngineTimeline returns the verdict view of archived epochs.
+func EngineTimeline(epochs []objectstore.ArchiveEpoch) engine.MariaDBTimeline {
+	if len(epochs) == 0 {
+		return nil
+	}
+	out := make(engine.MariaDBTimeline, len(epochs))
+	for i, e := range epochs {
+		out[i] = engine.MariaDBEpoch{ServerID: e.ServerID, Handoff: e.Handoff}
+	}
+	return out
+}
+
+// archiveTimeline is a judge that carries a timeline to persist.
+type archiveTimeline interface {
+	ArchiveTimeline() []objectstore.ArchiveEpoch
+}
+
+// ArchiveTimeline implements archiveTimeline.
+func (j *mariadbForkJudge) ArchiveTimeline() []objectstore.ArchiveEpoch { return j.epochs }
+
+// mergeArchiveTimeline returns the timeline to persist: the Cluster's, after
+// whatever older epochs the index holds that the Cluster no longer does (it
+// pruned them, or its status was lost and the timeline restarted), pruned to
+// what the archive's oldest segment still needs and capped like the Cluster's.
+func mergeArchiveTimeline(
+	stored, current []objectstore.ArchiveEpoch, segs []objectstore.ArchiveSegment,
+) []objectstore.ArchiveEpoch {
+	if len(current) == 0 {
+		return stored
+	}
+	merged := slices.Clone(stored)
+	if k := slices.Index(stored, current[0]); k >= 0 {
+		merged = merged[:k]
+	}
+	merged = append(merged, current...)
+	refs := map[string]string{}
+	if oldest := OldestSegmentPosition(segs); oldest != "" {
+		refs["archive"] = oldest
+	}
+	pruned := engine.PruneMariaDBTimeline(EngineTimeline(merged), refs, engine.MariaDBTimelineCeiling)
+	return merged[pruned.Dropped:]
 }
 
 // NewMariaDBForkJudge builds a judge from the cluster's primary timeline and
@@ -118,6 +270,30 @@ func (j *mariadbForkJudge) Judge(seg objectstore.ArchiveSegment) (*objectstore.A
 }
 
 func (j *mariadbForkJudge) Authority() string { return j.position }
+
+// ApplyArchiveTimeline judges every segment of a MariaDB archive against the
+// timeline the archive carries and folds what it disowns into the segments'
+// fork records, in place. Restore runs it before planning, so a fork the live
+// check never recorded (its primary had no verdict yet, or died before writing
+// the index) is cut rather than only detected.
+func ApplyArchiveTimeline(idx *objectstore.ArchiveIndex) error {
+	if idx == nil || len(idx.MariaDBTimeline) == 0 {
+		return nil
+	}
+	judge := NewMariaDBArchiveJudge(idx.MariaDBTimeline, "")
+	for i := range idx.Segments {
+		delta, err := judge.Judge(idx.Segments[i])
+		if err != nil {
+			return err
+		}
+		fork, _, err := mergeFork(idx.Segments[i].Fork, delta, "", time.Time{}, "restore")
+		if err != nil {
+			return err
+		}
+		idx.Segments[i].Fork = fork
+	}
+	return nil
+}
 
 // mergeFork folds a freshly judged delta into a segment's existing record and
 // returns the result, never modifying existing. A record only ever grows: a
@@ -265,4 +441,70 @@ func OldestSegmentPosition(segs []objectstore.ArchiveSegment) string {
 // forkCheckIdentity is how DetectedBy and CheckedBy name a primary.
 func forkCheckIdentity(instance, identity string) string {
 	return instance + "/" + identity
+}
+
+// ArchiveGaps lists the stretches of the timeline the archive is missing
+// between transactions it holds: recovery from a base backup taken before one
+// of them cannot cross it. On MySQL they are the holes of the covered set, per
+// UUID; on MariaDB the gaps between the segments' sequence ranges, per domain,
+// with each segment's range ending at its fork cut. A stretch before the first
+// archived transaction is not a gap: the archive simply starts later.
+func ArchiveGaps(idx *objectstore.ArchiveIndex) []string {
+	if idx == nil || len(idx.Segments) == 0 {
+		return nil
+	}
+	if covered, err := replication.ParseGTIDSet(idx.CoveredGTIDSet); err == nil && !mariadbArchive(idx) {
+		if holes := covered.Holes(); !holes.IsEmpty() {
+			return []string{holes.String()}
+		}
+		return nil
+	}
+	type interval struct{ start, end uint64 }
+	byDomain := map[uint32][]interval{}
+	for _, seg := range idx.Segments {
+		gtids, err := engine.ParseMariaDBPosition(seg.GTIDSet)
+		if err != nil {
+			continue
+		}
+		for _, g := range gtids {
+			start := MariaSeqForDomain(seg.StartGTIDSet, g.Domain)
+			if start == 0 {
+				start = 1
+			}
+			end := g.Seq
+			if seg.Fork != nil {
+				if cut, ok := seg.Fork.AfterSeq[g.Domain]; ok && cut < end {
+					end = cut
+				}
+			}
+			if end >= start {
+				byDomain[g.Domain] = append(byDomain[g.Domain], interval{start, end})
+			}
+		}
+	}
+	var out []string
+	for _, domain := range slices.Sorted(maps.Keys(byDomain)) {
+		ivs := byDomain[domain]
+		slices.SortFunc(ivs, func(a, b interval) int { return cmp.Compare(a.start, b.start) })
+		reached := ivs[0].end
+		for _, iv := range ivs[1:] {
+			if iv.start > reached+1 {
+				out = append(out, fmt.Sprintf("%d-%d..%d", domain, reached+1, iv.start-1))
+			}
+			reached = max(reached, iv.end)
+		}
+	}
+	return out
+}
+
+// mariadbArchive reports whether the index's segments carry MariaDB positions.
+func mariadbArchive(idx *objectstore.ArchiveIndex) bool {
+	for _, seg := range idx.Segments {
+		if seg.GTIDSet == "" {
+			continue
+		}
+		_, err := engine.ParseMariaDBPosition(seg.GTIDSet)
+		return err == nil
+	}
+	return false
 }

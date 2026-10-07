@@ -29,6 +29,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/tail"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
@@ -134,10 +135,20 @@ func (c *Controller) BackupStream(ctx context.Context, w io.Writer) (webserver.B
 		return webserver.BackupResult{}, err
 	}
 
-	// Only MariaDB needs anchor resolution; MySQL's xtrabackup_binlog_info already
-	// carries gtid_executed.
+	// MySQL's xtrabackup_binlog_info already carries the anchor; xtrabackup
+	// prints the same set, which recorded in the backup metadata lets the
+	// operator judge the backup without restoring it. Best effort: the restore
+	// reads the archive's own copy either way.
 	if flavor != engine.FlavorMariaDB {
-		return webserver.BackupResult{}, nil
+		_, _, gtid, ok := parseMariabackupBinlogPos(stderrTail.String())
+		if !ok || gtid == "" {
+			return webserver.BackupResult{}, nil
+		}
+		set, err := replication.ParseGTIDSet(gtid)
+		if err != nil {
+			return webserver.BackupResult{}, nil //nolint:nilerr // the anchor is optional for MySQL
+		}
+		return webserver.BackupResult{AnchorGTID: set.String()}, nil
 	}
 	anchorGTID, err := c.resolveAnchorGTID(ctx, stderrTail.String())
 	if err != nil {

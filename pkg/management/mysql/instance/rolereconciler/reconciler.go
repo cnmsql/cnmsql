@@ -325,6 +325,7 @@ func (r *Reconciler) setCurrentPrimary(ctx context.Context, me string) error {
 	now := metav1.Now()
 	cluster.Status.CurrentPrimary = me
 	cluster.Status.CurrentPrimaryTimestamp = &now
+	cluster.Status.CurrentPrimaryGeneration++
 	return r.Status().Patch(ctx, cluster, client.MergeFrom(before))
 }
 

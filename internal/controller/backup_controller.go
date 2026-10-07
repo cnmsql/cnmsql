@@ -83,8 +83,6 @@ type BackupReconciler struct {
 
 // Reconcile creates and tracks the backup worker Job for a Backup.
 func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	backup := &mysqlv1alpha1.Backup{}
 	if err := r.Get(ctx, req.NamespacedName, backup); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -194,34 +192,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	switch {
 	case latestJob.Status.Succeeded > 0:
-		// A logical backup's results live in its manifest; read them before
-		// declaring the Backup complete, so a completed Backup always shows what
-		// it holds.
-		var manifest *objectstore.LogicalBackupMetadata
-		if method == mysqlv1alpha1.BackupMethodLogical {
-			if manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys); err != nil {
-				// A missing or undecodable manifest will not fix itself, so fail
-				// the Backup instead of leaving it Running forever. Anything else
-				// (store unreachable, credentials briefly unreadable) is retried.
-				if !manifestUnrecoverable(err) {
-					return ctrl.Result{}, fmt.Errorf("reading logical backup manifest: %w", err)
-				}
-				return ctrl.Result{}, r.failBackup(ctx, backup, "ManifestMissing",
-					fmt.Sprintf("The worker Job reported success but its logical.json manifest could not be read from the object store: %v", err))
-			}
-		}
-		log.Info("Backup completed", "backup", backup.Name, "job", jobName)
-		return ctrl.Result{}, r.patchBackupStatus(ctx, backup, func(status *mysqlv1alpha1.BackupStatus) {
-			now := metav1.Now()
-			status.Phase = mysqlv1alpha1.BackupPhaseCompleted
-			status.StoppedAt = &now
-			status.Error = ""
-			if manifest != nil {
-				applyLogicalManifest(status, manifest)
-			}
-			setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, backupPhaseCompleted, "Backup completed", backup.Generation)
-			setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, backupPhaseCompleted, "Backup completed", backup.Generation)
-		})
+		return ctrl.Result{}, r.completeBackup(ctx, backup, method, store, keys, jobName)
 	case jobFinished(latestJob, batchv1.JobFailed):
 		// Not gated on Status.Failed: a Job killed at its active deadline can be
 		// marked Failed before any pod is counted as failed.
@@ -235,6 +206,49 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	default:
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 	}
+}
+
+// completeBackup records a Backup whose worker Job succeeded. A logical
+// backup's results live in its manifest, and a physical backup's anchor in its
+// metadata; both are read before declaring the Backup complete, so a completed
+// Backup always shows what it holds.
+func (r *BackupReconciler) completeBackup(
+	ctx context.Context, backup *mysqlv1alpha1.Backup, method mysqlv1alpha1.BackupMethod,
+	store *mysqlv1alpha1.S3ObjectStore, keys objectstore.BackupKeys, jobName string,
+) error {
+	var manifest *objectstore.LogicalBackupMetadata
+	if method == mysqlv1alpha1.BackupMethodLogical {
+		var err error
+		if manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys); err != nil {
+			// A missing or undecodable manifest will not fix itself, so fail
+			// the Backup instead of leaving it Running forever. Anything else
+			// (store unreachable, credentials briefly unreadable) is retried.
+			if !manifestUnrecoverable(err) {
+				return fmt.Errorf("reading logical backup manifest: %w", err)
+			}
+			return r.failBackup(ctx, backup, "ManifestMissing",
+				fmt.Sprintf("The worker Job reported success but its logical.json manifest could not be read from the object store: %v", err))
+		}
+	}
+	anchor, err := r.physicalAnchor(ctx, method, backup.Namespace, store, keys)
+	if err != nil {
+		return err
+	}
+	logf.FromContext(ctx).Info("Backup completed", "backup", backup.Name, "job", jobName)
+	return r.patchBackupStatus(ctx, backup, func(status *mysqlv1alpha1.BackupStatus) {
+		now := metav1.Now()
+		status.Phase = mysqlv1alpha1.BackupPhaseCompleted
+		status.StoppedAt = &now
+		status.Error = ""
+		if manifest != nil {
+			applyLogicalManifest(status, manifest)
+		}
+		if anchor != "" {
+			status.EndGTID = anchor
+		}
+		setBackupCondition(status, mysqlv1alpha1.ConditionProgressing, metav1.ConditionFalse, backupPhaseCompleted, "Backup completed", backup.Generation)
+		setBackupCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, backupPhaseCompleted, "Backup completed", backup.Generation)
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

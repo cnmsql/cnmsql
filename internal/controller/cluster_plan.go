@@ -364,6 +364,9 @@ func (r *ClusterReconciler) resolveRecovery(
 	if backup.Status.BackupID == "" {
 		return nil, fmt.Errorf("recovery backup %q has no backupID", backup.Name)
 	}
+	if err := checkNamedBackupTarget(backup, rec.RecoveryTarget); err != nil {
+		return nil, err
+	}
 
 	store, err := recoveryObjectStore(ctx, r.Client, cluster, backup)
 	if err != nil {
@@ -475,7 +478,12 @@ func (r *ClusterReconciler) resolveRawS3Recovery(
 	if rec.BackupID != "" {
 		entry, err = objectstore.FindBackupByID(entries, rec.BackupID)
 	} else {
-		entry, err = objectstore.SelectLatestBackup(entries)
+		var index *objectstore.ArchiveIndex
+		if replaysBinlogs(rec.RecoveryTarget) && rec.RecoveryTarget.TargetGTID == "" {
+			index = r.readRecoveryIndex(ctx, cluster.Namespace, binlogStore, sourceCluster)
+		}
+		entry, err = selectRecoveryBackup(entries, rec.RecoveryTarget, index,
+			cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB)
 	}
 	if err != nil {
 		return nil, err
@@ -498,6 +506,24 @@ func (r *ClusterReconciler) resolveRawS3Recovery(
 		plan.TargetImmediate = target.TargetImmediate != nil && *target.TargetImmediate
 	}
 	return plan, nil
+}
+
+// readRecoveryIndex reads the source archive's index so backup selection can
+// leave out dead-branch backups. Selection works without it, so a read that
+// fails only costs that filter: replay still refuses such a backup.
+func (r *ClusterReconciler) readRecoveryIndex(
+	ctx context.Context, namespace string, store *mysqlv1alpha1.S3ObjectStore, sourceCluster string,
+) *objectstore.ArchiveIndex {
+	osClient, err := r.objectStoreClient(ctx, namespace, store)
+	if err != nil {
+		return nil
+	}
+	var index objectstore.ArchiveIndex
+	if _, exists, err := osClient.GetJSONVersion(ctx, store.Bucket,
+		objectstore.ArchiveIndexKey(*store, sourceCluster), &index); err != nil || !exists {
+		return nil
+	}
+	return &index
 }
 
 // disabledServices indexes the default services the user turned off.

@@ -51,6 +51,9 @@ type observedCluster struct {
 	ReadyInstances int
 	// InstanceNames are the desired instance names, in ordinal order.
 	InstanceNames []string
+	// PrimaryGTIDReadAt is when the primary's gtid_executed in GTIDByInstance
+	// was read; zero when it was not.
+	PrimaryGTIDReadAt time.Time
 	// GTIDByInstance maps instance name to its gtid_executed set.
 	GTIDByInstance map[string]string
 	// ReplicationLagByInstance maps instance name to its heartbeat reading, in
@@ -227,6 +230,7 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	if observed.PrimaryName != "" {
 		if status, err := controlClient.Status(ctx, cluster, observed.PrimaryName); err == nil && status.GTIDExecuted != "" {
 			observed.GTIDByInstance[observed.PrimaryName] = status.GTIDExecuted
+			observed.PrimaryGTIDReadAt = time.Now()
 		}
 	}
 
@@ -604,6 +608,16 @@ func aggregateArchiving(
 		return out
 	}
 	out.OldestSegmentPosition = a.OldestSegmentPosition
+	out.DisownedGTIDs = a.DisownedGTIDs
+	out.Gaps = a.Gaps
+	out.CoveredGTIDSet = a.CoveredGTIDSet
+	if len(out.Gaps) > 0 {
+		now := metav1.Now()
+		out.GapsSince = &now
+		if prior != nil && prior.GapsSince != nil && slices.Equal(prior.Gaps, out.Gaps) {
+			out.GapsSince = prior.GapsSince
+		}
+	}
 	for _, fork := range a.Forks {
 		out.ForkGTIDs = append(out.ForkGTIDs, fork.GTIDs)
 		if at := parseInstanceTime(fork.DetectedAt); at != nil &&
@@ -622,6 +636,10 @@ func carryForks(out, prior *mysqlv1alpha1.ContinuousArchivingStatus) {
 	out.ForkGTIDs = prior.ForkGTIDs
 	out.ForkDetectedAt = prior.ForkDetectedAt
 	out.OldestSegmentPosition = prior.OldestSegmentPosition
+	out.DisownedGTIDs = prior.DisownedGTIDs
+	out.Gaps = prior.Gaps
+	out.GapsSince = prior.GapsSince
+	out.CoveredGTIDSet = prior.CoveredGTIDSet
 }
 
 // applyArchivingStatus records the archiving status the observation produced.
@@ -762,6 +780,8 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	applyBinlogPurgeHeldCondition(latest, time.Now())
 	wasForked := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionArchiveForked)
 	applyArchiveForkedCondition(latest)
+	wasGapped := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionArchiveGap)
+	r.applyArchiveGapCondition(ctx, latest)
 	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             conditionStatus(observed.Ready),
@@ -834,6 +854,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			latest.Status.ReplicationLagUpdatedAt = &metav1.Time{Time: time.Now()}
 		}
 	}
+	r.judgeBackups(ctx, latest, observed)
 	if reflect.DeepEqual(before.Status, latest.Status) {
 		return nil
 	}
@@ -850,6 +871,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	if err := r.Status().Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
+	r.onArchiveGap(ctx, latest, wasGapped)
 	r.recordFailoverEvent(ctx, latest, before)
 	if !wasBootstrapFailed && r.Recorder != nil &&
 		apimeta.IsStatusConditionTrue(latest.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed) {

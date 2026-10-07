@@ -43,8 +43,9 @@ type BackupMetadata struct {
 	// resolved on the source at backup time (MariaDB: via BINLOG_GTID_POS over the
 	// exact binlog coordinates mariabackup recorded). It gives point-in-time
 	// recovery a fully-specified anchor even when the in-archive binlog-info file
-	// carries only file+position (MariaDB 10.11). Empty for MySQL (whose
-	// binlog-info already carries the GTID) and for legacy backups.
+	// carries only file+position (MariaDB 10.11). On MySQL it is the set
+	// xtrabackup reported, which lets the operator choose and judge backups
+	// without restoring them. Empty for legacy backups.
 	AnchorGTID string `json:"anchorGTID,omitempty"`
 	// AnchorServerUUID is the archive-partition identity of the incarnation the base
 	// backup was taken from (MariaDB's persisted per-incarnation token). It lets a

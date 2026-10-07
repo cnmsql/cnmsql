@@ -1319,6 +1319,15 @@ type ClusterStatus struct {
 	// +optional
 	CurrentPrimaryTimestamp *metav1.Time `json:"currentPrimaryTimestamp,omitempty"`
 
+	// CurrentPrimaryGeneration counts the changes of currentPrimary: the
+	// instance that records itself as currentPrimary raises it by one in the
+	// same update (the operator does under Group Replication). It fences the
+	// binlog archive: a primary stamps its generation into the archive index,
+	// and a writer with a lower generation, a demoted primary still finishing a
+	// pass, never judges the archive's segments.
+	// +optional
+	CurrentPrimaryGeneration int64 `json:"currentPrimaryGeneration,omitempty"`
+
 	// TargetPrimaryTimestamp is when the current switchover request to
 	// TargetPrimary was started. It bounds the switchover by spec.maxSwitchoverDelay.
 	// +optional
@@ -1714,6 +1723,35 @@ type ContinuousArchivingStatus struct {
 	// timeline back to it.
 	// +optional
 	OldestSegmentPosition string `json:"oldestSegmentPosition,omitempty"`
+
+	// DisownedGTIDs (MySQL) is every transaction the archive recorded as
+	// disowned, including dead branches whose segment retention already
+	// dropped and the dead part of base backups. An instance holding any of
+	// them is diverged.
+	// +optional
+	DisownedGTIDs string `json:"disownedGTIDs,omitempty"`
+
+	// Gaps lists the stretches of the timeline the archive is missing between
+	// transactions it holds (a MySQL GTID set, or a MariaDB
+	// `domain-first..last` range): point-in-time recovery from a base backup
+	// taken before one of them cannot cross it. They come from a binary log
+	// that left the server before it was archived, typically a successor
+	// cloned after the last archived file whose predecessor then died.
+	// +optional
+	// +listType=atomic
+	Gaps []string `json:"gaps,omitempty"`
+
+	// GapsSince is when the archive started reporting these gaps. A gap the
+	// former primary's drain fills soon after a failover never raises
+	// ArchiveGap; one that outlives the grace period does.
+	// +optional
+	GapsSince *metav1.Time `json:"gapsSince,omitempty"`
+
+	// CoveredGTIDSet (MySQL) is every transaction the archive holds. Failover
+	// prefers, among equally advanced replicas, one whose binary-log history
+	// the archive already covers.
+	// +optional
+	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
 }
 
 // MariaDBEpoch is one change of primary on a MariaDB cluster.

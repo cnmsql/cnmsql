@@ -75,7 +75,9 @@ type floorView struct {
 	diverged       []string
 	positions      map[string]string
 	currentPrimary string
+	generation     int64
 	timeline       engine.MariaDBTimeline
+	epochs         []objectstore.ArchiveEpoch
 }
 
 func newClusterFloor(instance string) *clusterFloor {
@@ -85,15 +87,21 @@ func newClusterFloor(instance string) *clusterFloor {
 // Observe records the latest Cluster read by the role reconciler.
 func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
 	timeline := make(engine.MariaDBTimeline, 0, len(cluster.Status.MariaDBTimeline))
+	epochs := make([]objectstore.ArchiveEpoch, 0, len(cluster.Status.MariaDBTimeline))
 	for _, epoch := range cluster.Status.MariaDBTimeline {
 		timeline = append(timeline, engine.MariaDBEpoch{ServerID: epoch.ServerID, Handoff: epoch.Handoff})
+		epochs = append(epochs, objectstore.ArchiveEpoch{
+			Instance: epoch.Instance, ServerID: epoch.ServerID, Handoff: epoch.Handoff,
+		})
 	}
 	f.latest.Store(&floorView{
 		instances:      slices.Clone(cluster.Status.InstanceNames),
 		diverged:       slices.Clone(cluster.Status.DivergedInstances),
 		positions:      maps.Clone(cluster.Status.GTIDExecutedByInstance),
 		currentPrimary: cluster.Status.CurrentPrimary,
+		generation:     cluster.Status.CurrentPrimaryGeneration,
 		timeline:       timeline,
+		epochs:         epochs,
 	})
 }
 
@@ -108,6 +116,26 @@ func (f *clusterFloor) Primary() (string, string, bool) {
 	}
 	position, ok := view.positions[view.currentPrimary]
 	return view.currentPrimary, position, ok
+}
+
+// Authority implements binlog.AuthoritySource: the primary generation, while
+// the Cluster names this instance status.currentPrimary.
+func (f *clusterFloor) Authority() (int64, bool) {
+	view := f.latest.Load()
+	if view == nil || view.currentPrimary != f.instance {
+		return 0, false
+	}
+	return view.generation, true
+}
+
+// Epochs returns status.mariadbTimeline with instance names, as the archive
+// stores it.
+func (f *clusterFloor) Epochs() []objectstore.ArchiveEpoch {
+	view := f.latest.Load()
+	if view == nil {
+		return nil
+	}
+	return view.epochs
 }
 
 // Diverged implements binlog.ClusterView.
@@ -232,6 +260,7 @@ func startArchiver(
 		Scan:         binlog.MysqlbinlogScanner(cfg.MysqlbinlogPath, cfg.MariaDB),
 		NewSet:       cfg.newGTIDSet(),
 		Forks:        forkSource(reader, floor, cfg.MariaDB),
+		Authority:    floor.Authority,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -269,6 +298,11 @@ func startArchiver(
 func forkSource(reader *binlog.Reader, floor *clusterFloor, mariadb bool) binlog.ForkSource {
 	if !mariadb {
 		return func(ctx context.Context) (binlog.ForkJudge, error) {
+			// A server that is no longer writable no longer speaks for the
+			// surviving timeline, whatever pass it is finishing.
+			if writable, err := reader.Writable(ctx); err != nil || !writable {
+				return nil, err
+			}
 			executed, err := reader.ExecutedGTIDSet(ctx)
 			if err != nil {
 				return nil, err
@@ -281,9 +315,15 @@ func forkSource(reader *binlog.Reader, floor *clusterFloor, mariadb bool) binlog
 		if !ok {
 			return nil, nil
 		}
+		if writable, err := reader.Writable(ctx); err != nil || !writable {
+			return nil, err
+		}
 		position, err := reader.CurrentPosition(ctx)
 		if err != nil {
 			return nil, err
+		}
+		if epochs := floor.Epochs(); len(epochs) == len(timeline) {
+			return binlog.NewMariaDBArchiveJudge(epochs, position), nil
 		}
 		return binlog.NewMariaDBForkJudge(timeline, position), nil
 	}
@@ -305,6 +345,14 @@ func archivingStatus(s binlog.State) *webserver.ArchivingStatus {
 		PurgeHeldBy:           s.PurgeHeldBy,
 		OldestSegmentPosition: s.OldestSegmentPosition,
 		DeferredFile:          s.DeferredFile,
+		DisownedGTIDs:         s.Disowned,
+		Gaps:                  s.Gaps,
+		CoveredGTIDSet:        s.Covered,
+	}
+	for _, e := range s.Timeline {
+		out.MariaDBTimeline = append(out.MariaDBTimeline, webserver.ArchiveEpochStatus{
+			Instance: e.Instance, ServerID: e.ServerID, Handoff: e.Handoff,
+		})
 	}
 	if !s.PurgeHeldSince.IsZero() {
 		out.PurgeHeldSince = rfc3339(s.PurgeHeldSince)

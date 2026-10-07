@@ -36,6 +36,7 @@ func forkedPrimaryStatus(checkedAt string, forks ...webserver.ArchiveForkStatus)
 		StatusByInstance: map[string]*webserver.Status{
 			"demo-2": {Archiving: &webserver.ArchivingStatus{
 				Active: true, Forks: forks, ForkCheckedAt: checkedAt, OldestSegmentPosition: "0-1-219",
+				DisownedGTIDs: "u1:219",
 			}},
 		},
 	}
@@ -56,6 +57,9 @@ func TestAggregateArchivingMirrorsForks(t *testing.T) {
 	if got.OldestSegmentPosition != "0-1-219" {
 		t.Fatalf("oldestSegmentPosition = %q", got.OldestSegmentPosition)
 	}
+	if got.DisownedGTIDs != "u1:219" {
+		t.Fatalf("disownedGTIDs = %q", got.DisownedGTIDs)
+	}
 }
 
 // Between the old primary going away and the new primary's first fork check,
@@ -65,6 +69,7 @@ func TestAggregateArchivingKeepsForksUntilTheNewPrimaryChecks(t *testing.T) {
 	detected := metav1.NewTime(time.Date(2026, 10, 6, 11, 0, 0, 0, time.UTC))
 	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
 		Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected, OldestSegmentPosition: "0-1-3",
+		DisownedGTIDs: "u1:219",
 	}
 	for name, observed := range map[string]observedCluster{
 		"primary unreachable":          {PrimaryName: "demo-2", StatusByInstance: map[string]*webserver.Status{}},
@@ -74,7 +79,7 @@ func TestAggregateArchivingKeepsForksUntilTheNewPrimaryChecks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			got := aggregateArchiving(observed, prior)
 			if !slices.Equal(got.ForkGTIDs, prior.ForkGTIDs) || got.ForkDetectedAt == nil ||
-				got.OldestSegmentPosition != "0-1-3" {
+				got.OldestSegmentPosition != "0-1-3" || got.DisownedGTIDs != "u1:219" {
 				t.Fatalf("aggregated = %+v, want the prior fork fields", got)
 			}
 		})

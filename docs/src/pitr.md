@@ -499,7 +499,51 @@ Recovery treats those transactions as a dead branch:
   example to inspect what the failover lost.
 
 Nothing else is needed: archiving keeps working, and the condition clears on
-its own when the forked segment ages out of the retention window.
+its own when the forked segment ages out of the retention window. The dead
+transactions stay recorded in the archive index after that, so a backup that
+holds them is still refused, and an instance that holds them is marked
+diverged and never promoted.
+
+### Dead-branch backups
+
+A base backup taken on the losing side of a lagged failover holds transactions
+the surviving cluster never executed, even when they never reached the archive.
+The operator checks every completed physical Backup against the primary and
+sets its `DeadBranch` condition (True with a Warning event on the Cluster when
+it holds disowned transactions). Such a backup cannot recover a time or the
+latest point; recover from another backup, or name its branch with
+`targetGTID`.
+
+```bash
+kubectl get backup <name> \
+  -o jsonpath='{.status.conditions[?(@.type=="DeadBranch")].message}'
+```
+
+### Archive gaps
+
+The archive can miss a stretch of the timeline between transactions it holds:
+typically a replica cloned after the primary's last archived file, promoted
+after that primary died with the stretch only in its unarchived binary log, or a
+binary log `binlogExpireSeconds` removed before it was archived. Recovery cannot
+cross a gap: it fails with `ErrArchiveGap` (MySQL) or `ErrForkedTimeline`
+(MariaDB) instead of building a state that never existed. The cluster reports
+`status.continuousArchiving.gaps`, and once a gap has stood for seven minutes
+(a returning former primary usually ships the missing stretch before that), the
+`ArchiveGap` condition turns True with a Warning event and the operator takes a
+base backup on the primary (`<cluster>-archive-gap-<hash>`). Once it completes,
+recovery to any point after it works again; points inside the gap stay out of
+reach.
+
+### Choosing a base backup
+
+When recovery names no Backup (`externalClusters` recovery from raw S3), the
+operator picks the newest base backup that can reach the target: completed at
+or before `targetTime`, with an anchor `targetGTID` contains, and, when the
+recovery replays the archive, not on a dead branch. A named Backup that
+completed after `targetTime` is refused, since it already holds later
+transactions. A `targetTime` later than the archive's `archivedThrough` (the
+time before which everything the primary committed is archived) fails with
+`ErrTargetBeyondArchive` instead of recovering less than asked.
 
 The operator performs an up-front PITR satisfiability check before provisioning a
 recovery primary. It can block obvious failures, such as a `targetGTID` beyond
@@ -516,7 +560,8 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
   restore only to the backup's consistency point.
 - Configure credentials or IAM so instance pods can write the source archive and
   recovery Jobs can read it.
-- Monitor the `ContinuousArchiving` and `ArchiveForked` conditions,
+- Monitor the `ContinuousArchiving`, `ArchiveForked` and `ArchiveGap`
+  conditions, the `DeadBranch` condition on Backups,
   `pendingFiles`, object-store errors, and failover events.
 - Choose base-backup frequency and `targetRPOSeconds` together. The former
   mostly controls replay length/RTO; the latter controls how much recent work can
@@ -528,8 +573,12 @@ recovery primary. It can block obvious failures, such as a `targetGTID` beyond
 
 - PITR cannot recover transactions that were neither archived nor present on the
   post-failover primary.
-- `targetTime` depends on binlog event timestamps and the server clock. Prefer
+- `targetTime` depends on binlog event timestamps and the server clock. Replay
+  stops at the first transaction stamped at or after the target, so skewed
+  clocks between primaries recover an earlier point, never a mix. Prefer
   `targetGTID` when an exact boundary is available.
+- `gtid_domain_id` is reserved on MariaDB: a multi-domain archive cannot leave a
+  dead branch out of a recovery.
 - The operator's up-front target check is intentionally conservative and
   coverage-based. Some invalid targets are detected later by the restore Job.
 - Recovery uses the archive index. If `_index.json` is missing, stale, or forked,

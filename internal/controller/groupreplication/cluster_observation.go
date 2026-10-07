@@ -163,6 +163,9 @@ func (r *Reconciler) MergeStatus(cluster *mysqlv1alpha1.Cluster, observed topolo
 		}
 		if status.PrimaryMember != "" {
 			merged.Bootstrapped = true
+			if cluster.Status.CurrentPrimary != status.PrimaryMember {
+				cluster.Status.CurrentPrimaryGeneration++
+			}
 			cluster.Status.CurrentPrimary = status.PrimaryMember
 		}
 	}

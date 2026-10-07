@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -167,6 +168,24 @@ func CheckMariadbAuthors(files []PositionalFile, domain uint32, anchorSeq uint64
 		}
 	}
 	return nil
+}
+
+// seqBeforeTime turns a time target into a sequence target: the sequence just
+// before the first transaction, in sequence order past the anchor, stamped at
+// or after the target. Replay is chunked by file, and a --stop-datetime on
+// each chunk would let a later chunk apply transactions an earlier one
+// stopped short of (clocks differ between primaries); a sequence bound keeps
+// the recovered state a prefix of the timeline.
+func seqBeforeTime(files []PositionalFile, domain uint32, anchorSeq, highest uint64, target time.Time) uint64 {
+	first := highest + 1
+	for _, f := range files {
+		for _, b := range f.Boundaries {
+			if b.Domain == domain && b.Seq > anchorSeq && !b.Time.IsZero() && !b.Time.Before(target) && b.Seq < first {
+				first = b.Seq
+			}
+		}
+	}
+	return first - 1
 }
 
 // HighestMariadbSeq returns the highest sequence the files carry in domain.
@@ -354,6 +373,12 @@ func PlanMariadbReplay(plan ReplayPlan, files []PositionalFile, anchorSeq uint64
 			return nil, nil
 		}
 		target = highest
+		if !plan.TargetTime.IsZero() {
+			target = seqBeforeTime(cut, plan.MariaDBDomain, anchorSeq, highest, plan.TargetTime)
+			if target <= anchorSeq {
+				return nil, nil
+			}
+		}
 	}
 	return PlanMariadbPositionalFiles(cut, plan.MariaDBDomain, anchorSeq, target)
 }
@@ -434,7 +459,7 @@ func PrepareMariadbPositional(
 			}
 			return p, nil
 		}
-		if err := checkMariadbAnchor(segs, anchorGTID, p.Domain); err != nil {
+		if err := checkMariadbAnchor(segs, idx.Disowned, anchorGTID, p.Domain); err != nil {
 			return MariadbPositional{}, err
 		}
 	}
@@ -500,7 +525,9 @@ func capSegments(
 // checkMariadbAnchor refuses a time or latest recovery from a base backup whose
 // anchor (server, seq) falls in a recorded fork: the backup holds a disowned
 // transaction, and replay cannot remove it.
-func checkMariadbAnchor(segs []ReplaySegment, anchorGTID string, domain uint32) error {
+func checkMariadbAnchor(
+	segs []ReplaySegment, disowned *objectstore.ArchiveDisowned, anchorGTID string, domain uint32,
+) error {
 	gtids, err := engine.ParseMariaDBPosition(anchorGTID)
 	if err != nil || len(gtids) == 0 {
 		return nil
@@ -508,6 +535,14 @@ func checkMariadbAnchor(segs []ReplaySegment, anchorGTID string, domain uint32) 
 	for _, a := range gtids {
 		if a.Domain != domain {
 			continue
+		}
+		if disowned != nil {
+			for _, r := range disowned.Ranges {
+				if r.Holds(a.Domain, a.Server, a.Seq) {
+					return fmt.Errorf("%w: its position %s is on a dead branch the archive recorded (%d-%d-%d..%d)",
+						ErrBackupOnDeadBranch, a, r.Domain, r.Server, r.After+1, r.Through)
+				}
+			}
 		}
 		for _, seg := range segs {
 			cut, ok := forkCut(seg, domain)

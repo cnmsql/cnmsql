@@ -236,6 +236,10 @@ var managedKeys = map[string]struct{}{
 // TLS, or relocate on-disk paths the operator relies on. They are rejected on
 // top of managedKeys so a user override cannot destabilise an instance.
 var deniedKeys = map[string]struct{}{
+	// A second replication domain makes the binlog archive multi-domain, where
+	// point-in-time recovery cannot leave a dead branch out (design 039).
+	"gtid_domain_id":         {},
+	"gtid-domain-id":         {},
 	"basedir":                {},
 	"pid_file":               {},
 	"port":                   {},

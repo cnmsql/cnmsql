@@ -122,6 +122,50 @@ func (r *BackupReconciler) readLogicalManifest(
 	return &meta, nil
 }
 
+// physicalAnchor returns a completed physical backup's anchor, which
+// point-in-time recovery replays from and the dead-branch check judges. A
+// manifest that cannot be read at all leaves it unknown rather than failing a
+// good backup; a logical backup has none.
+func (r *BackupReconciler) physicalAnchor(
+	ctx context.Context, method mysqlv1alpha1.BackupMethod, namespace string,
+	store *mysqlv1alpha1.S3ObjectStore, keys objectstore.BackupKeys,
+) (string, error) {
+	if method == mysqlv1alpha1.BackupMethodLogical {
+		return "", nil
+	}
+	meta, err := r.readBackupMetadata(ctx, namespace, store, keys)
+	switch {
+	case err == nil:
+		return meta.AnchorGTID, nil
+	case manifestUnrecoverable(err):
+		return "", nil
+	default:
+		return "", fmt.Errorf("reading backup metadata: %w", err)
+	}
+}
+
+// readBackupMetadata reads a physical backup's metadata.json.
+func (r *BackupReconciler) readBackupMetadata(
+	ctx context.Context,
+	namespace string,
+	store *mysqlv1alpha1.S3ObjectStore,
+	keys objectstore.BackupKeys,
+) (*objectstore.BackupMetadata, error) {
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store)
+	if err != nil {
+		return nil, err
+	}
+	osClient, err := objectstore.NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var meta objectstore.BackupMetadata
+	if err := osClient.GetJSON(ctx, store.Bucket, keys.MetadataKey, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
 // manifestUnrecoverable reports whether a manifest read failed in a way no
 // retry fixes: the object is not there, or it is not a manifest.
 func manifestUnrecoverable(err error) bool {

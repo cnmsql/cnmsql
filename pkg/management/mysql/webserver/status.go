@@ -233,6 +233,24 @@ type ArchivingStatus struct {
 	// DeferredFile is the stranded binlog a former primary's drain keeps
 	// deferring because the surviving timeline does not provably hold it.
 	DeferredFile string `json:"deferredFile,omitempty"`
+	// DisownedGTIDs (MySQL) is every transaction the archive recorded as
+	// disowned, whether or not its segment is still in the archive.
+	DisownedGTIDs string `json:"disownedGTIDs,omitempty"`
+	// Gaps are the stretches of the timeline the archive is missing between
+	// transactions it holds: MySQL GTID sets, or MariaDB "domain-first..last".
+	Gaps []string `json:"gaps,omitempty"`
+	// CoveredGTIDSet (MySQL) is everything the archive holds.
+	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
+	// MariaDBTimeline is the primary timeline the archive carries; the
+	// operator seeds an empty status.mariadbTimeline from it.
+	MariaDBTimeline []ArchiveEpochStatus `json:"mariadbTimeline,omitempty"`
+}
+
+// ArchiveEpochStatus is one epoch of the archived MariaDB primary timeline.
+type ArchiveEpochStatus struct {
+	Instance string `json:"instance,omitempty"`
+	ServerID uint32 `json:"serverID"`
+	Handoff  string `json:"handoff,omitempty"`
 }
 
 // ArchiveForkStatus is one segment's fork record.
