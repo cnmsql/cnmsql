@@ -603,6 +603,18 @@ no live baseline. The operator therefore consults `status.divergedInstances` as
 it was recorded on an earlier reconcile, while the primary was still reachable.
 That persisted signal survives the outage.
 
+With continuous archiving on MySQL there is a second, comparison-free signal:
+every transaction the archive recorded as disowned
+(`status.continuousArchiving.disownedGTIDs`). An instance holding one is marked
+diverged whether or not a primary is there, which catches a former primary that
+comes back exactly when its successor goes down.
+
+Among candidates that are otherwise equal, failover prefers one whose
+`gtid_purged` the binlog archive already covers. A replica cloned after the
+primary's last archived file holds its clone point in no binary log, and
+promoting it after the primary is lost leaves a gap in the archive (see
+[PITR](./pitr.md#archive-gaps)). Failover never waits for that.
+
 ### MariaDB: the primary timeline
 
 A MySQL GTID names its author, so comparing sets finds errant transactions. A
@@ -650,6 +662,13 @@ recovery to a time or to the latest point leaves those transactions out. A
 former primary that rejoins never adds a disowned transaction through its drain:
 it ships a stranded file only once the current primary's recorded position
 proves it canonical.
+
+Each promotion raises `status.currentPrimaryGeneration` by one, in the same
+update that names the new `currentPrimary`; the status webhook refuses any
+other change to it. The archiver stamps its generation into the archive index,
+and a demoted primary still finishing an archive pass, whose generation is now
+behind, never judges the archive: otherwise it would record its successor's
+transactions as a dead branch.
 
 If every surviving candidate is known-diverged, failover blocks with "every
 replica candidate has diverged from the failed primary (errant transactions);
