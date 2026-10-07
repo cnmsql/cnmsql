@@ -255,6 +255,10 @@ Partial overrides are allowed. For example, setting only `serverTLSSecret`
 reuses your server certificate while cnmsql still generates the CA issuer and
 operator client certificate.
 
+A user-provided `replicationTLSSecret` is the operator's client certificate and
+must have the common name `cnmsql-operator`; a user-provided `serverTLSSecret`
+must not. See [Control API authorization](./security-model.md#control-api-authorization).
+
 ## Status model
 
 During reconciliation and periodic resyncs, the operator queries each

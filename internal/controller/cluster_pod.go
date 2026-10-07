@@ -177,8 +177,20 @@ func instanceVolumes(plan clusterPlan, inst instancePlan) []corev1.Volume {
 		{Name: backupVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: inst.ConfigMapName}}}},
 		{Name: "server-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: inst.ServerTLSSecret}}},
-		{Name: clientCAVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: plan.ClientCASecretName}}},
+		caCertVolume(clientCAVolumeName, plan.ClientCASecretName),
 	}
+}
+
+// caCertVolume projects only ca.crt out of a CA Secret. The Secret cert-manager
+// writes for the cluster CA also holds the CA's private key (tls.key), and a
+// user-provided CA Secret may carry one too: whoever reads it can mint any
+// certificate the control API trusts, so it must never reach an instance Pod
+// or a worker Job.
+func caCertVolume(name, secretName string) corev1.Volume {
+	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+		SecretName: secretName,
+		Items:      []corev1.KeyToPath{{Key: caCertKey, Path: caCertKey}},
+	}}}
 }
 
 // restoreArgs builds the recovering primary's bootstrap Job command: download

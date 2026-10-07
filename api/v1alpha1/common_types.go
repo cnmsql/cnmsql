@@ -181,13 +181,14 @@ type CertificatesConfiguration struct {
 
 	// The secret of type kubernetes.io/tls containing the server TLS certificate
 	// and key that will be set as ssl-cert and ssl-key. Should be signed by the
-	// CA in ServerCASecret.
+	// CA in ServerCASecret. Its common name must not be cnmsql-operator.
 	// +optional
 	ServerTLSSecret string `json:"serverTLSSecret,omitempty"`
 
 	// The secret of type kubernetes.io/tls containing the client certificate to
 	// authenticate as the replication user. Should be signed by the CA in
-	// ClientCASecret.
+	// ClientCASecret. It is the operator's client certificate for the instance
+	// control API, so its common name must be cnmsql-operator.
 	// +optional
 	ReplicationTLSSecret string `json:"replicationTLSSecret,omitempty"`
 

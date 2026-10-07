@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 func (r *ClusterReconciler) validateUserCertificates(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
@@ -45,41 +46,59 @@ func (r *ClusterReconciler) validateUserCertificates(ctx context.Context, cluste
 			return err
 		}
 	}
+	// The instance control API authorizes callers by their certificate's
+	// common name: the operator's client certificate must carry the operator's
+	// name, and an instance certificate (which instances also present to each
+	// other as clients) must not, or every peer would hold the operator's
+	// rights.
 	if certs.ServerTLSSecret != "" {
-		if err := r.validateUserTLSSecret(ctx, cluster, certs.ServerTLSSecret, "server TLS"); err != nil {
+		leaf, err := r.validateUserTLSSecret(ctx, cluster, certs.ServerTLSSecret, "server TLS")
+		if err != nil {
 			return err
+		}
+		if leaf.Subject.CommonName == webserver.OperatorCommonName {
+			return fmt.Errorf("user-provided server TLS secret %q must not use the operator's common name %q",
+				certs.ServerTLSSecret, webserver.OperatorCommonName)
 		}
 	}
 	if certs.ReplicationTLSSecret != "" {
-		if err := r.validateUserTLSSecret(ctx, cluster, certs.ReplicationTLSSecret, "replication TLS"); err != nil {
+		leaf, err := r.validateUserTLSSecret(ctx, cluster, certs.ReplicationTLSSecret, "replication TLS")
+		if err != nil {
 			return err
+		}
+		if leaf.Subject.CommonName != webserver.OperatorCommonName {
+			return fmt.Errorf("user-provided replication TLS secret %q must have common name %q, got %q",
+				certs.ReplicationTLSSecret, webserver.OperatorCommonName, leaf.Subject.CommonName)
 		}
 	}
 	return nil
 }
 
+// validateUserTLSSecret checks a user-provided kubernetes.io/tls Secret holds a
+// matching certificate and key, and returns the leaf certificate.
 func (r *ClusterReconciler) validateUserTLSSecret(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
 	name string,
 	role string,
-) error {
+) (*x509.Certificate, error) {
 	secret, err := r.userCertificateSecret(ctx, cluster, name, role)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if secret.Type != corev1.SecretTypeTLS {
-		return fmt.Errorf("user-provided %s secret %q must be type %q", role, name, corev1.SecretTypeTLS)
+		return nil, fmt.Errorf("user-provided %s secret %q must be type %q", role, name, corev1.SecretTypeTLS)
 	}
 	for _, key := range []string{corev1.TLSCertKey, corev1.TLSPrivateKeyKey} {
 		if len(secret.Data[key]) == 0 {
-			return fmt.Errorf("user-provided %s secret %q is missing key %q", role, name, key)
+			return nil, fmt.Errorf("user-provided %s secret %q is missing key %q", role, name, key)
 		}
 	}
-	if _, err := tls.X509KeyPair(secret.Data[corev1.TLSCertKey], secret.Data[corev1.TLSPrivateKeyKey]); err != nil {
-		return fmt.Errorf("user-provided %s secret %q contains invalid TLS material: %w", role, name, err)
+	pair, err := tls.X509KeyPair(secret.Data[corev1.TLSCertKey], secret.Data[corev1.TLSPrivateKeyKey])
+	if err != nil {
+		return nil, fmt.Errorf("user-provided %s secret %q contains invalid TLS material: %w", role, name, err)
 	}
-	return nil
+	return pair.Leaf, nil
 }
 
 func (r *ClusterReconciler) validateUserCASecret(

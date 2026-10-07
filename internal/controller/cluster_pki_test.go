@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 func TestBuildPlanCertificateOverridesAreIndependent(t *testing.T) {
@@ -105,10 +106,21 @@ func TestPodSpecUsesClientCASecret(t *testing.T) {
 			if volume.Secret == nil || volume.Secret.SecretName != clientCASecretName {
 				t.Fatalf("client-ca volume = %#v, want %s secret", volume.Secret, clientCASecretName)
 			}
+			assertOnlyCACertProjected(t, volume)
 			return
 		}
 	}
 	t.Fatal("client-ca volume not found")
+}
+
+// assertOnlyCACertProjected fails unless a CA Secret volume projects ca.crt
+// alone: the CA's private key (tls.key / ca.key) must never be mounted.
+func assertOnlyCACertProjected(t *testing.T, volume corev1.Volume) {
+	t.Helper()
+	items := volume.Secret.Items
+	if len(items) != 1 || items[0].Key != "ca.crt" || items[0].Path != "ca.crt" {
+		t.Fatalf("%s volume items = %#v, want only ca.crt", volume.Name, items)
+	}
 }
 
 func TestEnsureCertificatesSkipsOnlyUserProvidedServerTLS(t *testing.T) {
@@ -288,6 +300,7 @@ func TestValidateUserCertificates(t *testing.T) {
 	t.Parallel()
 	caCRT, caKey := testCertificate(t, true)
 	leafCRT, leafKey := testCertificate(t, false)
+	operatorCRT, operatorKey := testCertificateCN(t, false, webserver.OperatorCommonName)
 
 	tests := []struct {
 		name      string
@@ -352,13 +365,33 @@ func TestValidateUserCertificates(t *testing.T) {
 			}, {
 				ObjectMeta: metav1.ObjectMeta{Name: "replication-tls", Namespace: "default"},
 				Type:       corev1.SecretTypeTLS,
-				Data:       map[string][]byte{corev1.TLSCertKey: leafCRT, corev1.TLSPrivateKeyKey: leafKey},
+				Data:       map[string][]byte{corev1.TLSCertKey: operatorCRT, corev1.TLSPrivateKeyKey: operatorKey},
 			}},
 			certs: &mysqlv1alpha1.CertificatesConfiguration{
 				ServerCASecret:       "server-ca",
 				ServerTLSSecret:      "server-tls",
 				ReplicationTLSSecret: "replication-tls",
 			},
+		},
+		{
+			name: "replication tls must carry the operator common name",
+			secrets: []*corev1.Secret{{
+				ObjectMeta: metav1.ObjectMeta{Name: "replication-tls", Namespace: "default"},
+				Type:       corev1.SecretTypeTLS,
+				Data:       map[string][]byte{corev1.TLSCertKey: leafCRT, corev1.TLSPrivateKeyKey: leafKey},
+			}},
+			certs:     &mysqlv1alpha1.CertificatesConfiguration{ReplicationTLSSecret: "replication-tls"},
+			wantError: `must have common name "cnmsql-operator"`,
+		},
+		{
+			name: "server tls must not carry the operator common name",
+			secrets: []*corev1.Secret{{
+				ObjectMeta: metav1.ObjectMeta{Name: "server-tls", Namespace: "default"},
+				Type:       corev1.SecretTypeTLS,
+				Data:       map[string][]byte{corev1.TLSCertKey: operatorCRT, corev1.TLSPrivateKeyKey: operatorKey},
+			}},
+			certs:     &mysqlv1alpha1.CertificatesConfiguration{ServerTLSSecret: "server-tls"},
+			wantError: "must not use the operator's common name",
 		},
 		{
 			name: "client ca is verify only",
@@ -449,6 +482,11 @@ func assertUnstructuredNotFound(
 
 func testCertificate(t *testing.T, isCA bool) ([]byte, []byte) {
 	t.Helper()
+	return testCertificateCN(t, isCA, "cnmsql-test")
+}
+
+func testCertificateCN(t *testing.T, isCA bool, commonName string) ([]byte, []byte) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -459,7 +497,7 @@ func testCertificate(t *testing.T, isCA bool) ([]byte, []byte) {
 	}
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "cnmsql-test"},
+		Subject:               pkix.Name{CommonName: commonName},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
