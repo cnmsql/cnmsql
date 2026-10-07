@@ -51,6 +51,10 @@ var (
 	// disowned: the backup was taken on a dead branch, and replay cannot remove
 	// what it already contains.
 	ErrBackupOnDeadBranch = errors.New("binlog: base backup was taken on a dead branch of the timeline")
+	// ErrArchiveGap is returned when recovery would cross, or crossed,
+	// transactions the archive does not hold: replaying past them would build
+	// a state the cluster never served.
+	ErrArchiveGap = errors.New("binlog: the archive is missing transactions the recovery has to replay")
 )
 
 // gtidOps abstracts GTID-set operations needed for replay planning. MySQL uses
@@ -256,6 +260,9 @@ type ReplaySegment struct {
 type ReplayPlan struct {
 	// Segments are the timeline segments to replay, oldest first.
 	Segments []ReplaySegment
+	// AnchorGTID is the base backup's anchor, which the recovered set is
+	// checked against after replay.
+	AnchorGTID string
 	// ExcludeGTIDs drops transactions already present in the base backup (and the
 	// overlap successors re-emit). Passed as mysqlbinlog --exclude-gtids.
 	ExcludeGTIDs string
@@ -295,6 +302,10 @@ type ReplayPlan struct {
 	// branch to recover when the target falls in a fork.
 	MariaDBTarget *engine.MariaDBGTID
 
+	// DisownedGTIDs (MySQL) is every transaction the archive recorded as
+	// disowned; a time or latest recovery leaves them out, so the hole they
+	// leave in the recovered set is expected.
+	DisownedGTIDs string
 	// Forks are the fork records of the planned segments, for the restore log.
 	Forks []SegmentFork
 	// ForkChecked is false when no primary has fork-checked the index (an
@@ -330,7 +341,73 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 	if err := applyMySQLForks(idx, target, &plan); err != nil {
 		return ReplayPlan{}, err
 	}
+	// A latest recovery replays everything planned, so a hole in what the plan
+	// covers is a hole in the result. A time target may stop before it, which
+	// the check after replay settles.
+	if target.GTID == "" && target.Time == nil {
+		covered := []string{anchorGTID}
+		for _, seg := range plan.Segments {
+			covered = append(covered, seg.GTIDSet)
+		}
+		union, err := replication.UnionGTIDStrings(covered...)
+		if err != nil {
+			return ReplayPlan{}, fmt.Errorf("binlog: merging planned coverage: %w", err)
+		}
+		if err := checkMySQLGaps(anchorGTID, union, plan.DisownedGTIDs); err != nil {
+			return ReplayPlan{}, err
+		}
+	}
 	return plan, nil
+}
+
+// VerifyReplayedGTIDs checks the GTID set a MySQL recovery ended with. Every
+// hole in it must already be a hole of the base backup or a transaction the
+// archive disowned, and a targetGTID must be fully present: anything else means
+// the replay skipped transactions the archive never delivered, and the
+// recovered state never existed.
+func VerifyReplayedGTIDs(plan ReplayPlan, anchorGTID, executed string) error {
+	if plan.IncludeGTIDs != "" {
+		missing, err := replication.DifferenceGTIDStrings(plan.IncludeGTIDs, executed)
+		if err != nil {
+			return fmt.Errorf("binlog: comparing the recovered set with the target: %w", err)
+		}
+		if missing != "" {
+			return fmt.Errorf("%w: the recovered server lacks %s of the target", ErrArchiveGap, missing)
+		}
+	}
+	return checkMySQLGaps(anchorGTID, executed, plan.DisownedGTIDs)
+}
+
+// checkMySQLGaps reports the transactions missing from result that neither the
+// base backup's own holes nor the disowned set explain: the holes between its
+// intervals, and for a UUID the backup does not hold at all, everything before
+// its first transaction (the backup predates that UUID, so all of it had to be
+// replayed).
+func checkMySQLGaps(anchorGTID, result, disowned string) error {
+	anchor, err := replication.ParseGTIDSet(anchorGTID)
+	if err != nil {
+		return fmt.Errorf("binlog: parsing anchor GTID: %w", err)
+	}
+	got, err := replication.ParseGTIDSet(result)
+	if err != nil {
+		return fmt.Errorf("binlog: parsing recovered GTID set: %w", err)
+	}
+	expected, err := replication.ParseGTIDSet(disowned)
+	if err != nil {
+		return fmt.Errorf("binlog: parsing disowned GTID set: %w", err)
+	}
+	expected.Union(anchor.Holes())
+	missing := got.Holes()
+	for uuid, intervals := range got {
+		if len(anchor[uuid]) > 0 || len(intervals) == 0 || intervals[0].Start <= 1 {
+			continue
+		}
+		missing.AddInterval(uuid, replication.GTIDInterval{Start: 1, End: intervals[0].Start - 1})
+	}
+	if gap := missing.Difference(expected); !gap.IsEmpty() {
+		return fmt.Errorf("%w: %s", ErrArchiveGap, gap)
+	}
+	return nil
 }
 
 // applyMySQLForks folds the archive's fork records into a MySQL replay plan.
@@ -350,6 +427,7 @@ func applyMySQLForks(idx *objectstore.ArchiveIndex, target RecoveryTarget, plan 
 	if err != nil {
 		return fmt.Errorf("binlog: parsing fork records: %w", err)
 	}
+	plan.DisownedGTIDs = allForks
 
 	if target.GTID != "" {
 		mixed, err := replication.IntersectsGTIDStrings(plan.IncludeGTIDs, allForks)
@@ -419,7 +497,7 @@ func planReplayWithOps(
 
 	frontier := anchor.Clone()
 
-	plan := ReplayPlan{ExcludeGTIDs: anchor.String()}
+	plan := ReplayPlan{ExcludeGTIDs: anchor.String(), AnchorGTID: anchor.String()}
 	for i := range idx.Segments {
 		seg := &idx.Segments[i]
 		segSet := newSet()

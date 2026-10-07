@@ -18,6 +18,7 @@ package instance
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -336,7 +337,16 @@ func (o *RestoreOptions) applyReplay(
 	if err != nil {
 		return fmt.Errorf("pitr: %w", err)
 	}
-	_ = db.Close()
+	defer func() { _ = db.Close() }()
+	// Hold one connection for the check after replay. It is established while
+	// the server still skips grant checks, which it keeps after the replay
+	// loads the grant tables; a connection opened then would have to
+	// authenticate against the restored accounts.
+	verifyConn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pitr: holding a connection to the temporary server: %w", err)
+	}
+	defer func() { _ = verifyConn.Close() }()
 
 	sess, err := o.startReplaySession(ctx, bt)
 	if err != nil {
@@ -346,7 +356,11 @@ func (o *RestoreOptions) applyReplay(
 	// when the streaming reported no error: a mid-stream decode failure
 	// truncates the stream, which makes the client exit too, and the streaming
 	// error is the root cause worth reporting.
+	finished := false
 	defer func() {
+		if finished {
+			return
+		}
 		if finErr := sess.finish(); err == nil {
 			err = finErr
 		}
@@ -394,7 +408,32 @@ func (o *RestoreOptions) applyReplay(
 	}
 
 	log.Info("Replaying archived binlogs into restored data", "files", len(files))
-	return sess.streamChunk(ctx, replayArgs)
+	if err := sess.streamChunk(ctx, replayArgs); err != nil {
+		return err
+	}
+	if isMariaDB {
+		return nil
+	}
+	finished = true
+	if err := sess.finish(); err != nil {
+		return err
+	}
+	return verifyReplayedGTIDs(ctx, verifyConn, plan)
+}
+
+// verifyReplayedGTIDs reads the GTID set the MySQL replay ended with and checks
+// that it crossed no transaction the archive failed to deliver (see
+// binlog.VerifyReplayedGTIDs).
+func verifyReplayedGTIDs(ctx context.Context, conn *sql.Conn, plan binlog.ReplayPlan) error {
+	var executed string
+	if err := conn.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&executed); err != nil {
+		return fmt.Errorf("pitr: reading the recovered gtid_executed: %w", err)
+	}
+	if err := binlog.VerifyReplayedGTIDs(plan, plan.AnchorGTID, executed); err != nil {
+		return fmt.Errorf("pitr: %w", err)
+	}
+	logf.FromContext(ctx).WithName("instance-pitr").Info("Verified the recovered GTID set", "gtidExecuted", executed)
+	return nil
 }
 
 // replayMariadbPositional executes a MariaDB targetGTID recovery as byte-offset-
