@@ -95,3 +95,25 @@ func TestVerifyReplayedGTIDs(t *testing.T) {
 		t.Fatalf("a targetGTID the recovery fell short of must fail, err = %v", err)
 	}
 }
+
+// A targetTime past what the archive proves it holds fails instead of
+// recovering less than asked.
+func TestTimeTargetBeyondArchivedThrough(t *testing.T) {
+	t.Parallel()
+	through := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	idx := &objectstore.ArchiveIndex{ArchivedThrough: through, Segments: []objectstore.ArchiveSegment{
+		{ServerUUID: testUUID, Binlogs: []string{"binlog.000001"}, GTIDSet: testUUID + ":1-100"},
+	}}
+	late := through.Add(time.Minute)
+	if _, err := PlanReplay(idx, testUUID+":1-50", RecoveryTarget{Time: &late}); !errors.Is(err, ErrTargetBeyondArchive) {
+		t.Fatalf("err = %v, want ErrTargetBeyondArchive", err)
+	}
+	early := through.Add(-time.Minute)
+	if _, err := PlanReplay(idx, testUUID+":1-50", RecoveryTarget{Time: &early}); err != nil {
+		t.Fatalf("a target the archive covers must plan: %v", err)
+	}
+	idx.ArchivedThrough = time.Time{}
+	if _, err := PlanReplay(idx, testUUID+":1-50", RecoveryTarget{Time: &late}); err != nil {
+		t.Fatalf("an archive without the stamp is not judged: %v", err)
+	}
+}

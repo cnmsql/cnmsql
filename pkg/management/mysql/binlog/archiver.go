@@ -239,6 +239,8 @@ type ForkReport struct {
 	// ArchiveGaps); Covered is the index's MySQL covered set.
 	Gaps    []string
 	Covered string
+	// ArchivedThrough is the stamp this check wrote, zero when it wrote none.
+	ArchivedThrough time.Time
 	// Read is true when the report comes from a read of the index, so Forks and
 	// OldestSegmentPosition describe it; false when nothing was read.
 	Read bool
@@ -809,6 +811,12 @@ func (a *Archiver) checkForks(
 // primary that has no timeline) there is nothing to judge, and reading the
 // index on every pass to find that out would cost a round trip each time.
 func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
+	return a.CheckArchive(ctx, time.Time{})
+}
+
+// CheckArchive is CheckForks that also stamps the index's ArchivedThrough
+// with through when it moves it forward. A zero through stamps nothing.
+func (a *Archiver) CheckArchive(ctx context.Context, through time.Time) (ForkReport, error) {
 	if a.forks == nil {
 		return ForkReport{}, nil
 	}
@@ -822,7 +830,7 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 		err = fmt.Errorf("binlog: reading fork check authority: %w", err)
 		return ForkReport{Err: err}, err
 	}
-	if judge == nil {
+	if judge == nil && through.IsZero() {
 		return ForkReport{}, nil
 	}
 	pass.preloaded = judge
@@ -839,8 +847,22 @@ func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
 			if report.Err != nil {
 				return false, report.Err
 			}
-			if !report.Checked || (!changed && index.ForkCheck != nil && index.Generation >= generation) {
+			if report.Superseded {
 				return false, nil
+			}
+			stamp := !through.IsZero() && through.After(index.ArchivedThrough)
+			checkDue := report.Checked && (changed || index.ForkCheck == nil || index.Generation < generation)
+			if !checkDue && !stamp {
+				return false, nil
+			}
+			if stamp {
+				index.ArchivedThrough = through
+				report.ArchivedThrough = through
+			}
+			if !report.Checked {
+				index.Generation = max(index.Generation, generation)
+				index.UpdatedAt = a.now()
+				return true, nil
 			}
 			index.Generation = generation
 			index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}

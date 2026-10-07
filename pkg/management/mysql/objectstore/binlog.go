@@ -204,6 +204,11 @@ type ArchiveIndex struct {
 	// a dead branch does not erase it: a base backup holding that branch is
 	// still refused for a time or latest recovery.
 	Disowned *ArchiveDisowned `json:"disowned,omitempty"`
+	// ArchivedThrough is the time before which every transaction the primary
+	// committed is archived. A targetTime after it cannot be proven
+	// recoverable: transactions committed in between may sit in a binary log
+	// the archive never received.
+	ArchivedThrough time.Time `json:"archivedThrough,omitempty"`
 }
 
 // ArchiveDisowned is the index-level record of disowned transactions.

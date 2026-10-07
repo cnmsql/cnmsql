@@ -489,6 +489,9 @@ func planReplayWithOps(
 	if idx == nil {
 		return ReplayPlan{}, fmt.Errorf("binlog: archive index is required")
 	}
+	if err := checkTimeTarget(idx, target); err != nil {
+		return ReplayPlan{}, err
+	}
 
 	anchor := newSet()
 	if err := anchor.Parse(anchorGTID); err != nil {
@@ -529,6 +532,19 @@ func planReplayWithOps(
 	return plan, nil
 }
 
+// checkTimeTarget refuses a targetTime the archive cannot prove it reaches:
+// past ArchivedThrough, transactions committed before the target may sit in a
+// binary log the archive never received, and replaying what it does hold would
+// silently recover an earlier state. An archive that predates the stamp is not
+// judged.
+func checkTimeTarget(idx *objectstore.ArchiveIndex, target RecoveryTarget) error {
+	if target.Time == nil || idx.ArchivedThrough.IsZero() || !target.Time.After(idx.ArchivedThrough) {
+		return nil
+	}
+	return fmt.Errorf("%w: the archive holds every transaction only up to %s, before the target %s",
+		ErrTargetBeyondArchive, idx.ArchivedThrough.UTC().Format(time.RFC3339), target.Time.UTC().Format(time.RFC3339))
+}
+
 // replaySegment copies an index segment into a plan entry.
 func replaySegment(seg *objectstore.ArchiveSegment) ReplaySegment {
 	return ReplaySegment{
@@ -560,6 +576,9 @@ func plannedForks(idx *objectstore.ArchiveIndex, planned []ReplaySegment) []Segm
 func planReplayWithoutFrontier(
 	idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget, newSet newGTIDSetFunc,
 ) (ReplayPlan, error) {
+	if err := checkTimeTarget(idx, target); err != nil {
+		return ReplayPlan{}, err
+	}
 	anchor := newSet()
 	if err := anchor.Parse(anchorGTID); err != nil {
 		return ReplayPlan{}, fmt.Errorf("binlog: parsing anchor GTID: %w", err)
