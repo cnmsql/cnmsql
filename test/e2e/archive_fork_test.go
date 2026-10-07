@@ -140,7 +140,7 @@ func laggedPromotionSpec(f forkFlavor, cluster string) {
 		livePos = f.flush(cluster, replica, s.password)
 		f.covers(cluster, livePos, 5*time.Minute)
 
-		liveTime = rfc3339Now()
+		liveTime = recoveryStamp()
 		waitPast(liveTime)
 		writeForkRows(f, replica, s.password, "post", post)
 		f.covers(cluster, f.flush(cluster, replica, s.password), 5*time.Minute)
@@ -326,7 +326,7 @@ func cleanFailoverSpec(f forkFlavor, cluster string) {
 		prePos = f.flush(cluster, primary, s.password)
 		f.covers(cluster, prePos, 5*time.Minute)
 		waitReplicated(f, replica, s.password, pre)
-		preTime = rfc3339Now()
+		preTime = recoveryStamp()
 		waitPast(preTime)
 
 		By("failing over: the old primary is taken down with its replica caught up")
@@ -338,7 +338,7 @@ func cleanFailoverSpec(f forkFlavor, cluster string) {
 		writeForkRows(f, replica, s.password, "post", post)
 		postPos = f.flush(cluster, replica, s.password)
 		f.covers(cluster, postPos, 5*time.Minute)
-		postTime = rfc3339Now()
+		postTime = recoveryStamp()
 		waitPast(postTime)
 
 		writeForkRows(f, replica, s.password, "late", late)

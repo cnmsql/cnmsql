@@ -441,9 +441,15 @@ func expectRestoreFails(f forkFlavor, name, backup string, target pitrTarget, ne
 	}, e2eTimeout(30*time.Second), 5*time.Second).Should(Succeed())
 }
 
-// rfc3339Now is a recovery timestamp: now, at second precision.
-func rfc3339Now() string {
-	return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+// recoveryStamp is a recovery timestamp at second precision that falls strictly
+// after every write committed before the call. Binlog events carry whole
+// seconds and a time target stops at the first event at or after it, so a stamp
+// truncated into the same second as those writes would drop them: it rounds up
+// to the next second and waits for it instead.
+func recoveryStamp() string {
+	stamp := time.Now().UTC().Truncate(time.Second).Add(time.Second)
+	time.Sleep(time.Until(stamp))
+	return stamp.Format(time.RFC3339)
 }
 
 // waitPast sleeps until the wall clock is past a recorded RFC3339 instant, so
