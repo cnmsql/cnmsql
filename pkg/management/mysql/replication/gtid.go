@@ -250,6 +250,25 @@ func (s GTIDSet) Difference(other GTIDSet) GTIDSet {
 	return out
 }
 
+// Intersect returns the transactions both s and other hold.
+func (s GTIDSet) Intersect(other GTIDSet) GTIDSet {
+	return s.Difference(s.Difference(other))
+}
+
+// Holes returns, per UUID, the transactions missing between the first and the
+// last transaction s holds of it: the gaps between its intervals. A set that is
+// one interval per UUID has no holes. Recovery uses it to tell a replay that
+// crossed a missing stretch of the timeline from one that merely stopped early.
+func (s GTIDSet) Holes() GTIDSet {
+	out := GTIDSet{}
+	for uuid, intervals := range s {
+		for i := 1; i < len(intervals); i++ {
+			out[uuid] = append(out[uuid], GTIDInterval{Start: intervals[i-1].End + 1, End: intervals[i].Start - 1})
+		}
+	}
+	return out
+}
+
 // minus returns the parts of iv that no interval of sub covers, in order. sub
 // is normalized (sorted, disjoint), so one sweep suffices.
 func (iv GTIDInterval) minus(sub []GTIDInterval) []GTIDInterval {
@@ -357,4 +376,26 @@ func IntersectsGTIDStrings(a, b string) (bool, error) {
 		return false, err
 	}
 	return !setA.Difference(setB).Equal(setA), nil
+}
+
+// HolesGTIDString returns the holes (see GTIDSet.Holes) of a GTID set string.
+func HolesGTIDString(raw string) (string, error) {
+	set, err := ParseGTIDSet(raw)
+	if err != nil {
+		return "", err
+	}
+	return set.Holes().String(), nil
+}
+
+// IntersectGTIDStrings parses a and b and returns a ∩ b in canonical form.
+func IntersectGTIDStrings(a, b string) (string, error) {
+	setA, err := ParseGTIDSet(a)
+	if err != nil {
+		return "", err
+	}
+	setB, err := ParseGTIDSet(b)
+	if err != nil {
+		return "", err
+	}
+	return setA.Intersect(setB).String(), nil
 }
