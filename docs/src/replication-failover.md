@@ -211,8 +211,12 @@ stopped, the Pod reports NotReady and shows as `0/1 Running`. Unfencing restarts
 mysqld and the instance rejoins normal routing and role reconciliation.
 
 Fencing the primary stops writes for the whole cluster, because the rw Service
-loses its only endpoint. That is deliberate: use it to freeze an instance for
-inspection or maintenance rather than as a failover trigger.
+loses its only endpoint. Once the fence has stopped mysqld the primary counts as
+failed, and automatic failover promotes a safe replica after `failoverDelay`.
+The operator leaves the fenced Pod in place rather than deleting it as it does a
+failed primary's, so the fence holds until you clear it; the instance then
+rejoins as a replica. Use fencing to freeze an instance for inspection or
+maintenance, and a switchover to move the primary role deliberately.
 
 ## Primary lease fencing
 

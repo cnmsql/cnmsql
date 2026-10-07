@@ -527,3 +527,42 @@ func TestReconcileFailoverLeavesAFencePendingOnThePrimary(t *testing.T) {
 	default:
 	}
 }
+
+// TestReconcileFailoverKeepsAnAcknowledgedFencedPrimaryPod pins what happens
+// once the fence is acknowledged: the in-Pod reconciler has stopped mysqld and
+// released the lease, so the primary is genuinely down and failover promotes.
+// It must not delete the old primary's Pod on the way: the fence already did
+// what the deletion is for, and the recreated Pod would come back without the
+// annotation, silently lifting a fence the user asked to hold.
+func TestReconcileFailoverKeepsAnAcknowledgedFencedPrimaryPod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := fencedPrimaryCluster()
+	cluster.Status.FencedInstances = []string{drainPrimary}
+	primaryPod := annotatedPrimaryPod(cluster, drainPrimary)
+	replicaPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: drainReplica, Namespace: cluster.Namespace}}
+	r, _ := newDrainReconciler(t, cluster, primaryPod, replicaPod)
+
+	if _, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 2,
+		Observed:  fencedPrimaryState(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary != drainReplica {
+		t.Fatalf("expected failover to promote %s once the fence is acknowledged, targetPrimary is %q",
+			drainReplica, got.Status.TargetPrimary)
+	}
+	pod := &corev1.Pod{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: drainPrimary}, pod); err != nil {
+		t.Fatalf("the fenced primary's Pod must survive the failover: %v", err)
+	}
+	if pod.Annotations["cnmsql.cnmsql.co/fencing"] != "true" {
+		t.Fatal("the fenced primary's Pod lost its fence annotation")
+	}
+}
