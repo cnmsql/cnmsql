@@ -42,6 +42,7 @@ var _ = Describe("Node failure", Ordered, Serial, Label("disruptive", "node-fail
 			testNamespace = prevNS
 			dc.teardown()
 		})
+		dc.pinOperatorToControlPlane()
 
 		// From here on, the active kube-context targets the dedicated cluster.
 		createTestNamespace("nodefail")

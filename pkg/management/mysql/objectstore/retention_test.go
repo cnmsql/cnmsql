@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,6 +208,12 @@ func recordingS3(t *testing.T) (*httptest.Server, func() []string) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/"+ArchiveIndexName) && r.Method != http.MethodPut {
+			w.Header().Set("ETag", `"v1"`)
+			w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+			_, _ = w.Write([]byte(`{"clusterName":"demo","segments":[{"serverUUID":"u","binlogs":["binlog.000001"]}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(emptyListing))
 	}))
 	t.Cleanup(server.Close)
@@ -230,6 +237,7 @@ func TestApplyExpirySplitsStores(t *testing.T) {
 	plan := RetentionPlan{
 		DeleteBinlogKeys: []string{"archive/demo/binlogs/u/binlog.000001", "archive/demo/binlogs/u/binlog.000001.json"},
 		NewIndex:         &ArchiveIndex{},
+		DeletedBinlogs:   map[string]map[string]struct{}{"u": {"binlog.000001": {}}},
 	}
 
 	if err := ApplyBackupExpiry(context.Background(), testClient(t, baseSrv.URL), baseStore, plan); err != nil {

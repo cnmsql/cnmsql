@@ -1429,6 +1429,18 @@ type ClusterStatus struct {
 	// +optional
 	GTIDExecutedByInstance map[string]string `json:"gtidExecutedByInstance,omitempty"`
 
+	// MariaDBTimeline (MariaDB) records each change of primary, oldest first.
+	// Entry i says that, in every replication domain, the transactions after
+	// its handoff up to the next entry's handoff were authored by its server
+	// id. A MariaDB GTID position names only the author of its last
+	// transaction; this history is what tells a forked former primary from a
+	// lagging one. The oldest entries are dropped once no instance position or
+	// archive segment needs them. Not recorded on replica clusters.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=256
+	MariaDBTimeline []MariaDBEpoch `json:"mariadbTimeline,omitempty"`
+
 	// GTIDExecutedUpdatedAt records when GTIDExecutedByInstance was last
 	// refreshed. Because gtid_executed advances on every write, the operator
 	// throttles how often it persists the map; this timestamp marks the last
@@ -1683,6 +1695,43 @@ type ContinuousArchivingStatus struct {
 	// PurgeHeldSince is when the purge gate started keeping that binary log.
 	// +optional
 	PurgeHeldSince *metav1.Time `json:"purgeHeldSince,omitempty"`
+
+	// ForkGTIDs lists, one entry per archive segment, the archived
+	// transactions the surviving timeline never executed (a dead branch left
+	// by a lagged promotion): the MySQL GTID set, or a MariaDB range such as
+	// `0-1-219..0-1-225`. Point-in-time recovery to a time or to the latest
+	// point leaves them out; an explicit targetGTID can still recover them.
+	// +optional
+	// +listType=atomic
+	ForkGTIDs []string `json:"forkGTIDs,omitempty"`
+
+	// ForkDetectedAt is when the earliest of those records was written.
+	// +optional
+	ForkDetectedAt *metav1.Time `json:"forkDetectedAt,omitempty"`
+
+	// OldestSegmentPosition (MariaDB) is the lowest GTID position any archive
+	// segment reached, per domain. The operator keeps the MariaDB primary
+	// timeline back to it.
+	// +optional
+	OldestSegmentPosition string `json:"oldestSegmentPosition,omitempty"`
+}
+
+// MariaDBEpoch is one change of primary on a MariaDB cluster.
+type MariaDBEpoch struct {
+	// Instance is the primary of this epoch.
+	Instance string `json:"instance"`
+
+	// ServerID is its @@server_id, the server component of the GTIDs it
+	// authors.
+	ServerID uint32 `json:"serverID"`
+
+	// Handoff is its @@gtid_slave_pos when it took authority: per domain, the
+	// last transaction it inherited.
+	// +optional
+	Handoff string `json:"handoff,omitempty"`
+
+	// Since is when the operator first observed it as primary.
+	Since metav1.Time `json:"since"`
 }
 
 // ImageInfo describes an instance image as its own server binary reports it.

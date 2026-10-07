@@ -220,9 +220,12 @@ instance by unfencing.
 
 The operator tracks fenced instances in `status.fencedInstances`. A fenced
 instance is skipped as a failover candidate. Fencing the primary stops writes
-for the cluster because the rw Service has no endpoint. That is deliberate: use
-fencing to freeze an instance for inspection or maintenance, not as a failover
-trigger.
+for the cluster because the rw Service has no endpoint. Once the fence has
+stopped mysqld, the primary counts as failed, so automatic failover promotes a
+safe replica after `spec.failoverDelay`. The fenced Pod is not deleted: it stays
+fenced until you unfence it, and it then rejoins as a replica of the new
+primary. Use fencing to freeze an instance for inspection or maintenance; to
+move the primary role deliberately, use a switchover.
 
 ## Automatic failover
 
@@ -240,7 +243,8 @@ During failover cnmsql:
 1. chooses a ready replica with healthy replication SQL state;
 2. excludes any replica already known to be diverged (see below);
 3. checks that candidate GTID sets are comparable;
-4. fences the old primary Pod while retaining its PVC;
+4. fences the old primary Pod while retaining its PVC (a primary you fenced
+   yourself is already stopped and keeps its Pod and its fence);
 5. sets `targetPrimary` to the safe candidate;
 6. updates role labels and Services after promotion.
 

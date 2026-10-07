@@ -37,12 +37,15 @@ import (
 var ErrCollision = errors.New("binlog: archive key already holds a different object")
 
 // Store is the subset of objectstore.Client the archiver needs. It is an
-// interface so the archiver is unit-testable with an in-memory fake.
+// interface so the archiver is unit-testable with an in-memory fake. The index
+// is written through its versioned methods (objectstore.UpdateArchiveIndex),
+// since the primary, a draining former primary and retention all write it.
 type Store interface {
 	Upload(ctx context.Context, bucket, key string, r io.Reader, size int64, contentType string) error
 	PutJSON(ctx context.Context, bucket, key string, v any) error
 	GetJSON(ctx context.Context, bucket, key string, v any) error
 	Exists(ctx context.Context, bucket, key string) (bool, error)
+	objectstore.VersionedStore
 }
 
 // Scanner extracts a file's GTID/timestamp summary. The real implementation
@@ -62,10 +65,24 @@ type Archiver struct {
 	scan         Scanner
 	now          func() time.Time
 	newSet       func() gtidOps
+	// forks snapshots the authority the fork check compares segments against;
+	// nil disables the check.
+	forks ForkSource
 	// verified memoizes files this process has already proven byte-identical to
 	// their archived copy, so a steady-state pass costs one stat per file instead
 	// of re-decoding and re-hashing the whole retained set on every tick.
 	verified map[string]archivedStamp
+	// deferredScans memoizes the scan of files a drain filter deferred. A
+	// disowned tail is deferred forever, and decoding it with mysqlbinlog on
+	// every tick would cost a full read of the file every poll interval.
+	deferredScans map[string]scannedStamp
+}
+
+// scannedStamp is a scan result together with the identity of the file it was
+// taken from.
+type scannedStamp struct {
+	info os.FileInfo
+	scan ScanResult
 }
 
 // archivedStamp records the identity a file had when it was proven archived,
@@ -75,6 +92,11 @@ type Archiver struct {
 type archivedStamp struct {
 	info os.FileInfo
 	meta objectstore.BinlogMetadata
+}
+
+// matches reports whether a file is still the one a scan was taken from.
+func (s scannedStamp) matches(fi os.FileInfo) bool {
+	return archivedStamp{info: s.info}.matches(fi)
 }
 
 // matches reports whether a file is still the one this stamp was taken from.
@@ -104,6 +126,9 @@ type ArchiverOptions struct {
 	// NewSet returns a fresh GTIDOps accumulator for this archiver's engine.
 	// Defaults to a MySQL (replication.GTIDSet-backed) set.
 	NewSet func() GTIDOps
+	// Forks snapshots what the surviving timeline holds for the fork check run
+	// on every index write and by CheckForks. Nil disables fork checks.
+	Forks ForkSource
 }
 
 // NewArchiver builds an Archiver from validated options.
@@ -129,16 +154,18 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		newSet = newMysqlGTIDSet
 	}
 	return &Archiver{
-		store:        opts.Store,
-		objectStore:  opts.ObjectStore,
-		clusterName:  opts.ClusterName,
-		instanceName: opts.InstanceName,
-		serverUUID:   opts.ServerUUID,
-		binlogDir:    opts.BinlogDir,
-		scan:         opts.Scan,
-		now:          now,
-		newSet:       newSet,
-		verified:     make(map[string]archivedStamp),
+		store:         opts.Store,
+		objectStore:   opts.ObjectStore,
+		clusterName:   opts.ClusterName,
+		instanceName:  opts.InstanceName,
+		serverUUID:    opts.ServerUUID,
+		binlogDir:     opts.BinlogDir,
+		scan:          opts.Scan,
+		now:           now,
+		newSet:        newSet,
+		forks:         opts.Forks,
+		verified:      make(map[string]archivedStamp),
+		deferredScans: make(map[string]scannedStamp),
 	}, nil
 }
 
@@ -157,6 +184,36 @@ type ArchiveResult struct {
 	// order, with the GTIDs it holds. The purge gate reads it to decide how far
 	// the replicas let it go.
 	Files []ArchivedFile
+	// ForkCheck reports the fork check run with the pass's last index write;
+	// nil when the pass wrote no index.
+	ForkCheck *ForkReport
+	// Deferred names the file a drain filter refused, which stopped the pass;
+	// empty when nothing was deferred.
+	Deferred string
+}
+
+// FileFilter decides whether a file about to be uploaded may enter the archive,
+// given its scan. Refusing defers the file and stops the pass there, so a later
+// file never moves the frontier past it.
+type FileFilter func(name string, scan ScanResult) (bool, error)
+
+// ForkReport is the outcome of one fork check over the archive index.
+type ForkReport struct {
+	// Checked is true when the check compared every foreign segment against an
+	// authority; CheckedAt is when.
+	Checked   bool
+	CheckedAt time.Time
+	// Read is true when the report comes from a read of the index, so Forks and
+	// OldestSegmentPosition describe it; false when nothing was read.
+	Read bool
+	// Forks are the fork records the index carries after the check (or as read,
+	// when no check ran), not only those this check added.
+	Forks []SegmentFork
+	// OldestSegmentPosition is the lowest MariaDB position any segment reached
+	// (see OldestSegmentPosition); empty on MySQL.
+	OldestSegmentPosition string
+	// Err is why the check could not run, if it failed.
+	Err error
 }
 
 // ArchivedFile is one binlog known to be in the object store.
@@ -171,6 +228,24 @@ type ArchivedFile struct {
 // the resulting frontier or the first error; on error the frontier is not
 // advanced past the file that failed.
 func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (ArchiveResult, error) {
+	return a.archivePending(ctx, logs, nil, a.forks)
+}
+
+// DrainPending is ArchivePending for a former primary draining the tail it
+// stranded: every file to upload must pass allow first, and the index writes
+// run no fork check. A demoted instance is not the authority on what the
+// surviving timeline holds; judging the live primary's segment against its own
+// executed set would record transactions it simply has not replicated yet.
+func (a *Archiver) DrainPending(ctx context.Context, logs []BinaryLog, allow FileFilter) (ArchiveResult, error) {
+	return a.archivePending(ctx, logs, allow, nil)
+}
+
+// ChecksForks reports whether this archiver runs fork checks at all.
+func (a *Archiver) ChecksForks() bool { return a.forks != nil }
+
+func (a *Archiver) archivePending(
+	ctx context.Context, logs []BinaryLog, allow FileFilter, forks ForkSource,
+) (result ArchiveResult, err error) {
 	bucket := a.objectStore.Bucket
 
 	status, err := a.loadStatus(ctx, bucket)
@@ -182,12 +257,14 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		return ArchiveResult{}, fmt.Errorf("binlog: parsing covered gtid set: %w", err)
 	}
 
-	result := ArchiveResult{
+	result = ArchiveResult{
 		LastArchivedBinlog: status.LastArchivedBinlog,
 		LastArchivedGTID:   status.LastArchivedGTID,
 		CoveredGTIDSet:     status.CoveredGTIDSet,
 	}
 
+	pass := &forkPass{source: forks}
+	defer func() { result.ForkCheck = pass.report }()
 	for _, l := range Archivable(logs) {
 		select {
 		case <-ctx.Done():
@@ -195,9 +272,13 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		default:
 		}
 
-		meta, archived, err := a.archiveFile(ctx, bucket, l)
+		meta, archived, deferred, err := a.archiveFile(ctx, bucket, l, allow)
 		if err != nil {
 			return result, err
+		}
+		if deferred {
+			result.Deferred = l.Name
+			return result, nil
 		}
 		if archived {
 			result.Archived = append(result.Archived, l.Name)
@@ -244,7 +325,7 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 		if err := a.store.PutJSON(ctx, bucket, statusKey, status); err != nil {
 			return result, fmt.Errorf("binlog: writing archive status: %w", err)
 		}
-		if err := a.updateIndex(ctx, bucket, status, l.Name, meta.GTIDSet); err != nil {
+		if err := a.updateIndex(ctx, bucket, status, l.Name, meta.GTIDSet, pass); err != nil {
 			return result, err
 		}
 	}
@@ -253,11 +334,26 @@ func (a *Archiver) ArchivePending(ctx context.Context, logs []BinaryLog) (Archiv
 }
 
 // archiveFile archives a single rotated file. It returns the file's manifest,
-// whether it was freshly uploaded (false ⇒ already archived), and any error.
+// whether it was freshly uploaded (false ⇒ already archived), whether allow
+// deferred it (nothing uploaded), and any error.
 // Commit order is bytes → manifest, so a present manifest means a complete
 // archive; a present body without manifest is a partial upload that is retried.
 func (a *Archiver) archiveFile(
-	ctx context.Context, bucket string, l BinaryLog,
+	ctx context.Context, bucket string, l BinaryLog, allow FileFilter,
+) (objectstore.BinlogMetadata, bool, bool, error) {
+	meta, archived, err := a.archiveFileAllowed(ctx, bucket, l, allow)
+	if errors.Is(err, errDeferred) {
+		return objectstore.BinlogMetadata{}, false, true, nil
+	}
+	return meta, archived, false, err
+}
+
+// errDeferred is archiveFileAllowed's internal signal that allow refused the
+// file.
+var errDeferred = errors.New("binlog: file deferred")
+
+func (a *Archiver) archiveFileAllowed(
+	ctx context.Context, bucket string, l BinaryLog, allow FileFilter,
 ) (objectstore.BinlogMetadata, bool, error) {
 	keys, err := objectstore.BuildBinlogKeys(a.objectStore, a.clusterName, a.serverUUID, l.Name)
 	if err != nil {
@@ -306,10 +402,25 @@ func (a *Archiver) archiveFile(
 		return prior, false, nil
 	}
 
-	scanRes, err := a.scan(ctx, path)
-	if err != nil {
-		return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: scanning %q: %w", l.Name, err)
+	var scanRes ScanResult
+	if cached, ok := a.deferredScans[l.Name]; ok && cached.matches(st) {
+		scanRes = cached.scan
+	} else {
+		if scanRes, err = a.scan(ctx, path); err != nil {
+			return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: scanning %q: %w", l.Name, err)
+		}
 	}
+	if allow != nil {
+		ok, err := allow(l.Name, scanRes)
+		if err != nil {
+			return objectstore.BinlogMetadata{}, false, fmt.Errorf("binlog: evaluating %q for the archive: %w", l.Name, err)
+		}
+		if !ok {
+			a.deferredScans[l.Name] = scannedStamp{info: st, scan: scanRes}
+			return objectstore.BinlogMetadata{}, false, errDeferred
+		}
+	}
+	delete(a.deferredScans, l.Name)
 	sum, size, err := hashFile(path)
 	if err != nil {
 		return objectstore.BinlogMetadata{}, false, err
@@ -401,19 +512,36 @@ func (a *Archiver) loadStatus(ctx context.Context, bucket string) (objectstore.A
 // Folding only fileGTIDSet — the coverage of the file being added — keeps the two
 // in lockstep. Union is idempotent, so retries and resumes are safe.
 func (a *Archiver) updateIndex(
-	ctx context.Context, bucket string, status objectstore.ArchiveStatus, fileName, fileGTIDSet string,
+	ctx context.Context, bucket string, status objectstore.ArchiveStatus, fileName, fileGTIDSet string, pass *forkPass,
 ) error {
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
-	var index objectstore.ArchiveIndex
-	exists, err := a.store.Exists(ctx, bucket, key)
+	// The fold re-runs on a fresh copy whenever another writer got in first,
+	// so it is a pure function of the index it is handed.
+	err := objectstore.UpdateArchiveIndex(ctx, a.store, bucket, key,
+		func(index *objectstore.ArchiveIndex, _ bool) (bool, error) {
+			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
+				return false, err
+			}
+			// This write carries a fresh copy of the index anyway, so check the
+			// seams on it: a fork that landed late, or a record lost to a racing
+			// writer, is caught on the primary's next write.
+			_, report := a.checkForks(ctx, index, pass)
+			if report.Checked {
+				index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
+			}
+			pass.report = &report
+			return true, nil
+		})
 	if err != nil {
-		return err
+		return fmt.Errorf("binlog: updating archive index: %w", err)
 	}
-	if exists {
-		if err := a.store.GetJSON(ctx, bucket, key, &index); err != nil {
-			return fmt.Errorf("binlog: reading archive index: %w", err)
-		}
-	}
+	return nil
+}
+
+// foldFile adds one archived file and its coverage to the index.
+func (a *Archiver) foldFile(
+	index *objectstore.ArchiveIndex, status objectstore.ArchiveStatus, fileName, fileGTIDSet string,
+) error {
 	index.ClusterName = a.clusterName
 
 	seg, ok := index.Segment(a.serverUUID)
@@ -458,11 +586,140 @@ func (a *Archiver) updateIndex(
 	}
 	index.CoveredGTIDSet = cumulative.String()
 	index.UpdatedAt = a.now()
-
-	if err := a.store.PutJSON(ctx, bucket, key, &index); err != nil {
-		return fmt.Errorf("binlog: writing archive index: %w", err)
-	}
 	return nil
+}
+
+// forkPass snapshots the fork-check authority once per archive pass, so a pass
+// that writes the index for several files compares them all against the same
+// view and reads it only once.
+type forkPass struct {
+	source ForkSource
+	loaded bool
+	judge  ForkJudge
+	err    error
+	report *ForkReport
+}
+
+func (p *forkPass) load(ctx context.Context) (ForkJudge, error) {
+	if !p.loaded {
+		p.loaded = true
+		if p.source != nil {
+			p.judge, p.err = p.source(ctx)
+		}
+	}
+	return p.judge, p.err
+}
+
+func (a *Archiver) forkIdentity() string {
+	return forkCheckIdentity(a.instanceName, a.serverUUID)
+}
+
+// checkForks folds into every foreign segment's fork record the transactions
+// the surviving timeline does not hold, and reports whether any record grew.
+// Its own segment is skipped: it holds only this instance's binlog, which its
+// authority contains. The index is only modified when every segment could be
+// judged.
+func (a *Archiver) checkForks(
+	ctx context.Context, index *objectstore.ArchiveIndex, pass *forkPass,
+) (bool, ForkReport) {
+	report := ForkReport{}
+	finish := func() ForkReport {
+		report.Read = true
+		report.Forks = SegmentForks(index)
+		report.OldestSegmentPosition = OldestSegmentPosition(index.Segments)
+		return report
+	}
+	if pass.source == nil {
+		return false, finish()
+	}
+	judge, err := pass.load(ctx)
+	if err != nil {
+		report.Err = fmt.Errorf("binlog: reading fork check authority: %w", err)
+		return false, finish()
+	}
+	if judge == nil {
+		return false, finish()
+	}
+
+	now := a.now()
+	merged := make([]*objectstore.ArchiveFork, len(index.Segments))
+	grew := false
+	for i := range index.Segments {
+		seg := &index.Segments[i]
+		merged[i] = seg.Fork
+		if seg.ServerUUID == a.serverUUID {
+			continue
+		}
+		delta, err := judge.Judge(*seg)
+		if err != nil {
+			report.Err = err
+			return false, finish()
+		}
+		fork, g, err := mergeFork(seg.Fork, delta, judge.Authority(), now, a.forkIdentity())
+		if err != nil {
+			report.Err = err
+			return false, finish()
+		}
+		merged[i] = fork
+		grew = grew || g
+	}
+	for i := range index.Segments {
+		index.Segments[i].Fork = merged[i]
+	}
+	report.Checked = true
+	report.CheckedAt = now
+	return grew, finish()
+}
+
+// CheckForks runs the fork check over the archive index outside an archive
+// pass. The loop calls it on the first writable pass of a process, so a
+// promotion, failback or restart checks the archive without waiting for the
+// next rotation. It writes the index only when a record grew or the index has
+// never been checked. With no index yet there is nothing to check.
+//
+// The authority is taken before the index is read: without one (a MariaDB
+// primary that has no timeline) there is nothing to judge, and reading the
+// index on every pass to find that out would cost a round trip each time.
+func (a *Archiver) CheckForks(ctx context.Context) (ForkReport, error) {
+	if a.forks == nil {
+		return ForkReport{}, nil
+	}
+	pass := &forkPass{source: a.forks}
+	judge, err := pass.load(ctx)
+	if err != nil {
+		err = fmt.Errorf("binlog: reading fork check authority: %w", err)
+		return ForkReport{Err: err}, err
+	}
+	if judge == nil {
+		return ForkReport{}, nil
+	}
+	var report ForkReport
+	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
+	err = objectstore.UpdateArchiveIndex(ctx, a.store, a.objectStore.Bucket, key,
+		func(index *objectstore.ArchiveIndex, exists bool) (bool, error) {
+			if !exists {
+				report = ForkReport{}
+				return false, nil
+			}
+			var grew bool
+			grew, report = a.checkForks(ctx, index, pass)
+			if report.Err != nil {
+				return false, report.Err
+			}
+			if !report.Checked || (!grew && index.ForkCheck != nil) {
+				return false, nil
+			}
+			index.ForkCheck = &objectstore.ArchiveForkCheck{CheckedAt: report.CheckedAt, CheckedBy: a.forkIdentity()}
+			index.UpdatedAt = a.now()
+			return true, nil
+		})
+	if err != nil {
+		if report.Err == nil {
+			report.Err = err
+		}
+		return report, err
+	}
+	return report, nil
 }
 
 func hashFile(path string) (string, int64, error) {

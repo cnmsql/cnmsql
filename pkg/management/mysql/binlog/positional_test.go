@@ -35,9 +35,9 @@ func TestScanMariaDBBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []TxnBoundary{
-		{Domain: 0, Seq: 10, StartPos: 299}, // starts where the Gtid_list event ended
-		{Domain: 0, Seq: 11, StartPos: 341},
-		{Domain: 1, Seq: 3, StartPos: 420},
+		{Domain: 0, Server: 1, Seq: 10, StartPos: 299}, // starts where the Gtid_list event ended
+		{Domain: 0, Server: 1, Seq: 11, StartPos: 341},
+		{Domain: 1, Server: 5, Seq: 3, StartPos: 420},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("boundaries = %+v, want %+v", got, want)
@@ -104,7 +104,10 @@ func TestMariaSeqForDomain(t *testing.T) {
 func TestAnchorSeqFromBoundaries(t *testing.T) {
 	t.Parallel()
 	// {Domain, Seq, StartPos}
-	bounds := []TxnBoundary{{0, 1, 325}, {0, 2, 500}, {0, 3, 831}, {1, 9, 900}}
+	bounds := []TxnBoundary{
+		{Domain: 0, Seq: 1, StartPos: 325}, {Domain: 0, Seq: 2, StartPos: 500},
+		{Domain: 0, Seq: 3, StartPos: 831}, {Domain: 1, Seq: 9, StartPos: 900},
+	}
 	tests := []struct {
 		name   string
 		domain uint32
@@ -130,11 +133,11 @@ func TestPlanMariadbPositional(t *testing.T) {
 	t.Parallel()
 
 	twoFiles := [][]TxnBoundary{
-		{{0, 10, 100}, {0, 11, 200}, {0, 12, 300}}, // f1
-		{{0, 13, 100}, {0, 14, 200}, {0, 15, 300}}, // f2
+		{{Domain: 0, Seq: 10, StartPos: 100}, {Domain: 0, Seq: 11, StartPos: 200}, {Domain: 0, Seq: 12, StartPos: 300}}, // f1
+		{{Domain: 0, Seq: 13, StartPos: 100}, {Domain: 0, Seq: 14, StartPos: 200}, {Domain: 0, Seq: 15, StartPos: 300}}, // f2
 	}
 	oneFile := [][]TxnBoundary{
-		{{0, 10, 100}, {0, 11, 200}, {0, 12, 300}},
+		{{Domain: 0, Seq: 10, StartPos: 100}, {Domain: 0, Seq: 11, StartPos: 200}, {Domain: 0, Seq: 12, StartPos: 300}},
 	}
 
 	//nolint:prealloc // crossServer is appended below
@@ -216,15 +219,18 @@ func TestPlanMariadbPositional(t *testing.T) {
 			},
 			boundaries: [][]TxnBoundary{
 				// 1/binlog.000001: 0-1-1..14 (all at/below the anchor)
-				{{0, 1, 4}, {0, 14, 2800}},
+				{{Domain: 0, Seq: 1, StartPos: 4}, {Domain: 0, Seq: 14, StartPos: 2800}},
 				// 1/binlog.000002: 0-1-15..26
-				{{0, 15, 339}, {0, 26, 76000}},
+				{{Domain: 0, Seq: 15, StartPos: 339}, {Domain: 0, Seq: 26, StartPos: 76000}},
 				// 2/binlog.000001: rotation only, no transactions
 				{},
 				// 2/binlog.000002: re-log 0-1-15..26 then 0-2-27..57
-				{{0, 15, 339}, {0, 26, 60000}, {0, 27, 61000}, {0, 57, 284000}},
+				{
+					{Domain: 0, Seq: 15, StartPos: 339}, {Domain: 0, Seq: 26, StartPos: 60000},
+					{Domain: 0, Seq: 27, StartPos: 61000}, {Domain: 0, Seq: 57, StartPos: 284000},
+				},
 				// 2/binlog.000003: 0-2-58..62 (past the target)
-				{{0, 58, 339}, {0, 62, 34000}},
+				{{Domain: 0, Seq: 58, StartPos: 339}, {Domain: 0, Seq: 62, StartPos: 34000}},
 			},
 			anchor: 14,
 			target: 57,
@@ -253,9 +259,9 @@ func TestPlanMariadbPositional(t *testing.T) {
 				"A_binlog.000001", "A_binlog.000002", "M_binlog.000001",
 			},
 			boundaries: [][]TxnBoundary{
-				{{0, 1, 100}, {0, 10, 1000}},  // A 1-10
-				{{0, 21, 100}, {0, 30, 1000}}, // A 21-30
-				{{0, 11, 100}, {0, 20, 1000}}, // M 11-20
+				{{Domain: 0, Seq: 1, StartPos: 100}, {Domain: 0, Seq: 10, StartPos: 1000}},  // A 1-10
+				{{Domain: 0, Seq: 21, StartPos: 100}, {Domain: 0, Seq: 30, StartPos: 1000}}, // A 21-30
+				{{Domain: 0, Seq: 11, StartPos: 100}, {Domain: 0, Seq: 20, StartPos: 1000}}, // M 11-20
 			},
 			anchor: 0,
 			target: 30,
@@ -271,8 +277,8 @@ func TestPlanMariadbPositional(t *testing.T) {
 				"A_binlog.000001", "A_binlog.000002",
 			},
 			boundaries: [][]TxnBoundary{
-				{{0, 1, 100}, {0, 10, 1000}},  // A 1-10
-				{{0, 21, 100}, {0, 30, 1000}}, // A 21-30 (11-20 missing)
+				{{Domain: 0, Seq: 1, StartPos: 100}, {Domain: 0, Seq: 10, StartPos: 1000}},  // A 1-10
+				{{Domain: 0, Seq: 21, StartPos: 100}, {Domain: 0, Seq: 30, StartPos: 1000}}, // A 21-30 (11-20 missing)
 			},
 			anchor:  0,
 			target:  30,

@@ -101,6 +101,7 @@ func topologyObservationInput(observed observedCluster, cluster *mysqlv1alpha1.C
 		ConfiguredMembers:      observed.Plan.Instances,
 		EngineFlavor:           string(cluster.ResolvedFlavor()),
 		PriorDivergedInstances: priorDiverged,
+		MariaDBTimeline:        observed.MariaDBTimeline.engineTimeline(),
 	}
 	if gr != nil {
 		in.ObservedViewMax = gr.ObservedViewMax

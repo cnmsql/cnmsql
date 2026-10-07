@@ -42,6 +42,7 @@ var _ = Describe("PDB draining", Ordered, Serial, Label("disruptive", "node-fail
 			testNamespace = prevNS
 			dc.teardown()
 		})
+		dc.pinOperatorToControlPlane()
 
 		createTestNamespace("pdbdrain")
 

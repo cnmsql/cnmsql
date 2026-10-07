@@ -44,6 +44,15 @@ func (c *crashStore) PutJSON(ctx context.Context, bucket, key string, v any) err
 	return c.memStore.PutJSON(ctx, bucket, key, v)
 }
 
+// PutJSONIf is the index's write path; it crashes the same way.
+func (c *crashStore) PutJSONIf(ctx context.Context, bucket, key string, v any, etag string) error {
+	if !c.tripped && c.failPutSub != "" && strings.Contains(key, c.failPutSub) {
+		c.tripped = true
+		return errors.New("simulated crash before write")
+	}
+	return c.memStore.PutJSONIf(ctx, bucket, key, v, etag)
+}
+
 func (c *crashStore) Upload(ctx context.Context, bucket, key string, r io.Reader, size int64, ct string) error {
 	if !c.tripped && c.failUploadSub != "" && strings.Contains(key, c.failUploadSub) {
 		// The bytes land in the store, then the process dies before the manifest.

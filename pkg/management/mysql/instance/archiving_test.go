@@ -20,8 +20,11 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 func TestClusterFloorFailsClosedBeforeObservingACluster(t *testing.T) {
@@ -60,5 +63,78 @@ func TestClusterFloorPositions(t *testing.T) {
 	}
 	if !slices.Equal(unknown, []string{"demo-4"}) {
 		t.Fatalf("unknown = %v, want [demo-4]", unknown)
+	}
+}
+
+// The drain gate reads the current primary's recorded position, the divergence
+// list and, on MariaDB, the primary timeline from the same Cluster view.
+func TestClusterFloorClusterView(t *testing.T) {
+	t.Parallel()
+	floor := newClusterFloor("demo-1")
+	if _, _, ok := floor.Primary(); ok {
+		t.Fatal("an unobserved floor knows no primary")
+	}
+	if _, ok := floor.Timeline(); ok {
+		t.Fatal("an unobserved floor has no timeline")
+	}
+
+	cluster := &mysqlv1alpha1.Cluster{}
+	cluster.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+	cluster.Status.CurrentPrimary = "demo-2"
+	cluster.Status.DivergedInstances = []string{"demo-3"}
+	cluster.Status.GTIDExecutedByInstance = map[string]string{"demo-2": "0-2-300"}
+	cluster.Status.MariaDBTimeline = []mysqlv1alpha1.MariaDBEpoch{
+		{Instance: "demo-1", ServerID: 1},
+		{Instance: "demo-2", ServerID: 2, Handoff: "0-1-218"},
+	}
+	floor.Observe(cluster)
+	cluster.Status.MariaDBTimeline[1].Handoff = "changed"
+
+	name, pos, ok := floor.Primary()
+	if !ok || name != "demo-2" || pos != "0-2-300" {
+		t.Fatalf("Primary() = %q %q %v", name, pos, ok)
+	}
+	if !floor.Diverged("demo-3") || floor.Diverged("demo-2") {
+		t.Fatal("Diverged must follow status.divergedInstances")
+	}
+	tl, ok := floor.Timeline()
+	if !ok || len(tl) != 2 || tl[1].ServerID != 2 || tl[1].Handoff != "0-1-218" {
+		t.Fatalf("Timeline() = %+v %v", tl, ok)
+	}
+
+	cluster.Status.CurrentPrimary = "demo-4"
+	cluster.Status.MariaDBTimeline = nil
+	floor.Observe(cluster)
+	if _, _, ok := floor.Primary(); ok {
+		t.Fatal("a primary without a recorded position is unknown")
+	}
+	if _, ok := floor.Timeline(); ok {
+		t.Fatal("an empty timeline is no timeline")
+	}
+}
+
+func TestArchivingStatusProviderReportsForks(t *testing.T) {
+	t.Parallel()
+	detected := time.Date(2026, 10, 6, 1, 2, 3, 0, time.UTC)
+	got := archivingStatus(binlog.State{
+		Active: true,
+		Forks: []binlog.SegmentFork{
+			{ServerUUID: "old", InstanceName: "demo-0", GTIDs: "u:219", DetectedAt: detected},
+		},
+		ForkCheckedAt:         detected.Add(time.Minute),
+		OldestSegmentPosition: "0-1-5",
+		DeferredFile:          "binlog.000009",
+	})
+	if len(got.Forks) != 1 || got.Forks[0] != (webserver.ArchiveForkStatus{
+		Segment: "old", InstanceName: "demo-0", GTIDs: "u:219", DetectedAt: "2026-10-06T01:02:03Z",
+	}) {
+		t.Fatalf("forks = %+v", got.Forks)
+	}
+	if got.ForkCheckedAt != "2026-10-06T01:03:03Z" || got.OldestSegmentPosition != "0-1-5" ||
+		got.DeferredFile != "binlog.000009" {
+		t.Fatalf("status = %+v", got)
+	}
+	if empty := archivingStatus(binlog.State{}); empty.ForkCheckedAt != "" || empty.Forks != nil {
+		t.Fatalf("an unchecked state must report no check time: %+v", empty)
 	}
 }

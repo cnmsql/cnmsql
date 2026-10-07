@@ -96,6 +96,27 @@ func (d *dedicated) loadImage(image string) {
 	Expect(err).NotTo(HaveOccurred(), "failed to load image %s into %s", image, d.name)
 }
 
+// pinOperatorToControlPlane moves the operator onto the control-plane node, so a
+// spec that drains a worker never evicts the operator along with the instance
+// it drains. A drained primary waits in its preStop hook for the operator to
+// switch the role away; an operator evicted in the same drain has to reschedule
+// and wait out its predecessor's leader lease first, and when that outlasts the
+// hook the primary stops and the operator fails over instead.
+func (d *dedicated) pinOperatorToControlPlane() {
+	GinkgoHelper()
+	By("pinning the operator to the control-plane node so a worker drain never evicts it")
+	patch := `{"spec":{"template":{"spec":{` +
+		`"nodeSelector":{"node-role.kubernetes.io/control-plane":""},` +
+		`"tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}}}}`
+	_, err := kubectl("patch", "deployment", clusterWideDeployment, "-n", namespace,
+		"--type=strategic", "-p", patch)
+	Expect(err).NotTo(HaveOccurred(), "failed to pin the operator to the control-plane node")
+	_, err = kubectl("rollout", "status", "deployment/"+clusterWideDeployment, "-n", namespace,
+		"--timeout="+e2eTimeout(5*time.Minute).String())
+	Expect(err).NotTo(HaveOccurred(), "the pinned operator did not roll out on %s", d.name)
+	waitForWebhookReady("default")
+}
+
 // teardown restores the previously active kube-context and deletes the dedicated
 // cluster. It is best-effort: a failure here must not mask the spec result. Safe
 // to call on a nil receiver (e.g. when provisioning was skipped).

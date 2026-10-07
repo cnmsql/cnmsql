@@ -233,6 +233,47 @@ func (s GTIDSet) Union(other GTIDSet) {
 	}
 }
 
+// Difference returns the transactions in s that other does not hold (s \ other),
+// leaving both operands untouched. The fork check uses it to name exactly which
+// archived transactions the surviving timeline never executed.
+func (s GTIDSet) Difference(other GTIDSet) GTIDSet {
+	out := GTIDSet{}
+	for uuid, intervals := range s {
+		kept := make([]GTIDInterval, 0, len(intervals))
+		for _, iv := range intervals {
+			kept = append(kept, iv.minus(other[uuid])...)
+		}
+		if len(kept) > 0 {
+			out[uuid] = kept
+		}
+	}
+	return out
+}
+
+// minus returns the parts of iv that no interval of sub covers, in order. sub
+// is normalized (sorted, disjoint), so one sweep suffices.
+func (iv GTIDInterval) minus(sub []GTIDInterval) []GTIDInterval {
+	var out []GTIDInterval
+	start := iv.Start
+	for _, m := range sub {
+		if m.End < start {
+			continue
+		}
+		if m.Start > iv.End {
+			break
+		}
+		if m.Start > start {
+			out = append(out, GTIDInterval{Start: start, End: m.Start - 1})
+		}
+		// m.End+1 would overflow past MaxInt64; nothing remains after it.
+		if m.End >= iv.End {
+			return out
+		}
+		start = m.End + 1
+	}
+	return append(out, GTIDInterval{Start: start, End: iv.End})
+}
+
 // String renders the set in canonical MySQL form
 // ("uuid:1-5:8-10,uuid2:1-3"), sources sorted by UUID. An empty set renders to
 // the empty string.
@@ -290,4 +331,30 @@ func GTIDContains(superset, subset string) (bool, error) {
 		return false, err
 	}
 	return super.Contains(sub), nil
+}
+
+// DifferenceGTIDStrings parses a and b and returns a \ b in canonical form.
+func DifferenceGTIDStrings(a, b string) (string, error) {
+	setA, err := ParseGTIDSet(a)
+	if err != nil {
+		return "", err
+	}
+	setB, err := ParseGTIDSet(b)
+	if err != nil {
+		return "", err
+	}
+	return setA.Difference(setB).String(), nil
+}
+
+// IntersectsGTIDStrings reports whether a and b share at least one transaction.
+func IntersectsGTIDStrings(a, b string) (bool, error) {
+	setA, err := ParseGTIDSet(a)
+	if err != nil {
+		return false, err
+	}
+	setB, err := ParseGTIDSet(b)
+	if err != nil {
+		return false, err
+	}
+	return !setA.Difference(setB).Equal(setA), nil
 }

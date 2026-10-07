@@ -38,6 +38,10 @@ type ReplicaState struct {
 	SecondsBehindSource *int64
 	// LastError holds the most recent replication error, if any.
 	LastError string
+	// LastIOErrno is the I/O thread's last error number (Last_IO_Errno), 0
+	// when none. MariaDB's 1236 means the source refused this replica's GTID
+	// position.
+	LastIOErrno int
 	// RetrievedGTIDSet is the set of GTIDs received from the source.
 	RetrievedGTIDSet string
 }
@@ -63,6 +67,13 @@ func (m *Manager) GTIDPurged(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return m.scalarString(ctx, query)
+}
+
+// GTIDSlavePos returns MariaDB's @@GLOBAL.gtid_slave_pos: per domain, the last
+// transaction this server replicated. A primary's own writes do not advance
+// it, so on a primary it stays at what the primary inherited.
+func (m *Manager) GTIDSlavePos(ctx context.Context) (string, error) {
+	return m.scalarString(ctx, "SELECT @@GLOBAL.gtid_slave_pos")
 }
 
 // ServerUUID returns the server's stable identity (MySQL server_uuid; MariaDB
@@ -223,6 +234,9 @@ func parseReplicaStatus(row map[string]string) *ReplicaState {
 	state.SQLRunning = parseYesNo(firstNonEmpty(row, "Replica_SQL_Running", "Slave_SQL_Running"))
 	state.RetrievedGTIDSet = firstNonEmpty(row, "Retrieved_Gtid_Set")
 	state.LastError = firstNonEmpty(row, "Last_Error", "Last_IO_Error", "Last_SQL_Error")
+	if errno, err := strconv.Atoi(firstNonEmpty(row, "Last_IO_Errno")); err == nil {
+		state.LastIOErrno = errno
+	}
 
 	if lag := firstNonEmpty(row, "Seconds_Behind_Source", "Seconds_Behind_Master"); lag != "" && lag != "NULL" {
 		if v, err := strconv.ParseInt(lag, 10, 64); err == nil {

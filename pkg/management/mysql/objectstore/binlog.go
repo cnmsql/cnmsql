@@ -167,10 +167,11 @@ type ArchiveSegment struct {
 	// (e.g. after a re-init clone that reset the binlog history). A single
 	// incarnation is contiguous per domain, so one interval per domain suffices.
 	StartGTIDSet string `json:"startGTIDSet,omitempty"`
-	// HandoffGTID is the GTID frontier at which authority passed from this
-	// segment to the next (the successor primary's first authoritative GTID).
-	// Empty on the active, last segment.
-	HandoffGTID string `json:"handoffGTID,omitempty"`
+	// Fork records the transactions this segment archived that the surviving
+	// timeline does not hold. Whichever primary detects them writes it; it only
+	// ever grows, and it leaves the index with the segment when retention drops
+	// the segment.
+	Fork *ArchiveFork `json:"fork,omitempty"`
 	// StartedAt and EndedAt bound the segment in wall-clock time.
 	StartedAt time.Time `json:"startedAt,omitempty"`
 	EndedAt   time.Time `json:"endedAt,omitempty"`
@@ -190,6 +191,36 @@ type ArchiveIndex struct {
 	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
 	// UpdatedAt is when the index was last rewritten.
 	UpdatedAt time.Time `json:"updatedAt"`
+	// ForkCheck records the last fork check a primary ran over the whole index.
+	// nil means no primary has checked this index since fork checks shipped.
+	ForkCheck *ArchiveForkCheck `json:"forkCheck,omitempty"`
+}
+
+// ArchiveFork names the disowned part of a segment: transactions it archived
+// that the surviving timeline never executed (a dead branch). Replay of a
+// targetTime or latest recovery leaves them out.
+type ArchiveFork struct {
+	// GTIDSet (MySQL) is the disowned subset of the segment's GTIDSet.
+	GTIDSet string `json:"gtidSet,omitempty"`
+	// AfterSeq (MariaDB) maps a replication domain to the sequence the
+	// surviving timeline inherited: every transaction this segment holds in
+	// that domain with a higher sequence is disowned.
+	AfterSeq map[uint32]uint64 `json:"afterSeq,omitempty"`
+	// AuthorityGTIDSet is what the check compared against (MySQL
+	// gtid_executed, MariaDB the primary's position). Audit only; replay never
+	// reads it.
+	AuthorityGTIDSet string `json:"authorityGTIDSet,omitempty"`
+	// DetectedAt is when the record was first written.
+	DetectedAt time.Time `json:"detectedAt"`
+	// DetectedBy is the instance name and archive identity of the primary
+	// whose check found it.
+	DetectedBy string `json:"detectedBy"`
+}
+
+// ArchiveForkCheck stamps the last fork check run over an index.
+type ArchiveForkCheck struct {
+	CheckedAt time.Time `json:"checkedAt"`
+	CheckedBy string    `json:"checkedBy"`
 }
 
 // Segment returns the segment for the given server UUID and whether it exists.

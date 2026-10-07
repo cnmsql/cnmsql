@@ -209,3 +209,21 @@ func TestParseBoolAndYesNo(t *testing.T) {
 		t.Errorf("parseYesNo broken")
 	}
 }
+
+// The 1236 backstop needs the I/O thread's error number, which SHOW SLAVE
+// STATUS reports apart from the error text.
+func TestParseReplicaStatusIOErrno(t *testing.T) {
+	state := parseReplicaStatus(map[string]string{
+		"Master_Host": testSourceHost, "Slave_IO_Running": "No", "Last_IO_Errno": "1236",
+		"Last_IO_Error": "Got fatal error 1236 from master",
+	})
+	if state.LastIOErrno != 1236 {
+		t.Fatalf("LastIOErrno = %d, want 1236", state.LastIOErrno)
+	}
+	if state := parseReplicaStatus(map[string]string{"Master_Host": testSourceHost}); state.LastIOErrno != 0 {
+		t.Fatalf("LastIOErrno without the column = %d, want 0", state.LastIOErrno)
+	}
+	if state := parseReplicaStatus(map[string]string{"Last_IO_Errno": "x"}); state.LastIOErrno != 0 {
+		t.Fatalf("LastIOErrno for a malformed value = %d, want 0", state.LastIOErrno)
+	}
+}

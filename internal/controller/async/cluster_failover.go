@@ -34,6 +34,10 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
+// fencingAnnotation is the user-owned Pod annotation that fences an instance
+// (the cluster controller's constant of the same name).
+const fencingAnnotation = "cnmsql.cnmsql.co/fencing"
+
 // ReconcileFailover fences an unreachable async primary and selects the safest
 // replica after the configured delay and primary Lease have expired.
 func (r *Reconciler) ReconcileFailover(
@@ -47,6 +51,24 @@ func (r *Reconciler) ReconcileFailover(
 	}
 	if PrimaryHealthy(observed) {
 		return topology.FailoverResult{}, r.recordPrimaryHealthy(ctx, cluster)
+	}
+
+	// A primary whose Pod carries the fencing annotation but whose fence the
+	// operator has not acknowledged yet (not in status.fencedInstances) is being
+	// taken down deliberately, not failing. Failing over in that window — one
+	// missed status poll or a primary Lease between renewals is enough, and
+	// failoverDelay defaults to zero — would delete the annotated Pod, and the
+	// recreated Pod loses the annotation, so the fence could never be
+	// acknowledged and whatever requested it would wait forever. Decline
+	// instead: the pass runs on, patchStatus records the fence, the in-Pod
+	// reconciler stops mysqld, and the next pass sees a genuinely stopped
+	// primary. Once the fence is acknowledged the failover path proceeds as
+	// designed, and leaves the fenced Pod in place (see fenceInstancePod).
+	if slices.Contains(observed.Fenced, observed.PrimaryName) &&
+		!slices.Contains(cluster.Status.FencedInstances, observed.PrimaryName) {
+		logf.FromContext(ctx).Info("Primary is fenced but the fence is not acknowledged yet; deferring failover",
+			"instance", observed.PrimaryName)
+		return topology.FailoverResult{}, nil
 	}
 
 	// A planned switchover owns the primary change while one is in flight. The
@@ -328,6 +350,15 @@ func (r *Reconciler) fenceInstancePod(ctx context.Context, cluster *mysqlv1alpha
 		return client.IgnoreNotFound(err)
 	}
 	if pod.DeletionTimestamp != nil {
+		return nil
+	}
+	// A manually fenced instance whose fence the operator acknowledged has
+	// already been taken down by the in-Pod reconciler: mysqld stopped, lease
+	// released. Deleting its Pod would add nothing but would drop the fencing
+	// annotation with it, and the recreated Pod would rejoin as if the fence
+	// had been lifted.
+	if pod.Annotations[fencingAnnotation] == "true" && slices.Contains(cluster.Status.FencedInstances, name) {
+		logf.FromContext(ctx).Info("Keeping the fenced primary's Pod; the fence already stopped it", "instance", name)
 		return nil
 	}
 	return client.IgnoreNotFound(r.client.Delete(ctx, pod))

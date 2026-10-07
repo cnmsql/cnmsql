@@ -118,6 +118,14 @@ recovery stitch a gap-free timeline out of segments that individually have gaps,
 which is what a re-init clone leaves behind. `coveredGTIDSet` is the cumulative
 set across all segments.
 
+A segment can also carry a `fork` record: the transactions it archived that the
+surviving timeline never executed (see [Forks and dead
+branches](#forks-and-dead-branches)). The record sits on the segment that holds
+the dead transactions, so retention drops it together with the files. The index
+itself carries `forkCheck`, the time and author of the last fork check a primary
+ran over it; it is absent on an index no primary has checked since fork checks
+shipped.
+
 ### Base backup manifest (`metadata.json`)
 
 The recovery anchor. Source: `BackupMetadata`. Beyond archive key, SHA256, and
@@ -184,6 +192,75 @@ flowchart LR
 - **Purge is archive-gated.** The optional purge gate only lets MySQL recycle logs
   already shipped, so unarchived logs are not lost unless an operator bypasses the
   guard.
+
+## Forks and dead branches
+
+The archive keeps one segment per server UUID and stitches them by GTID. A
+lagged promotion can leave a dead branch in it: the old primary rotated and
+uploaded a file holding transaction `1:219`, then crashed, and the successor was
+promoted at `1:218`. That file stays in the old segment. Replayed naively, the
+recovered cluster would end at `{1:1-219, 2:1-300}`, a state the live cluster
+never served. On MariaDB it is worse: the successor reuses the sequence numbers
+(`0-1-219` is dead, `0-2-219` is live), and a planner ordering by sequence alone
+could splice the two branches.
+
+### The fork check
+
+The writable primary checks every segment but its own against what the
+surviving timeline holds. It runs on every pass that writes the index, and on
+the first writable pass of its process even with nothing to ship, so a
+promotion, failback or restart checks the archive without waiting for the next
+rotation. Whatever a segment holds that the timeline does not is merged into the
+segment's `fork` record, which only ever grows.
+
+- **MySQL** compares against the primary's `@@GLOBAL.gtid_executed`:
+  `fork.gtidSet` is `segment.gtidSet \ gtid_executed`. Executed sets only grow,
+  and a disowned transaction is held only by the instance that diverged, which
+  is never promoted, so the check can run at any time, any number of times, and
+  never records a transaction the cluster actually kept.
+- **MariaDB** positions say only how far each domain got and who wrote the last
+  transaction, so the check reads the operator's primary timeline
+  (`status.mariadbTimeline`, see [Replication and
+  failover](./replication-failover.md#mariadb-the-primary-timeline)). A segment
+  whose last GTID in a domain is off the timeline gets `fork.afterSeq[domain]`,
+  the sequence the surviving timeline inherited from that author: everything
+  the segment holds past it is disowned. History the timeline has no verdict on
+  records nothing.
+
+The primary, a draining former primary and retention all write the index, so
+every index write is a compare-and-swap: an S3 conditional PUT (`If-Match` on
+the ETag it read, `If-None-Match: *` to create it). A writer that loses the race
+re-reads the index and re-applies its change on top of the winner's, so neither
+change is lost, and a primary holding a stale copy cannot bring back a segment
+retention just dropped. A store that does not implement conditional PUTs
+answers 501 and gets unconditional writes from then on; there a lost write only
+delays a fork record by one pass, because the transactions are still disowned
+and the next check finds them again.
+
+The primary reports the records it read in its archiving status, and the
+operator mirrors them into `status.continuousArchiving.forkGTIDs` and
+`forkDetectedAt`, and sets the `ArchiveForked` condition (with a Warning event)
+while any segment carries one. It turns False once retention drops the last
+forked segment.
+
+### The drain gate
+
+A former primary may still hold closed binlogs it never shipped. The drain ships
+them once it rejoins, which fills canonical holes: transactions the surviving
+timeline executed but never logged, for example the stretch between the old
+primary's last rotation and a successor's clone point. Four gates authorise an
+upload, all required: the instance owns a segment, its replication is streaming,
+it is not listed in `status.divergedInstances`, and each file is on the
+surviving timeline. The last one means the file's GTIDs are in the current
+primary's recorded position, and on MariaDB that every domain's last GTID is
+also on the primary timeline.
+
+That last gate is what makes it impossible for the drain to add a disowned
+transaction, even in the window before the operator marks a returning primary
+diverged (MySQL's `AUTO_POSITION` accepts errant transactions, so streaming
+proves nothing there). A file that fails is deferred, not shipped, and the pass
+stops at it. A canonical tail passes within one refresh of the recorded
+positions. The deferred file shows up in the instance's archiving status.
 
 ## Restore process
 
@@ -266,6 +343,17 @@ added and its set unioned in. The plan hands `mysqlbinlog`:
 - `--include-gtids=<target>` for `targetGTID`, or `--stop-datetime` for
   `targetTime`.
 
+For `targetTime` and latest recoveries the planned segments' fork records join
+`--exclude-gtids`, so a forked archive recovers the state the cluster actually
+served (`{1:1-218, 2:1-300}` in the example above). A `targetGTID` is applied as
+given: a target that names disowned transactions recovers that branch, and the
+restore logs a warning, since together with the successor's later writes it
+describes a state that never existed. A base backup whose anchor already holds a
+disowned transaction was taken on the dead branch, and replay cannot remove what
+it contains: `targetTime` and latest fail with `ErrBackupOnDeadBranch`, while a
+`targetGTID` that contains the anchor proceeds. The restore log names the fork
+records it applied, and says so when the archive was never fork-checked.
+
 Because GTID de-duplicates, the planner is free to over-download and the server
 drops what it already has. The plan fails closed rather than guess:
 `ErrTargetBeforeBackup` (target older than the anchor), `ErrTargetBeyondArchive`
@@ -275,11 +363,15 @@ fork).
 
 ### The MariaDB positional path
 
-`mariadb-binlog` has no `--include-gtids`, so a MariaDB `targetGTID` recovery
-cannot be bounded by GTID. It is bounded by byte offsets instead. This is only
-supported for a single replication domain: `SingleDomainMariaGTID` rejects a
-multi-domain target, which would need per-domain offsets in one interleaved
-stream.
+`mariadb-binlog` has no `--include-gtids`, so a MariaDB recovery cannot be
+bounded by GTID. It is bounded by byte offsets instead. A `targetGTID` always
+takes this path; `SingleDomainMariaGTID` rejects a multi-domain target, which
+would need per-domain offsets in one interleaved stream. `targetTime` and latest
+take it too when the archive is single-domain (the operator does not set
+`gtid_domain_id`, so it is by default), with `--stop-datetime` applied to every
+chunk; that is what lets them leave out a fork at all. A multi-domain archive
+keeps the old concatenation path when no segment carries a fork, and fails
+closed with `ErrForkedTimeline` when one does.
 
 The mechanism (`replayMariadbPositional`, `PlanMariadbPositional`):
 
@@ -300,6 +392,28 @@ applied, skips already-applied prefixes, starts a fresh start-position-bounded
 chunk on overlap, and coalesces clean runs. `SelectMariadbSegments` prunes the
 download to the minimal set of segments whose per-domain ranges cover
 `(anchorSeq, targetSeq]` (a greedy interval cover), failing closed on a gap.
+
+#### Forks on the positional path
+
+Transaction boundaries carry the server id as well as the sequence, so a
+boundary names a transaction. A fork record marks the end of its segment in the
+domain: the file holding the first disowned transaction becomes its own chunk,
+stopped at that transaction, and the segment's later files are dropped. Skipping
+disowned boundaries like already-applied ones would not do, because files replay
+whole. A time or latest target then replays to the highest sequence the cut
+leaves.
+
+A `targetGTID` whose `(server, seq)` falls in a fork selects that branch: the
+segment holding it is used up to the target and every other segment is cut at
+the fork. A target on the surviving branch is unaffected. This is how a MariaDB
+`targetGTID` stays un-rewritten: its server id already names the branch.
+
+Restore runs without the source cluster's status, so it cannot read the
+timeline. As a backstop, if the files about to replay carry two different
+servers at the same `(domain, seq)` past the anchor and no fork record explains
+it, recovery fails with `ErrForkedTimeline` instead of splicing them. A backup
+whose anchor falls in a fork fails `targetTime` and latest with
+`ErrBackupOnDeadBranch`, as on MySQL.
 
 #### GTID-less anchor recovery
 
@@ -343,6 +457,9 @@ as `anchorServerUUID`, loaded onto `ReplayPlan.AnchorServerUUID`, and read by
 - **Anchor persistence across retries.** The backup's binlog-info is copied into
   the durable data directory, not just the scratch backup dir, so a retry that lost
   the scratch dir still replays from the correct anchor instead of from genesis.
+- **Dead branches stay dead.** A `targetTime` or latest recovery never replays a
+  transaction the archive records as disowned, and never starts from a backup
+  that holds one.
 - **Fail closed, never guess.** Every ambiguity (target out of range, forked
   timeline, ambiguous anchor, an unbridgeable sequence gap) is a hard error rather
   than a best-effort replay that could silently skip or duplicate transactions.
@@ -356,6 +473,9 @@ as `anchorServerUUID`, loaded onto `ReplayPlan.AnchorServerUUID`, and read by
 |---|---|
 | Object keys and JSON formats | `objectstore/binlog.go`, `objectstore/metadata.go` |
 | Archiving loop and commit order | `instance/archiving.go`, `binlog/archiver.go` |
-| Replay planning (both flavors) | `binlog/replay.go` |
+| Replay planning (both flavors) | `binlog/replay.go`, `binlog/replay_mariadb_forks.go` |
+| Fork check and judges | `binlog/forks.go`, `binlog/archiver.go` |
+| Drain gate | `binlog/loop.go` |
+| MariaDB primary timeline | `engine/mariadb_timeline.go`, `controller/cluster_timeline.go` |
 | Restore and replay execution | `instance/restore_pitr.go` |
 | MariaDB archive identity | `instance/archiveid.go` |

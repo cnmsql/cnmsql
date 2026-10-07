@@ -27,6 +27,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,11 +60,14 @@ type Supervisor interface {
 // Controller is the concrete webserver.InstanceController backed by a local
 // mysqld connection.
 type Controller struct {
-	name  string
-	conn  pool.Connection
-	repl  *replication.Manager
-	gr    *groupreplication.Manager
-	users *user.Manager
+	name string
+	conn pool.Connection
+	repl *replication.Manager
+	// mariadb selects the MariaDB-only status fields (gtid_slave_pos,
+	// server_id) the operator's primary timeline is built from.
+	mariadb bool
+	gr      *groupreplication.Manager
+	users   *user.Manager
 	// metricsUser is the local account custom monitoring queries run as. Empty
 	// disables POST /monitoring/account.
 	metricsUser string
@@ -155,6 +159,7 @@ func NewController(
 		name:         name,
 		conn:         conn,
 		repl:         replication.NewManagerWithDialect(conn, v, eng.Repl()),
+		mariadb:      eng.Flavor() == engine.FlavorMariaDB,
 		gr:           groupreplication.NewManager(conn, v),
 		users:        user.NewManagerWithDialect(conn, userDialectFor(eng)),
 		version:      v,
@@ -442,6 +447,16 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 	if purged, err := c.repl.GTIDPurged(ctx); err == nil {
 		status.GTIDPurged = purged
 	}
+	if c.mariadb {
+		if pos, err := c.repl.GTIDSlavePos(ctx); err == nil {
+			status.GTIDSlavePos = pos
+		}
+		if id, err := c.repl.ServerUUID(ctx); err == nil {
+			if n, err := strconv.ParseUint(id, 10, 32); err == nil {
+				status.ServerID = uint32(n)
+			}
+		}
+	}
 	if semi, err := c.repl.SemiSyncStatus(ctx); err == nil {
 		status.SemiSync = webserver.SemiSyncStatus{
 			SourceEnabled:  semi.SourceEnabled,
@@ -468,6 +483,7 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 			SQLRunning:          replicaState.SQLRunning,
 			SecondsBehindSource: replicaState.SecondsBehindSource,
 			LastError:           replicaState.LastError,
+			LastIOErrno:         replicaState.LastIOErrno,
 			RetrievedGTIDSet:    replicaState.RetrievedGTIDSet,
 		}
 	}

@@ -19,11 +19,11 @@ package binlog
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
@@ -46,6 +46,11 @@ var (
 	// GTID sets plus the anchor, i.e. a segment is missing or the timeline forked
 	// rather than nesting. Recovery refuses to straddle it.
 	ErrForkedTimeline = errors.New("binlog: archive timeline is forked or has a gap")
+	// ErrBackupOnDeadBranch is returned for a targetTime or latest recovery
+	// whose base backup already holds transactions the archive records as
+	// disowned: the backup was taken on a dead branch, and replay cannot remove
+	// what it already contains.
+	ErrBackupOnDeadBranch = errors.New("binlog: base backup was taken on a dead branch of the timeline")
 )
 
 // gtidOps abstracts GTID-set operations needed for replay planning. MySQL uses
@@ -233,6 +238,11 @@ type ReplaySegment struct {
 	ServerUUID string
 	// Files are the binlog basenames to replay, in sequence order.
 	Files []string
+	// GTIDSet is the segment's archived coverage (its position on MariaDB).
+	GTIDSet string
+	// Fork is the segment's fork record, if any: the transactions it archived
+	// that the surviving timeline disowned.
+	Fork *objectstore.ArchiveFork
 }
 
 // ReplayPlan is the ordered set of segments to download and the GTID/time bounds
@@ -277,8 +287,22 @@ type ReplayPlan struct {
 	// MariaDBAnchorSeq is the sequence the base backup already contains (replay
 	// starts just after it); zero when the backup predates the domain.
 	MariaDBAnchorSeq uint64
-	// MariaDBTargetSeq is the sequence to recover up to, inclusive.
+	// MariaDBTargetSeq is the sequence to recover up to, inclusive; zero for a
+	// targetTime or latest recovery, which replays to the highest sequence the
+	// fork cut leaves (bounded by StopDatetime for targetTime).
 	MariaDBTargetSeq uint64
+	// MariaDBTarget is the targetGTID as a transaction: its server names the
+	// branch to recover when the target falls in a fork.
+	MariaDBTarget *engine.MariaDBGTID
+
+	// Forks are the fork records of the planned segments, for the restore log.
+	Forks []SegmentFork
+	// ForkChecked is false when no primary has fork-checked the index (an
+	// archive written before fork checks existed).
+	ForkChecked bool
+	// Warnings are planning concerns worth logging that do not stop recovery,
+	// such as a targetGTID naming disowned transactions.
+	Warnings []string
 }
 
 // PlanReplay turns the cluster archive index, the base backup's anchor GTID, and
@@ -292,8 +316,69 @@ type ReplayPlan struct {
 // / ErrForkedTimeline instead.
 //
 // PlanReplay uses MySQL GTID semantics; for MariaDB use PlanReplayWithModel.
+//
+// Fork records apply to a targetTime or latest recovery: their transactions
+// join ExcludeGTIDs, so a forked archive recovers the state the cluster
+// actually served, and a base backup holding any of them fails with
+// ErrBackupOnDeadBranch. A targetGTID is applied as given; when it names
+// disowned transactions the plan carries a warning.
 func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target RecoveryTarget) (ReplayPlan, error) {
-	return planReplayWithOps(idx, anchorGTID, target, newMysqlGTIDSet)
+	plan, err := planReplayWithOps(idx, anchorGTID, target, newMysqlGTIDSet)
+	if err != nil {
+		return ReplayPlan{}, err
+	}
+	if err := applyMySQLForks(idx, target, &plan); err != nil {
+		return ReplayPlan{}, err
+	}
+	return plan, nil
+}
+
+// applyMySQLForks folds the archive's fork records into a MySQL replay plan.
+func applyMySQLForks(idx *objectstore.ArchiveIndex, target RecoveryTarget, plan *ReplayPlan) error {
+	var disowned []string
+	for _, seg := range idx.Segments {
+		if seg.Fork != nil && seg.Fork.GTIDSet != "" {
+			disowned = append(disowned, seg.Fork.GTIDSet)
+		}
+	}
+	allForks, err := replication.UnionGTIDStrings(disowned...)
+	if err != nil {
+		return fmt.Errorf("binlog: parsing fork records: %w", err)
+	}
+
+	if target.GTID != "" {
+		mixed, err := replication.IntersectsGTIDStrings(plan.IncludeGTIDs, allForks)
+		if err != nil {
+			return fmt.Errorf("binlog: comparing target with fork records: %w", err)
+		}
+		if mixed {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+				"recovery targetGTID includes transactions the surviving timeline disowned (%s); "+
+					"together with transactions written after the failover it recovers a state that never existed",
+				allForks))
+		}
+		return nil
+	}
+
+	onDeadBranch, err := replication.DifferenceGTIDStrings(allForks, plan.ExcludeGTIDs)
+	if err != nil {
+		return fmt.Errorf("binlog: comparing anchor with fork records: %w", err)
+	}
+	if onDeadBranch != allForks {
+		held, _ := replication.DifferenceGTIDStrings(allForks, onDeadBranch)
+		return fmt.Errorf("%w: it holds the disowned transactions %s", ErrBackupOnDeadBranch, held)
+	}
+
+	exclude := []string{plan.ExcludeGTIDs}
+	for _, seg := range plan.Segments {
+		if seg.Fork != nil && seg.Fork.GTIDSet != "" {
+			exclude = append(exclude, seg.Fork.GTIDSet)
+		}
+	}
+	if plan.ExcludeGTIDs, err = replication.UnionGTIDStrings(exclude...); err != nil {
+		return fmt.Errorf("binlog: merging fork records into the exclude set: %w", err)
+	}
+	return nil
 }
 
 // PlanReplayWithModel is PlanReplay using the given MariaDB GTID model for domain-
@@ -344,12 +429,11 @@ func planReplayWithOps(
 		if !segSet.IsEmpty() && frontier.Contains(segSet) {
 			continue
 		}
-		plan.Segments = append(plan.Segments, ReplaySegment{
-			ServerUUID: seg.ServerUUID,
-			Files:      append([]string(nil), seg.Binlogs...),
-		})
+		plan.Segments = append(plan.Segments, replaySegment(seg))
 		frontier.Union(segSet)
 	}
+	plan.ForkChecked = idx.ForkCheck != nil
+	plan.Forks = plannedForks(idx, plan.Segments)
 
 	if idx.CoveredGTIDSet != "" {
 		covered := newSet()
@@ -365,6 +449,30 @@ func planReplayWithOps(
 		return ReplayPlan{}, err
 	}
 	return plan, nil
+}
+
+// replaySegment copies an index segment into a plan entry.
+func replaySegment(seg *objectstore.ArchiveSegment) ReplaySegment {
+	return ReplaySegment{
+		ServerUUID: seg.ServerUUID,
+		Files:      append([]string(nil), seg.Binlogs...),
+		GTIDSet:    seg.GTIDSet,
+		Fork:       seg.Fork,
+	}
+}
+
+// plannedForks lists the fork records of the planned segments.
+func plannedForks(idx *objectstore.ArchiveIndex, planned []ReplaySegment) []SegmentFork {
+	var out []SegmentFork
+	for _, fork := range SegmentForks(idx) {
+		for _, seg := range planned {
+			if seg.ServerUUID == fork.ServerUUID {
+				out = append(out, fork)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // planReplayWithoutFrontier builds a replay plan without the strict GTID
@@ -385,11 +493,10 @@ func planReplayWithoutFrontier(
 		if len(seg.Binlogs) == 0 {
 			continue
 		}
-		plan.Segments = append(plan.Segments, ReplaySegment{
-			ServerUUID: seg.ServerUUID,
-			Files:      append([]string(nil), seg.Binlogs...),
-		})
+		plan.Segments = append(plan.Segments, replaySegment(seg))
 	}
+	plan.ForkChecked = idx.ForkCheck != nil
+	plan.Forks = plannedForks(idx, plan.Segments)
 
 	switch {
 	case target.GTID != "":
@@ -488,10 +595,7 @@ func SelectMariadbSegments(
 		}
 		used[best] = true
 		current = ivs[best].end
-		out = append(out, ReplaySegment{
-			ServerUUID: ivs[best].seg.ServerUUID,
-			Files:      append([]string(nil), ivs[best].seg.Binlogs...),
-		})
+		out = append(out, replaySegment(ivs[best].seg))
 	}
 	return out, nil
 }
@@ -630,126 +734,11 @@ func PlanMariadbPositional(
 	if len(files) != len(boundaries) {
 		return nil, fmt.Errorf("binlog: files/boundaries length mismatch (%d vs %d)", len(files), len(boundaries))
 	}
-
-	maxSeq, hasAny := maxSeqInDomain(boundaries, domain)
-	if !hasAny || maxSeq < targetSeq {
-		return nil, ErrTargetBeyondArchive
-	}
-	if targetSeq < anchorSeq {
-		// The target predates the base backup: unreachable by forward replay.
-		return nil, ErrTargetBeforeBackup
-	}
-
-	// Replay must proceed in ascending sequence order, but the caller passes files
-	// grouped by segment (server). Across a failover — and especially a re-init clone,
-	// where one server's segment covers a gap in another's — segment order is not
-	// sequence order. Sort a working copy by each file's first domain sequence so
-	// contiguous runs from different segments stitch together; files with no
-	// transactions in this domain sort last (the loop skips them anyway). For inputs
-	// already in sequence order (the single-server case) this is a no-op.
-	files, boundaries = sortByDomainSeq(files, boundaries, domain)
-
-	applied := anchorSeq
-	firstReplayed := true
-	var chunks []ReplayChunk
-	var cur *ReplayChunk
-	flush := func() {
-		if cur != nil {
-			chunks = append(chunks, *cur)
-			cur = nil
-		}
-	}
-
+	pf := make([]PositionalFile, len(files))
 	for i := range files {
-		minSeq, fileMax, found := domainFileStats(boundaries[i], domain)
-		if !found || fileMax <= applied {
-			// No transactions this replay hasn't already applied: the anchor covers
-			// them, or an earlier segment re-logs the same sequences. Skipping keeps
-			// the stream monotonic without breaking coalescing of the files around it.
-			continue
-		}
-
-		overlap := minSeq <= applied // re-logs sequences already applied (failover re-log)
-
-		// A hole between runs: this file's first new sequence is more than one past
-		// what we've applied, and it is not the leading edge (nothing replayed yet,
-		// where starting above the anchor just means the archive begins later). No
-		// downloaded file supplies the missing sequences, so replay cannot proceed
-		// monotonically. B2 (segment selection) should have caught this before
-		// download; fail closed here as a backstop.
-		if !firstReplayed && !overlap && minSeq > applied+1 {
-			return nil, ErrForkedTimeline
-		}
-
-		if fileMax >= targetSeq {
-			// This file carries the target. It is its own chunk: a stop offset needs a
-			// single file, and even without a stop bound an overlapping target file
-			// needs its own start offset.
-			stopPos, stopHere := firstAfterInFile(boundaries[i], domain, targetSeq)
-			if !stopHere && cur != nil && !overlap {
-				// Target is this file's last transaction and it continues the current
-				// coalescing chunk with no overlap: replay it whole in the same invocation.
-				cur.Files = append(cur.Files, files[i])
-				flush()
-				return chunks, nil
-			}
-			flush()
-			c := ReplayChunk{Files: []string{files[i]}}
-			if overlap || firstReplayed {
-				c.StartPosition, _ = firstAfterInFile(boundaries[i], domain, applied)
-			}
-			if stopHere {
-				c.StopPosition = stopPos
-			}
-			chunks = append(chunks, c)
-			return chunks, nil
-		}
-
-		// Whole file is new transactions below the target: replay it fully.
-		if cur != nil && !overlap {
-			cur.Files = append(cur.Files, files[i])
-		} else {
-			flush()
-			startPos, _ := firstAfterInFile(boundaries[i], domain, applied)
-			cur = &ReplayChunk{Files: []string{files[i]}, StartPosition: startPos}
-		}
-		applied = fileMax
-		firstReplayed = false
+		pf[i] = PositionalFile{Path: files[i], Boundaries: boundaries[i]}
 	}
-
-	// The target's file was never reached even though maxSeq >= targetSeq: the only
-	// way here is that every file was skipped as already-applied, i.e. the base
-	// backup already covers the target.
-	flush()
-	return chunks, nil
-}
-
-// sortByDomainSeq returns copies of the parallel files/boundaries slices reordered
-// by each file's first (minimum) sequence in the domain, stably. Files carrying no
-// transaction in the domain sort last. The inputs are left unmodified.
-func sortByDomainSeq(files []string, boundaries [][]TxnBoundary, domain uint32) ([]string, [][]TxnBoundary) {
-	order := make([]int, len(files))
-	for i := range order {
-		order[i] = i
-	}
-	sort.SliceStable(order, func(a, b int) bool {
-		minA, _, okA := domainFileStats(boundaries[order[a]], domain)
-		minB, _, okB := domainFileStats(boundaries[order[b]], domain)
-		if okA != okB {
-			return okA // files with domain transactions before those without
-		}
-		if !okA {
-			return false
-		}
-		return minA < minB
-	})
-	sf := make([]string, len(files))
-	sb := make([][]TxnBoundary, len(files))
-	for newIdx, oldIdx := range order {
-		sf[newIdx] = files[oldIdx]
-		sb[newIdx] = boundaries[oldIdx]
-	}
-	return sf, sb
+	return PlanMariadbPositionalFiles(pf, domain, anchorSeq, targetSeq)
 }
 
 // domainFileStats returns the minimum and maximum sequence a single file's
@@ -779,21 +768,6 @@ func firstAfterInFile(list []TxnBoundary, domain uint32, seq uint64) (int64, boo
 		}
 	}
 	return 0, false
-}
-
-// maxSeqInDomain returns the highest sequence archived for the domain.
-func maxSeqInDomain(boundaries [][]TxnBoundary, domain uint32) (uint64, bool) {
-	var max uint64
-	var found bool
-	for _, list := range boundaries {
-		for _, b := range list {
-			if b.Domain == domain && (!found || b.Seq > max) {
-				max = b.Seq
-				found = true
-			}
-		}
-	}
-	return max, found
 }
 
 func applyTargetWithOps(

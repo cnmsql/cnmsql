@@ -183,9 +183,13 @@ func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
 	db, mock, arch, store := drainFixture(t)
 	expectDemotedWithLogs(mock)
 
+	// The current primary's recorded position holds the stranded tail, which is
+	// what proves it canonical (gate 4).
 	loop := NewLoop(LoopOptions{
 		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
 		Replication: fakeProbe{streaming: true},
+		Cluster:     &fakeView{primary: "demo-2", position: testUUID + ":1-9", known: true},
+		Instance:    "demo-1",
 	})
 	var lastFlush time.Time
 	var lastSize int64

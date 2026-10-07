@@ -644,6 +644,7 @@ _Appears in:_
 | `image` _string_ | Image is the resolved image currently in use. |  | Optional: \{\} <br /> |
 | `targetImage` _[ImageInfo](#imageinfo)_ | TargetImage is what the operator learned about the image it rolls the<br />instances to, by running it in a probe Pod: the server version and flavor<br />the image's server binary reports, and the digest the kubelet pulled. A<br />new image is probed and validated before any instance moves to it; until<br />then the cluster stays on this one (see the ImageReady condition). |  | Optional: \{\} <br /> |
 | `gtidExecutedByInstance` _object (keys:string, values:string)_ | GTIDExecutedByInstance maps an instance name to its gtid_executed set. |  | Optional: \{\} <br /> |
+| `mariadbTimeline` _[MariaDBEpoch](#mariadbepoch) array_ | MariaDBTimeline (MariaDB) records each change of primary, oldest first.<br />Entry i says that, in every replication domain, the transactions after<br />its handoff up to the next entry's handoff were authored by its server<br />id. A MariaDB GTID position names only the author of its last<br />transaction; this history is what tells a forked former primary from a<br />lagging one. The oldest entries are dropped once no instance position or<br />archive segment needs them. Not recorded on replica clusters. |  | MaxItems: 256 <br />Optional: \{\} <br /> |
 | `gtidExecutedUpdatedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | GTIDExecutedUpdatedAt records when GTIDExecutedByInstance was last<br />refreshed. Because gtid_executed advances on every write, the operator<br />throttles how often it persists the map; this timestamp marks the last<br />persisted snapshot. |  | Optional: \{\} <br /> |
 | `replicationLagByInstance` _object (keys:string, values:integer)_ | ReplicationLagByInstance maps an instance name to its replication lag in<br />milliseconds, as measured by the heartbeat (see<br />spec.replication.heartbeat). Instances that reported no reading are absent<br />rather than zero, since zero would say "in sync", which is the opposite of<br />what an unreadable heartbeat means.<br />It is here to be looked at. The failover bound does not read it: it asks the<br />surviving replicas for their readings at the moment it elects, which is both<br />fresher than this snapshot and, unlike the departing primary's GTID<br />position, still answerable. Expect these values to climb while a primary is<br />down, because nothing is stamping the heartbeat any more. |  | Optional: \{\} <br /> |
 | `replicationLagUpdatedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | ReplicationLagUpdatedAt records when ReplicationLagByInstance was last<br />refreshed. Lag moves constantly, so the operator throttles how often it<br />persists the map; this timestamp says how old the readings are, and is the<br />only way to tell a replica that is genuinely one second behind from one<br />whose last reading merely happened to say so. |  | Optional: \{\} <br /> |
@@ -725,6 +726,9 @@ _Appears in:_
 | `lastFailureTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ |  |  | Optional: \{\} <br /> |
 | `purgeHeldBy` _string array_ | PurgeHeldBy lists the instances that have not applied the oldest archived<br />binary log on the primary, which keeps the purge gate from removing it.<br />Empty when the purge gate is off or holds nothing back. |  | Optional: \{\} <br /> |
 | `purgeHeldSince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | PurgeHeldSince is when the purge gate started keeping that binary log. |  | Optional: \{\} <br /> |
+| `forkGTIDs` _string array_ | ForkGTIDs lists, one entry per archive segment, the archived<br />transactions the surviving timeline never executed (a dead branch left<br />by a lagged promotion): the MySQL GTID set, or a MariaDB range such as<br />`0-1-219..0-1-225`. Point-in-time recovery to a time or to the latest<br />point leaves them out; an explicit targetGTID can still recover them. |  | Optional: \{\} <br /> |
+| `forkDetectedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | ForkDetectedAt is when the earliest of those records was written. |  | Optional: \{\} <br /> |
+| `oldestSegmentPosition` _string_ | OldestSegmentPosition (MariaDB) is the lowest GTID position any archive<br />segment reached, per domain. The operator keeps the MariaDB primary<br />timeline back to it. |  | Optional: \{\} <br /> |
 
 
 ### Database
@@ -1521,6 +1525,25 @@ _Appears in:_
 | `disabledDefaultServices` _[ServiceSelectorType](#serviceselectortype) array_ | DisabledDefaultServices is the list of default services (rw, ro, r) to<br />disable. The rw service cannot be disabled. |  | Enum: [rw ro r] <br />Optional: \{\} <br /> |
 | `template` _[ServiceTemplateSpec](#servicetemplatespec)_ | Template applies to the three default services (rw, ro, r). Fields set<br />here are merged into each default service. The operator still chooses the<br />selector and port based on the service role. |  | Optional: \{\} <br /> |
 | `additional` _[ManagedService](#managedservice) array_ | Additional is a list of additional managed services specified by the<br />user. Each entry declares a selectorType and an optional template to<br />overlay on top of the role-specific defaults. |  | Optional: \{\} <br /> |
+
+
+#### MariaDBEpoch
+
+
+
+MariaDBEpoch is one change of primary on a MariaDB cluster.
+
+
+
+_Appears in:_
+- [ClusterStatus](#clusterstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `instance` _string_ | Instance is the primary of this epoch. |  |  |
+| `serverID` _integer_ | ServerID is its @@server_id, the server component of the GTIDs it<br />authors. |  |  |
+| `handoff` _string_ | Handoff is its @@gtid_slave_pos when it took authority: per domain, the<br />last transaction it inherited. |  | Optional: \{\} <br /> |
+| `since` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | Since is when the operator first observed it as primary. |  |  |
 
 
 #### Metadata

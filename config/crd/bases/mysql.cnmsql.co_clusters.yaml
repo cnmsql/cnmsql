@@ -5459,6 +5459,22 @@ spec:
                     description: Enabled mirrors whether continuous archiving is configured
                       on.
                     type: boolean
+                  forkDetectedAt:
+                    description: ForkDetectedAt is when the earliest of those records
+                      was written.
+                    format: date-time
+                    type: string
+                  forkGTIDs:
+                    description: |-
+                      ForkGTIDs lists, one entry per archive segment, the archived
+                      transactions the surviving timeline never executed (a dead branch left
+                      by a lagged promotion): the MySQL GTID set, or a MariaDB range such as
+                      `0-1-219..0-1-225`. Point-in-time recovery to a time or to the latest
+                      point leaves them out; an explicit targetGTID can still recover them.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   lastArchivedBinlog:
                     description: |-
                       LastArchivedBinlog is the most recent binary-log file shipped by the
@@ -5480,6 +5496,12 @@ spec:
                     type: string
                   lastFailureTime:
                     format: date-time
+                    type: string
+                  oldestSegmentPosition:
+                    description: |-
+                      OldestSegmentPosition (MariaDB) is the lowest GTID position any archive
+                      segment reached, per domain. The operator keeps the MariaDB primary
+                      timeline back to it.
                     type: string
                   pendingFiles:
                     description: |-
@@ -5761,6 +5783,46 @@ spec:
                       version per role.
                     type: object
                 type: object
+              mariadbTimeline:
+                description: |-
+                  MariaDBTimeline (MariaDB) records each change of primary, oldest first.
+                  Entry i says that, in every replication domain, the transactions after
+                  its handoff up to the next entry's handoff were authored by its server
+                  id. A MariaDB GTID position names only the author of its last
+                  transaction; this history is what tells a forked former primary from a
+                  lagging one. The oldest entries are dropped once no instance position or
+                  archive segment needs them. Not recorded on replica clusters.
+                items:
+                  description: MariaDBEpoch is one change of primary on a MariaDB
+                    cluster.
+                  properties:
+                    handoff:
+                      description: |-
+                        Handoff is its @@gtid_slave_pos when it took authority: per domain, the
+                        last transaction it inherited.
+                      type: string
+                    instance:
+                      description: Instance is the primary of this epoch.
+                      type: string
+                    serverID:
+                      description: |-
+                        ServerID is its @@server_id, the server component of the GTIDs it
+                        authors.
+                      format: int32
+                      type: integer
+                    since:
+                      description: Since is when the operator first observed it as
+                        primary.
+                      format: date-time
+                      type: string
+                  required:
+                  - instance
+                  - serverID
+                  - since
+                  type: object
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: atomic
               observedGeneration:
                 description: ObservedGeneration is the generation observed by the
                   controller.

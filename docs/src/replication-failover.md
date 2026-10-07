@@ -211,8 +211,12 @@ stopped, the Pod reports NotReady and shows as `0/1 Running`. Unfencing restarts
 mysqld and the instance rejoins normal routing and role reconciliation.
 
 Fencing the primary stops writes for the whole cluster, because the rw Service
-loses its only endpoint. That is deliberate: use it to freeze an instance for
-inspection or maintenance rather than as a failover trigger.
+loses its only endpoint. Once the fence has stopped mysqld the primary counts as
+failed, and automatic failover promotes a safe replica after `failoverDelay`.
+The operator leaves the fenced Pod in place rather than deleting it as it does a
+failed primary's, so the fence holds until you clear it; the instance then
+rejoins as a replica. Use fencing to freeze an instance for inspection or
+maintenance, and a switchover to move the primary role deliberately.
 
 ## Primary lease fencing
 
@@ -598,6 +602,54 @@ primary's GTID set, but during a failover the primary is unreachable, so there i
 no live baseline. The operator therefore consults `status.divergedInstances` as
 it was recorded on an earlier reconcile, while the primary was still reachable.
 That persisted signal survives the outage.
+
+### MariaDB: the primary timeline
+
+A MySQL GTID names its author, so comparing sets finds errant transactions. A
+MariaDB position records only the highest sequence per domain and the author of
+the last one, and compares by sequence alone: once a lagged successor commits
+`0-2-219`, a forked former primary's dead `0-1-219` compares as contained. So
+the operator records the history position comparison cannot give, in
+`status.mariadbTimeline`: one entry per change of primary, with the new
+primary's `server_id` and its `gtid_slave_pos` at the handoff (what it
+inherited). In each domain, an entry's server authored the sequences after its
+handoff up to the next entry's.
+
+- An entry is appended when the operator first observes a writable primary whose
+  name differs from the last entry's (failover, switchover, failback, or the
+  first primary of the cluster), in the same reconcile and before divergence is
+  judged. The first entry starts at the primary's current position rather than
+  its `gtid_slave_pos`: a cluster restored from a backup, or one that ran before
+  the timeline existed, holds history its first primary did not author.
+- A position is **off the timeline** when the entry whose range holds its
+  sequence names another server. A replica off the timeline is marked diverged
+  as soon as it is reachable, before it tries to replicate, so a forked former
+  primary is never a failover candidate.
+- History before the oldest entry, or authored by a primary the operator never
+  observed (one that died within seconds of promoting), gets **no verdict**.
+  There, divergence falls back to position comparison, and a replica whose I/O
+  thread the current primary refused with error 1236 is marked diverged as a
+  backstop. A diverged mark clears only once the timeline proves the position
+  canonical, which a re-clone does.
+- The oldest entry is dropped once no instance's recorded position (diverged
+  ones included) and no archive segment sits at or below the next entry's
+  handoff. A hard ceiling of 256 entries drops it anyway and emits a
+  `MariaDBTimelineTruncated` Warning event.
+- Replica clusters do not record a timeline: their designated primary replicates
+  from the source cluster, so authorship is not theirs to track.
+
+The same timeline drives the archive's fork check on MariaDB (see [PITR
+internals](./pitr-internals.md#forks-and-dead-branches)).
+
+### Dead branches in the binlog archive
+
+A lagged promotion can leave a dead branch in the binlog archive if the old
+primary uploaded it before crashing. The new primary records it on the segment
+that holds it and the cluster reports the `ArchiveForked` condition; point-in-time
+recovery to a time or to the latest point leaves those transactions out. A
+former primary that rejoins never adds a disowned transaction through its drain:
+it ships a stranded file only once the current primary's recorded position
+proves it canonical.
 
 If every surviving candidate is known-diverged, failover blocks with "every
 replica candidate has diverged from the failed primary (errant transactions);

@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
@@ -126,42 +127,34 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		plan.StartPosition = anchor.Position
 		plan.AnchorServerUUID = anchorServer
 		// mariadb-binlog cannot filter by GTID, so a targetGTID recovery is bounded
-		// positionally: resolve the target (and the anchor already applied by the
-		// base backup) to a single domain's sequence numbers, and let the executor
-		// derive byte offsets by scanning the downloaded binlogs.
-		if o.Target.GTID != "" {
-			domain, targetSeq, ok, err := binlog.SingleDomainMariaGTID(o.Target.GTID)
-			if err != nil {
-				return fmt.Errorf("pitr: %w", err)
-			}
-			if ok {
-				plan.MariaDBPositional = true
-				plan.MariaDBDomain = domain
-				plan.MariaDBTargetSeq = targetSeq
-				plan.MariaDBAnchorSeq = binlog.MariaSeqForDomain(anchor.GTIDSet, domain)
-				// When the index carries per-segment GTID ranges, prune the download to
-				// the minimal set of segments whose union covers (anchorSeq, targetSeq],
-				// failing closed on a gap. A GTID-less archive (no segment GTIDSet) has no
-				// ranges to select on, so keep every segment and let the boundary-scanning
-				// replay planner be the authority. MariaDBAnchorSeq may be 0 here (10.11
-				// backup with no GTID); selection from 0 over-includes rather than
-				// under-includes, and the replay planner trims with the derived anchor.
-				if segmentsHaveGTIDRanges(index.Segments) {
-					selected, err := binlog.SelectMariadbSegments(
-						index.Segments, domain, plan.MariaDBAnchorSeq, targetSeq)
-					if err != nil {
-						return fmt.Errorf("pitr: selecting MariaDB segments: %w", err)
-					}
-					plan.Segments = selected
-				}
+		// positionally, and so is a time or latest recovery of a single-domain
+		// archive, which is what lets it leave out a recorded fork. The executor
+		// derives byte offsets by scanning the downloaded binlogs. When the index
+		// carries per-segment ranges the download is pruned to the segments that
+		// cover (anchor, target], failing closed on a gap. MariaDBAnchorSeq may be 0
+		// here (10.11 backup with no GTID); selection from 0 over-includes rather
+		// than under-includes, and the replay planner trims with the derived anchor.
+		positional, err := binlog.PrepareMariadbPositional(&index, anchor.GTIDSet, o.Target)
+		if err != nil {
+			return fmt.Errorf("pitr: planning MariaDB replay from base backup %s: %w", o.MetadataKey, err)
+		}
+		if positional.Enabled {
+			plan.MariaDBPositional = true
+			plan.MariaDBDomain = positional.Domain
+			plan.MariaDBAnchorSeq = positional.AnchorSeq
+			plan.MariaDBTargetSeq = positional.TargetSeq
+			plan.MariaDBTarget = positional.Target
+			if positional.Selected {
+				plan.Segments = positional.Segments
 			}
 		}
 	} else {
 		plan, err = binlog.PlanReplay(&index, anchor.GTIDSet, o.Target)
 		if err != nil {
-			return fmt.Errorf("pitr: planning replay: %w", err)
+			return fmt.Errorf("pitr: planning replay from base backup %s: %w", o.MetadataKey, err)
 		}
 	}
+	logReplayForks(log, plan)
 	if len(plan.Segments) == 0 {
 		log.Info("No archived binlogs to replay; data is already at the recovery target")
 		return nil
@@ -180,6 +173,23 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		"stopDatetime", plan.StopDatetime, "includeGTIDs", plan.IncludeGTIDs)
 
 	return o.applyReplay(ctx, bt, eng, plan, files)
+}
+
+// logReplayForks records which fork records the plan applied, the warnings it
+// raised, and whether the archive was ever fork-checked. None of these stop
+// recovery.
+func logReplayForks(log logr.Logger, plan binlog.ReplayPlan) {
+	for _, fork := range plan.Forks {
+		log.Info("Excluding transactions the surviving timeline disowned",
+			"segment", fork.ServerUUID, "instance", fork.InstanceName, "gtids", fork.GTIDs,
+			"detectedAt", fork.DetectedAt)
+	}
+	for _, warning := range plan.Warnings {
+		log.Info("Point-in-time recovery warning", "warning", warning)
+	}
+	if !plan.ForkChecked {
+		log.Info("Archive not fork-checked: no primary has written the index since fork checks shipped")
+	}
 }
 
 // readAnchorGTID parses the base backup's binlog-info file and returns the
@@ -240,19 +250,6 @@ func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) erro
 		return fmt.Errorf("pitr: downloading %s: %w", key, err)
 	}
 	return nil
-}
-
-// segmentsHaveGTIDRanges reports whether the archive index carries per-segment GTID
-// coverage, i.e. at least one segment has a non-empty GTIDSet. A GTID-less archive
-// (10.11 mariabackup, or files with no GTID events) has none, so range-based segment
-// selection cannot apply and every segment must be kept for boundary-scan replay.
-func segmentsHaveGTIDRanges(segments []objectstore.ArchiveSegment) bool {
-	for i := range segments {
-		if segments[i].GTIDSet != "" {
-			return true
-		}
-	}
-	return false
 }
 
 // ErrAmbiguousAnchor is returned when a GTID-less base backup's anchor file name
@@ -456,8 +453,15 @@ func (o *RestoreOptions) replayMariadbPositional(
 		}
 	}
 
-	chunks, err := binlog.PlanMariadbPositional(
-		files, boundaries, plan.MariaDBDomain, anchorSeq, plan.MariaDBTargetSeq)
+	positional := make([]binlog.PositionalFile, len(files))
+	segments := fileSegments(plan)
+	for i := range files {
+		positional[i] = binlog.PositionalFile{Path: files[i], Boundaries: boundaries[i]}
+		if i < len(segments) {
+			positional[i].Segment = segments[i]
+		}
+	}
+	chunks, err := binlog.PlanMariadbReplay(plan, positional, anchorSeq)
 	if err != nil {
 		return fmt.Errorf("pitr: planning MariaDB positional replay: %w", err)
 	}
@@ -471,6 +475,7 @@ func (o *RestoreOptions) replayMariadbPositional(
 			Files:         chunk.Files,
 			StartPosition: chunk.StartPosition,
 			StopPosition:  chunk.StopPosition,
+			StopDatetime:  plan.StopDatetime,
 			MariaDB:       true,
 		})
 		if err != nil {
@@ -483,6 +488,18 @@ func (o *RestoreOptions) replayMariadbPositional(
 		}
 	}
 	return nil
+}
+
+// fileSegments returns, parallel to the files downloadReplayFiles produces,
+// the archive segment each one came from.
+func fileSegments(plan binlog.ReplayPlan) []string {
+	var out []string
+	for _, seg := range plan.Segments {
+		for range seg.Files {
+			out = append(out, seg.ServerUUID)
+		}
+	}
+	return out
 }
 
 // replayPrologue primes the replay's SQL stream. The temporary server runs with

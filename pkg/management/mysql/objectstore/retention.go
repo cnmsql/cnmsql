@@ -80,6 +80,11 @@ type RetentionPlan struct {
 	// NewIndex is the rewritten archive index, or nil when no binlog was removed
 	// (so the existing index is left untouched).
 	NewIndex *ArchiveIndex
+	// DeletedBinlogs maps a segment's server UUID to the binlog basenames the
+	// plan deletes from it. ApplyBinlogExpiry re-applies it to the index as it
+	// is at write time, not to the copy the plan was computed from, so a write
+	// another index writer made in between is kept.
+	DeletedBinlogs map[string]map[string]struct{}
 	// Horizon is the recovery horizon: the oldest retained base backup's start
 	// time. Binlogs ending before it are uncoverable. Zero when nothing expired.
 	Horizon time.Time
@@ -177,15 +182,20 @@ func (plan *RetentionPlan) applyBinlogGC(binlogs []BinlogEntry, index *ArchiveIn
 		return
 	}
 	plan.NewIndex = rewriteIndex(index, deleted)
+	plan.DeletedBinlogs = deleted
 }
 
 // rewriteIndex returns a copy of index with the deleted binlog basenames removed
-// from each segment; segments left with no binlogs are dropped.
+// from each segment; segments left with no binlogs are dropped, taking their
+// fork records with them.
 func rewriteIndex(index *ArchiveIndex, deleted map[string]map[string]struct{}) *ArchiveIndex {
 	out := &ArchiveIndex{
 		ClusterName:    index.ClusterName,
 		CoveredGTIDSet: index.CoveredGTIDSet,
 		UpdatedAt:      time.Now().UTC(),
+		// Segments are copied whole below, so their fork records survive; the
+		// index-level stamp has to be carried explicitly.
+		ForkCheck: index.ForkCheck,
 	}
 	for _, seg := range index.Segments {
 		set := deleted[seg.ServerUUID]
@@ -310,11 +320,24 @@ func ApplyBinlogExpiry(
 			return err
 		}
 	}
-	if plan.NewIndex != nil {
-		indexKey := ArchiveIndexKey(store, clusterName)
-		if err := client.PutJSON(ctx, store.Bucket, indexKey, plan.NewIndex); err != nil {
-			return err
-		}
+	return rewriteArchiveIndex(ctx, client, store.Bucket, ArchiveIndexKey(store, clusterName), plan)
+}
+
+// rewriteArchiveIndex drops the plan's deleted binlogs from the index as it is
+// now. The archiver, a drain and retention all write the index; rewriting the
+// copy the plan was computed from would discard whatever another writer added
+// in between, and the archiver writing a copy it read before this rewrite
+// would bring dropped segments, fork records included, back. The
+// compare-and-swap in UpdateArchiveIndex closes both.
+func rewriteArchiveIndex(ctx context.Context, store VersionedStore, bucket, key string, plan RetentionPlan) error {
+	if len(plan.DeletedBinlogs) == 0 {
+		return nil
 	}
-	return nil
+	return UpdateArchiveIndex(ctx, store, bucket, key, func(idx *ArchiveIndex, exists bool) (bool, error) {
+		if !exists {
+			return false, nil
+		}
+		*idx = *rewriteIndex(idx, plan.DeletedBinlogs)
+		return true, nil
+	})
 }

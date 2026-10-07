@@ -24,6 +24,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+
+	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
 // Default loop cadences. The flush interval bounds time-based RPO; mysqld's
@@ -59,12 +62,36 @@ type ReplicaFloor interface {
 	Positions() (positions map[string]string, unknown []string, ok bool)
 }
 
+// ClusterView is the part of the Cluster the drain gate reads: what the
+// surviving timeline provably holds.
+type ClusterView interface {
+	// Primary returns status.currentPrimary and its recorded position
+	// (status.gtidExecutedByInstance). ok is false when either is unknown.
+	Primary() (name, position string, ok bool)
+	// Diverged reports whether name is listed in status.divergedInstances.
+	Diverged(name string) bool
+	// Timeline returns status.mariadbTimeline; ok is false when there is none
+	// (MySQL, replica clusters, or not observed yet).
+	Timeline() (engine.MariaDBTimeline, bool)
+}
+
 type Loop struct {
 	reader   *Reader
 	archiver *Archiver
 	logger   logr.Logger
 	// replication authorises draining a demoted primary's un-shipped binlogs.
 	replication ReplicationProbe
+	// cluster is what the drain gate proves a stranded file canonical against.
+	cluster ClusterView
+	// instance is this instance's name, as the Cluster status lists it.
+	instance string
+	// mariadb selects the MariaDB drain gate (timeline verdict on top of
+	// position containment).
+	mariadb bool
+	// forkChecked is set once a fork check ran in the current writable stretch
+	// of this process; losing writability clears it, so every promotion checks.
+	// Only the Run goroutine touches it.
+	forkChecked bool
 
 	pollInterval  time.Duration
 	flushInterval time.Duration
@@ -100,6 +127,15 @@ type State struct {
 	PurgeHeldSince time.Time
 	// purgeHeldFile is the file PurgeHeldSince refers to.
 	purgeHeldFile string
+	// Forks are the fork records the archive index carried at this primary's
+	// last read of it, ForkCheckedAt when it last ran a fork check (zero until
+	// it has), and OldestSegmentPosition the lowest MariaDB segment position.
+	Forks                 []SegmentFork
+	ForkCheckedAt         time.Time
+	OldestSegmentPosition string
+	// DeferredFile is the stranded file the drain gate keeps deferring because
+	// the surviving timeline does not provably hold it.
+	DeferredFile string
 }
 
 // LoopOptions configures a Loop.
@@ -117,6 +153,13 @@ type LoopOptions struct {
 	// Replication authorises the drain of binlogs stranded by a demotion. When
 	// nil, a non-writable instance never archives.
 	Replication ReplicationProbe
+	// Cluster is what the drain gate proves a stranded file canonical against;
+	// without it the drain defers every file.
+	Cluster ClusterView
+	// Instance is this instance's name in the Cluster status.
+	Instance string
+	// MariaDB selects the MariaDB drain gate.
+	MariaDB bool
 }
 
 // NewLoop builds a Loop from options, applying cadence defaults.
@@ -138,6 +181,9 @@ func NewLoop(opts LoopOptions) *Loop {
 		purge:         opts.Purge,
 		floor:         opts.Floor,
 		replication:   opts.Replication,
+		cluster:       opts.Cluster,
+		instance:      opts.Instance,
+		mariadb:       opts.MariaDB,
 	}
 }
 
@@ -147,6 +193,7 @@ func (l *Loop) State() State {
 	defer l.mu.Unlock()
 	s := l.state
 	s.PurgeHeldBy = slices.Clone(s.PurgeHeldBy)
+	s.Forks = slices.Clone(s.Forks)
 	return s
 }
 
@@ -179,7 +226,12 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 	if !writable {
 		l.mu.Lock()
 		l.state.Active = false
+		// Only the writable primary speaks for the archive's fork records.
+		l.state.Forks = nil
+		l.state.ForkCheckedAt = time.Time{}
+		l.state.OldestSegmentPosition = ""
 		l.mu.Unlock()
+		l.forkChecked = false
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
 		*lastFlush = time.Time{}
 		l.drain(ctx)
@@ -217,6 +269,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.fail("archiving binary logs", err)
 		return
 	}
+	forks, forkErr := l.checkForks(ctx, res.ForkCheck)
 
 	var held purgeHold
 	if l.purge {
@@ -251,6 +304,14 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		LastArchivedGTID:   res.LastArchivedGTID,
 		LastArchivedTime:   res.LastArchivedTime,
 		PendingFiles:       pendingAfter(logs, res.LastArchivedBinlog),
+
+		Forks:                 forks.Forks,
+		ForkCheckedAt:         forks.ForkCheckedAt,
+		OldestSegmentPosition: forks.OldestSegmentPosition,
+	}
+	if forkErr != nil {
+		l.state.LastError = "checking archive forks: " + forkErr.Error()
+		l.state.LastErrorTime = time.Now()
 	}
 	l.mu.Unlock()
 	if len(res.Archived) > 0 {
@@ -258,6 +319,51 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 			"files", res.Archived,
 			"lastArchivedGTID", res.LastArchivedGTID)
 	}
+}
+
+// checkForks completes this pass's fork check and returns the fork fields the
+// state should carry. The pass's own index write already checked when it
+// archived something; otherwise the first writable pass of a stretch runs the
+// check on its own, so a promotion, failback or restart does not wait for the
+// next rotation. Fields the pass did not refresh carry over from the last one.
+func (l *Loop) checkForks(ctx context.Context, report *ForkReport) (State, error) {
+	l.mu.Lock()
+	out := State{
+		Forks:                 l.state.Forks,
+		ForkCheckedAt:         l.state.ForkCheckedAt,
+		OldestSegmentPosition: l.state.OldestSegmentPosition,
+	}
+	l.mu.Unlock()
+	if !l.archiver.ChecksForks() {
+		return out, nil
+	}
+	if !l.forkChecked && (report == nil || !report.Checked) {
+		r, err := l.archiver.CheckForks(ctx)
+		if err != nil {
+			l.logger.Error(err, "Could not check the archive for forks")
+			return out, err
+		}
+		report = &r
+	}
+	if report == nil {
+		return out, nil
+	}
+	if report.Err != nil {
+		l.logger.Error(report.Err, "Could not check the archive for forks")
+		return out, report.Err
+	}
+	if report.Read {
+		out.Forks = report.Forks
+		out.OldestSegmentPosition = report.OldestSegmentPosition
+	}
+	if report.Checked {
+		l.forkChecked = true
+		out.ForkCheckedAt = report.CheckedAt
+		if len(report.Forks) > 0 {
+			l.logger.V(1).Info("Checked the archive for forks", "forks", len(report.Forks))
+		}
+	}
+	return out, nil
 }
 
 // purgePlan is where the purge gate may go this pass.
@@ -352,43 +458,45 @@ func (l *Loop) planPurge(logs []BinaryLog, res ArchiveResult) (purgePlan, error)
 // drain ships the closed binlogs a former primary stranded when it stopped being
 // writable, and does nothing at all on any other instance.
 //
-// A primary that dies holds every transaction it committed since its last
-// rotation in its still-open binlog, which the archiver cannot ship. Its
-// successor normally re-logs that history (log_slave_updates) and the hole
-// closes itself — but a re-cloned successor starts a virgin binlog and re-logs
-// nothing, so those transactions survive only in the dead primary's data
-// directory. Once its Pod restarts, mysqld closes that file and it becomes
-// archivable; without this, it is stranded for good and recovery across the
-// re-clone fails with ErrForkedTimeline against a hole no segment can bridge.
+// Its purpose is filling canonical holes: transactions the surviving timeline
+// executed but never logged. A successor provisioned by clone holds the clone
+// point's history in its executed set but not in its binlog. If the old primary
+// dies before rotating, the transactions between its last rotation and the
+// clone point survive only in its still-open binlog, which the archiver cannot
+// ship. Once its Pod restarts, mysqld closes that file and it becomes
+// archivable; without the drain, a recovery across the re-clone fails with
+// ErrForkedTimeline against a hole no segment can bridge.
 //
-// Two conditions authorise the upload, and both are needed:
+// Four gates authorise an upload, all required:
 //
-//   - The instance owns a segment (HasSegment): it archived while it was
+//  1. The instance owns a segment (HasSegment): it archived while it was
 //     primary, so the files it holds are its own history and not a replica's
 //     redundant re-log of someone else's.
-//   - Replication is streaming: the source accepted this instance's GTID
-//     position, which under MASTER_USE_GTID=current_pos is its true frontier —
-//     including everything it authored as primary. Acceptance means the source's
-//     binlog contains that exact GTID (domain-server-sequence), so this
-//     instance's history is an ancestor of the surviving timeline.
+//  2. Replication is streaming: the source accepted this instance's GTID
+//     position. On MariaDB the MASTER_USE_GTID=current_pos handshake refuses a
+//     diverged instance (1236), so this is a strong signal; MySQL's
+//     AUTO_POSITION accepts errant transactions, so there it is a weak one.
+//  3. The instance is not listed in status.divergedInstances.
+//  4. Each file is on the surviving timeline: its GTIDs are in the current
+//     primary's recorded position, and on MariaDB (whose positions compare by
+//     sequence alone, so a dead 0-1-219 looks contained in 0-2-300) every
+//     domain's last GTID is on the primary timeline too.
 //
-// The second is the safety property. A former primary whose final transactions
-// never reached its successor is diverged: they sit on a dead branch, and the
-// promoted server has since reused those sequence numbers for different
-// transactions under its own server id. Archiving them would put two different
-// transactions at the same sequence into the archive, and the MariaDB planner
-// stitches segments by sequence — it could replay the dead branch and silently
-// produce a database state that never existed. So authorisation comes only from
-// a source that accepted us: MariaDB refuses a diverged replica with error 1236,
-// and a diverged instance therefore never reaches a streaming state. No error is
-// ever read as permission — a failure to connect leaves the tail unshipped, and
-// recovery keeps failing closed, which is the correct outcome for a hole that
-// genuinely cannot be filled.
+// Gate 4 is the safety property. A former primary whose final transactions
+// never reached its successor is diverged: they sit on a dead branch the
+// surviving timeline disowned, and archiving them would let recovery resurrect
+// a state the cluster never served. The current primary's position is the
+// surviving timeline, and a stale record only understates it, so a file that
+// passes is canonical; a disowned file never passes, even in the window before
+// the operator marks the instance diverged. A canonical tail passes within one
+// position refresh. A file that fails is deferred, not shipped and not
+// recorded, and the pass stops there so the frontier never moves past it. No
+// error is read as permission.
 //
-// ArchivePending never touches the active log and is idempotent, so a drain
+// DrainPending never touches the active log and is idempotent, so a drain
 // ships exactly the closed, un-shipped files and converges. No flush (a
-// non-writable server must not rotate) and no purge (the purge gate stays with
-// the primary).
+// non-writable server must not rotate), no purge (the purge gate stays with the
+// primary) and no fork check (only the writable primary is an authority).
 func (l *Loop) drain(ctx context.Context) {
 	if l.replication == nil {
 		return
@@ -412,30 +520,78 @@ func (l *Loop) drain(ctx context.Context) {
 		// our history is unproven, so the tail stays on disk.
 		return
 	}
+	if l.cluster != nil && l.cluster.Diverged(l.instance) {
+		return
+	}
 
 	logs, err := l.reader.ListBinaryLogs(ctx)
 	if err != nil {
 		l.fail("listing binary logs", err)
 		return
 	}
-	res, err := l.archiver.ArchivePending(ctx, logs)
+	res, err := l.archiver.DrainPending(ctx, logs, l.onSurvivingTimeline)
 	if err != nil {
 		l.fail("draining stranded binary logs", err)
-		return
-	}
-	if len(res.Archived) == 0 {
 		return
 	}
 
 	l.mu.Lock()
 	l.state.LastArchivedBinlog = res.LastArchivedBinlog
 	l.state.LastArchivedGTID = res.LastArchivedGTID
-	l.state.LastArchivedTime = res.LastArchivedTime
+	if !res.LastArchivedTime.IsZero() {
+		l.state.LastArchivedTime = res.LastArchivedTime
+	}
 	l.state.PendingFiles = pendingAfter(logs, res.LastArchivedBinlog)
+	l.state.DeferredFile = res.Deferred
 	l.mu.Unlock()
-	l.logger.Info("Drained binary logs stranded by a demotion",
-		"files", res.Archived,
-		"lastArchivedGTID", res.LastArchivedGTID)
+	if len(res.Archived) > 0 {
+		l.logger.Info("Drained binary logs stranded by a demotion",
+			"files", res.Archived,
+			"lastArchivedGTID", res.LastArchivedGTID)
+	}
+}
+
+// onSurvivingTimeline is drain gate 4: a stranded file may enter the archive
+// only when the surviving timeline provably holds it. Anything unknown defers.
+func (l *Loop) onSurvivingTimeline(_ string, scan ScanResult) (bool, error) {
+	if l.cluster == nil {
+		return false, nil
+	}
+	primary, position, ok := l.cluster.Primary()
+	if !ok || primary == "" || primary == l.instance || position == "" {
+		return false, nil
+	}
+	if scan.GTIDSet == "" {
+		return true, nil
+	}
+	if !l.mariadb {
+		return replication.GTIDContains(position, scan.GTIDSet)
+	}
+	timeline, ok := l.cluster.Timeline()
+	if !ok {
+		return false, nil
+	}
+	file, err := engine.ParseMariaDBPosition(scan.GTIDSet)
+	if err != nil {
+		return false, err
+	}
+	held, err := engine.ParseMariaDBPosition(position)
+	if err != nil {
+		return false, err
+	}
+	reached := make(map[uint32]uint64, len(held))
+	for _, g := range held {
+		reached[g.Domain] = g.Seq
+	}
+	for _, g := range file {
+		if on, known := timeline.Verdict(g); !on || !known {
+			return false, nil
+		}
+		if reached[g.Domain] < g.Seq {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (l *Loop) fail(action string, err error) {
