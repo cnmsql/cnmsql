@@ -1741,6 +1741,12 @@ type ContinuousArchivingStatus struct {
 	// +listType=atomic
 	Gaps []string `json:"gaps,omitempty"`
 
+	// GapsSince is when the archive started reporting these gaps. A gap the
+	// former primary's drain fills soon after a failover never raises
+	// ArchiveGap; one that outlives the grace period does.
+	// +optional
+	GapsSince *metav1.Time `json:"gapsSince,omitempty"`
+
 	// CoveredGTIDSet (MySQL) is every transaction the archive holds. Failover
 	// prefers, among equally advanced replicas, one whose binary-log history
 	// the archive already covers.

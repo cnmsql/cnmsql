@@ -117,9 +117,13 @@ target that stops before it is fine.
 The primary's check also computes the archive's gaps: MySQL, the holes of the
 index's covered set; MariaDB, the gaps in the union of segment ranges per
 domain. They are reported in archiving status and mirrored into
-`continuousArchiving.gaps`. The `ArchiveGap` condition is True while a gap is
-not contained in the newest completed backup's anchor, with a Warning event on
-the False→True transition. On that transition, when the cluster has a backup
+`continuousArchiving.gaps` (with `gapsSince`). A gap a former primary's drain
+fills shortly after a failover is normal, so a gap counts only once it has
+stood for a grace period (one recorded-position refresh plus two minutes,
+seven minutes). The
+`ArchiveGap` condition is True while a counted gap is not contained in the
+newest completed backup's anchor, with a Warning event on the False→True
+transition. On that transition, when the cluster has a backup
 object store, the operator creates a Backup (`<cluster>-archive-gap-<hash>`,
 owned by the Cluster) so recovery to latest works again as soon as it
 completes.

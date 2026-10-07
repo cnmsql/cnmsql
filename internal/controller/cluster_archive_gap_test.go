@@ -145,3 +145,37 @@ func TestArchiveGapTakesABackup(t *testing.T) {
 		t.Fatalf("backups = %d, err = %v", len(backups.Items), err)
 	}
 }
+
+// A fresh gap waits for the former primary's drain before it counts.
+func TestArchiveGapWaitsForTheGrace(t *testing.T) {
+	ctx := context.Background()
+	cluster := gapCluster(gapUUID + ":101-150")
+	recent := metav1.NewTime(time.Now().Add(-30 * time.Second))
+	cluster.Status.ContinuousArchiving.GapsSince = &recent
+	r := gapReconciler(t)
+	r.applyArchiveGapCondition(ctx, cluster)
+	cond := apimeta.FindStatusCondition(cluster.Status.Conditions, mysqlv1alpha1.ConditionArchiveGap)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "GapPendingRepair" {
+		t.Fatalf("condition = %+v, want False pending repair", cond)
+	}
+	old := metav1.NewTime(time.Now().Add(-archiveGapGrace(cluster) - time.Second))
+	cluster.Status.ContinuousArchiving.GapsSince = &old
+	r.applyArchiveGapCondition(ctx, cluster)
+	if !apimeta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlv1alpha1.ConditionArchiveGap) {
+		t.Fatal("a gap past the grace must raise the condition")
+	}
+}
+
+func TestAggregateArchivingKeepsGapsSince(t *testing.T) {
+	since := metav1.NewTime(time.Now().Add(-time.Hour))
+	prior := &mysqlv1alpha1.ContinuousArchivingStatus{Gaps: []string{"u:5"}, GapsSince: &since}
+	observed := forkedPrimaryStatus("2026-10-06T12:05:00Z")
+	observed.StatusByInstance["demo-2"].Archiving.Gaps = []string{"u:5"}
+	if got := aggregateArchiving(observed, prior); got.GapsSince == nil || !got.GapsSince.Equal(&since) {
+		t.Fatalf("gapsSince = %v, want the prior stamp kept", got.GapsSince)
+	}
+	observed.StatusByInstance["demo-2"].Archiving.Gaps = []string{"u:5", "u:9"}
+	if got := aggregateArchiving(observed, prior); got.GapsSince == nil || got.GapsSince.Equal(&since) {
+		t.Fatalf("gapsSince = %v, want a new stamp for new gaps", got.GapsSince)
+	}
+}

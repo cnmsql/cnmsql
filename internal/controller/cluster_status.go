@@ -611,6 +611,13 @@ func aggregateArchiving(
 	out.DisownedGTIDs = a.DisownedGTIDs
 	out.Gaps = a.Gaps
 	out.CoveredGTIDSet = a.CoveredGTIDSet
+	if len(out.Gaps) > 0 {
+		now := metav1.Now()
+		out.GapsSince = &now
+		if prior != nil && prior.GapsSince != nil && slices.Equal(prior.Gaps, out.Gaps) {
+			out.GapsSince = prior.GapsSince
+		}
+	}
 	for _, fork := range a.Forks {
 		out.ForkGTIDs = append(out.ForkGTIDs, fork.GTIDs)
 		if at := parseInstanceTime(fork.DetectedAt); at != nil &&
@@ -631,6 +638,7 @@ func carryForks(out, prior *mysqlv1alpha1.ContinuousArchivingStatus) {
 	out.OldestSegmentPosition = prior.OldestSegmentPosition
 	out.DisownedGTIDs = prior.DisownedGTIDs
 	out.Gaps = prior.Gaps
+	out.GapsSince = prior.GapsSince
 	out.CoveredGTIDSet = prior.CoveredGTIDSet
 }
 

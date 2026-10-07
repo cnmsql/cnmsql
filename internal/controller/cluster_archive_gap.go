@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -136,7 +137,16 @@ func (r *ClusterReconciler) applyArchiveGapCondition(ctx context.Context, latest
 		if backup != nil {
 			anchor, name = backup.Status.EndGTID, backup.Name
 		}
-		if open := openArchiveGaps(ca.Gaps, anchor); len(open) > 0 {
+		open := openArchiveGaps(ca.Gaps, anchor)
+		if len(open) > 0 && !archiveGapSettled(latest, ca, time.Now()) {
+			condition.Reason = "GapPendingRepair"
+			condition.Message = fmt.Sprintf(
+				"The binary-log archive is missing %s; waiting for a former primary to ship it before taking a base backup",
+				strings.Join(open, "; "))
+			apimeta.SetStatusCondition(&latest.Status.Conditions, condition)
+			return
+		}
+		if len(open) > 0 {
 			condition.Status = metav1.ConditionTrue
 			condition.Reason = "TransactionsMissingFromArchive"
 			condition.Message = fmt.Sprintf(
@@ -151,6 +161,20 @@ func (r *ClusterReconciler) applyArchiveGapCondition(ctx context.Context, latest
 		}
 	}
 	apimeta.SetStatusCondition(&latest.Status.Conditions, condition)
+}
+
+// archiveGapGrace is how long a gap may stand before it counts: after a
+// failover the former primary's drain ships its stranded tail once the new
+// primary's recorded position covers it, one position refresh at most, which
+// closes the gap a successor's clone point left.
+func archiveGapGrace(*mysqlv1alpha1.Cluster) time.Duration {
+	return gtidPersistInterval + 2*time.Minute
+}
+
+// archiveGapSettled reports whether the archive's gaps have stood for the
+// grace period.
+func archiveGapSettled(cluster *mysqlv1alpha1.Cluster, ca *mysqlv1alpha1.ContinuousArchivingStatus, now time.Time) bool {
+	return ca.GapsSince == nil || now.Sub(ca.GapsSince.Time) >= archiveGapGrace(cluster)
 }
 
 // onArchiveGap warns when the ArchiveGap condition turns True and takes a base

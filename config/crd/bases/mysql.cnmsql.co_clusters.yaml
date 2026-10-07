@@ -5500,6 +5500,13 @@ spec:
                       type: string
                     type: array
                     x-kubernetes-list-type: atomic
+                  gapsSince:
+                    description: |-
+                      GapsSince is when the archive started reporting these gaps. A gap the
+                      former primary's drain fills soon after a failover never raises
+                      ArchiveGap; one that outlives the grace period does.
+                    format: date-time
+                    type: string
                   lastArchivedBinlog:
                     description: |-
                       LastArchivedBinlog is the most recent binary-log file shipped by the
