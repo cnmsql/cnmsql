@@ -72,7 +72,7 @@ func detectDivergedReplicas(input topology.ObservationInput) []string {
 
 	primaryGTID := input.GTIDByInstance[input.PrimaryName]
 	if primaryGTID == "" {
-		return holdingDisowned(input, stillPresent(input.PriorDivergedInstances, input.InstanceNames))
+		return holdingDisowned(input, offTimeline(input, stillPresent(input.PriorDivergedInstances, input.InstanceNames)))
 	}
 	prior := map[string]bool{}
 	for _, name := range input.PriorDivergedInstances {
@@ -115,6 +115,29 @@ func detectDivergedReplicas(input topology.ObservationInput) []string {
 		}
 	}
 	return holdingDisowned(input, diverged)
+}
+
+// offTimeline adds to diverged every MariaDB instance whose position the
+// primary timeline judges off it. The verdict needs no live primary, so a
+// former primary that returns while its successor is down is marked before it
+// can be elected.
+func offTimeline(input topology.ObservationInput, diverged []string) []string {
+	if engine.Flavor(input.EngineFlavor) != engine.FlavorMariaDB || len(input.MariaDBTimeline) == 0 {
+		return diverged
+	}
+	for _, name := range input.InstanceNames {
+		if name == input.PrimaryName || slices.Contains(diverged, name) {
+			continue
+		}
+		gtid := input.GTIDByInstance[name]
+		if gtid == "" {
+			continue
+		}
+		if on, known, err := input.MariaDBTimeline.Judge(gtid); err == nil && known && !on {
+			diverged = append(diverged, name)
+		}
+	}
+	return diverged
 }
 
 // holdingDisowned adds to diverged every MySQL instance whose last known GTID
