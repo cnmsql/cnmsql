@@ -297,12 +297,7 @@ A gap is a stretch the archive is missing between transactions it holds: the
 holes of the covered set on MySQL, the gaps between segments' sequence ranges on
 MariaDB. The typical one is a replica cloned after the primary's last archived
 file and promoted after that primary died: its clone point is in no binary log
-the archive will ever receive. On MySQL that stretch is often the tail of the
-old primary's UUID, with nothing archived after it, so the covered set shows no
-hole; each segment therefore also records `previousGTIDSet`, the Previous-GTIDs
-of its first archived file, and what that holds and no segment archived is a
-gap too, unless it predates the archive (below the archive's first transaction
-of that UUID, or of a UUID the archive holds nothing of). A binary log expired before it was archived
+the archive will ever receive. A binary log expired before it was archived
 (`binlogExpireSeconds` applies to unarchived logs too) leaves one as well. The
 primary reports gaps in its archiving status; the operator mirrors them into
 `status.continuousArchiving.gaps` and `gapsSince`. A former primary's drain
@@ -457,7 +452,7 @@ fork).
 MySQL applies a later transaction over a missing one without complaint, so gaps
 are checked twice. A latest recovery fails with `ErrArchiveGap` at plan time
 when `anchor ∪ planned segments` has a hole the anchor and the disowned set do
-not explain, or misses part of a planned segment's `previousGTIDSet`. After every replay the temporary server's `gtid_executed` must
+not explain. After every replay the temporary server's `gtid_executed` must
 have no such hole, a UUID the anchor does not hold must start at its first
 transaction, and a `targetGTID` must be fully present; otherwise the restore
 fails with `ErrArchiveGap`. A time target that stops before a gap passes.
