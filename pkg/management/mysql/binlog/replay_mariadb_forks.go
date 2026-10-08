@@ -17,6 +17,7 @@ limitations under the License.
 package binlog
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -170,12 +171,15 @@ func CheckMariadbAuthors(files []PositionalFile, domain uint32, anchorSeq uint64
 	return nil
 }
 
-// seqBeforeTime turns a time target into a sequence target: the sequence just
-// before the first transaction, in sequence order past the anchor, stamped at
-// or after the target. Replay is chunked by file, and a --stop-datetime on
-// each chunk would let a later chunk apply transactions an earlier one
-// stopped short of (clocks differ between primaries); a sequence bound keeps
-// the recovered state a prefix of the timeline.
+// seqBeforeTime turns a time target into a sequence target: the last archived
+// transaction before the first one, in sequence order past the anchor,
+// stamped at or after the target. Replay is chunked by file, and a
+// --stop-datetime on each chunk would let a later chunk apply transactions an
+// earlier one stopped short of (clocks differ between primaries); a sequence
+// bound keeps the recovered state a prefix of the timeline. Bounding on an
+// archived transaction, not the sequence just before the first one past the
+// target, stops short of a gap there the way MySQL's --stop-datetime does; a
+// gap below the bound is still crossed, and replay refuses it.
 func seqBeforeTime(files []PositionalFile, domain uint32, anchorSeq, highest uint64, target time.Time) uint64 {
 	first := highest + 1
 	for _, f := range files {
@@ -185,7 +189,15 @@ func seqBeforeTime(files []PositionalFile, domain uint32, anchorSeq, highest uin
 			}
 		}
 	}
-	return first - 1
+	before := anchorSeq
+	for _, f := range files {
+		for _, b := range f.Boundaries {
+			if b.Domain == domain && b.Seq > before && b.Seq < first {
+				before = b.Seq
+			}
+		}
+	}
+	return before
 }
 
 // HighestMariadbSeq returns the highest sequence the files carry in domain.
@@ -473,6 +485,12 @@ func PrepareMariadbPositional(
 		return p, nil
 	}
 	selected, err := SelectMariadbSegments(capped, p.Domain, p.AnchorSeq, selectTarget)
+	if errors.Is(err, ErrForkedTimeline) && target.Time != nil {
+		// A time target selects towards the highest sequence, but may stop
+		// before a gap on the way: only the transactions' stamps tell, so
+		// every segment is downloaded and replay planning decides.
+		return p, nil
+	}
 	if err != nil {
 		return MariadbPositional{}, err
 	}
