@@ -508,6 +508,14 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *ClusterReconciler) resolvePlan(ctx context.Context, cluster *mysqlv1alpha1.Cluster) (clusterPlan, *ctrl.Result, error) {
 	plan, err := r.buildPlan(ctx, cluster)
 	if err != nil {
+		// A plan that failed past the image still accepted it. Without the
+		// record, the next reconcile probes it again and the cluster flips back
+		// to Provisioning instead of staying Blocked on the real reason.
+		if plan.imageDecision.status != "" {
+			if recordErr := r.recordImageDecision(ctx, cluster, plan.imageDecision); recordErr != nil {
+				return clusterPlan{}, &ctrl.Result{}, recordErr
+			}
+		}
 		result, err := r.planFailed(ctx, cluster, err)
 		return clusterPlan{}, &result, err
 	}
