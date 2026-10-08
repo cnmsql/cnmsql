@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
@@ -229,6 +230,38 @@ func TestBuildPlanKeepsThePreviousImageWhileProbing(t *testing.T) {
 	}
 	if plan.Image != "registry.example/mysql:8.4.10" || plan.ServerVersion != "8.4.10" {
 		t.Fatalf("plan image %q version %q, want the previous target image", plan.Image, plan.ServerVersion)
+	}
+}
+
+// A plan that fails after the image was accepted still records it. The probe
+// Pod is released on acceptance, so without the record every reconcile would
+// probe again and report Provisioning instead of the reason the plan failed.
+func TestResolvePlanRecordsTheImageWhenThePlanFails(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	cluster.Spec.ImageName = "registry.example/mysql:8.4.11"
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{Recovery: &mysqlv1alpha1.BootstrapRecovery{
+		Backup: &mysqlv1alpha1.LocalObjectReference{Name: "missing"},
+	}}
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).WithStatusSubresource(cluster).Build()
+	r := &ClusterReconciler{
+		Client:      c,
+		Scheme:      scheme,
+		ImageProber: fixedImageProber{info: imageInfo("registry.example/mysql:8.4.11", "8.4.11")},
+	}
+	if _, stop, _ := r.resolvePlan(context.Background(), cluster); stop == nil {
+		t.Fatal("a plan naming a missing backup must stop the reconcile")
+	}
+	stored := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(cluster), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.TargetImage == nil || stored.Status.TargetImage.ServerVersion != "8.4.11" {
+		t.Fatalf("target image = %+v, want the accepted image recorded", stored.Status.TargetImage)
+	}
+	if stored.Status.Phase != topology.PhaseBlocked {
+		t.Fatalf("phase = %q, want Blocked", stored.Status.Phase)
 	}
 }
 

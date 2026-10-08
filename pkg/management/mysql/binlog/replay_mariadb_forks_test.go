@@ -409,3 +409,66 @@ func TestMariaDBTimeTargetIsAPrefix(t *testing.T) {
 		t.Fatalf("chunks = %+v, want file a stopped before seq 12", chunks)
 	}
 }
+
+// gappedMariaDBArchive: the old primary (server 1) archived 0-1-51..100, then
+// a successor re-cloned past 0-1-150 archived 0-2-151..160; 101..150 never
+// reached the archive.
+func gappedMariaDBArchive() (*objectstore.ArchiveIndex, []PositionalFile, []ReplaySegment) {
+	at := func(sec int) time.Time { return time.Date(2026, 10, 7, 12, 0, sec, 0, time.UTC) }
+	idx := &objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{
+		{ServerUUID: "old", Binlogs: []string{"binlog.000001"}, StartGTIDSet: "0-1-51", GTIDSet: "0-1-100"},
+		{ServerUUID: "new", Binlogs: []string{"binlog.000001"}, StartGTIDSet: "0-2-151", GTIDSet: "0-2-160"},
+	}}
+	old := txns(1, seqRange(51, 100)...)
+	for i := range old {
+		old[i].Time = at(1)
+	}
+	successor := txns(2, seqRange(151, 160)...)
+	for i := range successor {
+		successor[i].Time = at(20 + i)
+	}
+	files := []PositionalFile{
+		{Path: "old_binlog.000001", Segment: "old", Boundaries: old},
+		{Path: "new_binlog.000001", Segment: "new", Boundaries: successor},
+	}
+	segs := []ReplaySegment{{ServerUUID: "old"}, {ServerUUID: "new"}}
+	return idx, files, segs
+}
+
+// A time target may stop before an archive gap, so planning cannot refuse it
+// the way it refuses latest: it downloads every segment and leaves the call
+// to replay planning, which has the stamps.
+func TestPrepareMariadbPositionalLeavesAGapToATimeTarget(t *testing.T) {
+	t.Parallel()
+	idx, _, _ := gappedMariaDBArchive()
+	if _, err := PrepareMariadbPositional(idx, "0-1-60", RecoveryTarget{}); !errors.Is(err, ErrForkedTimeline) {
+		t.Fatalf("latest across the gap: err = %v, want ErrForkedTimeline", err)
+	}
+	when := time.Date(2026, 10, 7, 12, 0, 10, 0, time.UTC)
+	p, err := PrepareMariadbPositional(idx, "0-1-60", RecoveryTarget{Time: &when})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Enabled || p.Selected {
+		t.Fatalf("setup = %+v, want positional replay over every planned segment", p)
+	}
+}
+
+// A time target before the gap stops at the last archived transaction before
+// it; one past the gap would cross it and fails closed.
+func TestMariaDBTimeTargetStopsBeforeAGap(t *testing.T) {
+	t.Parallel()
+	_, files, segs := gappedMariaDBArchive()
+	before := ReplayPlan{Segments: segs, TargetTime: time.Date(2026, 10, 7, 12, 0, 10, 0, time.UTC)}
+	chunks, err := PlanMariadbReplay(before, files, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Files[0] != "old_binlog.000001" || chunks[0].StopPosition != 0 {
+		t.Fatalf("chunks = %+v, want the old file replayed whole and nothing past the gap", chunks)
+	}
+	past := ReplayPlan{Segments: segs, TargetTime: time.Date(2026, 10, 7, 12, 0, 25, 0, time.UTC)}
+	if _, err := PlanMariadbReplay(past, files, 60); !errors.Is(err, ErrForkedTimeline) {
+		t.Fatalf("a target past the gap: err = %v, want ErrForkedTimeline", err)
+	}
+}

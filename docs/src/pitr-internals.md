@@ -498,6 +498,11 @@ applied, skips already-applied prefixes, starts a fresh start-position-bounded
 chunk on overlap, and coalesces clean runs. `SelectMariadbSegments` prunes the
 download to the minimal set of segments whose per-domain ranges cover
 `(anchorSeq, targetSeq]` (a greedy interval cover), failing closed on a gap.
+A time target selects towards the highest sequence but may stop before a gap,
+which only the transactions' stamps tell, so on a gap it downloads every
+segment instead. It then stops at the last archived transaction before the
+first one stamped at or after the target: short of a gap there, the way MySQL's
+`--stop-datetime` stops, while a gap below that point is crossed and refused.
 
 #### Forks on the positional path
 

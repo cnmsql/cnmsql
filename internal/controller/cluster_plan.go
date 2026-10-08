@@ -301,20 +301,22 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 
 	// The bootstrap source is only read until the primary's data exists: after
 	// that the source Backup, its object store and its Secrets may go away.
+	// A failure from here on still carries the image decision: the image was
+	// probed and its probe Pod released, so it has to be recorded either way.
 	bootstrapped, err := r.primaryBootstrapped(ctx, cluster)
 	if err != nil {
-		return clusterPlan{}, err
+		return clusterPlan{imageDecision: decision}, err
 	}
 	if !bootstrapped {
 		recovery, err := r.resolveRecovery(ctx, cluster)
 		if err != nil {
-			return clusterPlan{}, err
+			return clusterPlan{imageDecision: decision}, err
 		}
 		plan.Recovery = recovery
 
 		imp, err := r.resolveImport(ctx, cluster, serverVersion)
 		if err != nil {
-			return clusterPlan{}, err
+			return clusterPlan{imageDecision: decision}, err
 		}
 		plan.Import = imp
 	}
