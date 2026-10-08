@@ -446,16 +446,24 @@ func forkCheckIdentity(instance, identity string) string {
 // ArchiveGaps lists the stretches of the timeline the archive is missing
 // between transactions it holds: recovery from a base backup taken before one
 // of them cannot cross it. On MySQL they are the holes of the covered set, per
-// UUID; on MariaDB the gaps between the segments' sequence ranges, per domain,
-// with each segment's range ending at its fork cut. A stretch before the first
-// archived transaction is not a gap: the archive simply starts later.
+// UUID, and what a segment's server held before its first archived file that
+// no segment archived (a successor's clone point the old primary never
+// shipped); on MariaDB the gaps between the segments' sequence ranges, per
+// domain, with each segment's range ending at its fork cut. A stretch before
+// the first archived transaction is not a gap: the archive simply starts later.
 func ArchiveGaps(idx *objectstore.ArchiveIndex) []string {
 	if idx == nil || len(idx.Segments) == 0 {
 		return nil
 	}
 	if covered, err := replication.ParseGTIDSet(idx.CoveredGTIDSet); err == nil && !mariadbArchive(idx) {
-		if holes := covered.Holes(); !holes.IsEmpty() {
-			return []string{holes.String()}
+		gaps := covered.Holes()
+		for _, seg := range idx.Segments {
+			if previous, err := replication.ParseGTIDSet(seg.PreviousGTIDSet); err == nil {
+				gaps.Union(sinceArchiveStart(previous.Difference(covered), covered))
+			}
+		}
+		if !gaps.IsEmpty() {
+			return []string{gaps.String()}
 		}
 		return nil
 	}
@@ -492,6 +500,27 @@ func ArchiveGaps(idx *objectstore.ArchiveIndex) []string {
 				out = append(out, fmt.Sprintf("%d-%d..%d", domain, reached+1, iv.start-1))
 			}
 			reached = max(reached, iv.end)
+		}
+	}
+	return out
+}
+
+// sinceArchiveStart keeps the part of missing at or after the first
+// transaction covered holds of each UUID. Anything earlier, or of a UUID the
+// archive holds nothing of, predates the archive.
+func sinceArchiveStart(missing, covered replication.GTIDSet) replication.GTIDSet {
+	out := replication.GTIDSet{}
+	for uuid, intervals := range missing {
+		held := covered[uuid]
+		if len(held) == 0 {
+			continue
+		}
+		for _, iv := range intervals {
+			if iv.End < held[0].Start {
+				continue
+			}
+			iv.Start = max(iv.Start, held[0].Start)
+			out.AddInterval(uuid, iv)
 		}
 	}
 	return out
