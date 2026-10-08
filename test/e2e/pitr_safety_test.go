@@ -319,24 +319,24 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 			g.Expect(strings.TrimSpace(gaps)).NotTo(BeEmpty(), "the archive gap must be reported")
 		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 		By("waiting out the grace a former primary's drain gets")
+		// ArchiveGap is True only until the backup it triggers completes, which
+		// a small database can do between two polls. The backup and the event
+		// are what last; the condition's settled reason is checked below.
+		var gapBackup string
 		Eventually(func(g Gomega) {
-			got, err := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].status}")
+			out, err := kubectl("get", "backups", "-n", testNamespace,
+				"-l", "mysql.cnmsql.co/archive-gap-backup=true",
+				"--sort-by=.metadata.creationTimestamp", "-o", "jsonpath={.items[*].metadata.name}")
 			g.Expect(err).NotTo(HaveOccurred())
 			reason, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].reason}")
 			message, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].message}")
 			archiving, _ := clusterField(cluster, "{.status.continuousArchiving}")
-			g.Expect(got).To(Equal("True"), "ArchiveGap %s: %s; continuousArchiving %s", reason, message, archiving)
+			names := strings.Fields(out)
+			g.Expect(names).NotTo(BeEmpty(), "no archive-gap backup yet; ArchiveGap %s: %s; continuousArchiving %s",
+				reason, message, archiving)
+			gapBackup = names[len(names)-1]
 		}, e2eTimeout(15*time.Minute), 15*time.Second).Should(Succeed())
 		expectWarningEvent(cluster, "ArchiveGap")
-
-		var gapBackup string
-		Eventually(func(g Gomega) {
-			out, err := kubectl("get", "backups", "-n", testNamespace,
-				"-l", "mysql.cnmsql.co/archive-gap-backup=true", "-o", "jsonpath={.items[*].metadata.name}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.Fields(out)).To(HaveLen(1))
-			gapBackup = strings.Fields(out)[0]
-		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 		expectBackupCompleted(gapBackup, 8*time.Minute)
 		Eventually(func(g Gomega) {
 			reason, err := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].reason}")
