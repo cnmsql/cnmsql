@@ -115,8 +115,13 @@ target that stops before it is fine.
 ### 4. Archive gaps at archive time
 
 The primary's check also computes the archive's gaps: MySQL, the holes of the
-index's covered set; MariaDB, the gaps in the union of segment ranges per
-domain. They are reported in archiving status and mirrored into
+index's covered set, plus what a segment's `previousGTIDSet` (the
+Previous-GTIDs of its first archived file) holds that no segment archived,
+above the archive's first transaction of each UUID; MariaDB, the gaps in the
+union of segment ranges per domain. The MySQL starting set catches a clone
+point at the tail of the old primary's UUID, which leaves no hole, and a
+latest recovery refuses a plan that misses part of a planned segment's
+starting set. They are reported in archiving status and mirrored into
 `continuousArchiving.gaps` (with `gapsSince`). A gap a former primary's drain
 fills shortly after a failover is normal, so a gap counts only once it has
 stood for a grace period (one recorded-position refresh plus two minutes,
