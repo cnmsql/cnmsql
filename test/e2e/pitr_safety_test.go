@@ -96,13 +96,25 @@ func expectPlanBlocked(name, manifest, needle string) {
 	}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 }
 
-// restartPod deletes an instance Pod so its instance manager starts afresh.
-func restartPod(cluster, pod string, instances int) {
+// restartPod deletes an instance Pod so its instance manager starts afresh,
+// and returns the primary once the replacement is up and a primary takes
+// writes. The status still reads Ready right after the delete, so the wait
+// starts from the replacement Pod; and deleting the primary may fail over, so
+// the primary is read again rather than assumed.
+func restartPod(f forkFlavor, cluster, pod, password string, instances int) string {
 	GinkgoHelper()
 	By(fmt.Sprintf("restarting %s", pod))
-	_, err := kubectl("delete", "pod", pod, "-n", testNamespace, "--wait=false")
+	uid, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 	Expect(err).NotTo(HaveOccurred())
-	expectClusterRecovers(cluster, instances, e2eTimeout(10*time.Minute))
+	_, err = kubectl("delete", "pod", pod, "-n", testNamespace, "--wait=false")
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		got, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(got)).NotTo(BeElementOf("", uid), "%s has not been replaced yet", pod)
+	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+	expectClusterRecovers(cluster, instances, 10*time.Minute)
+	return writablePrimary(f, cluster, password)
 }
 
 // lostIndexWriteSpec: a file whose index write failed after its status write
@@ -148,8 +160,7 @@ func lostIndexWriteSpec(f forkFlavor, cluster string) {
 	})
 
 	It("folds the file back into the index once the archiver restarts", func() {
-		restartPod(cluster, primary, s.instances)
-		primary = clusterPrimary(cluster)
+		primary = restartPod(f, cluster, primary, s.password, s.instances)
 		writeForkRows(f, primary, s.password, "second", second)
 		f.covers(cluster, f.flush(cluster, primary, s.password), 5*time.Minute)
 		Eventually(func(g Gomega) {
@@ -224,7 +235,10 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 		Eventually(func(g Gomega) {
 			got, err := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].status}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(got).To(Equal("True"))
+			reason, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].reason}")
+			message, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].message}")
+			archiving, _ := clusterField(cluster, "{.status.continuousArchiving}")
+			g.Expect(got).To(Equal("True"), "ArchiveGap %s: %s; continuousArchiving %s", reason, message, archiving)
 		}, e2eTimeout(15*time.Minute), 15*time.Second).Should(Succeed())
 		expectWarningEvent(cluster, "ArchiveGap")
 
