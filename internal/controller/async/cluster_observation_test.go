@@ -57,6 +57,20 @@ func TestMariaDBForkedFormerPrimaryIsDivergedOnFirstContact(t *testing.T) {
 	}
 }
 
+// The timeline needs no live primary: a forked former primary that returns
+// while its successor is down is marked all the same, so it is never elected.
+func TestMariaDBForkedFormerPrimaryIsDivergedWithThePrimaryDown(t *testing.T) {
+	t.Parallel()
+	in := mariadbInput(map[string]string{"demo-1": "0-1-219", "demo-3": "0-2-290"}, nil)
+	if got := detectDivergedReplicas(in); !slices.Equal(got, []string{"demo-1"}) {
+		t.Fatalf("diverged = %v, want [demo-1] with the primary unreachable", got)
+	}
+	in.MariaDBTimeline = nil
+	if got := detectDivergedReplicas(in); len(got) != 0 {
+		t.Fatalf("without a timeline nothing can be judged, got %v", got)
+	}
+}
+
 func TestMariaDBCanonicalReplicasAreNotDiverged(t *testing.T) {
 	t.Parallel()
 	in := mariadbInput(map[string]string{"demo-1": "0-1-200", "demo-2": "0-2-300", "demo-3": "0-2-300"}, nil)

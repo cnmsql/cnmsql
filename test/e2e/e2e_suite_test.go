@@ -184,14 +184,18 @@ func pullAndLoadInstanceImage(version string) {
 }
 
 // loadInstanceImage pulls the full image reference and loads it into Kind.
+// The lanes of one run share the runner's Docker daemon and pull the same
+// images at the same moment, which containerd can fail with "lease does not
+// exist"; the pull is retried a few times before it counts.
 func loadInstanceImage(image string) {
 	By(fmt.Sprintf("pulling the instance image (%s)", image))
-	cmd := exec.Command("docker", "pull", image)
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to pull the instance image %s", image)
+	EventuallyWithOffset(1, func() error {
+		_, err := utils.Run(exec.Command("docker", "pull", image))
+		return err
+	}, 3*time.Minute, 10*time.Second).Should(Succeed(), "Failed to pull the instance image %s", image)
 
 	By(fmt.Sprintf("loading the instance image on Kind (%s)", image))
-	err = utils.LoadImageToKindClusterWithName(image)
+	err := utils.LoadImageToKindClusterWithName(image)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the instance image %s into Kind", image)
 }
 

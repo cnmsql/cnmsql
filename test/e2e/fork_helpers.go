@@ -278,6 +278,23 @@ func waitPrimaryIs(f forkFlavor, cluster, want, password string) {
 	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 }
 
+// writablePrimary waits until the instance the operator names primary accepts
+// writes, and returns it.
+func writablePrimary(f forkFlavor, cluster, password string) string {
+	GinkgoHelper()
+	var primary string
+	Eventually(func(g Gomega) {
+		p, err := clusterField(cluster, "{.status.currentPrimary}")
+		g.Expect(err).NotTo(HaveOccurred())
+		p = strings.TrimSpace(p)
+		g.Expect(p).NotTo(BeEmpty(), "%s has no primary", cluster)
+		_, err = f.exec(p, "app", password, "app", "DELETE FROM "+forkTable+" WHERE id = -1;")
+		g.Expect(err).NotTo(HaveOccurred(), "%s is not writable yet", p)
+		primary = p
+	}, e2eTimeout(8*time.Minute), 5*time.Second).Should(Succeed())
+	return primary
+}
+
 // promoteFrozenReplica takes the primary down and holds it down (fencing stops
 // its mysqld), then unfences the frozen replica, which the operator promotes
 // although it misses everything the primary committed after the freeze.

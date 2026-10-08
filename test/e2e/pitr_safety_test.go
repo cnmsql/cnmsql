@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
@@ -46,6 +47,77 @@ func rewriteArchiveIndex(cluster string, mutate func(*objectstore.ArchiveIndex),
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(check(idx)).To(BeTrue(), "the index rewrite did not stick")
 	}, e2eTimeout(2*time.Minute), 3*time.Second).Should(Succeed())
+}
+
+// dropArchivedFiles removes from the archive every file instance archived
+// that keep does not name, the way a store that lost them would: the objects,
+// their manifests and their index entries, with the segment's coverage
+// rebuilt from the files it keeps.
+func dropArchivedFiles(f forkFlavor, cluster, instance string, keep []string) {
+	GinkgoHelper()
+	idx, err := readArchiveIndex(cluster)
+	Expect(err).NotTo(HaveOccurred())
+	segs := segmentsOf(idx, instance)
+	Expect(segs).To(HaveLen(1), "%s must own exactly one segment", instance)
+	uuid := segs[0].ServerUUID
+	store := mysqlv1alpha1.S3ObjectStore{Bucket: objectStoreBucket}
+	remote := func(key string) string { return fmt.Sprintf("%s:%s/%s", s3Remote, objectStoreBucket, key) }
+
+	var dropped []string
+	var coverage []string
+	for _, name := range segs[0].Binlogs {
+		keys, err := objectstore.BuildBinlogKeys(store, cluster, uuid, name)
+		Expect(err).NotTo(HaveOccurred())
+		if slices.Contains(keep, name) {
+			raw, err := rcloneExec("cat", remote(keys.ManifestKey))
+			Expect(err).NotTo(HaveOccurred(), "reading the manifest of %s", name)
+			var meta objectstore.BinlogMetadata
+			Expect(json.Unmarshal([]byte(raw), &meta)).To(Succeed())
+			coverage = append(coverage, meta.GTIDSet)
+			continue
+		}
+		for _, key := range []string{keys.BinlogKey, keys.ManifestKey} {
+			_, err := rcloneExec("deletefile", remote(key))
+			Expect(err).NotTo(HaveOccurred(), "deleting %s", key)
+		}
+		dropped = append(dropped, name)
+	}
+	if len(dropped) == 0 {
+		// Nothing past keep reached the archive: the gap is already there.
+		return
+	}
+	// A MariaDB position is the last file's; a MySQL set is the union.
+	segSet := coverage[len(coverage)-1]
+	if !f.mariadb {
+		segSet, err = replication.UnionGTIDStrings(coverage...)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	rewriteArchiveIndex(cluster, func(idx *objectstore.ArchiveIndex) {
+		var sets []string
+		for i := range idx.Segments {
+			seg := &idx.Segments[i]
+			if seg.ServerUUID == uuid {
+				seg.Binlogs = slices.DeleteFunc(seg.Binlogs, func(n string) bool { return slices.Contains(dropped, n) })
+				seg.GTIDSet = segSet
+			}
+			sets = append(sets, seg.GTIDSet)
+		}
+		if !f.mariadb {
+			covered, err := replication.UnionGTIDStrings(sets...)
+			Expect(err).NotTo(HaveOccurred())
+			idx.CoveredGTIDSet = covered
+		}
+	}, func(idx objectstore.ArchiveIndex) bool {
+		for _, seg := range segmentsOf(idx, instance) {
+			for _, name := range dropped {
+				if slices.Contains(seg.Binlogs, name) {
+					return false
+				}
+			}
+		}
+		return true
+	})
 }
 
 // backupField reads a jsonpath of a Backup.
@@ -96,13 +168,25 @@ func expectPlanBlocked(name, manifest, needle string) {
 	}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
 }
 
-// restartPod deletes an instance Pod so its instance manager starts afresh.
-func restartPod(cluster, pod string, instances int) {
+// restartPod deletes an instance Pod so its instance manager starts afresh,
+// and returns the primary once the replacement is up and a primary takes
+// writes. The status still reads Ready right after the delete, so the wait
+// starts from the replacement Pod; and deleting the primary may fail over, so
+// the primary is read again rather than assumed.
+func restartPod(f forkFlavor, cluster, pod, password string, instances int) string {
 	GinkgoHelper()
 	By(fmt.Sprintf("restarting %s", pod))
-	_, err := kubectl("delete", "pod", pod, "-n", testNamespace, "--wait=false")
+	uid, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 	Expect(err).NotTo(HaveOccurred())
-	expectClusterRecovers(cluster, instances, e2eTimeout(10*time.Minute))
+	_, err = kubectl("delete", "pod", pod, "-n", testNamespace, "--wait=false")
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		got, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(got)).NotTo(BeElementOf("", uid), "%s has not been replaced yet", pod)
+	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+	expectClusterRecovers(cluster, instances, 10*time.Minute)
+	return writablePrimary(f, cluster, password)
 }
 
 // lostIndexWriteSpec: a file whose index write failed after its status write
@@ -148,8 +232,7 @@ func lostIndexWriteSpec(f forkFlavor, cluster string) {
 	})
 
 	It("folds the file back into the index once the archiver restarts", func() {
-		restartPod(cluster, primary, s.instances)
-		primary = clusterPrimary(cluster)
+		primary = restartPod(f, cluster, primary, s.password, s.instances)
 		writeForkRows(f, primary, s.password, "second", second)
 		f.covers(cluster, f.flush(cluster, primary, s.password), 5*time.Minute)
 		Eventually(func(g Gomega) {
@@ -168,13 +251,15 @@ func lostIndexWriteSpec(f forkFlavor, cluster string) {
 	})
 }
 
-// cloneGapSpec: a replica is re-cloned while the primary holds transactions it
-// has not archived yet; the primary then dies with a dead tail, so it is
-// diverged and its drain can never ship the stretch the clone point covers.
-// The successor archives from after its clone point, leaving a gap. Recovery
-// used to replay straight over it (MySQL) and recover a state that never
-// existed; it now fails closed, the cluster reports ArchiveGap and takes a
-// backup past it, and recovery from that backup is whole.
+// cloneGapSpec: a replica is re-cloned past transactions the archive then
+// loses, and the primary dies with a dead tail, so it is diverged and its
+// drain can never ship them again. The re-clone rotates the primary's binary
+// log, which it archives at once, so the spec plays the store that lost those
+// files: the archive is missing the stretch the clone point covers, while the
+// successor archives from after it. Recovery used to replay straight over the
+// gap (MySQL) and recover a state that never existed; it now fails closed, the
+// cluster reports ArchiveGap and takes a backup past it, and recovery from
+// that backup is whole.
 func cloneGapSpec(f forkFlavor, cluster string) {
 	// No forced rotation: the gap's rows stay in the primary's active binlog.
 	s := &forkSuite{f: f, cluster: cluster, instances: 2, rpoSeconds: 3600}
@@ -185,6 +270,7 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 	dead := idRange(101, 103)
 	live := idRange(201, 205)
 	var primary, replica, beforeGap string
+	var kept []string
 
 	It("leaves a stretch only the lost primary and the clone point ever held", func() {
 		primary = clusterPrimary(cluster)
@@ -192,10 +278,15 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 		writeForkRows(f, primary, s.password, "common", common)
 		waitReplicated(f, replica, s.password, common)
 		f.covers(cluster, f.flush(cluster, primary, s.password), 5*time.Minute)
+		idx, err := readArchiveIndex(cluster)
+		Expect(err).NotTo(HaveOccurred())
+		for _, seg := range segmentsOf(idx, primary) {
+			kept = append(kept, seg.Binlogs...)
+		}
 		beforeGap = recoveryStamp()
 		waitPast(beforeGap)
 
-		By("writing rows the archive does not get yet, then re-cloning the replica past them")
+		By("writing rows the archive will lose, then re-cloning the replica past them")
 		writeForkRows(f, primary, s.password, "hole", hole)
 		reinitAndRecover(cluster, replica, s.instances)
 		waitReplicated(f, replica, s.password, hole)
@@ -212,6 +303,13 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 		By(fmt.Sprintf("letting %s return: it is diverged, so its drain never ships the gap", primary))
 		unfence(primary)
 		expectDiverged(cluster, primary)
+
+		By(fmt.Sprintf("losing every file %s archived after the common rows", primary))
+		dropArchivedFiles(f, cluster, primary, kept)
+		// The primary re-checks the archive on its next index write; the archive
+		// never covers the primary's position again, so there is nothing to wait
+		// on here.
+		f.flush(cluster, replica, s.password)
 	})
 
 	It("reports the gap and takes a base backup past it", func() {
@@ -221,21 +319,24 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 			g.Expect(strings.TrimSpace(gaps)).NotTo(BeEmpty(), "the archive gap must be reported")
 		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
 		By("waiting out the grace a former primary's drain gets")
-		Eventually(func(g Gomega) {
-			got, err := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].status}")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(got).To(Equal("True"))
-		}, e2eTimeout(15*time.Minute), 15*time.Second).Should(Succeed())
-		expectWarningEvent(cluster, "ArchiveGap")
-
+		// ArchiveGap is True only until the backup it triggers completes, which
+		// a small database can do between two polls. The backup and the event
+		// are what last; the condition's settled reason is checked below.
 		var gapBackup string
 		Eventually(func(g Gomega) {
 			out, err := kubectl("get", "backups", "-n", testNamespace,
-				"-l", "mysql.cnmsql.co/archive-gap-backup=true", "-o", "jsonpath={.items[*].metadata.name}")
+				"-l", "mysql.cnmsql.co/archive-gap-backup=true",
+				"--sort-by=.metadata.creationTimestamp", "-o", "jsonpath={.items[*].metadata.name}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.Fields(out)).To(HaveLen(1))
-			gapBackup = strings.Fields(out)[0]
-		}, e2eTimeout(3*time.Minute), 5*time.Second).Should(Succeed())
+			reason, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].reason}")
+			message, _ := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].message}")
+			archiving, _ := clusterField(cluster, "{.status.continuousArchiving}")
+			names := strings.Fields(out)
+			g.Expect(names).NotTo(BeEmpty(), "no archive-gap backup yet; ArchiveGap %s: %s; continuousArchiving %s",
+				reason, message, archiving)
+			gapBackup = names[len(names)-1]
+		}, e2eTimeout(15*time.Minute), 15*time.Second).Should(Succeed())
+		expectWarningEvent(cluster, "ArchiveGap")
 		expectBackupCompleted(gapBackup, 8*time.Minute)
 		Eventually(func(g Gomega) {
 			reason, err := clusterField(cluster, "{.status.conditions[?(@.type=='ArchiveGap')].reason}")
