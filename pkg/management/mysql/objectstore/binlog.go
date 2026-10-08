@@ -116,9 +116,6 @@ type BinlogMetadata struct {
 	FirstGTID string `json:"firstGTID,omitempty"`
 	LastGTID  string `json:"lastGTID,omitempty"`
 	GTIDSet   string `json:"gtidSet,omitempty"`
-	// PreviousGTIDSet is what the server had executed before this file (its
-	// Previous-GTIDs event).
-	PreviousGTIDSet string `json:"previousGTIDSet,omitempty"`
 	// FirstEventTime and LastEventTime bound the file in wall-clock time, for
 	// targetTime recovery.
 	FirstEventTime time.Time `json:"firstEventTime,omitempty"`
@@ -146,10 +143,6 @@ type ArchiveStatus struct {
 	// overwritten. It becomes the segment's StartGTIDSet in the index, giving
 	// recovery the segment's per-domain range start.
 	FirstGTID string `json:"firstGTID,omitempty"`
-	// PreviousGTIDSet is what the server had executed before the first file
-	// this segment archived, set once and never overwritten. It becomes the
-	// segment's PreviousGTIDSet in the index.
-	PreviousGTIDSet string `json:"previousGTIDSet,omitempty"`
 	// CoveredGTIDSet is the cumulative GTID set this segment has archived.
 	CoveredGTIDSet string `json:"coveredGTIDSet,omitempty"`
 	// UpdatedAt is when the status was last rewritten.
@@ -174,12 +167,6 @@ type ArchiveSegment struct {
 	// (e.g. after a re-init clone that reset the binlog history). A single
 	// incarnation is contiguous per domain, so one interval per domain suffices.
 	StartGTIDSet string `json:"startGTIDSet,omitempty"`
-	// PreviousGTIDSet (MySQL) is what the server had executed before the
-	// segment's first archived file. Whatever of it no segment archived is
-	// missing from the archive, unless it predates the archive: a successor
-	// provisioned by clone holds its clone point here, and the stretch of it
-	// its predecessor never shipped is a gap even when nothing follows it.
-	PreviousGTIDSet string `json:"previousGTIDSet,omitempty"`
 	// Fork records the transactions this segment archived that the surviving
 	// timeline does not hold. Whichever primary detects them writes it; it only
 	// ever grows, and it leaves the index with the segment when retention drops

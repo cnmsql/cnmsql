@@ -363,8 +363,7 @@ func (a *Archiver) archivePending(
 		// the status and the index write leaves the coverage recorded but the file
 		// unindexed, which the indexed memo catches.
 		advanced := archived || covered.String() != priorCovered ||
-			(status.FirstGTID == "" && meta.FirstGTID != "") ||
-			(status.PreviousGTIDSet == "" && meta.PreviousGTIDSet != "") || !a.indexed[l.Name]
+			(status.FirstGTID == "" && meta.FirstGTID != "") || !a.indexed[l.Name]
 
 		result.LastArchivedBinlog = l.Name
 		if meta.LastGTID != "" {
@@ -377,11 +376,6 @@ func (a *Archiver) archivePending(
 		// range start for recovery's gap-stitching.
 		if status.FirstGTID == "" && meta.FirstGTID != "" {
 			status.FirstGTID = meta.FirstGTID
-		}
-		// And what the server held before it: the clone point of a successor
-		// provisioned by clone, which the archive must also hold.
-		if status.PreviousGTIDSet == "" && meta.PreviousGTIDSet != "" {
-			status.PreviousGTIDSet = meta.PreviousGTIDSet
 		}
 		status.LastArchivedBinlog = result.LastArchivedBinlog
 		status.LastArchivedGTID = result.LastArchivedGTID
@@ -521,20 +515,19 @@ func (a *Archiver) archiveFileAllowed(
 
 	seq, _ := ParseSequence(l.Name)
 	meta := objectstore.BinlogMetadata{
-		ClusterName:     a.clusterName,
-		ServerUUID:      a.serverUUID,
-		InstanceName:    a.instanceName,
-		BinlogName:      l.Name,
-		Sequence:        seq,
-		FirstGTID:       scanRes.FirstGTID,
-		LastGTID:        scanRes.LastGTID,
-		GTIDSet:         scanRes.GTIDSet,
-		PreviousGTIDSet: scanRes.PreviousGTIDs,
-		FirstEventTime:  scanRes.FirstEventTime,
-		LastEventTime:   scanRes.LastEventTime,
-		SizeBytes:       size,
-		SHA256:          sum,
-		ArchivedAt:      a.now(),
+		ClusterName:    a.clusterName,
+		ServerUUID:     a.serverUUID,
+		InstanceName:   a.instanceName,
+		BinlogName:     l.Name,
+		Sequence:       seq,
+		FirstGTID:      scanRes.FirstGTID,
+		LastGTID:       scanRes.LastGTID,
+		GTIDSet:        scanRes.GTIDSet,
+		FirstEventTime: scanRes.FirstEventTime,
+		LastEventTime:  scanRes.LastEventTime,
+		SizeBytes:      size,
+		SHA256:         sum,
+		ArchivedAt:     a.now(),
 	}
 
 	// Upload the raw bytes, then the manifest. A crash between the two leaves a
@@ -652,9 +645,6 @@ func (a *Archiver) foldFile(
 	}
 	if seg.StartGTIDSet == "" {
 		seg.StartGTIDSet = status.FirstGTID
-	}
-	if seg.PreviousGTIDSet == "" {
-		seg.PreviousGTIDSet = status.PreviousGTIDSet
 	}
 	seg.EndedAt = a.now()
 

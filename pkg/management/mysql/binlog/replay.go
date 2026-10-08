@@ -363,46 +363,8 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 		if err := checkMySQLGaps(anchorGTID, union, plan.DisownedGTIDs); err != nil {
 			return ReplayPlan{}, err
 		}
-		if err := checkPlannedPrevious(idx, plan, union); err != nil {
-			return ReplayPlan{}, err
-		}
 	}
 	return plan, nil
-}
-
-// checkPlannedPrevious refuses a latest recovery that replays a segment whose
-// server held, before its first archived file, transactions neither the base
-// backup nor the replay supplies. That is a successor's clone point the old
-// primary never shipped: it leaves no hole when nothing of the old primary
-// follows it, yet the recovered state would lack it.
-func checkPlannedPrevious(idx *objectstore.ArchiveIndex, plan ReplayPlan, recovered string) error {
-	planned := map[string]bool{}
-	for _, seg := range plan.Segments {
-		planned[seg.ServerUUID] = true
-	}
-	var previous []string
-	for _, seg := range idx.Segments {
-		if planned[seg.ServerUUID] && seg.PreviousGTIDSet != "" {
-			previous = append(previous, seg.PreviousGTIDSet)
-		}
-	}
-	held, err := replication.UnionGTIDStrings(previous...)
-	if err != nil {
-		return fmt.Errorf("binlog: parsing segment starting sets: %w", err)
-	}
-	explained, err := replication.UnionGTIDStrings(recovered, plan.DisownedGTIDs)
-	if err != nil {
-		return fmt.Errorf("binlog: merging planned coverage: %w", err)
-	}
-	missing, err := replication.DifferenceGTIDStrings(held, explained)
-	if err != nil {
-		return fmt.Errorf("binlog: comparing segment starting sets with the plan: %w", err)
-	}
-	if missing != "" {
-		return fmt.Errorf("%w: %s, which a replayed segment's server held before its first archived binary log",
-			ErrArchiveGap, missing)
-	}
-	return nil
 }
 
 // checkUnrecordedForks is the MySQL restore backstop for forks no primary
