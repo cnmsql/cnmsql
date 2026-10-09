@@ -189,6 +189,19 @@ func restartPod(f forkFlavor, cluster, pod, password string, instances int) stri
 	return writablePrimary(f, cluster, password)
 }
 
+// ownGTIDs keeps the part of a MySQL executed set that pod committed under its
+// own server_uuid.
+func ownGTIDs(pod, password, executed string) string {
+	GinkgoHelper()
+	out, err := mysqlExec(pod, "app", password, "", "SELECT @@GLOBAL.server_uuid")
+	Expect(err).NotTo(HaveOccurred(), "reading server_uuid from %s", pod)
+	uuid := strings.ToLower(parseSingleValue(out))
+	set, err := replication.ParseGTIDSet(executed)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(set[uuid]).NotTo(BeEmpty(), "%s committed nothing under its own uuid %s in %q", pod, uuid, executed)
+	return replication.GTIDSet{uuid: set[uuid]}.String()
+}
+
 // lostIndexWriteSpec: a file whose index write failed after its status write
 // was never indexed again, and recovery replayed past it. The repair folds it
 // back in from the manifest the next time the archiver starts.
@@ -298,7 +311,15 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 
 		promoteFrozenReplica(f, cluster, primary, replica, s.password)
 		writeForkRows(f, replica, s.password, "live", live)
-		f.covers(cluster, f.flush(cluster, replica, s.password), 5*time.Minute)
+		// The successor's executed set starts at its clone point, which the
+		// archive only holds when the primary happened to rotate past it before
+		// it went down: that stretch is the gap this spec is about. Wait on what
+		// the successor archives itself.
+		executed := f.flush(cluster, replica, s.password)
+		if !f.mariadb {
+			executed = ownGTIDs(replica, s.password, executed)
+		}
+		f.covers(cluster, executed, 5*time.Minute)
 
 		By(fmt.Sprintf("letting %s return: it is diverged, so its drain never ships the gap", primary))
 		unfence(primary)
