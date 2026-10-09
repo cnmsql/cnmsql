@@ -169,7 +169,29 @@ func dumpE2EDiagnostics() {
 		}
 		_, _ = fmt.Fprintf(GinkgoWriter, "\n%s:\n%s\n", dump.name, out)
 	}
+	dumpOperatorLogsForNamespace()
 	dumpInstanceLogs()
+}
+
+// dumpOperatorLogsForNamespace prints the operator log lines that mention the
+// current test namespace. Parallel specs share one operator, so the plain tail
+// above is mostly other namespaces' reconciles by the time a spec fails.
+func dumpOperatorLogsForNamespace() {
+	out, err := kubectl("logs", "-l", "control-plane=controller-manager", "-n", namespace, "--tail=20000")
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "\nFailed to collect operator logs for %s: %v\n", testNamespace, err)
+		return
+	}
+	var lines []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, `"`+testNamespace+`"`) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 500 {
+		lines = lines[len(lines)-500:]
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\noperator logs for namespace %s:\n%s\n", testNamespace, strings.Join(lines, "\n"))
 }
 
 // dumpInstanceLogs prints recent logs from every MySQL instance Pod in the
@@ -184,7 +206,7 @@ func dumpInstanceLogs() {
 		return
 	}
 	for _, pod := range strings.Fields(pods) {
-		out, err := kubectl("logs", pod, "-n", testNamespace, "-c", "mysql", "--tail=80")
+		out, err := kubectl("logs", pod, "-n", testNamespace, "-c", "mysql", "--tail=200")
 		if err != nil {
 			// Pod may still be in an init container; surface that too.
 			out, _ = kubectl("logs", pod, "-n", testNamespace, "--all-containers", "--tail=80")

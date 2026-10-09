@@ -88,6 +88,17 @@ spec:
 		"Cluster admission webhook did not become ready")
 })
 
+// A failed spec dumps the cluster state, operator log and instance logs of its
+// namespace before any teardown removes them: most specs delete their namespace
+// in AfterEach, AfterAll or DeferCleanup, and a flake that leaves nothing behind
+// cannot be diagnosed. JustAfterEach runs ahead of every AfterEach.
+var _ = JustAfterEach(func() {
+	if CurrentSpecReport().Failed() {
+		By("dumping diagnostics for the failed spec")
+		dumpE2EDiagnostics()
+	}
+})
+
 // SynchronizedAfterSuite tears down the operator and cert-manager on process 1
 // only, after every parallel process has finished its specs.
 var _ = SynchronizedAfterSuite(func() {
