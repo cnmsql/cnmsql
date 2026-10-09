@@ -267,6 +267,91 @@ func TestReconcileFailoverDefersWhileSwitchoverTargetPromotes(t *testing.T) {
 	}
 }
 
+// sourceGoneState is switchoverState once a drained primary has finished its
+// preStop hook and shut down: it is no longer reporting, and the target's IO
+// thread lost its source (Connecting, which reads as not running), so readiness
+// fails. Its SQL thread is still draining the relay log, and it has not taken
+// the primary Lease yet because it only does so once caught up. A third,
+// healthy replica gives the election somewhere to go.
+func sourceGoneState() topology.FailoverState {
+	state := switchoverState()
+	delete(state.Instances, drainPrimary)
+	state.InstanceNames = append(state.InstanceNames, drainThird)
+	target := state.Instances[drainReplica]
+	target.Ready = false
+	target.IORunning = false
+	state.Instances[drainReplica] = target
+	state.Instances[drainThird] = topology.FailoverInstance{
+		Ready: true, Replica: true, Role: "replica", SQLRunning: true, IORunning: true, GTID: "uuid:1-10",
+	}
+	return state
+}
+
+// TestReconcileFailoverDefersWhileSwitchoverTargetDrainsRelay covers the window
+// between the old primary going away and the target taking the lease. A
+// drained primary shuts down as soon as it is demoted, which drops the target's
+// IO thread before the target has caught up and acquired the lease. The target
+// still promotes itself from there, so failing over in that window stamps an
+// emergency FailingOver over a planned drain switchover.
+func TestReconcileFailoverDefersWhileSwitchoverTargetDrainsRelay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	started := metav1.Now()
+	cluster.Status.TargetPrimaryTimestamp = &started
+	r, recorder := newDrainReconciler(t, cluster)
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 3,
+		Observed:  sourceGoneState(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled {
+		t.Fatal("expected failover to defer while the switchover target drains its relay log")
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("expected no failover event while the target drains its relay log, got %q", ev)
+	default:
+	}
+}
+
+// TestReconcileFailoverFiresWhenRelayDrainOutlastsMaxSwitchoverDelay bounds the
+// relay-drain deferral the way the lease deferral is bounded: a target that
+// never gets to promote must not hold off failover forever.
+func TestReconcileFailoverFiresWhenRelayDrainOutlastsMaxSwitchoverDelay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := switchoverCluster()
+	cluster.Spec.MaxSwitchoverDelay = 30
+	started := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	cluster.Status.TargetPrimaryTimestamp = &started
+	r, recorder := newDrainReconciler(t, cluster)
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances: 3,
+		Observed:  sourceGoneState(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Handled {
+		t.Fatal("expected failover to fire once maxSwitchoverDelay has passed on a stalled relay drain")
+	}
+	// The election may still pick the target: with its source gone, a replica
+	// whose SQL thread runs is what every failover candidate looks like.
+	if got := failedOverTo(t, ctx, r, cluster); got == "" {
+		t.Fatal("expected the failover to record a target")
+	}
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("expected a failover event to be recorded")
+	}
+}
+
 // TestReconcileFailoverFiresWhenSwitchoverTargetLeaseExpired bounds the
 // mid-promotion deferral from below: a promotion that fails before resetting
 // its replica metadata wedges the target behind its own stopped SQL thread, so

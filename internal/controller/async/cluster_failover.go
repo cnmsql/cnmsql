@@ -265,12 +265,16 @@ func (r *Reconciler) targetHoldsPromotionLease(
 	if !lease.Held {
 		return false, nil
 	}
-	if maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second; maxDelay > 0 &&
-		cluster.Status.TargetPrimaryTimestamp != nil &&
-		time.Since(cluster.Status.TargetPrimaryTimestamp.Time) > maxDelay {
-		return false, nil
-	}
-	return true, nil
+	return !switchoverOverdue(cluster), nil
+}
+
+// switchoverOverdue reports whether the switchover request has outlived
+// maxSwitchoverDelay, measured from targetPrimaryTimestamp. It bounds every
+// deferral that rests on the target still being on its way to promotion.
+func switchoverOverdue(cluster *mysqlv1alpha1.Cluster) bool {
+	maxDelay := time.Duration(cluster.Spec.MaxSwitchoverDelay) * time.Second
+	return maxDelay > 0 && cluster.Status.TargetPrimaryTimestamp != nil &&
+		time.Since(cluster.Status.TargetPrimaryTimestamp.Time) > maxDelay
 }
 
 // switchoverInFlight reports whether a planned switchover is being driven to a
@@ -284,6 +288,11 @@ func (r *Reconciler) targetHoldsPromotionLease(
 //     through the whole window. The primary Lease the target acquires right
 //     before Promote is the only operator-visible signal in that state, so the
 //     caller passes whether the target holds it (targetHoldsLease),
+//   - the target draining its relay log before it takes the lease: a drained
+//     primary shuts down as soon as it is demoted, so the target's IO thread
+//     loses its source and readiness fails, while its SQL thread still applies
+//     what it received. It promotes itself once caught up, so a replica whose
+//     SQL thread runs is still on its way, bounded by maxSwitchoverDelay,
 //   - the target already promoted, waiting for status.currentPrimary to catch
 //     up (ready and reporting primary).
 //
@@ -322,7 +331,13 @@ func switchoverInFlight(
 		return true
 	}
 	status, ok := observed.Instances[target]
-	return ok && status.Ready && status.Primary
+	if !ok {
+		return false
+	}
+	if status.Ready && status.Primary {
+		return true
+	}
+	return status.Replica && status.SQLRunning && !switchoverOverdue(cluster)
 }
 
 // maxTransactionsBehind returns the configured promotion bound, or nil when the
