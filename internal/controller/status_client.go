@@ -24,8 +24,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,7 +43,28 @@ import (
 type HTTPControlClient struct {
 	Client     client.Client
 	HTTPClient *http.Client
+
+	// dialContext, when set, replaces the transport's dialer. Tests use it to
+	// reach a local server under the instance's Service name.
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// transports holds one Transport per instance endpoint, so calls share a
+	// connection pool. A Transport built per call is never closed, and the
+	// instance server sets no idle timeout, so each call left a connection
+	// open for good: thousands of them OOMKilled the operator.
+	transportsMu sync.Mutex
+	transports   map[string]cachedTransport
 }
+
+// cachedTransport is a Transport and the Secret versions it was built from.
+type cachedTransport struct {
+	versions  string
+	transport *http.Transport
+}
+
+// controlIdleConnTimeout closes a pooled connection to an instance that has
+// been idle this long. The instance server never does.
+const controlIdleConnTimeout = 90 * time.Second
 
 // HTTPStatusClient reads instance status through the mTLS control API exposed
 // by the instance manager.
@@ -291,6 +314,10 @@ type statusTLS struct {
 	ClientTLSSecret string
 }
 
+// transport returns the Transport for an instance endpoint, reusing the cached
+// one while the CA and client Secrets are unchanged. A rotated Secret builds a
+// new Transport, and the old one's idle connections are closed, so the next
+// call presents the new certificate.
 func (c *HTTPControlClient) transport(ctx context.Context, namespace string, conn statusTLS) (*http.Transport, error) {
 	caSecret := &corev1.Secret{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: conn.CASecretName}, caSecret); err != nil {
@@ -300,6 +327,31 @@ func (c *HTTPControlClient) transport(ctx context.Context, namespace string, con
 	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: conn.ClientTLSSecret}, clientSecret); err != nil {
 		return nil, err
 	}
+
+	key := namespace + "/" + conn.ServiceName
+	versions := conn.CASecretName + "@" + caSecret.ResourceVersion + "," +
+		conn.ClientTLSSecret + "@" + clientSecret.ResourceVersion
+	c.transportsMu.Lock()
+	defer c.transportsMu.Unlock()
+	if cached, ok := c.transports[key]; ok {
+		if cached.versions == versions {
+			return cached.transport, nil
+		}
+		cached.transport.CloseIdleConnections()
+	}
+	transport, err := c.newTransport(namespace, conn, caSecret, clientSecret)
+	if err != nil {
+		return nil, err
+	}
+	if c.transports == nil {
+		c.transports = map[string]cachedTransport{}
+	}
+	c.transports[key] = cachedTransport{versions: versions, transport: transport}
+	return transport, nil
+}
+
+// newTransport builds the mTLS Transport for an instance endpoint.
+func (c *HTTPControlClient) newTransport(namespace string, conn statusTLS, caSecret, clientSecret *corev1.Secret) (*http.Transport, error) {
 
 	cert, err := tls.X509KeyPair(clientSecret.Data[corev1.TLSCertKey], clientSecret.Data[corev1.TLSPrivateKeyKey])
 	if err != nil {
@@ -311,6 +363,8 @@ func (c *HTTPControlClient) transport(ctx context.Context, namespace string, con
 	}
 
 	return &http.Transport{
+		DialContext:     c.dialContext,
+		IdleConnTimeout: controlIdleConnTimeout,
 		TLSClientConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			ServerName:   conn.ServiceName + "." + namespace + ".svc",
