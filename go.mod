@@ -13,7 +13,7 @@ require (
 	github.com/klauspost/compress v1.20.1
 	github.com/logrusorgru/aurora/v4 v4.0.0
 	github.com/minio/minio-go/v7 v7.3.0
-	github.com/onsi/ginkgo/v2 v2.33.0
+	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.94.1
 	github.com/prometheus/client_golang v1.25.0
