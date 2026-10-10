@@ -11,17 +11,26 @@
 # three times.
 #
 # Lanes (each becomes one matrix entry == one status check == one runner job):
-#   - core-feature         (core || feature) && !heavy      latest MySQL   procs 3
+#   - core-feature         (core || feature) && !flavor     latest MySQL   procs 3
+#                          && !heavy && !mariadb
 #   - heavy                heavy && !mariadb                latest MySQL   procs 1
 #   - operator-upgrade     disruptive (op-lifecycle)        latest MySQL   procs 1
 #   - major-upgrade        major-upgrade && !mariadb        latest MySQL   procs 1
 #   - node-failure         node-failure                     latest MySQL   procs 1
 #   - flavor-MySQL-<v>     flavor && !mariadb && !heavy      each MySQL     procs 2
 #   - flavor-MariaDB-<v>   flavor && mariadb && !heavy       each MariaDB   procs 2
+#   - mariadb-feature      mariadb && (core || feature)     latest MariaDB procs 3
+#                          && !flavor && !heavy
 #   - mariadb-heavy        mariadb && heavy                  latest MariaDB procs 1
 #   - mariadb-major-upgrade mariadb && major-upgrade         latest MariaDB procs 1
 #
-# The generic heavy and major-upgrade lanes exclude mariadb: those specs boot a
+# core-feature excludes flavor: a `core,flavor` or `feature,flavor` spec already
+# runs on the latest MySQL in its flavor-MySQL lane, so core-feature would run it
+# a second time on the same version. MariaDB follows the same split: specs whose
+# MySQL counterpart is version-agnostic are `feature,mariadb` and run once in
+# mariadb-feature; only version-sensitive ones are `flavor,mariadb`.
+#
+# The generic core-feature, heavy and major-upgrade lanes exclude mariadb: those specs boot a
 # MariaDB cluster and the suite loads either the MySQL or the MariaDB instance
 # images (never both), so a MariaDB spec on a MySQL-image lane can never pull its
 # image. They run in the dedicated mariadb-heavy / mariadb-major-upgrade lanes.
@@ -118,7 +127,7 @@ def lane(lane_id, label_filter, mysql_version, procs, major_upgrade=False, share
 def build_lanes():
     latest = MYSQL.latest
     lanes = [
-        lane("core-feature", "(core || feature) && !heavy", latest, 3),
+        lane("core-feature", "(core || feature) && !flavor && !heavy && !mariadb", latest, 3),
         lane("heavy", "heavy && !mariadb", latest, 1),
         # Disruptive operator-lifecycle specs each provision their own ephemeral
         # cluster, so the shared operator/MinIO is not needed (shared_setup=False).
@@ -144,6 +153,12 @@ def build_lanes():
             "flavor && mariadb && !heavy",
             "", 2, mariadb_version=mariadb_version,
         ))
+    # Version-agnostic MariaDB specs run once, on the latest series, like
+    # core-feature does for MySQL.
+    lanes.append(lane(
+        "mariadb-feature", "mariadb && (core || feature) && !flavor && !heavy", "", 3,
+        mariadb_version=MARIADB.latest,
+    ))
     # Dedicated MariaDB heavy and major-upgrade lanes: the MariaDB analogues of the
     # generic heavy / major-upgrade lanes, isolated at procs 1 on the latest series
     # so a single MariaDB image (or, for the rollout, the co-loaded series set) is
