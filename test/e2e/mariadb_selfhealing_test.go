@@ -17,7 +17,7 @@ import (
 // operator to self-heal. Instead, these tests verify that semi-sync is really
 // active (the MySQL variable names it once rendered left it silently off) and
 // that the cluster stays writable while a replica is fenced.
-var _ = Describe("MariaDB self-healing", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB self-healing", Ordered, Label("feature", "mariadb"), func() {
 	const (
 		cluster  = "mdb-selfheal"
 		minSync  = 1

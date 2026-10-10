@@ -15,7 +15,7 @@ import (
 // this pins that reclaimPolicy: Delete reclamation walks the MariaDB (mariabackup)
 // archive layout correctly when a schedule's Backups are garbage-collected. It
 // reuses the flavor-agnostic helpers from scheduledbackup_retention_test.go.
-var _ = Describe("MariaDB scheduled backup retention", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB scheduled backup retention", Ordered, Label("feature", "mariadb"), func() {
 	const (
 		sourceCluster       = "mdb-sched-ret-src"
 		scheduleName        = "mdb-sched-ret-nightly"

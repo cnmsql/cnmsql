@@ -154,7 +154,7 @@ var _ = Describe("Failover lag guard", Ordered, Label("feature"), func() {
 // but the transaction gap it measures is not: MariaDB counts GTIDs per
 // replication domain rather than per server UUID, so the arithmetic behind the
 // bound is a different implementation and needs its own end-to-end proof.
-var _ = Describe("MariaDB failover lag guard", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB failover lag guard", Ordered, Label("feature", "mariadb"), func() {
 	lagGuardSpec("mdb-lagguard", "mariadb", mariadbImage, mariadbExec)
 })
 

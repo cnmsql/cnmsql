@@ -196,7 +196,7 @@ var _ = Describe("Failover replication-lag guard", Ordered, Label("feature"), fu
 // "deliberately" is not "proven": UTC_TIMESTAMP(6), TIMESTAMPDIFF and INSERT ...
 // ON DUPLICATE KEY UPDATE all have to behave the same way on both engines for the
 // reading to mean anything, and the guard reads it on both.
-var _ = Describe("MariaDB failover replication-lag guard", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB failover replication-lag guard", Ordered, Label("feature", "mariadb"), func() {
 	heartbeatSpec("mdb-rpoguard", "mariadb", mariadbImage, mariadbExec)
 })
 

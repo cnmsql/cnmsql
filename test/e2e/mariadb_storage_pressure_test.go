@@ -19,7 +19,7 @@ import (
 // this pins that a MariaDB instance reports its volume the same way. As in the
 // MySQL spec we assert the steady-state (False, below threshold) rather than
 // forcing a fill: Kind's local-path backend does not enforce a per-PVC quota.
-var _ = Describe("MariaDB storage pressure", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB storage pressure", Ordered, Label("feature", "mariadb"), func() {
 	const cluster = "mdb-pressure"
 	instance := cluster + "-1"
 

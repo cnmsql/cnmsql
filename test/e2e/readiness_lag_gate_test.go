@@ -146,7 +146,7 @@ var _ = Describe("Replica readiness lag gate", Ordered, Label("feature"), func()
 // The MariaDB counterpart. The gate itself is flavor-agnostic instance-manager
 // logic, but the delayed-applier scenario is set up through each flavor's own
 // replication SQL, so the proof needs its own Describe.
-var _ = Describe("MariaDB replica readiness lag gate", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB replica readiness lag gate", Ordered, Label("feature", "mariadb"), func() {
 	readinessLagGateSpec("mdb-readylag", "mariadb", mariadbImage, mariadbExec, func(seconds int) string {
 		return fmt.Sprintf("CHANGE MASTER TO MASTER_DELAY=%d", seconds)
 	})

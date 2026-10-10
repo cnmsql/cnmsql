@@ -19,7 +19,7 @@ import (
 // reads its own work correctly on this engine. It reuses the flavor-agnostic
 // DatabaseUser/Secret manifests but drives SQL through mariadbExec, since the
 // MariaDB instance image ships no `mysql` symlink.
-var _ = Describe("MariaDB DatabaseUser superuser", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB DatabaseUser superuser", Ordered, Label("feature", "mariadb"), func() {
 	const (
 		cluster = "mdb-dbusr"
 		suCR    = "rootish"

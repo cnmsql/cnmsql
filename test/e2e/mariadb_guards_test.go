@@ -18,7 +18,7 @@ import (
 // routing EndpointSlices, not the server), but this pins that a MariaDB cluster
 // is fenced and unfenced the same way a MySQL one is. It reuses the fencing
 // annotation and rServiceEndpoints helpers from guards_test.go.
-var _ = Describe("MariaDB guards", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB guards", Ordered, Label("feature", "mariadb"), func() {
 	const (
 		cluster  = "mdb-guards"
 		replicas = 3

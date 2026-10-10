@@ -243,7 +243,7 @@ var _ = Describe("Custom monitoring queries", Ordered, Label("feature"), func() 
 	})
 })
 
-var _ = Describe("MariaDB custom monitoring queries", Ordered, Label("flavor", "mariadb"), func() {
+var _ = Describe("MariaDB custom monitoring queries", Ordered, Label("feature", "mariadb"), func() {
 	const cluster = "mariadb-custom-queries"
 	pod := cluster + "-1"
 

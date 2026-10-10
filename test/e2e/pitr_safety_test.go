@@ -673,22 +673,22 @@ var _ = Describe("PITR safety: recovery targets and backup choice", Ordered, Lab
 	recoveryTargetSpec(mysqlForkFlavor, "pitr-target")
 })
 
-var _ = Describe("MariaDB PITR safety: lost index write", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB PITR safety: lost index write", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	lostIndexWriteSpec(mariadbForkFlavor, "mdb-pitr-lostidx")
 })
 
-var _ = Describe("MariaDB PITR safety: clone-point gap", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB PITR safety: clone-point gap", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	cloneGapSpec(mariadbForkFlavor, "mdb-pitr-gap")
 })
 
-var _ = Describe("MariaDB PITR safety: dead tail in a backup", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB PITR safety: dead tail in a backup", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	deadTailBackupSpec(mariadbForkFlavor, "mdb-pitr-deadtail")
 })
 
-var _ = Describe("MariaDB PITR safety: old primary returns as its successor dies", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB PITR safety: old primary returns as its successor dies", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	returnAfterSuccessorSpec(mariadbForkFlavor, "mdb-pitr-return")
 })
 
-var _ = Describe("MariaDB PITR safety: recovery targets and backup choice", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB PITR safety: recovery targets and backup choice", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	recoveryTargetSpec(mariadbForkFlavor, "mdb-pitr-target")
 })
