@@ -412,11 +412,25 @@ func expectDiverged(cluster, instance string) {
 }
 
 // reinitAndRecover re-clones a diverged instance and waits for the cluster to
-// be whole again.
+// be whole again. A cluster that was Ready before the request still reads
+// Ready until the operator acts on it, so it first waits for the teardown: the
+// operator clears the request once the Pod and PVC are gone, and the instance
+// comes back as a new Pod. Without that, a spec could annotate the old Pod
+// (run 38032112393 fenced it) just before the operator deleted it.
 func reinitAndRecover(cluster, instance string, instances int) {
 	GinkgoHelper()
 	By(fmt.Sprintf("re-initialising the diverged %s", instance))
+	uid, err := kubectl("get", "pod", instance, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+	Expect(err).NotTo(HaveOccurred())
 	clusterAnnotate(cluster, "cnmsql.cnmsql.co/reinit="+instance)
+	Eventually(func(g Gomega) {
+		req, err := clusterField(cluster, `{.metadata.annotations.cnmsql\.cnmsql\.co/reinit}`)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.Split(req, ",")).NotTo(ContainElement(instance), "the reinit of %s is still pending", instance)
+		got, err := kubectl("get", "pod", instance, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(got)).NotTo(BeElementOf("", strings.TrimSpace(uid)), "%s has not been re-created yet", instance)
+	}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
 	expectClusterRecovers(cluster, instances, e2eTimeout(20*time.Minute))
 	Eventually(func(g Gomega) {
 		out, err := clusterField(cluster, "{.status.divergedInstances}")
