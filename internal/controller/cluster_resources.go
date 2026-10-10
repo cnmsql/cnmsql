@@ -501,6 +501,23 @@ func servicePorts() []corev1.ServicePort {
 	}
 }
 
+// podAnnotationsOwnedElsewhere are the instance Pod annotations that are not
+// part of the Pod template, so ensurePod keeps whatever value they hold:
+//   - fencing is set by users, and read by reconcileFencing;
+//   - unreachable-since is stamped and cleared by the routing guard;
+//   - reload-applied records the reload token an instance already applied;
+//   - the force-quorum-members and force-group-rebootstrap doorbells are
+//     stamped by the guard and cleared by the in-Pod reconciler once it acted;
+//   - the group-observation doorbell is published by the in-Pod reconciler.
+var podAnnotationsOwnedElsewhere = []string{
+	fencingAnnotation,
+	unreachableSinceAnnotation,
+	reloadAppliedAnnotation,
+	forceQuorumMembersAnnotation,
+	forceGroupRebootstrapAnnotation,
+	groupObservationAnnotation,
+}
+
 // ensurePod reconciles the instance Pod. It returns rolled=true when it deleted
 // the Pod to apply a template change (config, seed, scale): that is the
 // destructive rolling action the caller must serialise, stopping the pass and
@@ -542,16 +559,13 @@ func (r *ClusterReconciler) ensurePod(ctx context.Context, cluster *mysqlv1alpha
 	if v, ok := pod.Labels[routableLabel]; ok {
 		labels[routableLabel] = v
 	}
-	// The fencing annotation is user-owned. Preserve it so ensurePod does not
-	// erase the signal before observe/reconcileFencing can act on it.
-	if v, ok := pod.Annotations[fencingAnnotation]; ok {
-		annotations[fencingAnnotation] = v
-	}
-	// The group-observation doorbell is published by the in-Pod reconciler on its
-	// own Pod. Preserve it so ensurePod does not erase it between doorbell rings
-	// and cause a reconcile storm.
-	if v, ok := pod.Annotations[groupObservationAnnotation]; ok {
-		annotations[groupObservationAnnotation] = v
+	// Annotations other passes own are not part of the template: keep their live
+	// values. Dropping one erases its signal, and the owner writing it back
+	// queues the Cluster again, so the two alternate in a reconcile storm.
+	for _, key := range podAnnotationsOwnedElsewhere {
+		if v, ok := pod.Annotations[key]; ok {
+			annotations[key] = v
+		}
 	}
 	if pod.Annotations[podTemplateHashAnnotation] != annotations[podTemplateHashAnnotation] {
 		if !allowRoll {

@@ -296,7 +296,30 @@ func deployOperator() {
 	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+	// One operator serves every parallel spec of the lane, which is far more
+	// clusters than a production install of the default size reconciles at
+	// once. It restarted twice in run 38044602547 with no recorded cause, so
+	// the suite gives it more memory than config/manager does and the failure
+	// dump records why it last exited.
+	By("raising the controller-manager memory limit for the suite")
+	_, err = kubectl("set", "resources", "deployment/"+managerDeployment, "-n", namespace,
+		"-c", "manager", "--requests=memory="+e2eManagerMemoryRequest, "--limits=memory="+e2eManagerMemoryLimit)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to raise the controller-manager memory")
+	_, err = kubectl("rollout", "status", "deployment/"+managerDeployment, "-n", namespace,
+		"--timeout="+e2eTimeout(5*time.Minute).String())
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "controller-manager did not roll out with the raised memory")
 }
+
+const (
+	// managerDeployment is the controller-manager Deployment that make deploy
+	// creates (config/default's namePrefix plus config/manager's name).
+	managerDeployment = "cnmsql-controller-manager"
+	// e2eManagerMemoryRequest and e2eManagerMemoryLimit replace config/manager's
+	// 128Mi request and 512Mi limit for the suite's shared operator.
+	e2eManagerMemoryRequest = "256Mi"
+	e2eManagerMemoryLimit   = "1Gi"
+)
 
 // undeployOperator tears down the controller-manager and CRDs installed by
 // deployOperator.

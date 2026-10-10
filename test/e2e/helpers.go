@@ -159,6 +159,15 @@ func dumpE2EDiagnostics() {
 		{name: "events in test namespace", args: []string{"get", "events", "-n", testNamespace, "--sort-by=.lastTimestamp"}},
 		{name: "all events", args: []string{"get", "events", "-A", "--sort-by=.lastTimestamp"}},
 		{name: "operator pod logs", args: []string{"logs", "-l", "control-plane=controller-manager", "-n", namespace, "--tail=300"}},
+		// A restarted operator's own exit is the only record of why it went
+		// down (a panic, or OOMKilled with exit code 137): the logs above are
+		// the new container's.
+		{name: "operator restarts and last exit", args: []string{"get", "pods", "-n", namespace,
+			"-l", "control-plane=controller-manager", "-o",
+			`jsonpath={range .items[*]}{.metadata.name}{"\n"}{range .status.containerStatuses[*]}` +
+				`{"  "}{.name}{" restarts="}{.restartCount}{" lastState="}{.lastState}{"\n"}{end}{end}`}},
+		{name: "previous operator container logs", args: []string{"logs", "-l", "control-plane=controller-manager",
+			"-n", namespace, "-c", "manager", "--previous", "--tail=300"}},
 		{name: "node capacity and pressure", args: []string{"describe", "nodes"}},
 	}
 	for _, dump := range dumps {

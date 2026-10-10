@@ -882,6 +882,76 @@ func TestEnsurePodPreservesFencingAnnotation(t *testing.T) {
 	}
 }
 
+// TestEnsurePodLeavesOtherPassesAnnotationsAlone proves ensurePod neither drops
+// nor rewrites the Pod annotations other reconcile passes own. It used to reset
+// a Pod's annotations to the template, so the guard re-stamped unreachable-since
+// and ensurePod removed it on every pass while an instance was unreachable.
+// Each of those Pod writes queued the Cluster again: a reconcile storm of about
+// twenty passes a second that ran the operator out of memory in run 38050924292.
+func TestEnsurePodLeavesOtherPassesAnnotationsAlone(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		annotation string
+		value      string
+	}{
+		{"unreachable since", unreachableSinceAnnotation, "2026-10-10T12:48:55Z"},
+		{"reload applied", reloadAppliedAnnotation, "token-1"},
+		{"force quorum members", forceQuorumMembersAnnotation, "demo-1:33061"},
+		{"force group rebootstrap", forceGroupRebootstrapAnnotation, "yes"},
+		{"group observation", groupObservationAnnotation, "fingerprint"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			cluster := baseCluster()
+			plan := testPlan()
+			inst := plan.instanceFor(cluster, 1)
+			labels := labelsFor(cluster, inst.Name, roleOf(inst))
+			spec := (&ClusterReconciler{}).podSpec(cluster, plan, inst)
+			annotations, err := (&ClusterReconciler{}).podAnnotations(cluster, plan, inst, labels, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			annotations[tc.annotation] = tc.value
+			existingPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        inst.Name,
+					Namespace:   cluster.Namespace,
+					Labels:      labels,
+					Annotations: annotations,
+				},
+				Spec: spec,
+			}
+			scheme := testScheme(t)
+			reconciler := &ClusterReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, existingPod).Build(),
+				Scheme: scheme,
+			}
+			key := types.NamespacedName{Namespace: cluster.Namespace, Name: inst.Name}
+			before := &corev1.Pod{}
+			if err := reconciler.Get(ctx, key, before); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := reconciler.ensurePod(ctx, cluster, plan, inst, true); err != nil {
+				t.Fatal(err)
+			}
+			got := &corev1.Pod{}
+			if err := reconciler.Get(ctx, key, got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Annotations[tc.annotation] != tc.value {
+				t.Fatalf("%s = %q, want %q kept", tc.annotation, got.Annotations[tc.annotation], tc.value)
+			}
+			if got.ResourceVersion != before.ResourceVersion {
+				t.Fatalf("ensurePod wrote the Pod (resourceVersion %s -> %s); every write queues the Cluster again",
+					before.ResourceVersion, got.ResourceVersion)
+			}
+		})
+	}
+}
+
 func TestUnsupportedReasonNamesDeferredMilestones(t *testing.T) {
 	t.Parallel()
 	// Replicas are now supported.
