@@ -579,22 +579,22 @@ var _ = Describe("Archive fork: dead-branch backup", Ordered, Label("feature", "
 	deadBranchBackupSpec(mysqlForkFlavor, "fork-deadbak")
 })
 
-var _ = Describe("MariaDB archive fork: lagged promotion", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB archive fork: lagged promotion", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	laggedPromotionSpec(mariadbForkFlavor, "mdb-fork-lagged")
 })
 
-var _ = Describe("MariaDB archive fork: clean failover and recovery targets", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB archive fork: clean failover and recovery targets", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	cleanFailoverSpec(mariadbForkFlavor, "mdb-fork-clean")
 })
 
-var _ = Describe("MariaDB archive fork: failback", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB archive fork: failback", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	failbackSpec(mariadbForkFlavor, "mdb-fork-failback")
 })
 
-var _ = Describe("MariaDB archive fork: drain gate", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB archive fork: drain gate", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	drainGateSpec(mariadbForkFlavor, "mdb-fork-drain")
 })
 
-var _ = Describe("MariaDB archive fork: dead-branch backup", Ordered, Label("flavor", "mariadb", "pitr"), func() {
+var _ = Describe("MariaDB archive fork: dead-branch backup", Ordered, Label("feature", "mariadb", "pitr"), func() {
 	deadBranchBackupSpec(mariadbForkFlavor, "mdb-fork-deadbak")
 })

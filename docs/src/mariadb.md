@@ -259,3 +259,6 @@ real MariaDB instances:
 
 The suite mirrors the MySQL feature coverage rather than re-running every MySQL
 spec, and it does not cover Group Replication, which MariaDB does not support.
+As on MySQL, only the version-sensitive specs (bootstrap, backups and their
+retention, logical backups, the binlog purge gate and in-place upgrades) run on
+every supported series; the rest run once, on the latest series.
