@@ -120,7 +120,7 @@ func Start(ctx context.Context, opts StartOptions) error {
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := reconciler.releaseLease(releaseCtx); err != nil {
+		if err := reconciler.releaseLease(releaseCtx, ""); err != nil {
 			logf.FromContext(ctx).Error(err, "Could not release primary lease during shutdown")
 		}
 	}()

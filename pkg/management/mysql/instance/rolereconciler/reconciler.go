@@ -153,7 +153,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	// super_read_only/OFFLINE, reachable for inspection. Fence is idempotent, so
 	// this re-asserts the stopped state on every resync until the fence is cleared.
 	if isFenced(cluster, me) {
-		_ = r.releaseLease(ctx)
 		if cluster.ReplicationMode() == mysqlv1alpha1.ReplicationModeGroupReplication {
 			if err := r.Local.StopGroupReplication(ctx); err != nil {
 				log.Error(err, "Could not fence Group Replication member; will retry", "instance", me)
@@ -166,6 +165,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 				return ctrl.Result{RequeueAfter: waitRequeue}, nil
 			}
 			log.Info("Instance is fenced; mysqld stopped", "instance", me)
+			// Released only once mysqld is down, so no instance can promote while
+			// this one still takes writes.
+			_ = r.releaseLease(ctx, "")
 		}
 		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
 	}
@@ -218,8 +220,11 @@ func (r *Reconciler) reconcileAsyncRole(
 	// operator ever selecting a diverged candidate.
 	if isDiverged(cluster, me) {
 		if amPrimary {
-			_ = r.releaseLease(ctx)
-			_ = r.Local.Demote(ctx)
+			// No handoff position: a diverged instance's transactions are not
+			// ones the next primary should wait for.
+			if err := r.Local.Demote(ctx); err == nil {
+				_ = r.releaseLease(ctx, "")
+			}
 		}
 		log.Info("Instance is diverged; refusing to promote or follow, staying read-only", "instance", me)
 		return ctrl.Result{RequeueAfter: steadyRequeue}, nil
@@ -229,7 +234,7 @@ func (r *Reconciler) reconcileAsyncRole(
 	if target == me {
 		// Already a writable primary: just keep currentPrimary in step.
 		if amPrimary && !status.ReadOnly && !status.SuperReadOnly {
-			if err := r.acquireOrRenewLease(ctx); err != nil {
+			if _, err := r.acquireOrRenewLease(ctx, true); err != nil {
 				log.Error(err, "Could not secure primary lease; will retry", "instance", me)
 				return ctrl.Result{RequeueAfter: waitRequeue}, nil
 			}
@@ -239,15 +244,32 @@ func (r *Reconciler) reconcileAsyncRole(
 			return ctrl.Result{RequeueAfter: steadyRequeue}, nil
 		}
 		// A replica must drain its relay log before promoting so we do not lose
-		// received transactions. For a switchover the old primary is read-only and
-		// this converges; for a failover the source is gone and the relay drains.
+		// received transactions. For a failover the source is gone and the relay
+		// drains.
 		if !amPrimary && !caughtUp(status) {
 			log.Info("Waiting to catch up before promotion", "instance", me)
 			return ctrl.Result{RequeueAfter: waitRequeue}, nil
 		}
-		if err := r.acquireOrRenewLease(ctx); err != nil {
+		handoff, err := r.acquireOrRenewLease(ctx, false)
+		if err != nil {
 			log.Error(err, "Could not secure primary lease; will retry", "instance", me)
 			return ctrl.Result{RequeueAfter: waitRequeue}, nil
+		}
+		// For a switchover, draining what was received is not enough: the old
+		// primary may have committed a transaction this instance has not received
+		// yet. It records where it stopped when it hands over the Lease, and this
+		// instance holds the Lease without promoting until it has applied that.
+		// The wait lasts only while the old primary still feeds this instance:
+		// once its source is gone this is a failover, and the transactions only
+		// the dead server held are lost as in any asynchronous failover.
+		if handoff != "" && !applied(status.GTIDExecuted, handoff) {
+			if status.Replication != nil && status.Replication.IORunning {
+				log.Info("Waiting to apply the outgoing primary's last transactions before promotion",
+					"instance", me, "handoffPosition", handoff)
+				return ctrl.Result{RequeueAfter: waitRequeue}, nil
+			}
+			log.Info("Promoting without the outgoing primary's last transactions: its source is gone",
+				"instance", me, "handoffPosition", handoff, "gtidExecuted", status.GTIDExecuted)
 		}
 		// Promote: stop/reset any replication and clear read-only. Idempotent on a
 		// primary that merely booted read-only.
@@ -265,10 +287,7 @@ func (r *Reconciler) reconcileAsyncRole(
 	// to be superseded: stop accepting writes and wait.
 	if current == "" || current == me {
 		if amPrimary {
-			if err := r.releaseLease(ctx); err != nil {
-				log.Error(err, "Could not release primary lease during demotion", "instance", me)
-			}
-			if err := r.Local.Demote(ctx); err != nil {
+			if err := r.stepDown(ctx); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -280,12 +299,12 @@ func (r *Reconciler) reconcileAsyncRole(
 	if amPrimary {
 		// Former primary: demote then follow live. If live demotion fails, fall
 		// back to a restart so the Pod comes back clean as a replica.
-		if err := r.releaseLease(ctx); err != nil {
-			log.Error(err, "Could not release primary lease during demotion", "instance", me)
-		}
 		if err := r.Local.Demote(ctx); err != nil {
 			log.Error(err, "Live demotion failed; requesting shutdown to rejoin clean", "instance", me)
 			return ctrl.Result{}, r.Local.Shutdown(ctx)
+		}
+		if err := r.handOffLease(ctx); err != nil {
+			log.Error(err, "Could not release primary lease during demotion", "instance", me)
 		}
 	}
 	if err := r.Local.EnsureReplicaConfigured(ctx, source); err != nil {
@@ -345,18 +364,45 @@ func caughtUp(status *webserver.Status) bool {
 	if !repl.SQLRunning {
 		return false
 	}
-	eng, err := engine.ForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
-	if err != nil {
-		return false
-	}
-	applied, err := eng.GTID().Contains(status.GTIDExecuted, repl.RetrievedGTIDSet)
-	if err != nil || !applied {
+	if !applied(status.GTIDExecuted, repl.RetrievedGTIDSet) {
 		return false
 	}
 	if repl.SecondsBehindSource != nil && *repl.SecondsBehindSource > 0 {
 		return false
 	}
 	return true
+}
+
+// applied reports whether the executed GTID set contains set.
+func applied(executed, set string) bool {
+	eng, err := engine.ForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+	if err != nil {
+		return false
+	}
+	ok, err := eng.GTID().Contains(executed, set)
+	return err == nil && ok
+}
+
+// stepDown ends this instance's term as primary. It demotes first and only then
+// gives up the Lease, so the target cannot promote while this server still
+// takes writes.
+func (r *Reconciler) stepDown(ctx context.Context) error {
+	if err := r.Local.Demote(ctx); err != nil {
+		return err
+	}
+	return r.handOffLease(ctx)
+}
+
+// handOffLease releases the Lease of a demoted primary, recording the executed
+// GTID set it stopped at as the position the next primary must apply first.
+// The set is read after Demote, so it holds any commit that landed while the
+// server went read-only.
+func (r *Reconciler) handOffLease(ctx context.Context) error {
+	status, err := r.Local.Status(ctx)
+	if err != nil {
+		return err
+	}
+	return r.releaseLease(ctx, status.GTIDExecuted)
 }
 
 func isDiverged(cluster *mysqlv1alpha1.Cluster, name string) bool {

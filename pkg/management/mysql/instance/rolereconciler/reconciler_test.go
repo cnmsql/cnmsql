@@ -41,11 +41,14 @@ import (
 const instDemo1 = "demo-1"
 
 type fakeLocal struct {
-	status         *webserver.Status
-	statusErr      error
-	promoted       bool
-	demoted        bool
-	demoteErr      error
+	status    *webserver.Status
+	statusErr error
+	promoted  bool
+	demoted   bool
+	demoteErr error
+	// onDemote, when set, runs before Demote returns, so a test can stand in for
+	// a commit that lands while the server goes read-only.
+	onDemote       func(*webserver.Status)
 	configured     *replication.SourceOptions
 	repaired       *replication.SourceOptions
 	shutdownCalled bool
@@ -73,7 +76,17 @@ func (f *fakeLocal) Promote(context.Context) error {
 	f.status.Role = webserver.RolePrimary
 	return nil
 }
-func (f *fakeLocal) Demote(context.Context) error { f.demoted = true; return f.demoteErr }
+func (f *fakeLocal) Demote(context.Context) error {
+	f.demoted = true
+	if f.demoteErr != nil {
+		return f.demoteErr
+	}
+	if f.onDemote != nil {
+		f.onDemote(f.status)
+	}
+	f.status.ReadOnly = true
+	return nil
+}
 func (f *fakeLocal) EnsureReplicaConfigured(_ context.Context, s replication.SourceOptions) error {
 	f.configured = &s
 	return nil
@@ -152,7 +165,7 @@ func TestAcquireOrRenewLeaseCreatesLease(t *testing.T) {
 	local := &fakeLocal{status: &webserver.Status{Role: webserver.RoleReplica}}
 	r := newReconciler(t, "demo-2", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local)
 	r.primaryLeaseEnabled = true
-	if err := r.acquireOrRenewLease(context.Background()); err != nil {
+	if _, err := r.acquireOrRenewLease(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	lease := &coordinationv1.Lease{}
@@ -191,7 +204,7 @@ func TestAcquireOrRenewLeaseRenewsOwnLease(t *testing.T) {
 	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
 	r := newReconciler(t, instDemo1, &mysqlv1alpha1.ClusterStatus{TargetPrimary: instDemo1}, local, lease)
 	r.primaryLeaseEnabled = true
-	if err := r.acquireOrRenewLease(context.Background()); err != nil {
+	if _, err := r.acquireOrRenewLease(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	got := &coordinationv1.Lease{}
@@ -226,12 +239,12 @@ func TestAcquireOrRenewLeaseWaitsWhenAnotherHolderIsCurrent(t *testing.T) {
 	local := &fakeLocal{status: &webserver.Status{Role: webserver.RoleReplica}}
 	r := newReconciler(t, "demo-2", &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local, lease)
 	r.primaryLeaseEnabled = true
-	if err := r.acquireOrRenewLease(context.Background()); !errors.Is(err, errPrimaryLeaseHeld) {
+	if _, err := r.acquireOrRenewLease(context.Background(), false); !errors.Is(err, errPrimaryLeaseHeld) {
 		t.Fatalf("error = %v, want errPrimaryLeaseHeld", err)
 	}
 }
 
-func TestReleaseLeaseDeletesOnlyOwnLease(t *testing.T) {
+func TestReleaseLeaseKeepsLeaseAndRecordsHandoff(t *testing.T) {
 	t.Parallel()
 	holder := instDemo1
 	duration := int32(15)
@@ -245,14 +258,71 @@ func TestReleaseLeaseDeletesOnlyOwnLease(t *testing.T) {
 	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
 	r := newReconciler(t, instDemo1, &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local, lease)
 	r.primaryLeaseEnabled = true
-	if err := r.releaseLease(context.Background()); err != nil {
+	if err := r.releaseLease(context.Background(), "a:1-11"); err != nil {
 		t.Fatal(err)
 	}
-	got := &coordinationv1.Lease{}
-	if err := r.Get(context.Background(),
-		types.NamespacedName{Namespace: "default", Name: "demo-primary"}, got); err == nil {
-		t.Fatal("lease still exists after release")
+	got := getLease(t, r)
+	if got.Spec.HolderIdentity != nil {
+		t.Fatalf("holder = %q, want none after release", *got.Spec.HolderIdentity)
 	}
+	if pos := got.Annotations[handoffPositionAnnotation]; pos != "a:1-11" {
+		t.Fatalf("handoff position = %q, want a:1-11", pos)
+	}
+}
+
+func TestReleaseLeaseLeavesAnotherHoldersLease(t *testing.T) {
+	t.Parallel()
+	holder := "demo-2"
+	duration := int32(15)
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: "default"},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			LeaseDurationSeconds: &duration,
+		},
+	}
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	r := newReconciler(t, instDemo1, &mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2"}, local, lease)
+	r.primaryLeaseEnabled = true
+	if err := r.releaseLease(context.Background(), "a:1-11"); err != nil {
+		t.Fatal(err)
+	}
+	got := getLease(t, r)
+	if got.Spec.HolderIdentity == nil || *got.Spec.HolderIdentity != "demo-2" {
+		t.Fatalf("holder = %v, want demo-2 untouched", got.Spec.HolderIdentity)
+	}
+	if _, ok := got.Annotations[handoffPositionAnnotation]; ok {
+		t.Fatal("a non-holder must not record a handoff position")
+	}
+}
+
+// heldLease is a current primary Lease held by holder, with an optional
+// recorded handoff position.
+func heldLease(holder, handoff string) *coordinationv1.Lease {
+	duration := int32(15)
+	renewed := metav1.MicroTime{Time: time.Now()}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-primary", Namespace: "default"},
+		Spec:       coordinationv1.LeaseSpec{LeaseDurationSeconds: &duration},
+	}
+	if holder != "" {
+		lease.Spec.HolderIdentity = &holder
+		lease.Spec.RenewTime = &renewed
+	}
+	if handoff != "" {
+		lease.Annotations = map[string]string{handoffPositionAnnotation: handoff}
+	}
+	return lease
+}
+
+func getLease(t *testing.T, r *Reconciler) *coordinationv1.Lease {
+	t.Helper()
+	lease := &coordinationv1.Lease{}
+	if err := r.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: "demo-primary"}, lease); err != nil {
+		t.Fatal(err)
+	}
+	return lease
 }
 
 func reconcile(t *testing.T, r *Reconciler) ctrl.Result {
@@ -523,5 +593,121 @@ func TestOldPrimaryAwaitingPromotionDemotesAndWaits(t *testing.T) {
 	}
 	if res.RequeueAfter == 0 {
 		t.Fatal("expected a requeue while awaiting promotion")
+	}
+}
+
+func TestOutgoingPrimaryHandsOffAfterDemoting(t *testing.T) {
+	t.Parallel()
+	// A transaction committed while the server goes read-only is part of what
+	// the target must apply, so the recorded position is read after Demote.
+	local := &fakeLocal{
+		status:   &webserver.Status{Role: webserver.RolePrimary, GTIDExecuted: "a:1-10"},
+		onDemote: func(s *webserver.Status) { s.GTIDExecuted = "a:1-11" },
+	}
+	r := newReconciler(t, instDemo1,
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1},
+		local, heldLease(instDemo1, ""))
+	reconcile(t, r)
+	if !local.demoted {
+		t.Fatal("the outgoing primary must demote")
+	}
+	got := getLease(t, r)
+	if got.Spec.HolderIdentity != nil {
+		t.Fatalf("holder = %q, want the lease released", *got.Spec.HolderIdentity)
+	}
+	if pos := got.Annotations[handoffPositionAnnotation]; pos != "a:1-11" {
+		t.Fatalf("handoff position = %q, want a:1-11 (read after demoting)", pos)
+	}
+}
+
+func TestOutgoingPrimaryKeepsLeaseWhenDemoteFails(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{
+		status:    &webserver.Status{Role: webserver.RolePrimary, GTIDExecuted: "a:1-10"},
+		demoteErr: errors.New("boom"),
+	}
+	r := newReconciler(t, instDemo1,
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1},
+		local, heldLease(instDemo1, ""))
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{})
+	got := getLease(t, r)
+	if got.Spec.HolderIdentity == nil || *got.Spec.HolderIdentity != instDemo1 {
+		t.Fatalf("holder = %v, want demo-1: a primary that is still writable must keep the lease",
+			got.Spec.HolderIdentity)
+	}
+}
+
+func caughtUpReplica(executed string) *fakeLocal {
+	behind := int64(0)
+	return &fakeLocal{status: &webserver.Status{
+		Role:         webserver.RoleReplica,
+		GTIDExecuted: executed,
+		Replication: &webserver.ReplicationStatus{
+			IORunning:           true,
+			SQLRunning:          true,
+			RetrievedGTIDSet:    executed,
+			SecondsBehindSource: &behind,
+		},
+	}}
+}
+
+func TestTargetWaitsForTheHandoffPosition(t *testing.T) {
+	t.Parallel()
+	// The target drained everything it received, but the outgoing primary
+	// committed a:11 before it went read-only and the target has not got it yet.
+	local := caughtUpReplica("a:1-10")
+	r := newReconciler(t, "demo-2",
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1},
+		local, heldLease("", "a:1-11"))
+	res := reconcile(t, r)
+	if local.promoted {
+		t.Fatal("the target must not promote before applying the handoff position")
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("expected a requeue while waiting for the handoff position")
+	}
+	got := getLease(t, r)
+	if got.Spec.HolderIdentity == nil || *got.Spec.HolderIdentity != "demo-2" {
+		t.Fatalf("holder = %v, want demo-2 to hold the lease while it waits", got.Spec.HolderIdentity)
+	}
+}
+
+func TestTargetPromotesOnceTheHandoffPositionIsApplied(t *testing.T) {
+	t.Parallel()
+	local := caughtUpReplica("a:1-11")
+	r := newReconciler(t, "demo-2",
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1},
+		local, heldLease("", "a:1-11"))
+	reconcile(t, r)
+	if !local.promoted {
+		t.Fatal("the target must promote once it has applied the handoff position")
+	}
+}
+
+func TestPrimaryClearsTheHandoffPosition(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary, GTIDExecuted: "a:1-12"}}
+	r := newReconciler(t, "demo-2",
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: "demo-2"},
+		local, heldLease("demo-2", "a:1-11"))
+	reconcile(t, r)
+	if pos, ok := getLease(t, r).Annotations[handoffPositionAnnotation]; ok {
+		t.Fatalf("handoff position = %q, want it cleared once the primary is writable", pos)
+	}
+}
+
+func TestTargetPromotesWithoutTheHandoffPositionOnceTheSourceIsGone(t *testing.T) {
+	t.Parallel()
+	// The outgoing primary recorded a:11 and then died before shipping it. No
+	// surviving instance can apply it, so this is a failover: waiting would
+	// block the cluster for a transaction only the dead server had.
+	local := caughtUpReplica("a:1-10")
+	local.status.Replication.IORunning = false
+	r := newReconciler(t, "demo-2",
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: "demo-2", CurrentPrimary: instDemo1},
+		local, heldLease("", "a:1-11"))
+	reconcile(t, r)
+	if !local.promoted {
+		t.Fatal("with the source gone the target must promote on what it has")
 	}
 }

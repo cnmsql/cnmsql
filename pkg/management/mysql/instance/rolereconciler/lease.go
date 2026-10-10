@@ -30,22 +30,33 @@ import (
 
 const defaultLeaseDuration = 15 * time.Second
 
+// handoffPositionAnnotation records, on the primary Lease, the executed GTID
+// set an outgoing primary had once it was read-only. The instance taking over
+// does not promote until it has applied that set, so a transaction the old
+// primary committed just before stepping down, which the target may not have
+// received yet, is not lost.
+const handoffPositionAnnotation = "cnmsql.cnmsql.co/handoff-position"
+
 var errPrimaryLeaseHeld = errors.New("primary lease is held by another instance")
 
 func (r *Reconciler) primaryLeaseName() string {
 	return r.ClusterKey.Name + "-primary"
 }
 
-func (r *Reconciler) acquireOrRenewLease(ctx context.Context) error {
+// acquireOrRenewLease takes or renews the primary Lease for this instance and
+// returns the handoff position the previous holder recorded, if any. A settled
+// (writable) primary passes settled=true to drop that position, which only
+// matters to the instance taking over.
+func (r *Reconciler) acquireOrRenewLease(ctx context.Context, settled bool) (string, error) {
 	if !r.primaryLeaseEnabled {
-		return nil
+		return "", nil
 	}
 	key := types.NamespacedName{Namespace: r.ClusterKey.Namespace, Name: r.primaryLeaseName()}
 	lease := &coordinationv1.Lease{}
 	create := false
 	if err := r.Get(ctx, key, lease); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return err
+			return "", err
 		}
 		create = true
 		seconds := int32(defaultLeaseDuration / time.Second)
@@ -61,7 +72,12 @@ func (r *Reconciler) acquireOrRenewLease(ctx context.Context) error {
 		previousHolder = *lease.Spec.HolderIdentity
 	}
 	if previousHolder != "" && previousHolder != r.InstanceName && !leaseExpired(lease) {
-		return errPrimaryLeaseHeld
+		return "", errPrimaryLeaseHeld
+	}
+	handoff := lease.Annotations[handoffPositionAnnotation]
+	if settled && handoff != "" {
+		delete(lease.Annotations, handoffPositionAnnotation)
+		handoff = ""
 	}
 	now := metav1.MicroTime{Time: time.Now()}
 	holder := r.InstanceName
@@ -81,9 +97,9 @@ func (r *Reconciler) acquireOrRenewLease(ctx context.Context) error {
 		lease.Spec.LeaseDurationSeconds = &seconds
 	}
 	if create {
-		return r.Create(ctx, lease)
+		return handoff, r.Create(ctx, lease)
 	}
-	return r.Update(ctx, lease)
+	return handoff, r.Update(ctx, lease)
 }
 
 func leaseExpired(lease *coordinationv1.Lease) bool {
@@ -97,7 +113,13 @@ func leaseExpired(lease *coordinationv1.Lease) bool {
 	return time.Since(lease.Spec.RenewTime.Time) > duration
 }
 
-func (r *Reconciler) releaseLease(ctx context.Context) error {
+// releaseLease gives up the primary Lease if this instance holds it, recording
+// handoff as the position the next primary must apply first. An empty handoff
+// keeps whatever position is already recorded: a target that held the Lease
+// while waiting for one must not erase it for the next candidate. The Lease is
+// kept and only its holder cleared: the instance's RBAC cannot create it again,
+// only the operator can.
+func (r *Reconciler) releaseLease(ctx context.Context, handoff string) error {
 	if !r.primaryLeaseEnabled {
 		return nil
 	}
@@ -109,5 +131,13 @@ func (r *Reconciler) releaseLease(ctx context.Context) error {
 	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != r.InstanceName {
 		return nil
 	}
-	return client.IgnoreNotFound(r.Delete(ctx, lease))
+	lease.Spec.HolderIdentity = nil
+	lease.Spec.RenewTime = nil
+	if handoff != "" {
+		if lease.Annotations == nil {
+			lease.Annotations = map[string]string{}
+		}
+		lease.Annotations[handoffPositionAnnotation] = handoff
+	}
+	return client.IgnoreNotFound(r.Update(ctx, lease))
 }

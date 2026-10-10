@@ -414,6 +414,16 @@ The operator then:
 `spec.maxSwitchoverDelay` bounds how long the target may take to catch up before
 the switchover is aborted and surfaced as blocked.
 
+The old primary and the target hand over through the primary Lease. The old
+primary makes itself read-only first, then releases the Lease and records on it
+the GTID set it had executed at that point, including any transaction that
+committed while it went read-only. The target takes the Lease but does not
+promote until it has applied that set, so a write the old primary committed
+just before stepping down is not lost, even if the target had not received it
+yet. The target only waits while its replication still runs from the old
+primary. If the old primary dies in the meantime, the target promotes with
+what it has, as in any automatic failover.
+
 While the target promotes itself (step 4), it briefly reports not ready with its
 replication stopped. The operator recognizes this window by the primary Lease,
 which the target acquires right before it promotes. As long as the target holds
