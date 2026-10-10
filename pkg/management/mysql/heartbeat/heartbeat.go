@@ -207,11 +207,16 @@ func (l *Loop) fail(err error) {
 //
 // Only the writable primary may write: a stamp applied on a replica would be a
 // transaction the primary never issued, which is an errant transaction and would
-// mark the replica diverged for good. Two things prevent that. The loop asks the
-// server whether it is read-only first, and even if that raced a demotion, the
-// server itself refuses the write under super_read_only. The read-only case is
-// therefore not an error, it is the normal state of every replica in the
-// cluster.
+// mark the replica diverged for good. The loop asks the server whether it is
+// read-only first, and the stamp itself repeats that check in the statement
+// that writes. A demotion can land between the two, and the probe alone does
+// not cover it: MariaDB has no super_read_only, so this process's privileged
+// account can still write under read_only, and that write would be a
+// transaction the next primary never receives. SET GLOBAL read_only waits for
+// running statements, so the stamp either commits before the demotion
+// completes or sees read_only and writes no row (and no GTID). The read-only
+// case is therefore not an error, it is the normal state of every replica in
+// the cluster.
 func (l *Loop) stamp(ctx context.Context) (bool, error) {
 	writable, err := l.writable(ctx)
 	if err != nil {
@@ -226,16 +231,23 @@ func (l *Loop) stamp(ctx context.Context) (bool, error) {
 	// One row per server_id, so a promoted primary starts its own row rather than
 	// overwriting the dead one's. Readers take the newest stamp across all rows,
 	// which makes the handover seamless and leaves the old row as harmless
-	// history.
+	// history. read_only is compared as text because MariaDB 12 renders it as
+	// OFF/ON, and comparing that with 0 fails the statement in strict mode.
 	stamp := fmt.Sprintf(
-		"INSERT INTO %s (server_id, ts) VALUES (@@server_id, DATE_FORMAT(UTC_TIMESTAMP(6), '%s')) "+
+		"INSERT INTO %s (server_id, ts) SELECT @@server_id, DATE_FORMAT(UTC_TIMESTAMP(6), '%s') FROM DUAL "+
+			"WHERE CAST(@@GLOBAL.read_only AS CHAR) IN ('0', 'OFF') "+
 			"ON DUPLICATE KEY UPDATE ts = VALUES(ts)",
 		l.qualifiedTable(), tsLayout,
 	)
-	if _, err := l.db.ExecContext(ctx, stamp); err != nil {
+	res, err := l.db.ExecContext(ctx, stamp)
+	if err != nil {
 		return false, fmt.Errorf("stamping heartbeat: %w", err)
 	}
-	return true, nil
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("stamping heartbeat: %w", err)
+	}
+	return rows > 0, nil
 }
 
 // writable reports whether the server currently accepts writes, which is true
@@ -311,8 +323,25 @@ func (l *Loop) read(ctx context.Context) (time.Duration, bool, error) {
 // ensureSchema creates the heartbeat table if it is not there. It runs on the
 // primary only (stamp gates it), so the DDL reaches the replicas through the
 // binary log like any other statement.
+//
+// It looks for the table before running any DDL. CREATE ... IF NOT EXISTS is
+// binlogged even when the object exists, and on MariaDB even under read_only,
+// so replaying it on every newly promoted primary would reopen the race stamp
+// closes: a primary being demoted would write a transaction its successor never
+// receives. Only the first primary a cluster ever has finds the table missing.
 func (l *Loop) ensureSchema(ctx context.Context) error {
 	if l.schemaReady {
+		return nil
+	}
+	var tables int
+	if err := l.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+		l.cfg.schema(), l.cfg.table(),
+	).Scan(&tables); err != nil {
+		return fmt.Errorf("looking for the heartbeat table: %w", err)
+	}
+	if tables > 0 {
+		l.schemaReady = true
 		return nil
 	}
 	create := []string{

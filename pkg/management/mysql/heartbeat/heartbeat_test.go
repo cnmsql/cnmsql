@@ -31,6 +31,8 @@ const (
 	superReadOnlyQuery = "SELECT @@GLOBAL.super_read_only"
 	readOnlyQuery      = "SELECT @@GLOBAL.read_only"
 	readQuery          = "SELECT TIMESTAMPDIFF(MICROSECOND, MAX(ts), UTC_TIMESTAMP(6)) FROM `heartbeat`.`heartbeat`"
+	tableExistsQuery   = "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	stampCondition     = "WHERE CAST(@@GLOBAL.read_only AS CHAR) IN ('0', 'OFF')"
 )
 
 func newTestLoop(t *testing.T) (*Loop, sqlmock.Sqlmock) {
@@ -48,6 +50,17 @@ func newTestLoop(t *testing.T) (*Loop, sqlmock.Sqlmock) {
 func readOnly(mock sqlmock.Sqlmock, ro bool) {
 	mock.ExpectQuery(regexp.QuoteMeta(superReadOnlyQuery)).
 		WillReturnRows(sqlmock.NewRows([]string{"ro"}).AddRow(ro))
+}
+
+// tableExists queues the schema probe a writable primary runs before any DDL.
+func tableExists(mock sqlmock.Sqlmock, exists bool) {
+	n := 0
+	if exists {
+		n = 1
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(tableExistsQuery)).
+		WithArgs("heartbeat", "heartbeat").
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(n))
 }
 
 // TestTickOnReplicaReadsWithoutStamping proves a replica never writes to the
@@ -81,6 +94,7 @@ func TestTickOnPrimaryStampsThenReads(t *testing.T) {
 	loop, mock := newTestLoop(t)
 
 	readOnly(mock, false)
+	tableExists(mock, false)
 	mock.ExpectExec("CREATE DATABASE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO `heartbeat`.`heartbeat`").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -109,6 +123,7 @@ func TestStampFallsBackToReadOnlyWithoutSuperReadOnly(t *testing.T) {
 		WillReturnError(&mysql.MySQLError{Number: errUnknownSystemVariable, Message: "unknown system variable"})
 	mock.ExpectQuery(regexp.QuoteMeta(readOnlyQuery)).
 		WillReturnRows(sqlmock.NewRows([]string{"ro"}).AddRow(false))
+	tableExists(mock, false)
 	mock.ExpectExec("CREATE DATABASE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -159,6 +174,7 @@ func TestSchemaIsCreatedOnce(t *testing.T) {
 	loop, mock := newTestLoop(t)
 
 	readOnly(mock, false)
+	tableExists(mock, false)
 	mock.ExpectExec("CREATE DATABASE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -274,6 +290,7 @@ func TestStampOnPrimaryReportingReadOnlyAsOff(t *testing.T) {
 		WillReturnError(&mysql.MySQLError{Number: errUnknownSystemVariable, Message: "unknown system variable"})
 	mock.ExpectQuery(regexp.QuoteMeta(readOnlyQuery)).
 		WillReturnRows(sqlmock.NewRows([]string{"ro"}).AddRow("OFF"))
+	tableExists(mock, false)
 	mock.ExpectExec("CREATE DATABASE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -310,5 +327,69 @@ func TestStampOnReplicaReportingReadOnlyAsOn(t *testing.T) {
 	}
 	if state := loop.State(); state.Writing {
 		t.Error("an instance reporting read_only=ON stamped the heartbeat")
+	}
+}
+
+// TestStampIsConditionalOnReadOnly proves the stamp re-checks read_only in the
+// same statement that writes. A demotion between the writability probe and the
+// write must not let the stamp through: MariaDB has no super_read_only, so the
+// instance manager's privileged account can still write under read_only, and
+// the stamp would be a transaction the next primary never receives. MariaDB 12
+// renders the flag as OFF/ON, so the condition compares its text form.
+func TestStampIsConditionalOnReadOnly(t *testing.T) {
+	loop, mock := newTestLoop(t)
+	loop.schemaReady = true
+
+	readOnly(mock, false)
+	mock.ExpectExec(regexp.QuoteMeta(stampCondition)).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	writing, err := loop.stamp(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
+	}
+	if !writing {
+		t.Error("a stamp that wrote a row must report the instance as the writer")
+	}
+}
+
+// TestStampThatRacedADemotionIsNotWriting proves a stamp whose read_only
+// condition matched nothing, because the server went read-only after the
+// probe, reports the instance as not writing.
+func TestStampThatRacedADemotionIsNotWriting(t *testing.T) {
+	loop, mock := newTestLoop(t)
+	loop.schemaReady = true
+
+	readOnly(mock, false)
+	mock.ExpectExec(regexp.QuoteMeta(stampCondition)).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	writing, err := loop.stamp(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writing {
+		t.Error("a stamp that wrote nothing must not report the instance as the writer")
+	}
+}
+
+// TestEnsureSchemaSkipsDDLWhenTheTableExists proves a primary whose heartbeat
+// table already replicated from an earlier primary runs no DDL. CREATE ... IF
+// NOT EXISTS is binlogged even when the object exists and even under
+// read_only for a privileged account, so replaying it on a primary that is
+// being demoted would write a transaction its successor never receives.
+func TestEnsureSchemaSkipsDDLWhenTheTableExists(t *testing.T) {
+	loop, mock := newTestLoop(t)
+
+	readOnly(mock, false)
+	tableExists(mock, true)
+	mock.ExpectExec(regexp.QuoteMeta(stampCondition)).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if _, err := loop.stamp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
 	}
 }
