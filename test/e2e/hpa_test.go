@@ -76,7 +76,7 @@ var _ = Describe("Horizontal Pod Autoscaler", Ordered, Label("feature"), func() 
 				fmt.Sprintf("--replicas=%d", initial))
 			return err
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
-		expectClusterReady(cluster, initial, 10*time.Minute)
+		expectScaledDown(cluster, initial, 10*time.Minute)
 	})
 
 	// A failover can hand the primary to the highest ordinal just as a scale-down
