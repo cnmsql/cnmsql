@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 func (r *ClusterReconciler) reconcileSwitchover(
@@ -34,6 +36,12 @@ func (r *ClusterReconciler) reconcileSwitchover(
 	cluster *mysqlv1alpha1.Cluster,
 	observed observedCluster,
 ) (bool, error) {
+	// A switchover onto an instance whose Pod is being deleted is refused before
+	// anything acts on it: the role would land on a server that is about to go,
+	// and only be handed on again once it does.
+	if cancelled, err := r.cancelSwitchoverToTerminating(ctx, cluster, observed); cancelled || err != nil {
+		return cancelled, err
+	}
 	// A primary left above the desired count (a failover elected it just as a
 	// scale-down lowered spec.instances) goes back in range first, so the
 	// scale-down can finish. It outranks the preference: an instance the cluster
@@ -56,6 +64,48 @@ func (r *ClusterReconciler) reconcileSwitchover(
 		err = r.patchOperationPhase(ctx, cluster, observed, *result.Phase)
 	}
 	return result.Handled, err
+}
+
+// cancelSwitchoverToTerminating points targetPrimary back at the current
+// primary when the requested target's Pod is terminating. The operator never
+// elects such an instance itself, but a switchover requested by hand (kubectl
+// cnmsql promote, or a status patch) can name one, for example just as a
+// scale-down deletes it. Left alone, the async target promotes itself and the
+// drain switchover immediately moves the role off it again, and under Group
+// Replication the operator would hand the group's primary role to a leaving
+// member.
+//
+// A target that already reports the primary role is left alone: it has taken
+// the role, so pointing targetPrimary back would be a second handoff, not a
+// cancellation. The promotion is recorded first and the drain switchover then
+// moves the role off it, as for any draining primary.
+func (r *ClusterReconciler) cancelSwitchoverToTerminating(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+	observed observedCluster,
+) (bool, error) {
+	current, target := cluster.Status.CurrentPrimary, cluster.Status.TargetPrimary
+	if current == "" || target == "" || target == current {
+		return false, nil
+	}
+	if !slices.Contains(observed.TerminatingInstances, target) {
+		return false, nil
+	}
+	if status := observed.StatusByInstance[target]; status != nil && status.Role == webserver.RolePrimary {
+		return false, nil
+	}
+	message := fmt.Sprintf("Refused the switchover to %s: its Pod is terminating; %s stays primary", target, current)
+	logf.FromContext(ctx).Info("Cancelled switchover to a terminating instance", "target", target, "primary", current)
+	if err := topology.PatchClusterStatus(ctx, r.Client, cluster, func(status *mysqlv1alpha1.ClusterStatus) {
+		status.TargetPrimary = current
+		status.TargetPrimaryTimestamp = nil
+	}); err != nil {
+		return false, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "SwitchoverRefused", message)
+	}
+	return true, nil
 }
 
 // reconcilePreferredPrimary moves the primary back onto the most preferred
