@@ -382,6 +382,25 @@ func expectClusterReady(name string, instances int, timeout time.Duration) {
 	awaitClusterReady(name, instances, timeout, true)
 }
 
+// expectScaledDown blocks until a scale-down to instances has finished: the
+// cluster is Ready and only the instance Pods within the desired count remain.
+// Ready and readyInstances settle as soon as the removed instance leaves the
+// plan, while its Pod is still terminating, so a spec that scales up or moves
+// the primary next would otherwise race that deletion: the operator switches a
+// primary off a draining Pod, and a recreated instance can land on the old one.
+func expectScaledDown(name string, instances int, timeout time.Duration) {
+	GinkgoHelper()
+	expectClusterReady(name, instances, timeout)
+	want := make([]string, 0, instances)
+	for i := 1; i <= instances; i++ {
+		want = append(want, fmt.Sprintf("%s-%d", name, i))
+	}
+	Eventually(func() []string {
+		return clusterPods(name)
+	}, e2eTimeout(3*time.Minute), 5*time.Second).Should(ConsistOf(want),
+		"the Pods of the removed instances must be gone once the scale-down finishes")
+}
+
 // expectClusterRecovers is expectClusterReady for a cluster that is known to be
 // parked in Blocked right now, having been driven there on purpose by a guard spec
 // that has since removed the cause. Blocked is the state such a spec just finished

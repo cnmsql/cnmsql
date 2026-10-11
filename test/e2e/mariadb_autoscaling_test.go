@@ -69,7 +69,7 @@ var _ = Describe("MariaDB Horizontal Pod Autoscaler", Ordered, Label("feature", 
 				fmt.Sprintf("--replicas=%d", initial))
 			return err
 		}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
-		expectClusterReady(cluster, initial, e2eTimeout(10*time.Minute))
+		expectScaledDown(cluster, initial, e2eTimeout(10*time.Minute))
 	})
 
 	AfterAll(func() {
