@@ -414,6 +414,13 @@ The operator then:
 `spec.maxSwitchoverDelay` bounds how long the target may take to catch up before
 the switchover is aborted and surfaced as blocked.
 
+A switchover onto an instance whose Pod is terminating, for example one a
+scale-down is removing, is cancelled. The operator points `targetPrimary` back
+at the current primary and records a `SwitchoverRefused` warning event. If the
+target already took the primary role before the operator saw the request, the
+promotion stands, and the role then moves off it as it does for any draining
+primary.
+
 The old primary and the target hand over through the primary Lease. The old
 primary makes itself read-only first, then releases the Lease and records on it
 the GTID set it had executed at that point, including any transaction that
