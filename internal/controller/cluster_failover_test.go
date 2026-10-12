@@ -383,6 +383,57 @@ func TestFailoverDisownedGTIDsAreGatedToMySQL(t *testing.T) {
 	}
 }
 
+// TestFailoverDisownedGTIDsMirrorWinsOverAStaleLiveReport is the election-side
+// twin of the aggregateArchiving staleness guard: when the failing primary is
+// the returning old primary, still reachable and writable, its sidecar keeps
+// reporting the preserved pre-fence state — an empty disowned set fork-checked
+// before the fork the mirror recorded. Taking that report would blind the
+// election exactly when the mirror was supposed to stand on its own.
+func TestFailoverDisownedGTIDsMirrorWinsOverAStaleLiveReport(t *testing.T) {
+	t.Parallel()
+	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
+	cluster := archivingCluster()
+	cluster.Status.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingStatus{
+		Enabled: true, DisownedGTIDs: "u1:219", ForkDetectedAt: &detected,
+	}
+	// The live report is the pre-fence state: fork-checked at 11:00, before the
+	// 12:00 fork the mirror recorded, carrying an empty disowned set.
+	observed := observedCluster{
+		PrimaryName: "demo-2",
+		StatusByInstance: map[string]*webserver.Status{
+			"demo-2": {Archiving: &webserver.ArchivingStatus{
+				Active: true, ForkCheckedAt: "2026-10-06T11:00:00Z", DisownedGTIDs: "",
+			}},
+		},
+	}
+	if got := failoverDisownedGTIDs(observed, cluster); got != "u1:219" {
+		t.Fatalf("disownedGTIDs = %q, want the mirror's u1:219: the live report predates the recorded fork", got)
+	}
+}
+
+// TestFailoverDisownedGTIDsLiveReportWinsWhileFresh pins the other side of the
+// staleness rule: a report whose fork check is newer than the mirror's
+// ForkDetectedAt is authoritative, empty set included.
+func TestFailoverDisownedGTIDsLiveReportWinsWhileFresh(t *testing.T) {
+	t.Parallel()
+	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
+	cluster := archivingCluster()
+	cluster.Status.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingStatus{
+		Enabled: true, DisownedGTIDs: "u1:219", ForkDetectedAt: &detected,
+	}
+	observed := observedCluster{
+		PrimaryName: "demo-2",
+		StatusByInstance: map[string]*webserver.Status{
+			"demo-2": {Archiving: &webserver.ArchivingStatus{
+				Active: true, ForkCheckedAt: "2026-10-06T13:00:00Z", DisownedGTIDs: "",
+			}},
+		},
+	}
+	if got := failoverDisownedGTIDs(observed, cluster); got != "" {
+		t.Fatalf("disownedGTIDs = %q, want the live report's empty set: its fork check is newer than the mirror", got)
+	}
+}
+
 func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 	t.Parallel()
 	observed := observedCluster{

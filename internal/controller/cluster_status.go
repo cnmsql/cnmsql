@@ -628,9 +628,7 @@ func aggregateArchiving(
 	// know about, the report's index view is stale and its fork fields cannot
 	// be trusted. Carry the fork records from the prior status, but still
 	// accept the frontier fields from the report.
-	checkedAt := parseInstanceTime(a.ForkCheckedAt)
-	if checkedAt != nil && prior != nil && prior.ForkDetectedAt != nil &&
-		checkedAt.Time.Before(prior.ForkDetectedAt.Time) {
+	if archivingReportStale(a, prior) {
 		out.DisownedGTIDs = prior.DisownedGTIDs
 		out.ForkGTIDs = prior.ForkGTIDs
 		out.ForkDetectedAt = prior.ForkDetectedAt
@@ -646,6 +644,17 @@ func aggregateArchiving(
 		}
 	}
 	return out
+}
+
+// archivingReportStale reports whether the primary's fork check predates a
+// fork already recorded in prior: the report describes the archive as it stood
+// before a known fork (a returning old primary re-reporting its pre-fence
+// state), so its fork records cannot be trusted. A check the parser cannot
+// read, or a prior with no fork detection to compare against, is not stale.
+func archivingReportStale(a *webserver.ArchivingStatus, prior *mysqlv1alpha1.ContinuousArchivingStatus) bool {
+	checkedAt := parseInstanceTime(a.ForkCheckedAt)
+	return checkedAt != nil && prior != nil && prior.ForkDetectedAt != nil &&
+		checkedAt.Time.Before(prior.ForkDetectedAt.Time)
 }
 
 // carryForks copies the fork fields of the last reported archiving status.
