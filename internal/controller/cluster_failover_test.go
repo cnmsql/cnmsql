@@ -364,73 +364,21 @@ func TestSelectFailoverCandidateUnboundedIgnoresLag(t *testing.T) {
 	}
 }
 
-// TestFailoverDisownedGTIDsAreGatedToMySQL pins the flavor gate on the
-// failover request: the archive's disowned set reaches the election on MySQL
-// only. On MariaDB the recorded set is a positional range that must never be
-// parsed as a MySQL GTID set.
-func TestFailoverDisownedGTIDsAreGatedToMySQL(t *testing.T) {
+// TestFailoverDisownedGTIDsFollowTheAggregatedRecord wires the incident end to
+// end on the controller side: the failing primary is the returning old primary,
+// still writable and reporting its superseded pre-fence view. The elections
+// read what the observation aggregated, so they keep the recorded disowned set
+// instead of the report's empty one.
+func TestFailoverDisownedGTIDsFollowTheAggregatedRecord(t *testing.T) {
 	t.Parallel()
-	observed := forkedPrimaryStatus("2026-10-06T12:05:00Z")
-	cluster := archivingCluster()
-	if got := failoverDisownedGTIDs(observed, cluster); got != "u1:219" {
-		t.Fatalf("mysql disownedGTIDs = %q, want u1:219", got)
+	prior := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true, DisownedGTIDs: "u1:219"}
+	observed := returningPrimaryReport()
+	observed.ContinuousArchiving = aggregateArchiving(observed, prior, 4)
+	if got := failoverDisownedGTIDs(observed); got != "u1:219" {
+		t.Fatalf("disownedGTIDs = %q, want the recorded u1:219", got)
 	}
-
-	mariadb := archivingCluster()
-	mariadb.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
-	if got := failoverDisownedGTIDs(observed, mariadb); got != "" {
-		t.Fatalf("mariadb disownedGTIDs = %q, want empty: a positional range must never be parsed as a MySQL GTID set", got)
-	}
-}
-
-// TestFailoverDisownedGTIDsMirrorWinsOverAStaleLiveReport is the election-side
-// twin of the aggregateArchiving staleness guard: when the failing primary is
-// the returning old primary, still reachable and writable, its sidecar keeps
-// reporting the preserved pre-fence state — an empty disowned set fork-checked
-// before the fork the mirror recorded. Taking that report would blind the
-// election exactly when the mirror was supposed to stand on its own.
-func TestFailoverDisownedGTIDsMirrorWinsOverAStaleLiveReport(t *testing.T) {
-	t.Parallel()
-	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
-	cluster := archivingCluster()
-	cluster.Status.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, DisownedGTIDs: "u1:219", ForkDetectedAt: &detected,
-	}
-	// The live report is the pre-fence state: fork-checked at 11:00, before the
-	// 12:00 fork the mirror recorded, carrying an empty disowned set.
-	observed := observedCluster{
-		PrimaryName: "demo-2",
-		StatusByInstance: map[string]*webserver.Status{
-			"demo-2": {Archiving: &webserver.ArchivingStatus{
-				Active: true, ForkCheckedAt: "2026-10-06T11:00:00Z", DisownedGTIDs: "",
-			}},
-		},
-	}
-	if got := failoverDisownedGTIDs(observed, cluster); got != "u1:219" {
-		t.Fatalf("disownedGTIDs = %q, want the mirror's u1:219: the live report predates the recorded fork", got)
-	}
-}
-
-// TestFailoverDisownedGTIDsLiveReportWinsWhileFresh pins the other side of the
-// staleness rule: a report whose fork check is newer than the mirror's
-// ForkDetectedAt is authoritative, empty set included.
-func TestFailoverDisownedGTIDsLiveReportWinsWhileFresh(t *testing.T) {
-	t.Parallel()
-	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
-	cluster := archivingCluster()
-	cluster.Status.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, DisownedGTIDs: "u1:219", ForkDetectedAt: &detected,
-	}
-	observed := observedCluster{
-		PrimaryName: "demo-2",
-		StatusByInstance: map[string]*webserver.Status{
-			"demo-2": {Archiving: &webserver.ArchivingStatus{
-				Active: true, ForkCheckedAt: "2026-10-06T13:00:00Z", DisownedGTIDs: "",
-			}},
-		},
-	}
-	if got := failoverDisownedGTIDs(observed, cluster); got != "" {
-		t.Fatalf("disownedGTIDs = %q, want the live report's empty set: its fork check is newer than the mirror", got)
+	if got := failoverDisownedGTIDs(observedCluster{}); got != "" {
+		t.Fatalf("disownedGTIDs = %q with archiving off, want empty", got)
 	}
 }
 

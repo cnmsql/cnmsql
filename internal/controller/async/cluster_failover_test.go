@@ -774,9 +774,9 @@ func TestSelectFailoverCandidateBlocksWhenTheOnlyCandidateHoldsADisownedTransact
 		},
 	}
 	elected := SelectFailoverCandidate(Election{
-		Observed:      observed,
-		GTID:          engine.MustForFlavor(engine.FlavorMySQL).GTID(),
-		DisownedGTIDs: oldPrimaryUUID + ":219",
+		Observed: observed,
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+		Disowned: disownedSet(engine.FlavorMySQL, oldPrimaryUUID+":219"),
 	})
 	if elected.Name != "" {
 		t.Fatalf("candidate = %q, want no election: it holds a transaction the archive disowned", elected.Name)
@@ -789,12 +789,34 @@ func TestSelectFailoverCandidateBlocksWhenTheOnlyCandidateHoldsADisownedTransact
 func TestSelectFailoverCandidateExcludesACandidateHoldingADisownedTransaction(t *testing.T) {
 	t.Parallel()
 	elected := SelectFailoverCandidate(Election{
-		Observed:      disownedCandidateState(),
-		GTID:          engine.MustForFlavor(engine.FlavorMySQL).GTID(),
-		DisownedGTIDs: oldPrimaryUUID + ":219",
+		Observed: disownedCandidateState(),
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+		Disowned: disownedSet(engine.FlavorMySQL, oldPrimaryUUID+":219"),
 	})
 	if elected.Name != "demo-2" {
 		t.Fatalf("candidate = %q (reason %q), want demo-2: demo-1 holds a transaction the archive disowned",
+			elected.Name, elected.Reason)
+	}
+}
+
+// TestSelectFailoverCandidateExcludesADisownedTransactionInTheRelayLog covers a
+// replica that pulled the dead branch from the returning old primary but has
+// not applied it yet: the applier drains the relay log before promotion, so
+// the disowned transaction would still run on the new primary.
+func TestSelectFailoverCandidateExcludesADisownedTransactionInTheRelayLog(t *testing.T) {
+	t.Parallel()
+	observed := disownedCandidateState()
+	observed.Instances["demo-1"] = topology.FailoverInstance{
+		Ready: true, Replica: true, Role: "replica", SQLRunning: true,
+		GTID: oldPrimaryUUID + ":1-218", RetrievedGTID: oldPrimaryUUID + ":1-219",
+	}
+	elected := SelectFailoverCandidate(Election{
+		Observed: observed,
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+		Disowned: disownedSet(engine.FlavorMySQL, oldPrimaryUUID+":219"),
+	})
+	if elected.Name != "demo-2" {
+		t.Fatalf("candidate = %q (reason %q), want demo-2: demo-1 retrieved a transaction the archive disowned",
 			elected.Name, elected.Reason)
 	}
 }
@@ -814,21 +836,28 @@ func TestSelectFailoverCandidateWithAnEmptyDisownedSetElectsAsBefore(t *testing.
 	}
 }
 
-// TestSelectFailoverCandidateFailsOpenOnUnparseableDisownedGTIDs pins the
-// fail-open rule, consistent with the observation's holdingDisowned: a
-// disowned set the parser cannot read must not veto candidates, because a
-// promotion refusal on a corrupt record could strand a cluster with no
-// primary.
-func TestSelectFailoverCandidateFailsOpenOnUnparseableDisownedGTIDs(t *testing.T) {
+// TestDisownedSet pins what the guards apply: nothing on MariaDB, whose
+// recorded set is a positional range, and nothing for a set the parser cannot
+// read, because a promotion refusal on a corrupt record could strand a cluster
+// with no primary.
+func TestDisownedSet(t *testing.T) {
 	t.Parallel()
-	elected := SelectFailoverCandidate(Election{
-		Observed:      disownedCandidateState(),
-		GTID:          engine.MustForFlavor(engine.FlavorMySQL).GTID(),
-		DisownedGTIDs: "not-a-gtid-set",
-	})
-	if elected.Name != "demo-1" {
-		t.Fatalf("candidate = %q (reason %q), want demo-1: an unparseable disowned set must fail open",
-			elected.Name, elected.Reason)
+	for name, tc := range map[string]struct {
+		flavor engine.Flavor
+		raw    string
+		want   string
+	}{
+		"mysql":       {engine.FlavorMySQL, oldPrimaryUUID + ":219", oldPrimaryUUID + ":219"},
+		"empty":       {engine.FlavorMySQL, "", ""},
+		"unparseable": {engine.FlavorMySQL, "not-a-gtid-set", ""},
+		"mariadb":     {engine.FlavorMariaDB, "0-1-219..0-1-225", ""},
+		// The flavor decides, not whether the value happens to parse.
+		"mariadb, parseable as mysql": {engine.FlavorMariaDB, oldPrimaryUUID + ":219", ""},
+	} {
+		got := disownedSet(tc.flavor, tc.raw)
+		if (got == nil) != (tc.want == "") || (got != nil && !strings.EqualFold(got.String(), tc.want)) {
+			t.Errorf("%s: disownedSet = %v, want %q", name, got, tc.want)
+		}
 	}
 }
 

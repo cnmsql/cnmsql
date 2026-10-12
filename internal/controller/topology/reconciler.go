@@ -168,12 +168,11 @@ type FailoverRequest struct {
 	Observed          FailoverState
 	RetryInterval     time.Duration
 	ProvisioningRetry time.Duration
-	// DisownedGTIDs (MySQL) is what the binlog archive recorded as disowned,
-	// fed to the failover election so it can refuse a candidate that holds a
-	// dead branch on its own: a returning old primary that reports as primary
-	// during its demotion window can blind the divergence observation for a
-	// pass. Empty on MariaDB, whose recorded sets must never be parsed as
-	// MySQL GTID sets.
+	// DisownedGTIDs is what the binlog archive recorded as disowned (status
+	// continuousArchiving.disownedGTIDs), fed to the failover election so it
+	// can refuse a candidate that holds a dead branch on its own: the
+	// divergence observation can be blind to one for a pass. The election
+	// applies it on MySQL only; on MariaDB it is a positional range.
 	DisownedGTIDs string
 }
 
@@ -329,9 +328,10 @@ type Reconciler interface {
 	// when the current primary's Pod is gracefully terminating (e.g. a node
 	// drain). It is best-effort: when no safe candidate exists it does nothing
 	// and lets the reactive failover path handle the primary once it is gone.
-	// disownedGTIDs (MySQL) is what the binlog archive recorded as disowned,
-	// fed to the election so it can refuse a candidate that holds a dead
-	// branch, the same guard the failover election applies.
+	// disownedGTIDs is what the binlog archive recorded as disowned (see
+	// FailoverRequest.DisownedGTIDs), fed to the election so it can refuse a
+	// candidate that holds a dead branch, the same guard the failover
+	// election applies.
 	ReconcileDrainSwitchover(
 		ctx context.Context,
 		cluster *mysqlv1alpha1.Cluster,

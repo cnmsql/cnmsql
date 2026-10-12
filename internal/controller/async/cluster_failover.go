@@ -177,7 +177,7 @@ func (r *Reconciler) ReconcileFailover(
 		ArchiveCovered:    archiveCovered(cluster),
 		MaxReplicationLag: cluster.MaxReplicationLag(),
 		PrimaryDownFor:    time.Since(failingSince),
-		DisownedGTIDs:     request.DisownedGTIDs,
+		Disowned:          disownedSet(engine.Flavor(cluster.ResolvedFlavor()), request.DisownedGTIDs),
 	})
 	candidate := elected.Name
 	if candidate == "" {
@@ -520,13 +520,12 @@ type Election struct {
 	// the primary died: with nothing stamping the table any more, every second the
 	// primary stays down adds a second to every replica's reading.
 	PrimaryDownFor time.Duration
-	// DisownedGTIDs (MySQL) is what the binlog archive recorded as disowned. A
-	// candidate whose executed set intersects it holds a dead branch and is
-	// refused, counted with the diverged. The guard stands on its own: the
-	// divergence observation that should have flagged the candidate can be blind
-	// for a pass — a returning old primary that reports as primary during its
-	// demotion window is enough to blind it.
-	DisownedGTIDs string
+	// Disowned (MySQL, see disownedSet) is what the binlog archive recorded as
+	// disowned. A candidate holding any of it, executed or still in its relay
+	// log, holds a dead branch and is refused, counted with the diverged. The
+	// guard stands on its own: the divergence observation that should have
+	// flagged the candidate can be blind for a pass.
+	Disowned replication.GTIDSet
 }
 
 // SelectFailoverCandidate chooses the safest reachable async replica. The SQL
@@ -560,13 +559,12 @@ func SelectFailoverCandidate(e Election) FailoverCandidate {
 		if !ok || !status.Replica || !status.SQLRunning || status.GTID == "" {
 			continue
 		}
-		if e.DisownedGTIDs != "" {
-			// Fail open on a parse error, like the observation's holdingDisowned:
-			// a set the parser cannot read must not silently veto candidates.
-			if holds, err := replication.IntersectsGTIDStrings(status.GTID, e.DisownedGTIDs); err == nil && holds {
-				divergedSkipped++
-				continue
-			}
+		// The relay log counts: the applier drains it before promotion (see
+		// transactionsBehind), so a disowned transaction pulled but not yet
+		// applied would still run on the new primary.
+		if e.Disowned != nil && holdsDisowned(e.Disowned, status.GTID, status.RetrievedGTID) {
+			divergedSkipped++
+			continue
 		}
 		candidates = append(candidates, name)
 	}

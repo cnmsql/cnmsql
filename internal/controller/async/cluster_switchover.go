@@ -154,12 +154,9 @@ func (r *Reconciler) ReconcileSwitchover(
 // is already in flight, the primary is already unreachable, or no safe candidate
 // exists.
 //
-// disownedGTIDs (MySQL; empty on MariaDB, whose recorded sets must never be
-// parsed as MySQL GTID sets) is what the binlog archive recorded as disowned.
-// The election refuses a candidate whose executed set intersects it: those are
-// the dead-branch transactions the divergence observation can miss for a pass
-// when a returning old primary reports as primary during its demotion window —
-// the same incident the failover election guards on its own.
+// disownedGTIDs is what the binlog archive recorded as disowned. The election
+// refuses a candidate holding any of it on MySQL (see Election.Disowned), the
+// same guard the failover election applies.
 func (r *Reconciler) ReconcileDrainSwitchover(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
@@ -201,7 +198,7 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 		Preferred:             cluster.PreferredPrimary(),
 		ReferenceGTID:         observed.Instances[current].GTID,
 		ArchiveCovered:        archiveCovered(cluster),
-		DisownedGTIDs:         disownedGTIDs,
+		Disowned:              disownedSet(engine.Flavor(cluster.ResolvedFlavor()), disownedGTIDs),
 	}).Name
 	if candidate == "" {
 		// No provably-safe replica: do nothing and let failover handle the primary
