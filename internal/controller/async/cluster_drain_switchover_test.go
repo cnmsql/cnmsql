@@ -100,7 +100,7 @@ func TestReconcileDrainSwitchoverPromotesSafeReplica(t *testing.T) {
 	cluster := drainCluster()
 	r, recorder := newDrainReconciler(t, cluster)
 
-	result, err := r.ReconcileDrainSwitchover(ctx, cluster, drainState())
+	result, err := r.ReconcileDrainSwitchover(ctx, cluster, drainState(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestReconcileDrainSwitchoverDisabledIsNoOp(t *testing.T) {
 	cluster.Spec.EnableSwitchoverOnDrain = new(false)
 	r, _ := newDrainReconciler(t, cluster)
 
-	result, err := r.ReconcileDrainSwitchover(ctx, cluster, drainState())
+	result, err := r.ReconcileDrainSwitchover(ctx, cluster, drainState(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestReconcileDrainSwitchoverPrimaryNotTerminatingIsNoOp(t *testing.T) {
 	state := drainState()
 	state.Terminating = nil // primary is healthy and staying put
 
-	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state)
+	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestReconcileDrainSwitchoverNoSafeCandidateDefersToFailover(t *testing.T) {
 	// The only replica has diverged from the primary: not a safe target.
 	state.Diverged = []string{drainReplica}
 
-	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state)
+	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,12 +193,40 @@ func TestReconcileDrainSwitchoverUnreachablePrimaryDefersToFailover(t *testing.T
 	primary.Ready = false
 	state.Instances[drainPrimary] = primary
 
-	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state)
+	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Handled {
 		t.Fatal("expected no handoff when the primary is already unreachable")
+	}
+	assertTargetUnchanged(t, r, cluster)
+}
+
+// TestReconcileDrainSwitchoverRefusesADisownedCandidate wires the disowned-branch
+// guard into the drain election: the only candidate's executed set intersects
+// the archive's disowned set, so it holds a dead branch — the returning-old-
+// primary incident the failover election guards — and must not be handed the
+// primary role by a planned switchover either. The handoff is left to the
+// reactive failover path, which refuses it with the same guard.
+func TestReconcileDrainSwitchoverRefusesADisownedCandidate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := drainCluster()
+	r, _ := newDrainReconciler(t, cluster)
+
+	state := drainState()
+	state.Instances[drainReplica] = topology.FailoverInstance{
+		Ready: true, Replica: true, Role: "replica", SQLRunning: true, IORunning: true,
+		GTID: oldPrimaryUUID + ":1-219",
+	}
+
+	result, err := r.ReconcileDrainSwitchover(ctx, cluster, state, oldPrimaryUUID+":219")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled {
+		t.Fatal("expected no handoff when the only candidate holds a disowned transaction")
 	}
 	assertTargetUnchanged(t, r, cluster)
 }

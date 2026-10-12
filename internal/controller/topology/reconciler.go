@@ -329,10 +329,14 @@ type Reconciler interface {
 	// when the current primary's Pod is gracefully terminating (e.g. a node
 	// drain). It is best-effort: when no safe candidate exists it does nothing
 	// and lets the reactive failover path handle the primary once it is gone.
+	// disownedGTIDs (MySQL) is what the binlog archive recorded as disowned,
+	// fed to the election so it can refuse a candidate that holds a dead
+	// branch, the same guard the failover election applies.
 	ReconcileDrainSwitchover(
 		ctx context.Context,
 		cluster *mysqlv1alpha1.Cluster,
 		observed FailoverState,
+		disownedGTIDs string,
 	) (FailoverResult, error)
 	// SwitchoverTargetReady reports whether instanceName could be handed the
 	// primary role right now: an async replica whose replication threads are both
