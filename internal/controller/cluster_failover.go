@@ -23,6 +23,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 func (r *ClusterReconciler) reconcileFailover(
@@ -36,6 +37,7 @@ func (r *ClusterReconciler) reconcileFailover(
 		Observed:          topologyFailoverState(*observed),
 		RetryInterval:     readyResync,
 		ProvisioningRetry: provisioningRequeue,
+		DisownedGTIDs:     failoverDisownedGTIDs(*observed, cluster),
 	})
 	if err != nil {
 		return result.Handled, ctrl.Result{}, err
@@ -60,6 +62,17 @@ func (r *ClusterReconciler) reconcileFailover(
 		err = r.patchOperationPhase(ctx, cluster, *observed, *result.Phase)
 	}
 	return result.Handled, ctrl.Result{RequeueAfter: result.RequeueAfter}, err
+}
+
+// failoverDisownedGTIDs is the archive's disowned set for the failover
+// election, from the same source the divergence observation uses. Empty on
+// MariaDB: the recorded set is a positional range there that must never be
+// parsed as a MySQL GTID set.
+func failoverDisownedGTIDs(observed observedCluster, cluster *mysqlv1alpha1.Cluster) string {
+	if engine.Flavor(cluster.ResolvedFlavor()) == engine.FlavorMariaDB {
+		return ""
+	}
+	return disownedGTIDs(observed, cluster)
 }
 
 // patchOperationPhase records an in-flight operation phase (e.g. Degraded,

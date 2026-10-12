@@ -168,6 +168,13 @@ type FailoverRequest struct {
 	Observed          FailoverState
 	RetryInterval     time.Duration
 	ProvisioningRetry time.Duration
+	// DisownedGTIDs (MySQL) is what the binlog archive recorded as disowned,
+	// fed to the failover election so it can refuse a candidate that holds a
+	// dead branch on its own: a returning old primary that reports as primary
+	// during its demotion window can blind the divergence observation for a
+	// pass. Empty on MariaDB, whose recorded sets must never be parsed as
+	// MySQL GTID sets.
+	DisownedGTIDs string
 }
 
 // FailoverResult tells the root reconciler whether failover owned this pass.

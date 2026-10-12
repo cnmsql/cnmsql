@@ -364,6 +364,25 @@ func TestSelectFailoverCandidateUnboundedIgnoresLag(t *testing.T) {
 	}
 }
 
+// TestFailoverDisownedGTIDsAreGatedToMySQL pins the flavor gate on the
+// failover request: the archive's disowned set reaches the election on MySQL
+// only. On MariaDB the recorded set is a positional range that must never be
+// parsed as a MySQL GTID set.
+func TestFailoverDisownedGTIDsAreGatedToMySQL(t *testing.T) {
+	t.Parallel()
+	observed := forkedPrimaryStatus("2026-10-06T12:05:00Z")
+	cluster := archivingCluster()
+	if got := failoverDisownedGTIDs(observed, cluster); got != "u1:219" {
+		t.Fatalf("mysql disownedGTIDs = %q, want u1:219", got)
+	}
+
+	mariadb := archivingCluster()
+	mariadb.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+	if got := failoverDisownedGTIDs(observed, mariadb); got != "" {
+		t.Fatalf("mariadb disownedGTIDs = %q, want empty: a positional range must never be parsed as a MySQL GTID set", got)
+	}
+}
+
 func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 	t.Parallel()
 	observed := observedCluster{
