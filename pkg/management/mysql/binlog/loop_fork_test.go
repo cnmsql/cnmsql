@@ -111,6 +111,30 @@ func TestLoopChecksForksOnFirstWritablePass(t *testing.T) {
 	}
 }
 
+// The state carries the primary generation its fork check ran under, so the
+// operator can tell a current primary's view of the index from one a
+// superseded primary kept; a demotion clears it with the check.
+func TestLoopReportsTheGenerationOfItsForkCheck(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	seedIndex(t, store, objectstore.ArchiveIndex{Segments: []objectstore.ArchiveSegment{oldSegment(otherUUID + ":1-219")}})
+	src := &executedSource{executed: otherUUID + ":1-218"}
+	loop, mock := idleLoop(t, store, src.source)
+	loop.archiver.authority = func() (int64, bool) { return 7, true }
+
+	expectWritable(mock, true)
+	runTick(loop)
+	if got := loop.State(); got.ForkCheckedAt.IsZero() || got.ForkCheckGeneration != 7 {
+		t.Fatalf("checkedAt=%v generation=%d, want a check under generation 7", got.ForkCheckedAt, got.ForkCheckGeneration)
+	}
+
+	expectWritable(mock, false)
+	runTick(loop)
+	if got := loop.State(); got.ForkCheckGeneration != 0 {
+		t.Fatalf("a demoted instance must stop reporting a check generation: %d", got.ForkCheckGeneration)
+	}
+}
+
 // A restarted primary, or a new one after a failover, reports the fork records
 // already in the index, not only those it detects itself.
 func TestLoopReportsForksAlreadyInTheIndex(t *testing.T) {

@@ -177,6 +177,7 @@ func (r *Reconciler) ReconcileFailover(
 		ArchiveCovered:    archiveCovered(cluster),
 		MaxReplicationLag: cluster.MaxReplicationLag(),
 		PrimaryDownFor:    time.Since(failingSince),
+		Disowned:          disownedSet(engine.Flavor(cluster.ResolvedFlavor()), request.DisownedGTIDs),
 	})
 	candidate := elected.Name
 	if candidate == "" {
@@ -519,6 +520,12 @@ type Election struct {
 	// the primary died: with nothing stamping the table any more, every second the
 	// primary stays down adds a second to every replica's reading.
 	PrimaryDownFor time.Duration
+	// Disowned (MySQL, see disownedSet) is what the binlog archive recorded as
+	// disowned. A candidate holding any of it, executed or still in its relay
+	// log, holds a dead branch and is refused, counted with the diverged. The
+	// guard stands on its own: the divergence observation that should have
+	// flagged the candidate can be blind for a pass.
+	Disowned replication.GTIDSet
 }
 
 // SelectFailoverCandidate chooses the safest reachable async replica. The SQL
@@ -550,6 +557,13 @@ func SelectFailoverCandidate(e Election) FailoverCandidate {
 		}
 		status, ok := observed.Instances[name]
 		if !ok || !status.Replica || !status.SQLRunning || status.GTID == "" {
+			continue
+		}
+		// The relay log counts: the applier drains it before promotion (see
+		// transactionsBehind), so a disowned transaction pulled but not yet
+		// applied would still run on the new primary.
+		if e.Disowned != nil && holdsDisowned(e.Disowned, status.GTID, status.RetrievedGTID) {
+			divergedSkipped++
 			continue
 		}
 		candidates = append(candidates, name)

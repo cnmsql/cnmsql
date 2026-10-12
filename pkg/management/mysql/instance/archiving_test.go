@@ -122,6 +122,7 @@ func TestArchivingStatusProviderReportsForks(t *testing.T) {
 			{ServerUUID: "old", InstanceName: "demo-0", GTIDs: "u:219", DetectedAt: detected},
 		},
 		ForkCheckedAt:         detected.Add(time.Minute),
+		ForkCheckGeneration:   7,
 		OldestSegmentPosition: "0-1-5",
 		DeferredFile:          "binlog.000009",
 	})
@@ -130,7 +131,8 @@ func TestArchivingStatusProviderReportsForks(t *testing.T) {
 	}) {
 		t.Fatalf("forks = %+v", got.Forks)
 	}
-	if got.ForkCheckedAt != "2026-10-06T01:03:03Z" || got.OldestSegmentPosition != "0-1-5" ||
+	if got.ForkCheckedAt != "2026-10-06T01:03:03Z" || got.ForkCheckGeneration != 7 ||
+		got.OldestSegmentPosition != "0-1-5" ||
 		got.DeferredFile != "binlog.000009" {
 		t.Fatalf("status = %+v", got)
 	}

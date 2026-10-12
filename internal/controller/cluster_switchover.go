@@ -204,7 +204,8 @@ func (r *ClusterReconciler) reconcileDrainSwitchover(
 	cluster *mysqlv1alpha1.Cluster,
 	observed observedCluster,
 ) (ctrl.Result, error, bool) {
-	result, err := r.topologyReconciler(cluster).ReconcileDrainSwitchover(ctx, cluster, topologyFailoverState(observed))
+	result, err := r.topologyReconciler(cluster).ReconcileDrainSwitchover(ctx, cluster,
+		topologyFailoverState(observed), failoverDisownedGTIDs(observed))
 	if err != nil {
 		return ctrl.Result{}, err, true
 	}

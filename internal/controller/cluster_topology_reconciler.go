@@ -111,15 +111,16 @@ func topologyObservationInput(observed observedCluster, cluster *mysqlv1alpha1.C
 	return in
 }
 
-// disownedGTIDs is the archive's MySQL disowned set: the primary's report once
-// it has fork-checked the archive, otherwise the last one recorded in status.
+// disownedGTIDs is the archive's MySQL disowned set: the primary's report while
+// it is current (see archiveReportCurrent), otherwise the last one recorded in
+// status. The observation needs it before aggregateArchiving runs, which waits
+// for the topology to name the primary; both apply the same rule.
 func disownedGTIDs(observed observedCluster, cluster *mysqlv1alpha1.Cluster) string {
 	if !cluster.IsArchivingEnabled() {
 		return ""
 	}
-	if status, ok := observed.StatusByInstance[observed.PrimaryName]; ok && status.Archiving != nil &&
-		status.Archiving.ForkCheckedAt != "" {
-		return status.Archiving.DisownedGTIDs
+	if report := primaryArchiveReport(observed, cluster); report != nil {
+		return report.DisownedGTIDs
 	}
 	if ca := cluster.Status.ContinuousArchiving; ca != nil {
 		return ca.DisownedGTIDs

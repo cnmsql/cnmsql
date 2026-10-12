@@ -28,6 +28,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 // TestPrimaryUnhealthyReason pins the trigger reasons the failover log line
@@ -740,5 +741,169 @@ func TestReconcileFailoverKeepsAnAcknowledgedFencedPrimaryPod(t *testing.T) {
 	}
 	if pod.Annotations["cnmsql.cnmsql.co/fencing"] != "true" {
 		t.Fatal("the fenced primary's Pod lost its fence annotation")
+	}
+}
+
+// disownedCandidateState is the failover the incident produced: the old primary
+// came back while its successor was down, so it reads as a healthy replica, and
+// it is the most advanced one — its extra transaction is the one the archive
+// disowned. demo-2 is the clean replica that must be elected instead.
+func disownedCandidateState() topology.FailoverState {
+	return topology.FailoverState{
+		PrimaryName:   "demo-0",
+		InstanceNames: []string{"demo-0", "demo-1", "demo-2"},
+		Instances: map[string]topology.FailoverInstance{
+			"demo-1": {Ready: true, Replica: true, Role: "replica", SQLRunning: true, GTID: oldPrimaryUUID + ":1-219"},
+			"demo-2": {Ready: true, Replica: true, Role: "replica", SQLRunning: true, GTID: oldPrimaryUUID + ":1-218"},
+		},
+	}
+}
+
+// TestSelectFailoverCandidateBlocksWhenTheOnlyCandidateHoldsADisownedTransaction
+// is the belt-and-braces guard behind the divergence observation: a returning
+// old primary that reports as primary during its demotion window can blind the
+// observation for one pass, so the election must refuse a candidate whose
+// executed set intersects the archive's disowned set on its own.
+func TestSelectFailoverCandidateBlocksWhenTheOnlyCandidateHoldsADisownedTransaction(t *testing.T) {
+	t.Parallel()
+	observed := topology.FailoverState{
+		PrimaryName:   "demo-2",
+		InstanceNames: []string{"demo-1", "demo-2"},
+		Instances: map[string]topology.FailoverInstance{
+			"demo-1": {Ready: true, Replica: true, Role: "replica", SQLRunning: true, GTID: oldPrimaryUUID + ":1-219"},
+		},
+	}
+	elected := SelectFailoverCandidate(Election{
+		Observed: observed,
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+		Disowned: disownedSet(engine.FlavorMySQL, oldPrimaryUUID+":219"),
+	})
+	if elected.Name != "" {
+		t.Fatalf("candidate = %q, want no election: it holds a transaction the archive disowned", elected.Name)
+	}
+	if elected.Reason != "every replica candidate has diverged from the failed primary (errant transactions); manual recovery required" {
+		t.Fatalf("reason = %q, want the errant-transactions block reason", elected.Reason)
+	}
+}
+
+func TestSelectFailoverCandidateExcludesACandidateHoldingADisownedTransaction(t *testing.T) {
+	t.Parallel()
+	elected := SelectFailoverCandidate(Election{
+		Observed: disownedCandidateState(),
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+		Disowned: disownedSet(engine.FlavorMySQL, oldPrimaryUUID+":219"),
+	})
+	if elected.Name != "demo-2" {
+		t.Fatalf("candidate = %q (reason %q), want demo-2: demo-1 holds a transaction the archive disowned",
+			elected.Name, elected.Reason)
+	}
+}
+
+// TestSelectFailoverCandidateExcludesADisownedTransactionInTheRelayLog covers a
+// replica that pulled the dead branch from the returning old primary but has
+// not applied it yet: the applier drains the relay log before promotion, so
+// the disowned transaction would still run on the new primary.
+func TestSelectFailoverCandidateExcludesADisownedTransactionInTheRelayLog(t *testing.T) {
+	t.Parallel()
+	observed := disownedCandidateState()
+	observed.Instances["demo-1"] = topology.FailoverInstance{
+		Ready: true, Replica: true, Role: "replica", SQLRunning: true,
+		GTID: oldPrimaryUUID + ":1-218", RetrievedGTID: oldPrimaryUUID + ":1-219",
+	}
+	elected := SelectFailoverCandidate(Election{
+		Observed: observed,
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+		Disowned: disownedSet(engine.FlavorMySQL, oldPrimaryUUID+":219"),
+	})
+	if elected.Name != "demo-2" {
+		t.Fatalf("candidate = %q (reason %q), want demo-2: demo-1 retrieved a transaction the archive disowned",
+			elected.Name, elected.Reason)
+	}
+}
+
+// TestSelectFailoverCandidateWithAnEmptyDisownedSetElectsAsBefore pins the
+// clusters without an archive: an empty disowned set must leave the election
+// exactly as it was.
+func TestSelectFailoverCandidateWithAnEmptyDisownedSetElectsAsBefore(t *testing.T) {
+	t.Parallel()
+	elected := SelectFailoverCandidate(Election{
+		Observed: disownedCandidateState(),
+		GTID:     engine.MustForFlavor(engine.FlavorMySQL).GTID(),
+	})
+	if elected.Name != "demo-1" {
+		t.Fatalf("candidate = %q (reason %q), want demo-1: an empty disowned set must not change the election",
+			elected.Name, elected.Reason)
+	}
+}
+
+// TestDisownedSet pins what the guards apply: nothing on MariaDB, whose
+// recorded set is a positional range, and nothing for a set the parser cannot
+// read, because a promotion refusal on a corrupt record could strand a cluster
+// with no primary.
+func TestDisownedSet(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		flavor engine.Flavor
+		raw    string
+		want   string
+	}{
+		"mysql":       {engine.FlavorMySQL, oldPrimaryUUID + ":219", oldPrimaryUUID + ":219"},
+		"empty":       {engine.FlavorMySQL, "", ""},
+		"unparseable": {engine.FlavorMySQL, "not-a-gtid-set", ""},
+		"mariadb":     {engine.FlavorMariaDB, "0-1-219..0-1-225", ""},
+		// The flavor decides, not whether the value happens to parse.
+		"mariadb, parseable as mysql": {engine.FlavorMariaDB, oldPrimaryUUID + ":219", ""},
+	} {
+		got := disownedSet(tc.flavor, tc.raw)
+		if (got == nil) != (tc.want == "") || (got != nil && !strings.EqualFold(got.String(), tc.want)) {
+			t.Errorf("%s: disownedSet = %v, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// TestReconcileFailoverBlocksWhenTheOnlyCandidateHoldsADisownedTransaction
+// wires the guard end to end: the disowned set travels with the request into
+// the election, so the refusal reports Blocked with the errant-transactions
+// reason rather than promoting the dead branch.
+func TestReconcileFailoverBlocksWhenTheOnlyCandidateHoldsADisownedTransaction(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := drainCluster()
+	r, recorder := newDrainReconciler(t, cluster)
+	observed := deadPrimaryState()
+	observed.Instances[drainReplica] = topology.FailoverInstance{
+		Ready: true, Replica: true, Role: "replica", SQLRunning: true, IORunning: true,
+		GTID: oldPrimaryUUID + ":1-219",
+	}
+
+	result, err := r.ReconcileFailover(ctx, cluster, topology.FailoverRequest{
+		Instances:     2,
+		Observed:      observed,
+		DisownedGTIDs: oldPrimaryUUID + ":219",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled {
+		t.Fatal("a refused failover must not claim the reconcile pass; the failed primary's Pod still needs recreating")
+	}
+	if result.Phase == nil || result.Phase.Phase != topology.PhaseBlocked {
+		t.Fatalf("Phase = %v, want %q", result.Phase, topology.PhaseBlocked)
+	}
+	if result.Phase != nil && !strings.Contains(result.Phase.Reason, "errant transactions") {
+		t.Fatalf("PhaseReason = %q, want it to name the errant transactions", result.Phase.Reason)
+	}
+
+	got := &mysqlv1alpha1.Cluster{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.TargetPrimary != drainPrimary {
+		t.Fatalf("TargetPrimary = %q, want the dead-branch holder left unpromoted", got.Status.TargetPrimary)
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("expected no failover event, got %q", ev)
+	default:
 	}
 }

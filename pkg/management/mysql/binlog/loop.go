@@ -143,9 +143,11 @@ type State struct {
 	purgeHeldFile string
 	// Forks are the fork records the archive index carried at this primary's
 	// last read of it, ForkCheckedAt when it last ran a fork check (zero until
-	// it has), and OldestSegmentPosition the lowest MariaDB segment position.
+	// it has) and ForkCheckGeneration the primary generation that check ran
+	// under, and OldestSegmentPosition the lowest MariaDB segment position.
 	Forks                 []SegmentFork
 	ForkCheckedAt         time.Time
+	ForkCheckGeneration   int64
 	OldestSegmentPosition string
 	// Disowned is the archive's MySQL disowned set (see
 	// objectstore.ArchiveIndex.Disowned) as of the last read.
@@ -254,6 +256,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		// Only the writable primary speaks for the archive's fork records.
 		l.state.Forks = nil
 		l.state.ForkCheckedAt = time.Time{}
+		l.state.ForkCheckGeneration = 0
 		l.state.OldestSegmentPosition = ""
 		l.state.Disowned = ""
 		l.state.Gaps = nil
@@ -351,6 +354,7 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 
 		Forks:                 forks.Forks,
 		ForkCheckedAt:         forks.ForkCheckedAt,
+		ForkCheckGeneration:   forks.ForkCheckGeneration,
 		OldestSegmentPosition: forks.OldestSegmentPosition,
 		Disowned:              forks.Disowned,
 		Gaps:                  forks.Gaps,
@@ -379,6 +383,7 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport, through time.
 	out := State{
 		Forks:                 l.state.Forks,
 		ForkCheckedAt:         l.state.ForkCheckedAt,
+		ForkCheckGeneration:   l.state.ForkCheckGeneration,
 		OldestSegmentPosition: l.state.OldestSegmentPosition,
 		Disowned:              l.state.Disowned,
 		Gaps:                  l.state.Gaps,
@@ -433,6 +438,7 @@ func (l *Loop) checkForks(ctx context.Context, report *ForkReport, through time.
 	if report.Checked {
 		l.forkChecked = true
 		out.ForkCheckedAt = report.CheckedAt
+		out.ForkCheckGeneration = report.Generation
 		if len(report.Forks) > 0 {
 			l.logger.V(1).Info("Checked the archive for forks", "forks", len(report.Forks))
 		}

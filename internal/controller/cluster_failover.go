@@ -36,6 +36,7 @@ func (r *ClusterReconciler) reconcileFailover(
 		Observed:          topologyFailoverState(*observed),
 		RetryInterval:     readyResync,
 		ProvisioningRetry: provisioningRequeue,
+		DisownedGTIDs:     failoverDisownedGTIDs(*observed),
 	})
 	if err != nil {
 		return result.Handled, ctrl.Result{}, err
@@ -60,6 +61,16 @@ func (r *ClusterReconciler) reconcileFailover(
 		err = r.patchOperationPhase(ctx, cluster, *observed, *result.Phase)
 	}
 	return result.Handled, ctrl.Result{RequeueAfter: result.RequeueAfter}, err
+}
+
+// failoverDisownedGTIDs is the archive's disowned set for the elections: the
+// one this pass's observation aggregated, which is what status records. The
+// elections apply it on MySQL only (see async.Election.Disowned).
+func failoverDisownedGTIDs(observed observedCluster) string {
+	if observed.ContinuousArchiving == nil {
+		return ""
+	}
+	return observed.ContinuousArchiving.DisownedGTIDs
 }
 
 // patchOperationPhase records an in-flight operation phase (e.g. Degraded,

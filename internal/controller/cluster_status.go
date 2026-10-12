@@ -246,7 +246,8 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 	// picked up while polling can be any member, and only the elected one runs
 	// the archiver.
 	if cluster.IsArchivingEnabled() {
-		observed.ContinuousArchiving = aggregateArchiving(observed, cluster.Status.ContinuousArchiving)
+		observed.ContinuousArchiving = aggregateArchiving(observed, cluster.Status.ContinuousArchiving,
+			cluster.Status.CurrentPrimaryGeneration)
 		observed.ContinuousArchiving.Destination = archiveDestination(cluster)
 	}
 	observed.GroupReplication = topologyObservation.GroupReplication
@@ -580,13 +581,14 @@ func unreadyInstanceNames(observed observedCluster) []string {
 // on the primary (the single writer), so that is the instance whose frontier
 // the cluster surfaces.
 //
-// The fork fields are the exception: they describe the archive, not the
-// primary, and change only when a primary's fork check says so. Until the
-// current primary has run one (it is unreachable, just promoted, or restarted)
-// prior's fields carry over, so a failover does not briefly report an
-// unforked archive.
+// The fields read from the archive index (forks, disowned set, gaps, coverage,
+// oldest segment) are the exception: they describe the archive, not the
+// primary, and change only when a current primary's fork check says so (see
+// archiveReportCurrent). Until then prior's fields carry over, so a failover
+// does not briefly report an unforked archive, and a returning old primary
+// re-reporting its pre-fence view cannot wipe what its successor recorded.
 func aggregateArchiving(
-	observed observedCluster, prior *mysqlv1alpha1.ContinuousArchivingStatus,
+	observed observedCluster, prior *mysqlv1alpha1.ContinuousArchivingStatus, generation int64,
 ) *mysqlv1alpha1.ContinuousArchivingStatus {
 	out := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true}
 	status, ok := observed.StatusByInstance[observed.PrimaryName]
@@ -603,7 +605,7 @@ func aggregateArchiving(
 	out.LastFailureTime = parseInstanceTime(a.LastErrorTime)
 	out.PurgeHeldBy = a.PurgeHeldBy
 	out.PurgeHeldSince = parseInstanceTime(a.PurgeHeldSince)
-	if a.ForkCheckedAt == "" {
+	if !archiveReportCurrent(a, generation) {
 		carryForks(out, prior)
 		return out
 	}
@@ -626,6 +628,33 @@ func aggregateArchiving(
 		}
 	}
 	return out
+}
+
+// archiveReportCurrent reports whether an archiving report speaks for the
+// archive index: its fork check ran, under the Cluster's current primary
+// generation. A check under an older generation is a superseded primary's
+// view, e.g. a returning old primary that kept its pre-fence state while
+// unreachable and reports it as primary until it is demoted; its successor
+// may have recorded forks since, which that view does not carry. Generations
+// rise by one with every change of currentPrimary, so unlike the check's wall
+// clock they order checks made on different hosts.
+//
+// A report without a generation (an instance manager older than the field)
+// is not current once the Cluster has had a primary generation: the recorded
+// fields wait for the primary to run one that reports it.
+func archiveReportCurrent(a *webserver.ArchivingStatus, generation int64) bool {
+	return a != nil && a.ForkCheckedAt != "" && a.ForkCheckGeneration >= generation
+}
+
+// primaryArchiveReport is the primary's archiving report when it is current
+// (see archiveReportCurrent), nil otherwise: the readers of the archive
+// index's fields then fall back to the last ones recorded in status.
+func primaryArchiveReport(observed observedCluster, cluster *mysqlv1alpha1.Cluster) *webserver.ArchivingStatus {
+	status, ok := observed.StatusByInstance[observed.PrimaryName]
+	if !ok || !archiveReportCurrent(status.Archiving, cluster.Status.CurrentPrimaryGeneration) {
+		return nil
+	}
+	return status.Archiving
 }
 
 // carryForks copies the fork fields of the last reported archiving status.

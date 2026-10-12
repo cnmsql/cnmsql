@@ -105,6 +105,7 @@ func (r *Reconciler) ReconcileDrainSwitchover(
 	_ context.Context,
 	_ *mysqlv1alpha1.Cluster,
 	_ topology.FailoverState,
+	_ string,
 ) (topology.FailoverResult, error) {
 	return topology.FailoverResult{}, nil
 }

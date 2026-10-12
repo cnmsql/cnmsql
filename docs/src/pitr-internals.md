@@ -291,6 +291,15 @@ of a writable instance does nothing until its Cluster view names it primary,
 then stamps its generation into the index on every write. A writer whose
 generation is below the index's never judges the segments.
 
+The operator applies the same order to what it mirrors into
+`status.continuousArchiving`. A primary reports the generation its last fork
+check ran under, and the fields read from the index (forks, the disowned set,
+gaps, coverage, the oldest segment) are taken only from a check under the
+current `status.currentPrimaryGeneration`. A former primary that was
+unreachable while its successor recorded a fork keeps its older view, and
+reports it as primary until it is demoted: the status keeps what the successor
+recorded instead.
+
 ### Gaps
 
 A gap is a stretch the archive is missing between transactions it holds: the

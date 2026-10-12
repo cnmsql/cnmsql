@@ -624,7 +624,10 @@ With continuous archiving on MySQL there is a second, comparison-free signal:
 every transaction the archive recorded as disowned
 (`status.continuousArchiving.disownedGTIDs`). An instance holding one is marked
 diverged whether or not a primary is there, which catches a former primary that
-comes back exactly when its successor goes down.
+comes back exactly when its successor goes down. The failover and drain
+elections also refuse such a candidate on their own, counting what it has
+pulled into its relay log, so a pass where the divergence mark is missing
+cannot promote it.
 
 Among candidates that are otherwise equal, failover prefers one whose
 `gtid_purged` the binlog archive already covers. A replica cloned after the

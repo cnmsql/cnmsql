@@ -227,6 +227,12 @@ type ArchivingStatus struct {
 	// ForkCheckedAt (RFC3339) is when this primary last ran a fork check over
 	// the index; empty until it has, in which case Forks may be stale.
 	ForkCheckedAt string `json:"forkCheckedAt,omitempty"`
+	// ForkCheckGeneration is the status.currentPrimaryGeneration that check
+	// ran under. Every field read from the index (Forks, DisownedGTIDs, Gaps,
+	// CoveredGTIDSet, OldestSegmentPosition, MariaDBTimeline) is as of that
+	// check: a lower generation than the Cluster's is a superseded primary's
+	// view, such as a returning old primary re-reporting its pre-fence state.
+	ForkCheckGeneration int64 `json:"forkCheckGeneration,omitempty"`
 	// OldestSegmentPosition (MariaDB) is the lowest position any archive
 	// segment reached, per domain.
 	OldestSegmentPosition string `json:"oldestSegmentPosition,omitempty"`

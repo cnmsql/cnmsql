@@ -364,6 +364,24 @@ func TestSelectFailoverCandidateUnboundedIgnoresLag(t *testing.T) {
 	}
 }
 
+// TestFailoverDisownedGTIDsFollowTheAggregatedRecord wires the incident end to
+// end on the controller side: the failing primary is the returning old primary,
+// still writable and reporting its superseded pre-fence view. The elections
+// read what the observation aggregated, so they keep the recorded disowned set
+// instead of the report's empty one.
+func TestFailoverDisownedGTIDsFollowTheAggregatedRecord(t *testing.T) {
+	t.Parallel()
+	prior := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true, DisownedGTIDs: "u1:219"}
+	observed := returningPrimaryReport()
+	observed.ContinuousArchiving = aggregateArchiving(observed, prior, 4)
+	if got := failoverDisownedGTIDs(observed); got != "u1:219" {
+		t.Fatalf("disownedGTIDs = %q, want the recorded u1:219", got)
+	}
+	if got := failoverDisownedGTIDs(observedCluster{}); got != "" {
+		t.Fatalf("disownedGTIDs = %q with archiving off, want empty", got)
+	}
+}
+
 func TestDetectDivergedReplicasFlagsErrantTransactions(t *testing.T) {
 	t.Parallel()
 	observed := observedCluster{

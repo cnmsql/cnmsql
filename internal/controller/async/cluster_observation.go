@@ -146,22 +146,47 @@ func offTimeline(input topology.ObservationInput, diverged []string) []string {
 // that returns after its successor died would otherwise be a failover
 // candidate that resurrects its dead branch.
 func holdingDisowned(input topology.ObservationInput, diverged []string) []string {
-	if input.DisownedGTIDs == "" || engine.Flavor(input.EngineFlavor) == engine.FlavorMariaDB {
+	disowned := disownedSet(engine.Flavor(input.EngineFlavor), input.DisownedGTIDs)
+	if disowned == nil {
 		return diverged
 	}
 	for _, name := range input.InstanceNames {
 		if name == input.PrimaryName || slices.Contains(diverged, name) {
 			continue
 		}
-		gtid := input.GTIDByInstance[name]
-		if gtid == "" {
-			continue
-		}
-		if holds, err := replication.IntersectsGTIDStrings(gtid, input.DisownedGTIDs); err == nil && holds {
+		if holdsDisowned(disowned, input.GTIDByInstance[name]) {
 			diverged = append(diverged, name)
 		}
 	}
 	return diverged
+}
+
+// disownedSet parses the archive's disowned set for the guards that refuse a
+// dead branch, nil when there is nothing to apply. On MariaDB the recorded set
+// is a positional range, never a MySQL GTID set, and the timeline judges
+// divergence there instead. A set the parser cannot read fails open: it must
+// not silently veto every instance.
+func disownedSet(flavor engine.Flavor, raw string) replication.GTIDSet {
+	if raw == "" || flavor == engine.FlavorMariaDB {
+		return nil
+	}
+	set, err := replication.ParseGTIDSet(raw)
+	if err != nil || set.IsEmpty() {
+		return nil
+	}
+	return set
+}
+
+// holdsDisowned reports whether any of an instance's GTID sets holds a
+// transaction of disowned. A set the parser cannot read holds nothing here.
+func holdsDisowned(disowned replication.GTIDSet, sets ...string) bool {
+	for _, raw := range sets {
+		set, err := replication.ParseGTIDSet(raw)
+		if err == nil && !set.Intersect(disowned).IsEmpty() {
+			return true
+		}
+	}
+	return false
 }
 
 // mariadbSourceRefused is the I/O error MariaDB reports when the source cannot

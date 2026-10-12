@@ -365,6 +365,7 @@ func archivingStatus(s binlog.State) *webserver.ArchivingStatus {
 	}
 	if !s.ForkCheckedAt.IsZero() {
 		out.ForkCheckedAt = rfc3339(s.ForkCheckedAt)
+		out.ForkCheckGeneration = s.ForkCheckGeneration
 	}
 	for _, fork := range s.Forks {
 		entry := webserver.ArchiveForkStatus{Segment: fork.ServerUUID, InstanceName: fork.InstanceName, GTIDs: fork.GTIDs}
