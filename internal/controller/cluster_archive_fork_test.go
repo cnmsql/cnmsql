@@ -372,3 +372,38 @@ func TestAggregateArchivingEmptyForkCheckedAtCarriesForks(t *testing.T) {
 		t.Errorf("OldestSegmentPosition = %q, want 0-1-3", got.OldestSegmentPosition)
 	}
 }
+
+// 7. A prior status that has never recorded a fork detection (ForkDetectedAt
+// nil) gives the staleness guard nothing to compare against, so a stale-looking
+// report is accepted as-is rather than guarded. Pinning test: this locks the
+// existing short-circuit, it does not change behaviour.
+func TestAggregateArchivingPriorWithoutForkDetectionAcceptsReport(t *testing.T) {
+	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
+		Enabled: true, ForkGTIDs: []string{"u1:219"}, DisownedGTIDs: "u1:219", OldestSegmentPosition: "0-1-3",
+	}
+	// Stale-looking: the fork check is old and the report carries no forks, but
+	// with no recorded ForkDetectedAt the guard cannot call it stale.
+	observed := observedCluster{
+		PrimaryName: "demo-2",
+		StatusByInstance: map[string]*webserver.Status{
+			"demo-2": {Archiving: &webserver.ArchivingStatus{
+				Active: true, ForkCheckedAt: "2026-10-06T11:00:00Z",
+				OldestSegmentPosition: "0-1-219", DisownedGTIDs: "",
+			}},
+		},
+	}
+	got := aggregateArchiving(observed, prior)
+
+	if len(got.ForkGTIDs) != 0 {
+		t.Errorf("ForkGTIDs = %v, want the report's empty set", got.ForkGTIDs)
+	}
+	if got.DisownedGTIDs != "" {
+		t.Errorf("DisownedGTIDs = %q, want the report's empty set", got.DisownedGTIDs)
+	}
+	if got.ForkDetectedAt != nil {
+		t.Errorf("ForkDetectedAt = %v, want nil: the report detected no fork", got.ForkDetectedAt)
+	}
+	if got.OldestSegmentPosition != "0-1-219" {
+		t.Errorf("OldestSegmentPosition = %q, want the report's 0-1-219", got.OldestSegmentPosition)
+	}
+}
