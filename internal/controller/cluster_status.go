@@ -585,6 +585,10 @@ func unreadyInstanceNames(observed observedCluster) []string {
 // current primary has run one (it is unreachable, just promoted, or restarted)
 // prior's fields carry over, so a failover does not briefly report an
 // unforked archive.
+//
+// The fork fields carry over until a primary reports a fork check newer than
+// the last recorded detection; a stale report (e.g. a returning old primary
+// re-reporting its pre-fence state) cannot wipe records a newer primary wrote.
 func aggregateArchiving(
 	observed observedCluster, prior *mysqlv1alpha1.ContinuousArchivingStatus,
 ) *mysqlv1alpha1.ContinuousArchivingStatus {
@@ -607,8 +611,9 @@ func aggregateArchiving(
 		carryForks(out, prior)
 		return out
 	}
+
+	// Frontier fields always come from the report.
 	out.OldestSegmentPosition = a.OldestSegmentPosition
-	out.DisownedGTIDs = a.DisownedGTIDs
 	out.Gaps = a.Gaps
 	out.CoveredGTIDSet = a.CoveredGTIDSet
 	if len(out.Gaps) > 0 {
@@ -618,6 +623,21 @@ func aggregateArchiving(
 			out.GapsSince = prior.GapsSince
 		}
 	}
+
+	// Staleness guard: if the primary's fork check predates a fork we already
+	// know about, the report's index view is stale and its fork fields cannot
+	// be trusted. Carry the fork records from the prior status, but still
+	// accept the frontier fields from the report.
+	checkedAt := parseInstanceTime(a.ForkCheckedAt)
+	if checkedAt != nil && prior != nil && prior.ForkDetectedAt != nil &&
+		checkedAt.Time.Before(prior.ForkDetectedAt.Time) {
+		out.DisownedGTIDs = prior.DisownedGTIDs
+		out.ForkGTIDs = prior.ForkGTIDs
+		out.ForkDetectedAt = prior.ForkDetectedAt
+		return out
+	}
+
+	out.DisownedGTIDs = a.DisownedGTIDs
 	for _, fork := range a.Forks {
 		out.ForkGTIDs = append(out.ForkGTIDs, fork.GTIDs)
 		if at := parseInstanceTime(fork.DetectedAt); at != nil &&
