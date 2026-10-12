@@ -224,9 +224,11 @@ type FileFilter func(name string, scan ScanResult) (bool, error)
 // ForkReport is the outcome of one fork check over the archive index.
 type ForkReport struct {
 	// Checked is true when the check compared every foreign segment against an
-	// authority; CheckedAt is when.
-	Checked   bool
-	CheckedAt time.Time
+	// authority; CheckedAt is when, and Generation the primary generation it
+	// ran under (see AuthoritySource).
+	Checked    bool
+	CheckedAt  time.Time
+	Generation int64
 	// Superseded is true when a primary with a newer generation already wrote
 	// the index, so this one did not judge it.
 	Superseded bool
@@ -808,6 +810,7 @@ func (a *Archiver) checkForks(
 	index.Disowned = disowned
 	report.Checked = true
 	report.CheckedAt = now
+	report.Generation = pass.generation
 	return changed || disownedChanged, finish()
 }
 

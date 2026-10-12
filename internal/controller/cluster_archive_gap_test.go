@@ -172,11 +172,11 @@ func TestAggregateArchivingKeepsGapsSince(t *testing.T) {
 	prior := &mysqlv1alpha1.ContinuousArchivingStatus{Gaps: []string{"u:5"}, GapsSince: &since}
 	observed := forkedPrimaryStatus("2026-10-06T12:05:00Z")
 	observed.StatusByInstance["demo-2"].Archiving.Gaps = []string{"u:5"}
-	if got := aggregateArchiving(observed, prior); got.GapsSince == nil || !got.GapsSince.Equal(&since) {
+	if got := aggregateArchiving(observed, prior, 0); got.GapsSince == nil || !got.GapsSince.Equal(&since) {
 		t.Fatalf("gapsSince = %v, want the prior stamp kept", got.GapsSince)
 	}
 	observed.StatusByInstance["demo-2"].Archiving.Gaps = []string{"u:5", "u:9"}
-	if got := aggregateArchiving(observed, prior); got.GapsSince == nil || got.GapsSince.Equal(&since) {
+	if got := aggregateArchiving(observed, prior, 0); got.GapsSince == nil || got.GapsSince.Equal(&since) {
 		t.Fatalf("gapsSince = %v, want a new stamp for new gaps", got.GapsSince)
 	}
 }

@@ -47,7 +47,7 @@ func TestAggregateArchivingMirrorsForks(t *testing.T) {
 		webserver.ArchiveForkStatus{Segment: "old", GTIDs: "u1:219", DetectedAt: "2026-10-06T12:00:00Z"},
 		webserver.ArchiveForkStatus{Segment: "older", GTIDs: "u0:5-6", DetectedAt: "2026-10-06T11:00:00Z"},
 	)
-	got := aggregateArchiving(observed, nil)
+	got := aggregateArchiving(observed, nil, 0)
 	if !slices.Equal(got.ForkGTIDs, []string{"u1:219", "u0:5-6"}) {
 		t.Fatalf("forkGTIDs = %v", got.ForkGTIDs)
 	}
@@ -77,7 +77,7 @@ func TestAggregateArchivingKeepsForksUntilTheNewPrimaryChecks(t *testing.T) {
 		"primary reports no archiving": {PrimaryName: "demo-2", StatusByInstance: map[string]*webserver.Status{"demo-2": {}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := aggregateArchiving(observed, prior)
+			got := aggregateArchiving(observed, prior, 0)
 			if !slices.Equal(got.ForkGTIDs, prior.ForkGTIDs) || got.ForkDetectedAt == nil ||
 				got.OldestSegmentPosition != "0-1-3" || got.DisownedGTIDs != "u1:219" {
 				t.Fatalf("aggregated = %+v, want the prior fork fields", got)
@@ -85,7 +85,7 @@ func TestAggregateArchivingKeepsForksUntilTheNewPrimaryChecks(t *testing.T) {
 		})
 	}
 	// Once the primary has checked, its answer wins, empty included.
-	if got := aggregateArchiving(forkedPrimaryStatus("2026-10-06T12:05:00Z"), prior); len(got.ForkGTIDs) != 0 || got.ForkDetectedAt != nil {
+	if got := aggregateArchiving(forkedPrimaryStatus("2026-10-06T12:05:00Z"), prior, 0); len(got.ForkGTIDs) != 0 || got.ForkDetectedAt != nil {
 		t.Fatalf("a checked primary reporting no forks must clear them: %+v", got)
 	}
 }
@@ -191,219 +191,128 @@ func TestApplyArchivingStatus(t *testing.T) {
 	}
 }
 
-// 1. A stale report (ForkCheckedAt older than prior.ForkDetectedAt) must not
-// wipe fork records a newer primary already wrote. Frontier fields still come
-// from the report.
-func TestAggregateArchivingStaleReportCannotWipeForks(t *testing.T) {
-	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
-	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected,
-		DisownedGTIDs: "u1:219", OldestSegmentPosition: "0-1-3", CoveredGTIDSet: "old-set",
-	}
-	// Stale: ForkCheckedAt (11:00) predates prior.ForkDetectedAt (12:00).
-	observed := observedCluster{
-		PrimaryName: "demo-2",
+// returningPrimaryReport is the report of the incident: a former primary that
+// was unreachable while its successor recorded a fork, back writable for the
+// seconds before it is demoted. Its preserved state comes from its last fork
+// check, under generation 3, and does not carry its successor's fork. The
+// check's wall clock is later than the fork's detection (clock skew, or a
+// record that grew after its first detection), so only the generation can
+// tell the report is stale.
+func returningPrimaryReport() observedCluster {
+	return observedCluster{
+		PrimaryName: "demo-0",
 		StatusByInstance: map[string]*webserver.Status{
-			"demo-2": {Archiving: &webserver.ArchivingStatus{
-				Active: true, ForkCheckedAt: "2026-10-06T11:00:00Z",
-				OldestSegmentPosition: "0-1-219", DisownedGTIDs: "",
-				CoveredGTIDSet: "new-set", LastArchivedBinlog: "mysql-bin.000042",
+			"demo-0": {Archiving: &webserver.ArchivingStatus{
+				Active: true, ForkCheckedAt: "2026-10-06T12:30:00Z", ForkCheckGeneration: 3,
+				LastArchivedBinlog: "mysql-bin.000042", DisownedGTIDs: "", CoveredGTIDSet: "u1:1-218",
+				OldestSegmentPosition: "0-1-1", Gaps: []string{"u1:100-110"},
+				MariaDBTimeline: []webserver.ArchiveEpochStatus{{Instance: "demo-0", ServerID: 1}},
 			}},
 		},
 	}
-	got := aggregateArchiving(observed, prior)
-
-	// Fork fields carried from prior.
-	if !slices.Equal(got.ForkGTIDs, prior.ForkGTIDs) {
-		t.Errorf("ForkGTIDs = %v, want %v", got.ForkGTIDs, prior.ForkGTIDs)
-	}
-	if got.ForkDetectedAt == nil || !got.ForkDetectedAt.Time.Equal(detected.Time) {
-		t.Errorf("ForkDetectedAt = %v, want %v", got.ForkDetectedAt, detected)
-	}
-	if got.DisownedGTIDs != "u1:219" {
-		t.Errorf("DisownedGTIDs = %q, want u1:219", got.DisownedGTIDs)
-	}
-	// Frontier fields from report.
-	if got.OldestSegmentPosition != "0-1-219" {
-		t.Errorf("OldestSegmentPosition = %q, want 0-1-219", got.OldestSegmentPosition)
-	}
-	if got.CoveredGTIDSet != "new-set" {
-		t.Errorf("CoveredGTIDSet = %q, want new-set", got.CoveredGTIDSet)
-	}
-	if got.LastArchivedBinlog != "mysql-bin.000042" {
-		t.Errorf("LastArchivedBinlog = %q, want mysql-bin.000042", got.LastArchivedBinlog)
-	}
 }
 
-// 2. A fresh report (ForkCheckedAt newer than prior.ForkDetectedAt) with empty
-// forks is a legitimate retraction and must clear the mirror — no freezing.
-func TestAggregateArchivingFreshReportClearsForks(t *testing.T) {
+// A report fork-checked under a superseded primary generation must not replace
+// anything read from the archive index: not the fork records its successor
+// wrote, and not the frontier (coverage, gaps, oldest segment) of the same
+// stale read.
+func TestAggregateArchivingKeepsTheRecordOverASupersededReport(t *testing.T) {
 	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
-	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected,
-		DisownedGTIDs: "u1:219",
-	}
-	// Fresh: ForkCheckedAt (13:00) is newer than prior.ForkDetectedAt (12:00).
-	observed := observedCluster{
-		PrimaryName: "demo-2",
-		StatusByInstance: map[string]*webserver.Status{
-			"demo-2": {Archiving: &webserver.ArchivingStatus{
-				Active: true, ForkCheckedAt: "2026-10-06T13:00:00Z",
-				DisownedGTIDs: "", OldestSegmentPosition: "0-1-5",
-			}},
+	since := metav1.NewTime(time.Date(2026, 10, 6, 11, 0, 0, 0, time.UTC))
+	for name, prior := range map[string]*mysqlv1alpha1.ContinuousArchivingStatus{
+		"fork recorded": {
+			Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected, DisownedGTIDs: "u1:219",
+			CoveredGTIDSet: "u1:1-219", OldestSegmentPosition: "0-1-3",
 		},
-	}
-	got := aggregateArchiving(observed, prior)
-
-	if len(got.ForkGTIDs) != 0 {
-		t.Errorf("ForkGTIDs = %v, want empty", got.ForkGTIDs)
-	}
-	if got.ForkDetectedAt != nil {
-		t.Errorf("ForkDetectedAt = %v, want nil", got.ForkDetectedAt)
-	}
-	if got.DisownedGTIDs != "" {
-		t.Errorf("DisownedGTIDs = %q, want empty", got.DisownedGTIDs)
-	}
-	if got.OldestSegmentPosition != "0-1-5" {
-		t.Errorf("OldestSegmentPosition = %q, want 0-1-5", got.OldestSegmentPosition)
-	}
-}
-
-// 3. A fresh report with forks replaces prior ones and recomputes
-// ForkDetectedAt from the new forks.
-func TestAggregateArchivingFreshReportReplacesForks(t *testing.T) {
-	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
-	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, ForkGTIDs: []string{"u0:5-6"}, ForkDetectedAt: &detected,
-		DisownedGTIDs: "u0:5-6",
-	}
-	// Fresh: ForkCheckedAt (12:00) equals prior.ForkDetectedAt — still not stale.
-	observed := forkedPrimaryStatus("2026-10-06T12:00:00Z",
-		webserver.ArchiveForkStatus{Segment: "new", GTIDs: "u1:219", DetectedAt: "2026-10-06T12:05:00Z"},
-	)
-	got := aggregateArchiving(observed, prior)
-
-	if !slices.Equal(got.ForkGTIDs, []string{"u1:219"}) {
-		t.Errorf("ForkGTIDs = %v, want [u1:219]", got.ForkGTIDs)
-	}
-	wantDetected := time.Date(2026, 10, 6, 12, 5, 0, 0, time.UTC)
-	if got.ForkDetectedAt == nil || !got.ForkDetectedAt.Time.Equal(wantDetected) {
-		t.Errorf("ForkDetectedAt = %v, want %v", got.ForkDetectedAt, wantDetected)
-	}
-	if got.DisownedGTIDs != "u1:219" {
-		t.Errorf("DisownedGTIDs = %q, want u1:219", got.DisownedGTIDs)
-	}
-}
-
-// 4. No prior status means there is nothing to guard; the report is accepted
-// as-is.
-func TestAggregateArchivingNoPriorAcceptsReport(t *testing.T) {
-	observed := forkedPrimaryStatus("2026-10-06T12:00:00Z",
-		webserver.ArchiveForkStatus{Segment: "s1", GTIDs: "u1:219", DetectedAt: "2026-10-06T11:00:00Z"},
-	)
-	got := aggregateArchiving(observed, nil)
-
-	if !slices.Equal(got.ForkGTIDs, []string{"u1:219"}) {
-		t.Errorf("ForkGTIDs = %v, want [u1:219]", got.ForkGTIDs)
-	}
-	wantDetected := time.Date(2026, 10, 6, 11, 0, 0, 0, time.UTC)
-	if got.ForkDetectedAt == nil || !got.ForkDetectedAt.Time.Equal(wantDetected) {
-		t.Errorf("ForkDetectedAt = %v, want %v", got.ForkDetectedAt, wantDetected)
-	}
-}
-
-// 5. An unparseable ForkCheckedAt is not comparable — fail open and accept
-// the report.
-func TestAggregateArchivingUnparseableForkCheckedAt(t *testing.T) {
-	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
-	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected,
-		DisownedGTIDs: "u1:219",
-	}
-	observed := observedCluster{
-		PrimaryName: "demo-2",
-		StatusByInstance: map[string]*webserver.Status{
-			"demo-2": {Archiving: &webserver.ArchivingStatus{
-				Active: true, ForkCheckedAt: "not-a-time",
-				Forks: []webserver.ArchiveForkStatus{
-					{Segment: "new", GTIDs: "u2:100", DetectedAt: "2026-10-06T13:00:00Z"},
-				},
-				DisownedGTIDs: "u2:100", OldestSegmentPosition: "0-1-100",
-			}},
+		// Retention dropped the forked segment: no record, but the index's
+		// disowned set still names its transactions.
+		"segment dropped by retention": {
+			Enabled: true, DisownedGTIDs: "u1:219", CoveredGTIDSet: "u1:1-219", OldestSegmentPosition: "0-1-3",
+			Gaps: []string{"u1:50"}, GapsSince: &since,
 		},
-	}
-	got := aggregateArchiving(observed, prior)
-
-	if !slices.Equal(got.ForkGTIDs, []string{"u2:100"}) {
-		t.Errorf("ForkGTIDs = %v, want [u2:100]", got.ForkGTIDs)
-	}
-	wantDetected := time.Date(2026, 10, 6, 13, 0, 0, 0, time.UTC)
-	if got.ForkDetectedAt == nil || !got.ForkDetectedAt.Time.Equal(wantDetected) {
-		t.Errorf("ForkDetectedAt = %v, want %v", got.ForkDetectedAt, wantDetected)
-	}
-	if got.DisownedGTIDs != "u2:100" {
-		t.Errorf("DisownedGTIDs = %q, want u2:100", got.DisownedGTIDs)
-	}
-	if got.OldestSegmentPosition != "0-1-100" {
-		t.Errorf("OldestSegmentPosition = %q, want 0-1-100", got.OldestSegmentPosition)
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := aggregateArchiving(returningPrimaryReport(), prior, 4)
+			if got.DisownedGTIDs != "u1:219" || !slices.Equal(got.ForkGTIDs, prior.ForkGTIDs) ||
+				got.ForkDetectedAt != prior.ForkDetectedAt {
+				t.Errorf("fork fields = %q %v %v, want the recorded ones", got.DisownedGTIDs, got.ForkGTIDs, got.ForkDetectedAt)
+			}
+			if got.CoveredGTIDSet != "u1:1-219" || got.OldestSegmentPosition != "0-1-3" ||
+				!slices.Equal(got.Gaps, prior.Gaps) || got.GapsSince != prior.GapsSince {
+				t.Errorf("index frontier = %q %q %v %v, want the recorded one",
+					got.CoveredGTIDSet, got.OldestSegmentPosition, got.Gaps, got.GapsSince)
+			}
+			// What the instance itself shipped is not read from the index.
+			if got.LastArchivedBinlog != "mysql-bin.000042" {
+				t.Errorf("LastArchivedBinlog = %q, want the report's", got.LastArchivedBinlog)
+			}
+		})
 	}
 }
 
-// 6. Empty ForkCheckedAt keeps carryForks behaviour unchanged.
-func TestAggregateArchivingEmptyForkCheckedAtCarriesForks(t *testing.T) {
+// A report checked under the current generation is the archive's answer,
+// empty included: a retraction or a retention clear must reach the status.
+func TestAggregateArchivingTakesACurrentReport(t *testing.T) {
 	detected := metav1.NewTime(time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC))
 	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected,
-		DisownedGTIDs: "u1:219", OldestSegmentPosition: "0-1-3",
+		Enabled: true, ForkGTIDs: []string{"u1:219"}, ForkDetectedAt: &detected, DisownedGTIDs: "u1:219",
 	}
-	observed := forkedPrimaryStatus("") // empty ForkCheckedAt
-	got := aggregateArchiving(observed, prior)
-
-	if !slices.Equal(got.ForkGTIDs, prior.ForkGTIDs) {
-		t.Errorf("ForkGTIDs = %v, want %v", got.ForkGTIDs, prior.ForkGTIDs)
-	}
-	if got.ForkDetectedAt == nil || !got.ForkDetectedAt.Time.Equal(detected.Time) {
-		t.Errorf("ForkDetectedAt = %v, want %v", got.ForkDetectedAt, detected)
-	}
-	if got.DisownedGTIDs != "u1:219" {
-		t.Errorf("DisownedGTIDs = %q, want u1:219", got.DisownedGTIDs)
-	}
-	if got.OldestSegmentPosition != "0-1-3" {
-		t.Errorf("OldestSegmentPosition = %q, want 0-1-3", got.OldestSegmentPosition)
+	// The cached Cluster can lag the instance that just promoted itself, so a
+	// newer generation than the controller's is current too.
+	for _, generation := range []int64{3, 2} {
+		got := aggregateArchiving(returningPrimaryReport(), prior, generation)
+		if got.DisownedGTIDs != "" || len(got.ForkGTIDs) != 0 || got.ForkDetectedAt != nil {
+			t.Errorf("generation %d: fork fields = %q %v %v, want the report's empty answer",
+				generation, got.DisownedGTIDs, got.ForkGTIDs, got.ForkDetectedAt)
+		}
+		if got.CoveredGTIDSet != "u1:1-218" || got.OldestSegmentPosition != "0-1-1" {
+			t.Errorf("generation %d: frontier = %q %q, want the report's", generation, got.CoveredGTIDSet, got.OldestSegmentPosition)
+		}
 	}
 }
 
-// 7. A prior status that has never recorded a fork detection (ForkDetectedAt
-// nil) gives the staleness guard nothing to compare against, so a stale-looking
-// report is accepted as-is rather than guarded. Pinning test: this locks the
-// existing short-circuit, it does not change behaviour.
-func TestAggregateArchivingPriorWithoutForkDetectionAcceptsReport(t *testing.T) {
-	prior := &mysqlv1alpha1.ContinuousArchivingStatus{
-		Enabled: true, ForkGTIDs: []string{"u1:219"}, DisownedGTIDs: "u1:219", OldestSegmentPosition: "0-1-3",
+// An instance manager older than ForkCheckGeneration reports none. Once the
+// Cluster has a primary generation its report cannot be ordered, so the record
+// waits for a primary that reports one; a Cluster that never had one takes it.
+func TestAggregateArchivingReportWithoutAGeneration(t *testing.T) {
+	prior := &mysqlv1alpha1.ContinuousArchivingStatus{Enabled: true, DisownedGTIDs: "u1:219"}
+	observed := forkedPrimaryStatus("2026-10-06T12:05:00Z")
+	observed.StatusByInstance["demo-2"].Archiving.DisownedGTIDs = ""
+	if got := aggregateArchiving(observed, prior, 1); got.DisownedGTIDs != "u1:219" {
+		t.Errorf("generation 1: disownedGTIDs = %q, want the record kept", got.DisownedGTIDs)
 	}
-	// Stale-looking: the fork check is old and the report carries no forks, but
-	// with no recorded ForkDetectedAt the guard cannot call it stale.
-	observed := observedCluster{
-		PrimaryName: "demo-2",
-		StatusByInstance: map[string]*webserver.Status{
-			"demo-2": {Archiving: &webserver.ArchivingStatus{
-				Active: true, ForkCheckedAt: "2026-10-06T11:00:00Z",
-				OldestSegmentPosition: "0-1-219", DisownedGTIDs: "",
-			}},
-		},
+	if got := aggregateArchiving(observed, prior, 0); got.DisownedGTIDs != "" {
+		t.Errorf("generation 0: disownedGTIDs = %q, want the report's", got.DisownedGTIDs)
 	}
-	got := aggregateArchiving(observed, prior)
+}
 
-	if len(got.ForkGTIDs) != 0 {
-		t.Errorf("ForkGTIDs = %v, want the report's empty set", got.ForkGTIDs)
+// The readers that need the archive's fields before or outside the aggregation
+// apply the same rule: a superseded report falls back to status.
+func TestArchiveIndexReadersIgnoreASupersededReport(t *testing.T) {
+	cluster := archivingCluster()
+	cluster.Status.CurrentPrimaryGeneration = 4
+	cluster.Status.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingStatus{
+		Enabled: true, DisownedGTIDs: "u1:219", OldestSegmentPosition: "0-1-3",
 	}
-	if got.DisownedGTIDs != "" {
-		t.Errorf("DisownedGTIDs = %q, want the report's empty set", got.DisownedGTIDs)
+	observed := returningPrimaryReport()
+	if got := disownedGTIDs(observed, cluster); got != "u1:219" {
+		t.Errorf("disownedGTIDs = %q, want the recorded u1:219", got)
 	}
-	if got.ForkDetectedAt != nil {
-		t.Errorf("ForkDetectedAt = %v, want nil: the report detected no fork", got.ForkDetectedAt)
+	if got := oldestArchivedPosition(cluster, observed); got != "0-1-3" {
+		t.Errorf("oldestArchivedPosition = %q, want the recorded 0-1-3", got)
 	}
-	if got.OldestSegmentPosition != "0-1-219" {
-		t.Errorf("OldestSegmentPosition = %q, want the report's 0-1-219", got.OldestSegmentPosition)
+	if got := archivedTimeline(observed, cluster, time.Now()); got != nil {
+		t.Errorf("archivedTimeline = %v, want nothing seeded from a superseded report", got)
+	}
+
+	cluster.Status.CurrentPrimaryGeneration = 3
+	if got := disownedGTIDs(observed, cluster); got != "" {
+		t.Errorf("current: disownedGTIDs = %q, want the report's empty set", got)
+	}
+	if got := oldestArchivedPosition(cluster, observed); got != "0-1-1" {
+		t.Errorf("current: oldestArchivedPosition = %q, want the report's 0-1-1", got)
+	}
+	if got := archivedTimeline(observed, cluster, time.Now()); len(got) != 1 || got[0].Instance != "demo-0" {
+		t.Errorf("current: archivedTimeline = %v, want the report's epoch", got)
 	}
 }

@@ -89,7 +89,7 @@ func nextMariaDBTimeline(cluster *mysqlv1alpha1.Cluster, observed observedCluste
 	}
 	timeline := slices.Clone(cluster.Status.MariaDBTimeline)
 	if len(timeline) == 0 {
-		timeline = archivedTimeline(observed, now)
+		timeline = archivedTimeline(observed, cluster, now)
 	}
 	if status, ok := observed.StatusByInstance[observed.PrimaryName]; ok && writablePrimary(status) &&
 		(len(timeline) == 0 || timeline[len(timeline)-1].Instance != observed.PrimaryName) {
@@ -116,16 +116,17 @@ func nextMariaDBTimeline(cluster *mysqlv1alpha1.Cluster, observed observedCluste
 	return update
 }
 
-// archivedTimeline is the timeline the archive carries, as the primary
-// reports it: the history a Cluster whose status was lost (recreated from a
-// manifest, restored without status) starts from instead of from scratch.
-func archivedTimeline(observed observedCluster, now time.Time) []mysqlv1alpha1.MariaDBEpoch {
-	status, ok := observed.StatusByInstance[observed.PrimaryName]
-	if !ok || status.Archiving == nil || status.Archiving.ForkCheckedAt == "" {
+// archivedTimeline is the timeline the archive carries, as a current primary
+// reports it (see archiveReportCurrent): the history a Cluster whose status was
+// lost (recreated from a manifest, restored without status) starts from
+// instead of from scratch.
+func archivedTimeline(observed observedCluster, cluster *mysqlv1alpha1.Cluster, now time.Time) []mysqlv1alpha1.MariaDBEpoch {
+	report := primaryArchiveReport(observed, cluster)
+	if report == nil {
 		return nil
 	}
 	var out []mysqlv1alpha1.MariaDBEpoch
-	for _, e := range status.Archiving.MariaDBTimeline {
+	for _, e := range report.MariaDBTimeline {
 		out = append(out, mysqlv1alpha1.MariaDBEpoch{
 			Instance: e.Instance, ServerID: e.ServerID, Handoff: e.Handoff, Since: metav1.NewTime(now),
 		})
@@ -176,12 +177,11 @@ func timelineReferences(cluster *mysqlv1alpha1.Cluster, observed observedCluster
 }
 
 // oldestArchivedPosition is the lowest position the archive still holds: the
-// primary's report once it has fork-checked the index, otherwise the last one
-// recorded in status.
+// primary's report while it is current (see archiveReportCurrent), otherwise
+// the last one recorded in status.
 func oldestArchivedPosition(cluster *mysqlv1alpha1.Cluster, observed observedCluster) string {
-	if status, ok := observed.StatusByInstance[observed.PrimaryName]; ok && status.Archiving != nil &&
-		status.Archiving.ForkCheckedAt != "" {
-		return status.Archiving.OldestSegmentPosition
+	if report := primaryArchiveReport(observed, cluster); report != nil {
+		return report.OldestSegmentPosition
 	}
 	if ca := cluster.Status.ContinuousArchiving; ca != nil {
 		return ca.OldestSegmentPosition
