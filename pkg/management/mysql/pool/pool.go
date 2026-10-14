@@ -58,10 +58,10 @@ type Config struct {
 	// Params are extra DSN parameters merged with the defaults.
 	Params map[string]string
 	// MaxOpenConns caps the pool size. The instance manager's control pool
-	// should set this to 1: on servers without the admin interface (pre-8.0.14)
-	// a single privileged connection reliably owns the one reserved
-	// SUPER/CONNECTION_ADMIN slot that survives max_connections exhaustion,
-	// instead of wasting it across idle connections. Defaults to 2.
+	// sets this to 1 over the socket: there a single privileged connection
+	// reliably owns the one reserved SUPER/CONNECTION_ADMIN slot that survives
+	// max_connections exhaustion, instead of wasting it across idle
+	// connections. Defaults to 2.
 	MaxOpenConns int
 	// PasswordFunc, when set, is called before every new connection and wins
 	// over Password, so a rotated credential Secret reaches the next connection

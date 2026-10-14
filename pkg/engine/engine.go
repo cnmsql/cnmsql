@@ -121,6 +121,12 @@ type Engine interface {
 	// does not.
 	HasAdminInterface(version.Version) bool
 
+	// HasExtraPort reports whether the server supports extra_port, a second
+	// TCP listener with its own connection budget (extra_max_connections) and
+	// its own reserved privileged slot. MariaDB only; MySQL uses the admin
+	// interface instead.
+	HasExtraPort() bool
+
 	// HasLogReplicaUpdates reports whether the server uses the
 	// log_replica_updates variable name instead of log_slave_updates.
 	// MySQL 8.0+; MariaDB always uses log_slave_updates.
@@ -307,6 +313,8 @@ func (mysqlEngine) HasAdminInterface(v version.Version) bool {
 	return v.HasAdminInterface()
 }
 
+func (mysqlEngine) HasExtraPort() bool { return false }
+
 func (mysqlEngine) HasLogReplicaUpdates(v version.Version) bool {
 	return v.HasLogReplicaUpdates()
 }
@@ -457,6 +465,8 @@ func (mariadbEngine) SemiSyncIsPlugin() bool { return false }
 func (mariadbEngine) HasAdminInterface(version.Version) bool {
 	return false
 }
+
+func (mariadbEngine) HasExtraPort() bool { return true }
 
 func (mariadbEngine) HasLogReplicaUpdates(version.Version) bool {
 	return false

@@ -276,6 +276,8 @@ func TestRenderEngineCapabilityOverrides(t *testing.T) {
 	// No admin interface, even though 11.4 > MySQL's 8.0.14 gate.
 	assertNotContains(t, out, "admin_address")
 	assertNotContains(t, out, "admin_port")
+	// The flag was left unset, so no extra_port either.
+	assertNotContains(t, out, "extra_port")
 	// A replica is read_only, but MariaDB has no super_read_only.
 	assertContains(t, out, "read_only = ON")
 	assertNotContains(t, out, "super_read_only")
@@ -319,8 +321,33 @@ func TestRenderAdminInterfaceUnsupportedVersions(t *testing.T) {
 	}
 }
 
+func TestRenderExtraPort(t *testing.T) {
+	mariadbNaming := version.SemiSyncNaming{EnabledVarSource: "rpl_semi_sync_master_enabled"}
+	c := baseConfig()
+	c.Version = "11.4.3"
+	c.SemiSyncNaming = &mariadbNaming
+	c.HasExtraPort = true
+	out := mustRender(t, c)
+
+	assertContains(t, out, "extra_port = 33062")
+	assertContains(t, out, "extra_max_connections = 4")
+	assertNotContains(t, out, "admin_port")
+
+	c.AdminPort = 40000
+	assertContains(t, mustRender(t, c), "extra_port = 40000")
+}
+
+func TestRenderExtraPortNeedsEngineCapabilities(t *testing.T) {
+	// Without SemiSyncNaming the version-derived (MySQL) defaults apply, and
+	// MySQL has no extra_port.
+	c := baseConfig()
+	c.Version = version80
+	c.HasExtraPort = true
+	assertNotContains(t, mustRender(t, c), "extra_port")
+}
+
 func TestRenderRejectsAdminInterfaceUserParameters(t *testing.T) {
-	for _, key := range []string{"admin_address", "admin-port"} {
+	for _, key := range []string{"admin_address", "admin-port", "extra_port", "extra-max-connections"} {
 		c := baseConfig()
 		c.UserParameters = map[string]string{key: "x"}
 		if _, err := c.Render(); err == nil {

@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -111,6 +112,7 @@ type ServerConfig struct {
 	// (MySQL 8.0.14+), a separate listener not governed by max_connections that
 	// guarantees the instance manager can always reach mysqld. They are ignored
 	// on older servers. When AdminAddress is empty it defaults to loopback.
+	// On MariaDB AdminPort is the extra_port instead (see HasExtraPort).
 	AdminAddress string
 	AdminPort    int
 	// TLS holds the TLS material paths; mTLS is enforced when set.
@@ -131,6 +133,10 @@ type ServerConfig struct {
 	// HasAdminInterface reports whether to render admin_address/admin_port.
 	// Set from the engine to avoid flavor-dependent version.Version methods.
 	HasAdminInterface bool
+	// HasExtraPort reports whether to render MariaDB's extra_port (on
+	// AdminPort) and extra_max_connections. Honoured only with engine
+	// capabilities (SemiSyncNaming set): MySQL has no such variable.
+	HasExtraPort bool
 	// HasSuperReadOnly reports whether super_read_only is available.
 	HasSuperReadOnly bool
 	// HasLogReplicaUpdates reports whether log_replica_updates (MySQL 8.0+)
@@ -210,6 +216,8 @@ var managedKeys = map[string]struct{}{
 	"admin-address":            {},
 	"admin_port":               {},
 	"admin-port":               {},
+	"extra_port":               {},
+	"extra_max_connections":    {},
 	"ssl_ca":                   {},
 	"ssl-ca":                   {},
 	"ssl_cert":                 {},
@@ -494,11 +502,13 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 	engineCapabilities := c.SemiSyncNaming != nil
 
 	hasAdminInterface := ver.HasAdminInterface()
+	hasExtraPort := false
 	hasLogReplicaUpdates := ver.HasLogReplicaUpdates()
 	hasSuperReadOnly := ver.HasSuperReadOnly()
 	semiSyncNaming := ver.SemiSync()
 	if engineCapabilities {
 		hasAdminInterface = c.HasAdminInterface
+		hasExtraPort = c.HasExtraPort
 		hasLogReplicaUpdates = c.HasLogReplicaUpdates
 		hasSuperReadOnly = c.HasSuperReadOnly
 		semiSyncNaming = *c.SemiSyncNaming
@@ -559,6 +569,20 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 		pairs = append(pairs,
 			pair{"admin_address", addr},
 			pair{"admin_port", strconv.Itoa(port)},
+		)
+	}
+
+	// MariaDB extra_port: a second listener with its own connection budget and
+	// reserved privileged slot, sized for the instance manager's control pool.
+	// It binds bind_address like the main port; there is no address variable.
+	if hasExtraPort {
+		port := c.AdminPort
+		if port == 0 {
+			port = DefaultAdminPort
+		}
+		pairs = append(pairs,
+			pair{"extra_port", strconv.Itoa(port)},
+			pair{"extra_max_connections", strconv.Itoa(pool.ControlPoolSize)},
 		)
 	}
 

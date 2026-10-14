@@ -225,7 +225,7 @@ Each row maps to a subsystem section.
 | Reset binlogs | `RESET BINARY LOGS AND GTIDS` (8.4+) / `RESET MASTER` | `RESET MASTER` | 10 |
 | `super_read_only` | yes | **no** — only `read_only` + kill non-super writers | 10, 15 |
 | Semi-sync vars | `rpl_semi_sync_source_*` (8.0.26+) | `rpl_semi_sync_master_*` (built-in, no INSTALL PLUGIN) | 10 |
-| Admin interface | `admin_address`/`admin_port` (8.0.14+) | none — use `extra_port` or reserved SUPER slot | 13 |
+| Admin interface | `admin_address`/`admin_port` (8.0.14+) | none — `extra_port` ([040](040-control-pool-dedicated-listener.md)) | 13 |
 | Binlog expiry var | `binlog_expire_logs_seconds` | `binlog_expire_logs_seconds` (10.11+) else `expire_logs_days` | 11 |
 | Quorum topology | Group Replication | Galera (out of scope) | 12 |
 | Physical backup | `xtrabackup` + `xbstream` | `mariabackup` + `mbstream` | 11 |
@@ -409,10 +409,10 @@ Lease logic are engine-agnostic (they act on the Pod and on generic SQL the
 `Engine` supplies). Two touch points:
 
 - **Admin connection under connection exhaustion:** MySQL uses `admin_port`
-  (8.0.14+); MariaDB has no admin interface. `Engine` reports no admin interface,
-  and the manager falls back to the reserved `SUPER`/`CONNECTION_ADMIN` slot path
-  that already exists for pre-8.0.14 MySQL. Optionally wire MariaDB's `extra_port`
-  + `extra_max_connections` later; the reserved-slot fallback is sufficient for M1.
+  (8.0.14+); MariaDB has no admin interface. MariaDB uses `extra_port` +
+  `extra_max_connections` instead, falling back to the reserved
+  `SUPER`/`CONNECTION_ADMIN` socket slot when the server has no extra port —
+  see [040](040-control-pool-dedicated-listener.md).
 - **Version probe:** `ServerVersion()` in `replication/reader.go` returns the raw
   `@@version`; `Engine.ParseServerVersion` normalizes MariaDB's
   `11.4.3-MariaDB-1:11.4.3+maria~ubu2404` suffix (the existing `Parse` already

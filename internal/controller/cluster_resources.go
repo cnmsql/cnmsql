@@ -295,6 +295,7 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 		return "", fmt.Errorf("parsing server version %q: %w", plan.ServerVersion, err)
 	}
 	cfg.HasAdminInterface = clusterEng.HasAdminInterface(ver)
+	cfg.HasExtraPort = clusterEng.HasExtraPort()
 	cfg.HasSuperReadOnly = clusterEng.HasSuperReadOnly()
 	cfg.HasLogReplicaUpdates = clusterEng.HasLogReplicaUpdates(ver)
 	naming := clusterEng.SemiSync(ver)
