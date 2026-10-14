@@ -777,7 +777,11 @@ func TestReloadAppliesDynamicParameters(t *testing.T) {
 }
 
 func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
-	c, mock := newController(t, nil)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 
 	mock.ExpectQuery("SELECT @@GLOBAL.read_only").
@@ -797,7 +801,7 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 	mock.ExpectExec("SET GLOBAL read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SET GLOBAL super_read_only = ON").WillReturnResult(sqlmock.NewResult(0, 0))
 
-	err := configureSemiSync(ctx, c.repl, RunOptions{
+	err = configureSemiSync(ctx, db, mustVersion(t, "8.0.36"), RunOptions{
 		SemiSyncWaitCount:     1,
 		SemiSyncTimeoutMillis: 10000,
 	}, engine.MustForFlavor(engine.FlavorMySQL))
@@ -810,10 +814,14 @@ func TestConfigureSemiSyncTemporarilyClearsReadOnly(t *testing.T) {
 }
 
 func TestConfigureSemiSyncNoopForBuiltinEngine(t *testing.T) {
-	c, mock := newController(t, nil)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 
-	err := configureSemiSync(ctx, c.repl, RunOptions{
+	err = configureSemiSync(ctx, db, mustVersion(t, "11.4.3"), RunOptions{
 		SemiSyncWaitCount:     1,
 		SemiSyncTimeoutMillis: 10000,
 	}, engine.MustForFlavor(engine.FlavorMariaDB))

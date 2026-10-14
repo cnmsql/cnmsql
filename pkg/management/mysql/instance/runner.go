@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net/http"
@@ -186,13 +187,32 @@ func (o *RunOptions) applyDefaults() {
 	}
 }
 
-func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunOptions, eng engine.Engine) error {
+// configureSemiSync installs and enables the semi-sync plugins. It runs on one
+// pinned connection: binary logging is suppressed per session, and the pool
+// may hand each statement a different session.
+func configureSemiSync(ctx context.Context, db *sql.DB, ver version.Version, opts RunOptions, eng engine.Engine) error {
 	log := logf.FromContext(ctx).WithName("semi-sync")
 
 	if !eng.SemiSyncIsPlugin() {
 		log.Info("Skipping semi-sync runtime configuration (engine built-in)")
 		return nil
 	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("dedicated connection for semi-sync configuration: %w", err)
+	}
+	binlogSuppressed := false
+	defer func() {
+		// A session left with binary logging off must not go back to the
+		// pool, where a later control statement would silently skip the
+		// binlog: ErrBadConn makes database/sql discard it.
+		if binlogSuppressed {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+		_ = conn.Close()
+	}()
+	repl := replication.NewManagerWithDialect(conn, ver, eng.Repl())
 
 	roState, err := repl.ReadOnly(ctx)
 	if err != nil {
@@ -216,6 +236,7 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 	// under their own server_id can never apply the primary's GTID stream
 	// because MariaDB gtid_strict_mode rejects out-of-order sequence numbers.
 	log.Info("Suppressing binary logging for semi-sync configuration")
+	binlogSuppressed = true
 	if err := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=0"); err != nil {
 		return err
 	}
@@ -263,7 +284,9 @@ func configureSemiSync(ctx context.Context, repl *replication.Manager, opts RunO
 		return nil
 	}()
 
-	if binlogErr := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=1"); binlogErr != nil {
+	if binlogErr := repl.Exec(ctx, "SET SESSION SQL_LOG_BIN=1"); binlogErr == nil {
+		binlogSuppressed = false
+	} else {
 		if err == nil {
 			err = binlogErr
 		} else {
@@ -433,8 +456,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer signal.Stop(signals)
 
 	// Establish the privileged control connection.
-	controlCfg := pool.ControlConfig(eng.HasAdminInterface(ver), opts.Control)
-	db, err := openControl(ctx, controlCfg, opts.ReadyTimeout)
+	db, err := openControlPool(logf.IntoContext(ctx, log), eng, ver, opts.Control, opts.ReadyTimeout)
 	if err != nil {
 		_ = sup.Shutdown(ctx)
 		// mysqld did not come up. Most causes are environmental — a boot slower
@@ -516,7 +538,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// configured, and serving its role. Semi-sync plugins are already installed and
 	// enabled, and re-applying them would clear read_only on a serving instance.
 	if opts.SemiSyncEnabled && !adopting {
-		if err := configureSemiSync(ctx, controller.repl, opts, eng); err != nil {
+		if err := configureSemiSync(ctx, db, ver, opts, eng); err != nil {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
@@ -683,7 +705,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	// Custom queries get their own connection as the unprivileged metrics
 	// account: user SQL must not run as the control account, nor hold the
-	// single control connection the probes depend on.
+	// control connections the probes depend on.
 	customDB, err := pool.Connect(pool.Config{
 		Socket:       opts.Control.Socket,
 		User:         opts.MetricsUser,
@@ -1063,6 +1085,56 @@ func runUpgrade(ctx context.Context, eng engine.Engine, socket, user, password s
 	}
 	log.Info("System table upgrade completed")
 	return nil
+}
+
+// openControlPool opens the privileged control pool: over the admin interface
+// where the server has one, otherwise over the socket, moving to MariaDB's
+// extra_port once the server confirms it listens there.
+func openControlPool(
+	ctx context.Context,
+	eng engine.Engine,
+	ver version.Version,
+	params pool.ControlParams,
+	timeout time.Duration,
+) (*sql.DB, error) {
+	db, err := openControl(ctx, pool.ControlConfig(eng.HasAdminInterface(ver), params), timeout)
+	if err != nil || !eng.HasExtraPort() {
+		return db, err
+	}
+	return moveControlToExtraPort(ctx, db, params, pool.Open), nil
+}
+
+// moveControlToExtraPort replaces the single-connection socket pool with a
+// pool on the server's extra_port. The server, not the flavor, decides: after
+// an in-place manager upgrade mysqld still runs the config it started with,
+// which may predate extra_port. Any failure keeps the socket pool, which still
+// works through the reserved privileged slot.
+func moveControlToExtraPort(
+	ctx context.Context,
+	socketDB *sql.DB,
+	params pool.ControlParams,
+	open func(context.Context, pool.Config) (*sql.DB, error),
+) *sql.DB {
+	log := logf.FromContext(ctx)
+
+	var port int
+	if err := socketDB.QueryRowContext(ctx, "SELECT @@GLOBAL.extra_port").Scan(&port); err != nil {
+		log.Error(err, "Could not read extra_port, keeping the control connection on the socket")
+		return socketDB
+	}
+	if port == 0 {
+		log.Info("Server has no extra_port, keeping the control connection on the socket")
+		return socketDB
+	}
+	db, err := open(ctx, pool.ExtraPortControlConfig(params, port))
+	if err != nil {
+		log.Error(err, "Could not connect to extra_port, keeping the control connection on the socket",
+			"port", port)
+		return socketDB
+	}
+	_ = socketDB.Close()
+	log.Info("Moved the control connection to extra_port", "port", port)
+	return db
 }
 
 // openControl opens the control connection, retrying until ready.

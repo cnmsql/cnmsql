@@ -18,6 +18,11 @@ package pool
 
 const defaultAdminAddress = "127.0.0.1"
 
+// ControlPoolSize is the control pool's size on a dedicated listener (the MySQL
+// admin interface or the MariaDB extra_port), so a slow control statement does
+// not stall the others. MariaDB's extra_max_connections is rendered to match.
+const ControlPoolSize = 4
+
 // ControlParams describes how the instance manager reaches its local mysqld for
 // control and monitoring.
 type ControlParams struct {
@@ -30,8 +35,8 @@ type ControlParams struct {
 	// over Password, so a rotated credential Secret reaches the next connection
 	// without closing the ones already open.
 	PasswordFunc func() string
-	// Socket is the local unix socket, used on servers without the admin
-	// interface.
+	// Socket is the local unix socket, used on servers without a dedicated
+	// listener.
 	Socket string
 	// AdminAddress and AdminPort locate the administrative interface; empty
 	// values fall back to loopback / the default admin port.
@@ -41,17 +46,12 @@ type ControlParams struct {
 
 // ControlConfig builds the connection config the instance manager uses to reach
 // its local mysqld for control and monitoring. On MySQL 8.0.14+ it targets the
-// administrative interface, which is exempt from max_connections; on older
-// servers it falls back to the unix socket and relies on the reserved
-// privileged connection slot. Either way the pool is capped at a single
-// connection so that reserved slot is never wasted.
+// administrative interface, which is exempt from max_connections, with a pool
+// of ControlPoolSize. Otherwise it falls back to the unix socket and relies on
+// the reserved privileged connection slot, so the pool is capped at a single
+// connection that owns that slot instead of wasting it.
 func ControlConfig(hasAdminInterface bool, p ControlParams) Config {
-	cfg := Config{
-		User:         p.User,
-		Password:     p.Password,
-		PasswordFunc: p.PasswordFunc,
-		MaxOpenConns: 1,
-	}
+	cfg := p.config()
 
 	if hasAdminInterface {
 		addr := p.AdminAddress
@@ -64,11 +64,33 @@ func ControlConfig(hasAdminInterface bool, p ControlParams) Config {
 		}
 		cfg.Host = addr
 		cfg.Port = port
+		cfg.MaxOpenConns = ControlPoolSize
 		return cfg
 	}
 
 	cfg.Socket = p.Socket
+	cfg.MaxOpenConns = 1
 	return cfg
+}
+
+// ExtraPortControlConfig builds the control connection config for MariaDB's
+// extra_port listening on port. The listener has its own connection budget and
+// its own reserved privileged slot, so the pool is sized like the admin
+// interface's.
+func ExtraPortControlConfig(p ControlParams, port int) Config {
+	cfg := p.config()
+	cfg.Host = defaultAdminAddress
+	cfg.Port = port
+	cfg.MaxOpenConns = ControlPoolSize
+	return cfg
+}
+
+func (p ControlParams) config() Config {
+	return Config{
+		User:         p.User,
+		Password:     p.Password,
+		PasswordFunc: p.PasswordFunc,
+	}
 }
 
 // CurrentPassword is the control password to use now.

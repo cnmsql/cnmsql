@@ -180,6 +180,9 @@ func TestMySQLCapabilityFacet(t *testing.T) {
 	if !eng.SupportsDynamicPrivileges() {
 		t.Error("MySQL SupportsDynamicPrivileges() = false, want true")
 	}
+	if eng.HasExtraPort() {
+		t.Error("MySQL HasExtraPort() = true, want false")
+	}
 	if got := eng.TLSReloadStatement(); got != "ALTER INSTANCE RELOAD TLS" {
 		t.Errorf("MySQL TLSReloadStatement() = %q, want ALTER INSTANCE RELOAD TLS", got)
 	}
@@ -288,6 +291,9 @@ func TestMariaDBFacets(t *testing.T) {
 	}
 	if eng.SemiSyncIsPlugin() {
 		t.Error("MariaDB SemiSyncIsPlugin() = true, want false")
+	}
+	if !eng.HasExtraPort() {
+		t.Error("MariaDB HasExtraPort() = false, want true")
 	}
 	if eng.SupportsDynamicPrivileges() {
 		t.Error("MariaDB SupportsDynamicPrivileges() = true, want false")

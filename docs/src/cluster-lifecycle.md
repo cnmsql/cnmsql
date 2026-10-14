@@ -186,8 +186,13 @@ Each Pod runs a cnmsql instance manager as PID 1. It is responsible for:
   status;
 - running the binlog archiver when continuous archiving is enabled.
 
-The manager uses MySQL's admin interface where available so control operations
-do not get locked out by application connection pressure. Older versions fall
+The manager uses MySQL's admin interface, or MariaDB's `extra_port`, so control
+operations do not get locked out by application connection pressure. Both
+listen on port 33062, which is operator-managed (`admin_*`/`extra_port`/
+`extra_max_connections` cannot be set in `spec.mysql.parameters`). MariaDB's
+`extra_port` listens on the same address as the main port, so it is reachable
+on the Pod IP; any account can connect to it, but its last slot is reserved for
+privileged accounts like the manager's. Servers without either listener fall
 back to local socket access and reserved privileges.
 
 ## Configuration surface

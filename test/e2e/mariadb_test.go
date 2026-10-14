@@ -60,6 +60,30 @@ var _ = Describe("MariaDB", Ordered, Label("flavor", "mariadb"), func() {
 		Expect(statusFlavor).To(Equal("mariadb"), "status flavor is not mariadb")
 	})
 
+	It("reaches mysqld over extra_port", func() {
+		rootPW := rootPassword(clusterName)
+
+		By("verifying extra_port is configured")
+		out, err := mariadbExec(primary, "root", rootPW, "",
+			"SELECT CONCAT(@@extra_port, '/', @@extra_max_connections)")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(Equal("33062/4"))
+
+		By("verifying the control sessions are TCP, not socket")
+		// A loopback TCP session's host is "localhost:<port>" (or
+		// "127.0.0.1:<port>"); a socket session's is a bare "localhost".
+		Eventually(func(g Gomega) {
+			out, err := mariadbExec(primary, "root", rootPW, "",
+				"SELECT CONCAT(SUM(host LIKE '%:%'), '/', SUM(host NOT LIKE '%:%')) "+
+					"FROM information_schema.processlist WHERE user = 'cnmsql_control'")
+			g.Expect(err).NotTo(HaveOccurred())
+			parts := strings.Split(strings.TrimSpace(out), "/")
+			g.Expect(parts).To(HaveLen(2), "unexpected processlist output %q", out)
+			g.Expect(parts[0]).NotTo(Equal("0"), "no control session over TCP")
+			g.Expect(parts[1]).To(Equal("0"), "control session still on the socket")
+		}).Should(Succeed())
+	})
+
 	It("writes data and reads it back on replicas", func() {
 		password := appPassword(clusterName)
 		Expect(password).NotTo(BeEmpty(), "app password secret not ready")

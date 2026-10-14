@@ -27,12 +27,13 @@ import (
 // the session's metadata-lock wait bounded to lockWait, and restores the
 // session default before the connection returns to the pool.
 //
-// The instance manager's control pool is a single connection (ControlConfig).
-// A statement on it that pends on a metadata lock — SET GLOBAL read_only
-// waiting behind a queued DDL, say — starves the heartbeat, the status and
-// every other control call for exactly as long as the server is willing to
-// wait, which by default is about a year. Statements that can legitimately
-// wait on a lock run here instead, and the session lock_wait_timeout turns the
+// The instance manager's control pool is small, and a single connection over
+// the socket (ControlConfig). A statement on it that pends on a metadata lock —
+// SET GLOBAL read_only waiting behind a queued DDL, say — holds its connection
+// for exactly as long as the server is willing to wait, which by default is
+// about a year; on a single-connection pool that starves the heartbeat, the
+// status and every other control call. Statements that can legitimately wait
+// on a lock run here instead, and the session lock_wait_timeout turns the
 // unbounded server-side wait into a lock-wait-timeout failure the caller sees
 // and can surface. On a single-connection pool the dedicated connection is
 // that one connection, so other control calls still wait for the run — but

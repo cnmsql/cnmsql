@@ -32,8 +32,8 @@ func TestControlConfigUsesAdminInterfaceWhenAvailable(t *testing.T) {
 	if cfg.Socket != "" {
 		t.Errorf("admin interface config should not use the socket, got %q", cfg.Socket)
 	}
-	if cfg.MaxOpenConns != 1 {
-		t.Errorf("control pool must be capped at 1 connection, got %d", cfg.MaxOpenConns)
+	if cfg.MaxOpenConns != ControlPoolSize {
+		t.Errorf("admin interface pool = %d connections, want %d", cfg.MaxOpenConns, ControlPoolSize)
 	}
 }
 
@@ -62,6 +62,30 @@ func TestControlConfigFallsBackToSocketOnLegacy(t *testing.T) {
 	}
 	if cfg.MaxOpenConns != 1 {
 		t.Errorf("control pool must be capped at 1 connection, got %d", cfg.MaxOpenConns)
+	}
+}
+
+func TestExtraPortControlConfig(t *testing.T) {
+	cfg := ExtraPortControlConfig(ControlParams{
+		User:         "manager",
+		Socket:       "/var/run/mysqld/mysqld.sock",
+		PasswordFunc: func() string { return "x" },
+	}, 33062)
+
+	if cfg.Host != "127.0.0.1" || cfg.Port != 33062 {
+		t.Errorf("expected extra port loopback:33062, got %s:%d", cfg.Host, cfg.Port)
+	}
+	if cfg.Socket != "" {
+		t.Errorf("extra port config should not use the socket, got %q", cfg.Socket)
+	}
+	if cfg.MaxOpenConns != ControlPoolSize {
+		t.Errorf("extra port pool = %d connections, want %d", cfg.MaxOpenConns, ControlPoolSize)
+	}
+	if _, err := cfg.DSN(); err != nil {
+		t.Errorf("extra port config produced invalid DSN: %v", err)
+	}
+	if cfg.User != "manager" || cfg.PasswordFunc == nil || cfg.PasswordFunc() != "x" {
+		t.Error("extra port config must keep the control credentials")
 	}
 }
 

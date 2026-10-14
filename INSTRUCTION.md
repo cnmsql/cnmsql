@@ -18,7 +18,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 | D6 | Replica provisioning: **XtraBackup-first** (Clone plugin later) | Universal across supported versions, Percona-native |
 | D7 | Operator↔instance control API: **HTTP + mTLS** | Simple, debuggable, CNPG parity |
 | D8 | Instance image: **custom slim Debian+Percona APT image** (`Dockerfile.instance`), rootless (uid 1001) | Lighter than upstream percona/percona-server (~75% smaller), only tools we need |
-| D9 | Instance manager reaches mysqld via **admin interface** (`admin_address`/`admin_port`, 8.0.14+), falls back to socket + reserved slot | Socket does NOT bypass `max_connections`; manager must never be locked out |
+| D9 | Instance manager reaches mysqld via **admin interface** (`admin_address`/`admin_port`, 8.0.14+) or MariaDB **`extra_port`**, falls back to socket + reserved slot (pool of 1) | Socket does NOT bypass `max_connections`; manager must never be locked out. See design 040 |
 | D10 | Manager binary injected at pod startup via bootstrap-controller init container copying `/manager` from operator image into shared `scratch-data` emptyDir | CNPG pattern; operator and instance manager versions always identical |
 | D11 | Backup worker Jobs use the **same cnmsql instance image** as the Cluster | Keeps worker version-aligned with XtraBackup tooling |
 | D12 | Integration tests run a **version matrix** (8.0, 8.4, 9.7) | Every supported version exercised end-to-end |
