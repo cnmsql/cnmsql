@@ -212,10 +212,13 @@ func (r *DatabaseUserReconciler) applyUser(
 	}
 
 	// owned is true once we have successfully applied this account at least once
-	// (markUserApplied is the only writer of Applied). If the account exists but
-	// we have never applied it, it belongs to something else: refuse to clobber
-	// it unless adoption is explicitly requested.
-	owned := du.Status.Applied != nil
+	// (markUserApplied is the only writer of Applied), or when we sent a create
+	// for this exact account that never returned success: the create may have
+	// landed anyway (a timeout, or CREATE USER succeeding before a GRANT failed).
+	// If the account exists and neither holds, it belongs to something else:
+	// refuse to clobber it unless adoption is explicitly requested.
+	pendingCreate := du.Status.PendingCreate == roleKey(name, host)
+	owned := du.Status.Applied != nil || pendingCreate
 	if exists && !owned && !du.AdoptRequested() {
 		return "", userConflictError{msg: fmt.Sprintf(
 			"MySQL account %s@%s already exists and is not managed by this DatabaseUser; "+
@@ -228,6 +231,15 @@ func (r *DatabaseUserReconciler) applyUser(
 	}
 
 	if !exists {
+		// Record the create before sending it, so an error that hides a
+		// successful create does not turn our own account into a conflict.
+		if !owned {
+			if err := r.patchUserStatus(ctx, du, func(status *mysqlv1alpha1.DatabaseUserStatus) {
+				status.PendingCreate = roleKey(name, host)
+			}); err != nil {
+				return "", fmt.Errorf("recording pending create of %s: %w", roleKey(name, host), err)
+			}
+		}
 		if err := r.ControlClient.CreateUser(ctx, cluster, primary, user.CreateUserRequest{
 			Name:                  name,
 			Host:                  host,
@@ -248,7 +260,13 @@ func (r *DatabaseUserReconciler) applyUser(
 	}
 
 	// Adopting a pre-existing account: take ownership and reconcile its state.
-	if !owned {
+	// An account left by our own unconfirmed create is not an adoption; the
+	// alter below re-applies its password (never recorded as applied) and any
+	// grants the failed create did not get to.
+	switch {
+	case pendingCreate:
+		r.recordUserEvent(du, corev1.EventTypeNormal, "UserCreated", name)
+	case !owned:
 		r.recordUserEvent(du, corev1.EventTypeNormal, "Adopted", name)
 	}
 
@@ -517,6 +535,7 @@ func (r *DatabaseUserReconciler) markUserApplied(ctx context.Context, du *mysqlv
 		status.Message = ""
 		status.ObservedGeneration = du.Generation
 		status.PasswordSecretResourceVersion = secretRV
+		status.PendingCreate = ""
 		setUserCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, "Reconciled", "DatabaseUser reconciled", du.Generation)
 	})
 }
@@ -526,6 +545,8 @@ func (r *DatabaseUserReconciler) markUserApplied(ctx context.Context, du *mysqlv
 // successful apply (markUserApplied); keeping it nil until then preserves the
 // "never applied by us" signal that drives conflict detection, so a pre-existing
 // account is never silently adopted just because an earlier reconcile failed.
+// status.PendingCreate is left alone too: it must survive the failed create it
+// was recorded for.
 func (r *DatabaseUserReconciler) markUserNotApplied(ctx context.Context, du *mysqlv1alpha1.DatabaseUser, reason, message string) error {
 	return r.patchUserStatus(ctx, du, func(status *mysqlv1alpha1.DatabaseUserStatus) {
 		status.Message = message

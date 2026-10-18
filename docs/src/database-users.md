@@ -130,6 +130,17 @@ On the next reconcile the operator adopts the account: it reconciles the passwor
 and grants and sets `status.applied=true`. After that, ownership is implicit and
 you can remove the annotation.
 
+An account the operator created itself is never a conflict, even when the create
+did not report success. Before it asks the primary to create the account, the
+operator records `name@host` in `status.pendingCreate`. A create can time out
+after MySQL already ran it, or fail on a grant after the account exists. If the
+next reconcile finds that account, the operator treats it as its own: it
+re-applies the password and grants, sets `status.applied=true` and clears
+`status.pendingCreate`. Something else creating the same `name@host` between the
+operator's check and its create also ends up owned by this `DatabaseUser`. That
+window already existed before `status.pendingCreate`, because the create is
+`CREATE USER IF NOT EXISTS`.
+
 ## A safe DBaaS admin
 
 A common DBaaS ask is "give the tenant a near-root account on their data, but
