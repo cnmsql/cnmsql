@@ -12016,11 +12016,11 @@ spec:
         - --metrics-bind-address=:8443
         - --leader-elect
         - --health-probe-bind-address=:8081
-        - --operator-image=ghcr.io/cnmsql/cnmsql:d76a8ba
+        - --operator-image=ghcr.io/cnmsql/cnmsql:0.9.0
         - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         command:
         - /manager
-        image: ghcr.io/cnmsql/cnmsql:d76a8ba
+        image: ghcr.io/cnmsql/cnmsql:0.9.0
         livenessProbe:
           httpGet:
             path: /healthz

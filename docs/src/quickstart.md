@@ -75,8 +75,8 @@ kind load docker-image ghcr.io/cnmsql/cnmsql-instance:8.4 --name cnmsql-test-e2e
 The operator image must also be loaded into Kind if your Kind cluster can't reach the registry. The image is `ghcr.io/cnmsql/cnmsql` tagged with the chart version:
 
 ```bash
-docker pull ghcr.io/cnmsql/cnmsql:0.3.2
-kind load docker-image ghcr.io/cnmsql/cnmsql:0.3.2 --name cnmsql-test-e2e
+docker pull ghcr.io/cnmsql/cnmsql:0.9.0
+kind load docker-image ghcr.io/cnmsql/cnmsql:0.9.0 --name cnmsql-test-e2e
 ```
 :::
 
