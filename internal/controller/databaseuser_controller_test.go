@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -34,7 +35,7 @@ import (
 
 const testUserName = "tenant"
 
-func databaseUserReconciler(t *testing.T, control *recordingControlClient, recorder record.EventRecorder, objs ...client.Object) *DatabaseUserReconciler {
+func databaseUserReconciler(t *testing.T, control InstanceControlClient, recorder record.EventRecorder, objs ...client.Object) *DatabaseUserReconciler {
 	t.Helper()
 	scheme := testScheme(t)
 	builder := fake.NewClientBuilder().
@@ -590,6 +591,119 @@ func TestDatabaseUserAdoptsWithAnnotation(t *testing.T) {
 	}
 	if !drainEvents(rec.Events, "Adopted") {
 		t.Errorf("expected an Adopted event")
+	}
+}
+
+// lostCreateControlClient creates the account on the instance but reports the
+// create as failed, like a /user/create that times out after MySQL ran it.
+type lostCreateControlClient struct {
+	*recordingControlClient
+	onCreate func()
+}
+
+func (c *lostCreateControlClient) CreateUser(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instance string, req user.CreateUserRequest) error {
+	if c.onCreate != nil {
+		c.onCreate()
+	}
+	_ = c.recordingControlClient.CreateUser(ctx, cluster, instance, req)
+	c.users = append(c.users, user.UserInfo{Name: req.Name, Host: req.Host})
+	return context.DeadlineExceeded
+}
+
+func TestDatabaseUserRecoversAccountFromTimedOutCreate(t *testing.T) {
+	t.Parallel()
+	control := &lostCreateControlClient{recordingControlClient: &recordingControlClient{}}
+	rec := record.NewFakeRecorder(20)
+	du := newDatabaseUser(nil)
+	r := databaseUserReconciler(t, control, rec, readyClusterForDB(), du, userPasswordSecret())
+
+	// The marker must be persisted before the request leaves, or a crash or
+	// timeout right after sending it would lose it.
+	control.onCreate = func() {
+		if got := getDatabaseUser(t, r, du).Status.PendingCreate; got != "tenant@%" {
+			t.Errorf("status.pendingCreate at create time = %q, want %q", got, "tenant@%")
+		}
+	}
+
+	// Finalizer pass, then the create that times out after landing.
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.created) != 1 {
+		t.Fatalf("created = %d, want 1", len(control.created))
+	}
+	got := getDatabaseUser(t, r, du)
+	if got.Status.Applied != nil {
+		t.Fatalf("status.applied = %v after a failed create, want nil", *got.Status.Applied)
+	}
+	if got.Status.PendingCreate != "tenant@%" {
+		t.Fatalf("status.pendingCreate = %q after a failed create, want it kept", got.Status.PendingCreate)
+	}
+	drainEvents(rec.Events, "")
+
+	// The next pass finds the account and must take it as its own.
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+	got = getDatabaseUser(t, r, du)
+	if got.Status.Applied == nil || !*got.Status.Applied {
+		t.Fatalf("status.applied = %+v, want true; ready condition: %+v", got.Status.Applied, got.Status.Conditions)
+	}
+	if got.Status.PendingCreate != "" {
+		t.Errorf("status.pendingCreate = %q after apply, want cleared", got.Status.PendingCreate)
+	}
+	if got.Status.PasswordSecretResourceVersion == "" {
+		t.Errorf("password version not recorded")
+	}
+	if len(control.created) != 1 {
+		t.Errorf("created = %d, want no second create", len(control.created))
+	}
+	// The password and grants of an unconfirmed create are re-applied.
+	if len(control.altered) != 1 {
+		t.Fatalf("altered = %+v, want one", control.altered)
+	}
+	if a := control.altered[0]; a.Password == nil || *a.Password != "s3cret" || a.Privileges == nil {
+		t.Errorf("alter did not re-apply password and grants: %+v", a)
+	}
+	events := []string{}
+	for len(rec.Events) > 0 {
+		events = append(events, <-rec.Events)
+	}
+	for _, e := range events {
+		if strings.Contains(e, "UserConflict") || strings.Contains(e, "Adopted") {
+			t.Errorf("unexpected event %q for an account we created", e)
+		}
+	}
+}
+
+func TestDatabaseUserPendingCreateForOtherAccountStillConflicts(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{
+		users: []user.UserInfo{{Name: testUserName, Host: "%"}}, // pre-existing, not ours
+	}
+	rec := record.NewFakeRecorder(20)
+	du := newDatabaseUser(nil)
+	// A create was once sent for another host (spec.host changed since).
+	du.Status.PendingCreate = testUserName + "@10.0.0.%"
+	r := databaseUserReconciler(t, control, rec, readyClusterForDB(), du, userPasswordSecret())
+
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.created) != 0 || len(control.altered) != 0 {
+		t.Fatalf("MySQL was mutated on conflict: created=%+v altered=%+v", control.created, control.altered)
+	}
+	if got := getDatabaseUser(t, r, du); got.Status.Applied != nil {
+		t.Errorf("status.applied = %+v, want nil on conflict", got.Status.Applied)
+	}
+	if !drainEvents(rec.Events, "UserConflict") {
+		t.Errorf("expected a UserConflict event")
 	}
 }
 

@@ -4755,7 +4755,8 @@ spec:
                     description: |-
                       The secret of type kubernetes.io/tls containing the client certificate to
                       authenticate as the replication user. Should be signed by the CA in
-                      ClientCASecret.
+                      ClientCASecret. It is the operator's client certificate for the instance
+                      control API, so its common name must be cnmsql-operator.
                     type: string
                   serverAltDNSNames:
                     description: |-
@@ -4774,7 +4775,7 @@ spec:
                     description: |-
                       The secret of type kubernetes.io/tls containing the server TLS certificate
                       and key that will be set as ssl-cert and ssl-key. Should be signed by the
-                      CA in ServerCASecret.
+                      CA in ServerCASecret. Its common name must not be cnmsql-operator.
                     type: string
                 type: object
               description:
@@ -7234,7 +7235,8 @@ spec:
                     description: |-
                       The secret of type kubernetes.io/tls containing the client certificate to
                       authenticate as the replication user. Should be signed by the CA in
-                      ClientCASecret.
+                      ClientCASecret. It is the operator's client certificate for the instance
+                      control API, so its common name must be cnmsql-operator.
                     type: string
                   serverAltDNSNames:
                     description: |-
@@ -7253,7 +7255,7 @@ spec:
                     description: |-
                       The secret of type kubernetes.io/tls containing the server TLS certificate
                       and key that will be set as ssl-cert and ssl-key. Should be signed by the
-                      CA in ServerCASecret.
+                      CA in ServerCASecret. Its common name must not be cnmsql-operator.
                     type: string
                 type: object
               conditions:
@@ -8444,6 +8446,14 @@ spec:
                 description: |-
                   PasswordSecretResourceVersion records the source Secret resourceVersion
                   last applied to MySQL, so the password is re-applied only when it changes.
+                type: string
+              pendingCreate:
+                description: |-
+                  PendingCreate names the account (name@host) this DatabaseUser asked the
+                  primary to create, recorded before the request is sent and cleared on the
+                  first successful apply. A create that errors (for example a timeout) may
+                  still have created the account; the operator treats a matching account as
+                  its own on the next reconcile instead of reporting a conflict.
                 type: string
             type: object
         required:

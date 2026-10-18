@@ -521,9 +521,22 @@ cluster takes a few minutes. Logical backups keep working during the roll.
 2. Check that `MetricsAccountReady` is `True` on every cluster and that your
    dashboards still get the metrics they rely on.
 
-3. Upgrade the `kubectl cnmsql` plugin.
+3. List the `DatabaseUser`s whose `Ready` reason is `UserConflict`. On 0.8.x,
+   a create that timed out after MySQL had already created the account left
+   the `DatabaseUser` in that state for good. 0.9.0 avoids this for new
+   creates (see [Conflicts and adoption](./database-users.md#conflicts-and-adoption)),
+   but it cannot tell which existing conflicts came from such a create. If
+   the account is the one that `DatabaseUser` was meant to create, adopt it:
 
-4. You can now use the
+   ```bash
+   kubectl get databaseuser -A \
+     -o jsonpath='{range .items[?(@.status.conditions[0].reason=="UserConflict")]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
+   kubectl cnmsql -n <namespace> databaseuser adopt <name>
+   ```
+
+4. Upgrade the `kubectl cnmsql` plugin.
+
+5. You can now use the
    [published catalogs](./instance-images.md#published-catalogs), digest
    references and the distroless images.
 

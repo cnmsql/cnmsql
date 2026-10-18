@@ -972,6 +972,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional detail, typically an error. |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the generation observed by the controller. |  | Optional: \{\} <br /> |
 | `passwordSecretResourceVersion` _string_ | PasswordSecretResourceVersion records the source Secret resourceVersion<br />last applied to MySQL, so the password is re-applied only when it changes. |  | Optional: \{\} <br /> |
+| `pendingCreate` _string_ | PendingCreate names the account (name@host) this DatabaseUser asked the<br />primary to create, recorded before the request is sent and cleared on the<br />first successful apply. A create that errors (for example a timeout) may<br />still have created the account; the operator treats a matching account as<br />its own on the next reconcile instead of reporting a conflict. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest observations of the user state. |  | Optional: \{\} <br /> |
 
 

@@ -174,6 +174,14 @@ type DatabaseUserStatus struct {
 	// +optional
 	PasswordSecretResourceVersion string `json:"passwordSecretResourceVersion,omitempty"`
 
+	// PendingCreate names the account (name@host) this DatabaseUser asked the
+	// primary to create, recorded before the request is sent and cleared on the
+	// first successful apply. A create that errors (for example a timeout) may
+	// still have created the account; the operator treats a matching account as
+	// its own on the next reconcile instead of reporting a conflict.
+	// +optional
+	PendingCreate string `json:"pendingCreate,omitempty"`
+
 	// Conditions represent the latest observations of the user state.
 	// +listType=map
 	// +listMapKey=type
