@@ -46,16 +46,17 @@ checksum:
 
 # Keyless signing of the checksums file with cosign. Uses the GitHub Actions
 # OIDC identity (no long-lived keys); the certificate is recorded in the public
-# Rekor transparency log. SLSA provenance for the archives is generated from
-# checksums.txt by the release workflow. docs/src/operations.md ("Verify a
+# Rekor transparency log. Cosign 3 writes the signature and certificate into
+# one Sigstore bundle and ignores --output-signature/--output-certificate, so
+# the bundle path must be passed. SLSA provenance for the archives is generated
+# from checksums.txt by the release workflow. docs/src/operations.md ("Verify a
 # release") shows how to check both.
 signs:
 - cmd: cosign
-  certificate: "${artifact}.pem"
+  signature: "${artifact}.sigstore.json"
   args:
   - sign-blob
-  - "--output-certificate=${certificate}"
-  - "--output-signature=${signature}"
+  - "--bundle=${signature}"
   - "${artifact}"
   - --yes
   artifacts: checksum

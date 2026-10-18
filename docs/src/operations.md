@@ -22,9 +22,10 @@ A checksum match only proves the download was not corrupted. Each release also
 carries two attestations that tie the archives to this repository's release
 workflow:
 
-- `checksums.txt.sig` and `checksums.txt.pem`: a keyless
+- `checksums.txt.sigstore.json`: a keyless
   [cosign](https://github.com/sigstore/cosign) signature over `checksums.txt`,
-  recorded in the public Rekor transparency log.
+  recorded in the public Rekor transparency log. Releases up to v0.8.0 ship it
+  as `checksums.txt.sig` and `checksums.txt.pem` instead.
 - `kubectl-cnmsql.intoto.jsonl` (from v0.9.0): [SLSA](https://slsa.dev) build
   provenance for every archive, recording the workflow, commit and tag that
   built it.
@@ -35,7 +36,7 @@ Download the archive for your platform and the release metadata:
 VERSION=v0.9.0
 ARCHIVE=kubectl-cnmsql_${VERSION#v}_linux_amd64.tar.gz
 BASE=https://github.com/cnmsql/cnmsql/releases/download/${VERSION}
-for f in "$ARCHIVE" checksums.txt checksums.txt.sig checksums.txt.pem kubectl-cnmsql.intoto.jsonl; do
+for f in "$ARCHIVE" checksums.txt checksums.txt.sigstore.json kubectl-cnmsql.intoto.jsonl; do
   curl -sSfLO "$BASE/$f"
 done
 ```
@@ -44,8 +45,7 @@ Check the signature on `checksums.txt`, then the archive against it:
 
 ```bash
 cosign verify-blob checksums.txt \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/cnmsql/cnmsql/.github/workflows/release.yml@refs/tags/${VERSION}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum --ignore-missing -c checksums.txt
