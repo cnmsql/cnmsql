@@ -186,9 +186,15 @@ operator to that release, and what to do.
 
 ### Upgrading from 0.8.x to 0.9.0
 
-Upgrading to 0.9.0 restarts every instance once. Clusters on MySQL 8.0 and 8.4
-need nothing else. Clusters on MySQL 9.x need a change before you upgrade; see
-[Clusters on MySQL 9.x](#clusters-on-mysql-9x).
+Upgrading to 0.9.0 restarts every instance once. Most clusters need nothing
+else, but go through [Before upgrading](#before-upgrading-to-090) first: a few
+settings that 0.8.x accepted or ignored now block a cluster or change what it
+does. Clusters on MySQL 9.x need a change before you upgrade; see [Clusters on
+MySQL 9.x](#clusters-on-mysql-9x).
+
+Data and backups carry over. Point-in-time recovery from a backup taken before
+the upgrade to a point after it works on MySQL and MariaDB, and an archive
+written by 0.8.x is checked for forks and gaps like a new one.
 
 #### What changes
 
@@ -205,20 +211,27 @@ After the upgrade:
   cluster's pull secrets, node selector, affinity and tolerations. If a
   `ResourceQuota` or an admission policy restricts Pods in the namespace, make
   sure it allows this one.
-- Until its probe finishes, a cluster shows `Provisioning` with no ready
-  instances. The instances keep serving, but the operator does not manage the
-  cluster in the meantime: no failover, switchover or rolling update. This
-  takes a few seconds, or as long as the image pull on a slow registry (up to
-  five minutes).
+- Until its probe finishes, a cluster shows `Provisioning` (`Probing image
+  …`) with no ready instances. The instances keep serving, but the operator
+  does not manage the cluster in the meantime: no failover, switchover or
+  rolling update. This takes a few seconds, or as long as the image pull on a
+  slow registry (up to five minutes).
 - The probed version must belong to the series the cluster names: the series
   of its catalog entry, or the version at the start of its image tag (`:8.4`,
   `:8.4.11-…`). If it doesn't, the cluster is `Blocked` and the operator stops
   managing it until you fix the spec. 0.8.x never checked this.
 - Every instance restarts once, because the Pods no longer carry the
-  `MYSQL_VERSION` variable. Replicas restart first. Then the operator switches
-  over, so writes fail for about a second, and restarts the old primary. A
-  single-instance cluster is down while it restarts. This happens even with
+  `MYSQL_VERSION` variable and mount only `ca.crt` from the CA Secret (see
+  [below](#certificates-and-the-control-api)). Replicas restart first. Then the
+  operator switches over, so writes fail for about a second (a few seconds on a
+  busy control plane), and restarts the old primary. A single-instance cluster
+  is down while it restarts. This happens even with
   `inPlaceInstanceManagerUpdates` enabled.
+- During the roll the cluster reports `Degraded` (`2/3 instances ready`) while
+  an instance restarts and `Switchover` while the primary moves. It does not
+  report `Upgrading`, which is for instance-manager and major-version
+  upgrades. Alerts on the `Degraded` phase or on `Ready=False` fire during the
+  roll; silence them for the upgrade window.
 - my.cnf is rendered for the exact server version. 0.8.x assumed 8.4.0 for
   every 8.4 image, so settings that depend on a later patch release may now
   appear.
@@ -231,10 +244,92 @@ After the upgrade:
   instance that holds the purge for 15 minutes or more. See
   [the purge gate](./pitr.md).
 - The `kubectl cnmsql` plugin opens root sessions through the instance manager
-  instead of a shell, so it works on distroless images. The new plugin fails
-  with `unknown command "client"` on instances that still run the old instance
-  manager, so upgrade it after the operator. The 0.8.x plugin keeps working
-  with the new operator, except on distroless images.
+  instead of a shell, so it works on distroless images. On an instance that
+  still runs the old instance manager, the new plugin's `shell` prints the
+  usage of `manager instance` and exits with status 0 instead of opening a
+  session, so a script that pipes SQL into it does not notice. Upgrade the
+  plugin after the operator. The 0.8.x plugin keeps working with the new
+  operator, except on distroless images.
+- The Cluster has new conditions: `ImageReady` (the probe result),
+  `MetricsAccountReady`, `ArchiveForked` and `ArchiveGap` (on archiving
+  clusters) and `BinlogPurgeHeld`.
+
+#### Monitoring settings now take effect
+
+- **The metrics account's grants are reconciled.** `cnmsql_metrics` now holds
+  exactly its built-in grants plus the ones listed in
+  `spec.monitoring.privileges`. A grant you added by hand on 0.8.x is revoked
+  on the first reconcile after the upgrade, and any metric that depended on it
+  stops. List the grants you need in `spec.monitoring.privileges` before
+  upgrading; it accepts `SELECT` and `SHOW VIEW` on `db.*` or `db.table`. See
+  [Account and privileges](./monitoring.md#account-and-privileges).
+- **Custom queries run.** 0.8.x accepted `spec.monitoring.customQueriesConfigMap`,
+  `customQueriesSecret`, `disableDefaultQueries` and `metricsQueriesTTL` but
+  did nothing with them. From 0.9.0 the referenced queries run on every
+  instance, and `disableDefaultQueries: true` removes the built-in
+  mysqld_exporter families from `/metrics`. A cluster that set these fields
+  long ago starts behaving differently after the upgrade. See [Custom
+  queries](./monitoring.md#custom-queries).
+
+#### Parameters the operator now manages
+
+These keys can no longer be set in `spec.mysql.parameters`:
+
+- `log_output`, `slow_query_log_file` and `log_slow_query_file`, because the
+  slow query log becomes usable (see [Slow query log and the run
+  volume](#slow-query-log-and-the-run-volume)). `slow_query_log` and
+  `long_query_time` are still yours to set.
+- On MariaDB, `extra_port` and `extra_max_connections` (see
+  [below](#mariadb-extra_port)).
+
+A cluster that sets one goes `Blocked` after the upgrade, with a `phaseReason`
+like `spec.mysql.parameters: the following parameters are managed by the
+operator and cannot be set: log_output`. Its instances keep serving, but the
+operator does not manage it. Remove the keys before upgrading. If you already
+upgraded, removing them unblocks the cluster: it is probed, then restarts once.
+
+#### Certificates and the control API
+
+The instance control API now authorizes each caller by the common name of its
+client certificate: only `cnmsql-operator` may call every route, and an
+instance certificate may only stream a backup from another instance. The CA's
+private key no longer reaches instance Pods, bootstrap Jobs or worker Jobs. See
+[Control API authorization](./security-model.md#control-api-authorization).
+
+Clusters whose certificates cnmsql generates need nothing. With user-provided
+certificates in `spec.certificates`:
+
+- `replicationTLSSecret` is the operator's client certificate, so its common
+  name must be `cnmsql-operator`.
+- `serverTLSSecret` must not use the common name `cnmsql-operator`.
+
+A cluster that breaks either rule goes `Blocked` after the upgrade. Reissue the
+certificate before upgrading (see [Before upgrading](#before-upgrading-to-090)).
+
+#### MariaDB extra_port
+
+The instance manager now reaches MariaDB over `extra_port` 33062, a second
+listener with its own connection budget, so application connections cannot
+lock it out. The restart above picks it up. `extra_port` listens on the same
+address as port 3306, so it is reachable on the Pod IP, and any account can
+connect to it. If a NetworkPolicy or firewall restricts who reaches port 3306,
+restrict 33062 the same way.
+
+The engine now calls `mariadb-backup` and runs `mariadbd`, not the deprecated
+`mariabackup` and `mysqld` names. The published MariaDB images ship both. A
+custom image must too.
+
+#### Point-in-time recovery fails closed
+
+A recovery that would cross a stretch missing from the archive now fails with
+`ErrArchiveGap` (MySQL) or `ErrForkedTimeline` (MariaDB), and a `targetTime`
+past what the archive holds fails with `ErrTargetBeyondArchive`. 0.8.x replayed
+what it found and recovered less than asked. The first primary pass after the
+upgrade checks the existing archive. If it finds a gap that stands for seven
+minutes, the cluster reports `ArchiveGap` and the operator takes a base backup
+on the primary (`<cluster>-archive-gap-<hash>`) so that recovery to later
+points works. See [Archive gaps](./pitr.md#archive-gaps) and [Forked
+archives](./pitr.md#forked-archives).
 
 #### Clusters on MySQL 9.x
 
@@ -277,13 +372,22 @@ upgrade. Do this while the operator is still on 0.8.x:
        series: "9.7"   # was "9.0"
    ```
 
-3. Wait for the cluster to be `Ready` again. The operator takes a backup first
+3. Wait until every instance runs 9.7. The operator takes a backup first
    (unless `spec.upgrade.backupBeforeUpgrade` is `false`), then restarts the
-   replicas on 9.7, switches over, and restarts the old primary. Each instance
-   upgrades its data when it first starts on 9.7, and its log shows `Server
-   upgrade from '90600' to '907xx' completed`. Until the roll is over, don't
-   scale up, rebuild a replica or take a physical backup: XtraBackup 9.7
-   cannot copy a 9.6 server.
+   replicas on 9.7, switches over, and restarts the old primary. The cluster
+   reports `Ready` for a moment between the backup and the first restart, so
+   don't go by the phase alone. This must list the 9.7 image for every
+   instance:
+
+   ```bash
+   kubectl get pods -n <namespace> -l mysql.cnmsql.co/instance \
+     -o 'custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image'
+   ```
+
+   Each instance upgrades its data when it first starts on 9.7, and its log
+   shows `Server upgrade from '90600' to '907xx' completed`. Until the roll is
+   over, don't scale up, rebuild a replica or take a physical backup:
+   XtraBackup 9.7 cannot copy a 9.6 server.
 
 4. Take a new backup. Backups taken before the roll can only be restored onto
    9.6.
@@ -311,8 +415,9 @@ A cluster still on the `9.0` catalog entry is `Blocked`, with a message like
 `Image ghcr.io/cnmsql/cnmsql-instance:9.x runs 9.6.0, which is not series 9.0
 named by the ImageCatalog "9.0" entry`. Its instances keep serving, but the
 operator doesn't manage it, not even to fail over. Switch it to `imageName` as
-in option 2. The operator accepts the image right away and restarts the
-instances once. From there, only a logical backup takes it to 9.7.
+in option 2. The operator probes the image again, which keeps the cluster in
+`Provisioning` for a minute or so, then accepts it and restarts the instances
+once. From there, only a logical backup takes it to 9.7.
 
 #### Before upgrading {#before-upgrading-to-090}
 
@@ -339,36 +444,108 @@ instances once. From there, only a logical backup takes it to 9.7.
    8.4.x. If it doesn't, fix the catalog entry or the tag. Clusters whose image
    tag has no version (`:latest`, a digest) are not checked.
 
+5. Remove the parameters the operator now manages (see
+   [above](#parameters-the-operator-now-manages)). This lists the clusters
+   that set one:
+
+   ```bash
+   kubectl get clusters -A -o json | jq -r '.items[]
+     | (.spec.mysql.parameters // {} | keys
+        | map(select(IN("log_output", "slow_query_log_file", "log_slow_query_file",
+                        "extra_port", "extra_max_connections")))) as $k
+     | select($k | length > 0)
+     | "\(.metadata.namespace)/\(.metadata.name): \($k | join(", "))"'
+   ```
+
+6. Move hand-made grants on the metrics account into
+   `spec.monitoring.privileges`. Anything beyond `PROCESS`,
+   `REPLICATION CLIENT`, `REPLICATION SLAVE` on `*.*` and `SELECT` on
+   `performance_schema.*` is revoked after the upgrade:
+
+   ```bash
+   echo "SHOW GRANTS FOR 'cnmsql_metrics'@'localhost';" | \
+     kubectl cnmsql -n <namespace> shell <cluster> -- -N
+   ```
+
+7. Check the clusters that set custom monitoring queries, since they start
+   running (see [above](#monitoring-settings-now-take-effect)):
+
+   ```bash
+   kubectl get clusters -A -o json | jq -r '.items[]
+     | select(.spec.monitoring // {} | .customQueriesConfigMap or .customQueriesSecret
+              or .disableDefaultQueries or .metricsQueriesTTL)
+     | "\(.metadata.namespace)/\(.metadata.name)"'
+   ```
+
+8. Check the common name of user-provided certificates (see
+   [above](#certificates-and-the-control-api)). List the clusters that have
+   them, then read each certificate's subject:
+
+   ```bash
+   kubectl get clusters -A -o json | jq -r '.items[]
+     | select(.spec.certificates.replicationTLSSecret or .spec.certificates.serverTLSSecret)
+     | "\(.metadata.namespace)/\(.metadata.name) replication=\(.spec.certificates.replicationTLSSecret // "-") server=\(.spec.certificates.serverTLSSecret // "-")"'
+   kubectl get secret -n <namespace> <secret> -o jsonpath='{.data.tls\.crt}' | \
+     base64 -d | openssl x509 -noout -subject
+   ```
+
+   The replication certificate's subject must be `CN=cnmsql-operator`; the
+   server certificate's must not.
+
+9. Plan for the restarts and silence alerts on `Degraded` for the window.
+
 #### Upgrading {#upgrading-to-090}
 
 ```bash
-helm upgrade cnmsql cnmsql/cnmsql -n <operator-namespace> --version 0.9.0
+helm upgrade cnmsql oci://ghcr.io/cnmsql/charts/cnmsql \
+  -n <operator-namespace> --version 0.9.0
 ```
 
-Watch `kubectl get clusters -A`. Each cluster shows `Provisioning`, then
-`Upgrading` while its instances restart, then `Ready` with a `VERSION`.
+Watch `kubectl get clusters -A`. Each cluster shows `Provisioning` while its
+image is probed, `Degraded` while each instance restarts and `Switchover`
+while the primary moves, then `Ready` with a `VERSION`. A three-instance
+cluster takes a few minutes. Logical backups keep working during the roll.
 
 #### After upgrading {#after-upgrading-to-090}
 
-1. If a cluster is `Blocked`, read the reason:
+1. If a cluster is `Blocked`, read the reason. A parameter or certificate
+   problem is in `phaseReason`, an image problem in the `ImageReady`
+   condition:
 
    ```bash
+   kubectl get cluster <name> -n <namespace> -o jsonpath='{.status.phaseReason}{"\n"}'
    kubectl get cluster <name> -n <namespace> \
      -o jsonpath='{.status.conditions[?(@.type=="ImageReady")].message}'
    ```
 
-2. Upgrade the `kubectl cnmsql` plugin.
+2. Check that `MetricsAccountReady` is `True` on every cluster and that your
+   dashboards still get the metrics they rely on.
 
-3. You can now use the
+3. Upgrade the `kubectl cnmsql` plugin.
+
+4. You can now use the
    [published catalogs](./instance-images.md#published-catalogs), digest
    references and the distroless images.
 
 #### Downgrading to 0.8.x {#downgrading-to-08x}
 
-A downgrade restarts every instance again. 0.8.x reads the version from the
-image tag, so first move any cluster whose tag has no version (a digest,
-`:latest`) back to a tag like `:8.4`. The 0.8.x plugin cannot open root
-sessions on distroless images.
+A downgrade restarts every instance again. Data is not affected. Before you run
+`helm rollback`:
+
+1. Move any cluster whose tag has no version (a digest, `:latest`) back to a
+   tag like `:8.4`: 0.8.x reads the version from the image tag.
+2. Undo the 0.9.0 settings whose absence changes what the cluster does. 0.8.x
+   ignores them:
+   - `spec.enableFailover: false`: 0.8.x fails over automatically again.
+   - `spec.backup.continuousArchiving.objectStore`: 0.8.x archives to
+     `spec.backup.objectStore` instead, which splits the archive across two
+     stores.
+   - Custom monitoring queries stop running, and `spec.monitoring.privileges`
+     is no longer applied. The grants stay as the 0.9.0 operator left them.
+
+Use the 0.8.x plugin after the downgrade: the 0.9.0 plugin cannot open root
+sessions on the 0.8.x instance manager, and the 0.8.x plugin cannot open them
+on distroless images.
 
 #### Slow query log and the run volume
 
@@ -380,10 +557,9 @@ log](./monitoring.md#slow-query-log)), which changes two things:
   of the restart above. Up to 32 MiB of it counts against the instance
   container's memory limit; check that clusters with a tight
   `resources.limits.memory` have room for it.
-- `log_output` and `slow_query_log_file` are now managed by the operator. A
-  cluster that sets either in `spec.mysql.parameters` goes `Blocked` after the
-  upgrade, with a `phaseReason` naming the key. Remove them before upgrading.
-  `slow_query_log` and `long_query_time` are still yours to set.
+- `log_output`, `slow_query_log_file` and `log_slow_query_file` are now
+  managed by the operator (see [Parameters the operator now
+  manages](#parameters-the-operator-now-manages)).
 
 ### Upgrading from 0.7.x to 0.8.0
 
@@ -539,7 +715,8 @@ this needs no action.
 #### Upgrading {#upgrading-to-080}
 
 ```bash
-helm upgrade cnmsql cnmsql/cnmsql -n <operator-namespace> --version 0.8.0
+helm upgrade cnmsql oci://ghcr.io/cnmsql/charts/cnmsql \
+  -n <operator-namespace> --version 0.8.0
 ```
 
 Follow the roll with `kubectl get clusters -A`: each cluster goes through
