@@ -8033,8 +8033,12 @@ spec:
                       description: Host the user connects from. Defaults to "%".
                       type: string
                     name:
-                      description: Name of the user.
+                      description: Name of the user. The names root, mysql.* and cnmsql_*
+                        are reserved.
                       type: string
+                      x-kubernetes-validations:
+                      - message: user name is reserved (root, mysql.*, cnmsql_*)
+                        rule: self != 'root' && !self.startsWith('mysql.') && !self.startsWith('cnmsql_')
                     passwordSecret:
                       description: PasswordSecret references the secret key holding
                         the user's password.
