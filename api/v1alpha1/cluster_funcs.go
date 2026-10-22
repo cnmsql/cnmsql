@@ -790,7 +790,7 @@ func (spec *ClusterSpec) validateManagedRoles(path *field.Path) field.ErrorList 
 			allErrs = append(allErrs, field.Required(rolePath.Child("name"), "role name is required"))
 			continue
 		}
-		if isReservedRoleName(role.Name) {
+		if IsReservedRoleName(role.Name) {
 			allErrs = append(allErrs, field.Invalid(
 				rolePath.Child("name"), role.Name,
 				"role name is reserved (root, mysql.*, cnmsql_*)"))
@@ -820,9 +820,10 @@ func (spec *ClusterSpec) validateManagedRoles(path *field.Path) field.ErrorList 
 	return allErrs
 }
 
-// isReservedRoleName reports whether a MySQL user name is reserved by MySQL or
-// the operator and must not be declared as a managed role.
-func isReservedRoleName(name string) bool {
+// IsReservedRoleName reports whether a MySQL user name is reserved by MySQL or
+// the operator and must not be declared as a managed role, DatabaseUser or
+// Database inline user. The InlineUser.Name CEL rule mirrors it.
+func IsReservedRoleName(name string) bool {
 	if name == "root" {
 		return true
 	}

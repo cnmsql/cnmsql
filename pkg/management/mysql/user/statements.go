@@ -57,6 +57,11 @@ var MariaDBDialect = Dialect{RevokeIfExists: false}
 // the account names the operator provisions during bootstrap (see
 // internal/controller constants and instance/bootstrap.go); touching them would
 // break the control plane, replication, backups or monitoring.
+//
+// cnmsql_dump is deliberately absent: the operator provisions it through this
+// same API (see internal/controller/cluster_dump_account.go). Tenant-supplied
+// names are kept off the whole cnmsql_ prefix at the CR layer instead, by
+// v1alpha1.IsReservedRoleName and the InlineUser.Name CEL rule.
 var reservedUsers = map[string]struct{}{
 	"cnmsql_control": {},
 	"cnmsql_repl":    {},

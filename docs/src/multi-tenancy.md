@@ -213,7 +213,8 @@ break the isolation the model depends on.
 
 ### Reserved and operator-owned accounts are protected
 
-Managed-role names that collide with operator internals are rejected up front:
+User names that collide with operator internals are rejected up front, whether
+they come from a managed role, a `DatabaseUser`, or a `Database` inline user:
 `root`, the `mysql.*` system accounts, and the `cnmsql_*` user-name prefix the
 operator reserves for its own bootstrap, replication, instance-manager, and
 backup accounts. Tenants cannot declare their way into an account that controls

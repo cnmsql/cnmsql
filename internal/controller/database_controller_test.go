@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -336,5 +337,43 @@ func TestDatabaseReconcileEnsureAbsentDropsSchema(t *testing.T) {
 	}
 	if len(control.createdDatabase) != 0 {
 		t.Fatalf("createdDatabase = %+v, want none", control.createdDatabase)
+	}
+}
+
+// A Database stored before the CRD rejected reserved inline user names must
+// still never reach the operator's own accounts.
+func TestDatabaseReconcileRefusesReservedInlineUser(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{
+		users: []user.UserInfo{{Name: "cnmsql_dump", Host: "localhost"}},
+	}
+	db := newDatabase(func(d *mysqlv1alpha1.Database) {
+		d.Spec.Users = []mysqlv1alpha1.InlineUser{{
+			Name:   "cnmsql_dump",
+			Host:   "localhost",
+			Ensure: mysqlv1alpha1.EnsureAbsent,
+		}}
+	})
+	r := databaseReconciler(t, control, readyClusterForDB(), db)
+
+	for range 2 {
+		if _, err := r.Reconcile(context.Background(), dbRequest(db)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+
+	if len(control.dropped)+len(control.created)+len(control.altered) != 0 {
+		t.Fatalf("reserved user touched: dropped=%+v created=%+v altered=%+v",
+			control.dropped, control.created, control.altered)
+	}
+	got := &mysqlv1alpha1.Database{}
+	if err := r.Get(context.Background(), dbRequest(db).NamespacedName, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Applied == nil || *got.Status.Applied {
+		t.Errorf("status.applied = %+v, want false", got.Status.Applied)
+	}
+	if !strings.Contains(got.Status.Message, "reserved") {
+		t.Errorf("status.message = %q, want it to mention the reserved name", got.Status.Message)
 	}
 }
