@@ -18,5 +18,10 @@
     "prism-react-renderer": "^2.4.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
+  },
+  "overrides": {
+    "katex": "^0.18.2",
+    "postcss-selector-parser": "^7.1.6",
+    "tinypool": "^2.1.2"
   }
 }
