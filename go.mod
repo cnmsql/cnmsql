@@ -15,7 +15,7 @@ require (
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
-	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.94.1
+	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.94.2
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/robfig/cron/v3 v3.0.1
