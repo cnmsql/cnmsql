@@ -131,7 +131,7 @@ func (u *DatabaseUser) Validate() field.ErrorList {
 	name := u.UserName()
 	if name == "" {
 		allErrs = append(allErrs, field.Required(spec.Child("name"), "user name is required"))
-	} else if isReservedRoleName(name) {
+	} else if IsReservedRoleName(name) {
 		allErrs = append(allErrs, field.Invalid(spec.Child("name"), name,
 			"user name is reserved (root, mysql.*, cnmsql_*)"))
 	}

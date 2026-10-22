@@ -83,8 +83,9 @@ type DatabaseSpec struct {
 // For an installation-wide user not scoped to a single database, use the
 // standalone DatabaseUser CRD instead.
 type InlineUser struct {
-	// Name of the user.
+	// Name of the user. The names root, mysql.* and cnmsql_* are reserved.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self != 'root' && !self.startsWith('mysql.') && !self.startsWith('cnmsql_')",message="user name is reserved (root, mysql.*, cnmsql_*)"
 	Name string `json:"name"`
 
 	// Host the user connects from. Defaults to "%".

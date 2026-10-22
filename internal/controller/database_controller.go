@@ -209,6 +209,13 @@ func (r *DatabaseReconciler) reconcileDatabaseUsers(
 	if len(db.Spec.Users) == 0 {
 		return nil, nil
 	}
+	// The CRD rejects these names, but a Database stored before that rule
+	// existed must still never touch the operator's own accounts.
+	for i := range db.Spec.Users {
+		if name := db.Spec.Users[i].Name; mysqlv1alpha1.IsReservedRoleName(name) {
+			return nil, fmt.Errorf("user %s: name is reserved (root, mysql.*, cnmsql_*)", name)
+		}
+	}
 	listed, err := r.ControlClient.ListUsers(ctx, cluster, primary)
 	if err != nil {
 		return nil, fmt.Errorf("listing users on %s: %w", primary, err)

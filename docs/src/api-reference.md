@@ -1263,7 +1263,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name of the user. |  | Required: \{\} <br /> |
+| `name` _string_ | Name of the user. The names root, mysql.* and cnmsql_* are reserved. |  | Required: \{\} <br /> |
 | `host` _string_ | Host the user connects from. Defaults to "%". | % | Optional: \{\} <br /> |
 | `ensure` _[EnsureOption](#ensureoption)_ | Ensure controls whether the user is created or dropped. | present | Enum: [present absent] <br />Optional: \{\} <br /> |
 | `passwordSecret` _[SecretKeySelector](#secretkeyselector)_ | PasswordSecret references the secret key holding the user's password. |  | Optional: \{\} <br /> |
