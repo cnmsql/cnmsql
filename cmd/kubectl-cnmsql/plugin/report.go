@@ -20,6 +20,7 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -155,10 +157,24 @@ func printToWriter(o any, format ReportFormat, writer io.Writer) error {
 	}
 }
 
+// redactObjectMeta drops the metadata that can carry a copy of an object's
+// values: kubectl's last-applied-configuration annotation holds the full
+// applied manifest, and managedFields is noise once values are blanked.
+func redactObjectMeta(meta *metav1.ObjectMeta) {
+	meta.ManagedFields = nil
+	if _, ok := meta.Annotations[corev1.LastAppliedConfigAnnotation]; !ok {
+		return
+	}
+	annotations := maps.Clone(meta.Annotations)
+	delete(annotations, corev1.LastAppliedConfigAnnotation)
+	meta.Annotations = annotations
+}
+
 // RedactSecret returns a copy of secret with the Data keys preserved but the
 // values blanked, so the structure is visible without leaking material.
 func RedactSecret(secret corev1.Secret) corev1.Secret {
 	redacted := secret
+	redactObjectMeta(&redacted.ObjectMeta)
 	redacted.Data = make(map[string][]byte, len(secret.Data))
 	for k := range secret.Data {
 		redacted.Data[k] = []byte("")
@@ -173,13 +189,18 @@ func RedactSecret(secret corev1.Secret) corev1.Secret {
 // PassSecret returns secret unchanged (used when redaction is stopped).
 func PassSecret(secret corev1.Secret) corev1.Secret { return secret }
 
-// RedactConfigMap returns a copy of configMap with the Data keys preserved but
-// the values blanked.
+// RedactConfigMap returns a copy of configMap with the Data and BinaryData
+// keys preserved but the values blanked.
 func RedactConfigMap(configMap corev1.ConfigMap) corev1.ConfigMap {
 	redacted := configMap
+	redactObjectMeta(&redacted.ObjectMeta)
 	redacted.Data = make(map[string]string, len(configMap.Data))
 	for k := range configMap.Data {
 		redacted.Data[k] = ""
+	}
+	redacted.BinaryData = make(map[string][]byte, len(configMap.BinaryData))
+	for k := range configMap.BinaryData {
+		redacted.BinaryData[k] = []byte("")
 	}
 	return redacted
 }

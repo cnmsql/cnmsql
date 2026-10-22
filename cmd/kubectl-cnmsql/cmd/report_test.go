@@ -77,6 +77,62 @@ func TestRedactConfigMapBlanksValues(t *testing.T) {
 	}
 }
 
+func TestRedactSecretDropsLastAppliedAndManagedFields(t *testing.T) {
+	t.Parallel()
+	annotations := map[string]string{
+		corev1.LastAppliedConfigAnnotation: `{"data":{"password":"U0VDUkVU"}}`,
+		"team":                             "db",
+	}
+	secret := corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:          "demo-app",
+			Annotations:   annotations,
+			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl"}},
+		},
+		Data: map[string][]byte{"password": []byte("SECRET")},
+	}
+	r := plugin.RedactSecret(secret)
+	if _, ok := r.Annotations[corev1.LastAppliedConfigAnnotation]; ok {
+		t.Error("last-applied-configuration annotation kept")
+	}
+	if r.Annotations["team"] != "db" {
+		t.Errorf("unrelated annotation lost: %v", r.Annotations)
+	}
+	if r.ManagedFields != nil {
+		t.Errorf("managedFields kept: %v", r.ManagedFields)
+	}
+	if _, ok := annotations[corev1.LastAppliedConfigAnnotation]; !ok {
+		t.Error("input annotations mutated")
+	}
+}
+
+func TestRedactConfigMapBlanksBinaryDataAndDropsLastApplied(t *testing.T) {
+	t.Parallel()
+	cm := corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "demo-cm",
+			Annotations: map[string]string{
+				corev1.LastAppliedConfigAnnotation: `{"binaryData":{"blob":"U0VDUkVU"}}`,
+			},
+			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl"}},
+		},
+		BinaryData: map[string][]byte{"blob": []byte("SECRET")},
+	}
+	r := plugin.RedactConfigMap(cm)
+	if v, ok := r.BinaryData["blob"]; !ok || len(v) != 0 {
+		t.Errorf("blob not blanked or key removed: %q (present=%v)", v, ok)
+	}
+	if _, ok := r.Annotations[corev1.LastAppliedConfigAnnotation]; ok {
+		t.Error("last-applied-configuration annotation kept")
+	}
+	if r.ManagedFields != nil {
+		t.Errorf("managedFields kept: %v", r.ManagedFields)
+	}
+	if string(cm.BinaryData["blob"]) != "SECRET" {
+		t.Error("input binaryData mutated")
+	}
+}
+
 func TestRedactWebhookClientConfigBlanksCA(t *testing.T) {
 	t.Parallel()
 	cfg := admissionregistrationv1.WebhookClientConfig{CABundle: []byte("REALCA")}
