@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -181,6 +182,64 @@ func TestRestoredServerStatementsRunWithoutPasswords(t *testing.T) {
 	stmts := restoredServerStatements(eng, "8.4.0", "", "", "", "", "")
 	if len(stmts) != 1 || stmts[0] != "RESET REPLICA ALL" {
 		t.Fatalf("expected only the replica reset without passwords, got: %v", stmts)
+	}
+}
+
+func TestReplayFileName(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverUUID string
+		binlogName string
+		want       string
+	}{
+		{name: "mysql server_uuid", serverUUID: "3e11fa47-71ca-11e1-9e33-c80aa9429562", binlogName: "binlog.000004",
+			want: "3e11fa47-71ca-11e1-9e33-c80aa9429562_binlog.000004"},
+		{name: "mariadb server_id", serverUUID: "101", binlogName: "binlog.000001", want: "101_binlog.000001"},
+		{name: "parent directory as identity", serverUUID: "..", binlogName: "binlog.000001"},
+		{name: "separator in identity", serverUUID: "a/b", binlogName: "binlog.000001"},
+		{name: "underscore in identity", serverUUID: "a_b", binlogName: "binlog.000001"},
+		{name: "empty identity", serverUUID: "", binlogName: "binlog.000001"},
+		{name: "traversal in name", serverUUID: "101", binlogName: "../../etc/cron.d/x"},
+		{name: "backslash in name", serverUUID: "101", binlogName: `..\binlog.000001`},
+		{name: "no sequence number", serverUUID: "101", binlogName: "binlog.index"},
+		{name: "newline in name", serverUUID: "101", binlogName: "binlog.000001\n"},
+	}
+	for _, tc := range tests {
+		got, err := replayFileName(tc.serverUUID, tc.binlogName)
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%s: replayFileName(%q, %q) = %q, want an error", tc.name, tc.serverUUID, tc.binlogName, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%s: replayFileName(%q, %q) = %q, %v, want %q", tc.name, tc.serverUUID, tc.binlogName, got, err, tc.want)
+		}
+	}
+}
+
+// TestDownloadReplayFilesRejectsUnsafeNames checks that an archive index naming
+// a file outside the replay directory fails before anything is written.
+func TestDownloadReplayFilesRejectsUnsafeNames(t *testing.T) {
+	base := t.TempDir()
+	replayDir := filepath.Join(base, "binlog-replay")
+	if err := os.MkdirAll(replayDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	o := &RestoreOptions{SourceCluster: "src"}
+	o.ObjectStore.Bucket = "bucket"
+	plan := binlog.ReplayPlan{Segments: []binlog.ReplaySegment{
+		{ServerUUID: "..", Files: []string{"escaped.000001"}},
+	}}
+	if _, err := o.downloadReplayFiles(context.Background(), replayDir, plan); err == nil {
+		t.Fatal("downloadReplayFiles accepted segment identity \"..\"")
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("downloadReplayFiles wrote outside the replay dir: %v", entries)
 	}
 }
 
