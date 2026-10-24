@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -222,34 +223,68 @@ func (o *RestoreOptions) readAnchorGTID(bt engine.BackupTool) (engine.BinlogInfo
 	return engine.BinlogInfo{}, nil
 }
 
+// The archive index is read from the bucket, so whoever can write the archive
+// controls the segment identities and file names it lists. Both become local file
+// names under the replay directory, so they are held to the shapes the archiver
+// produces: a server_uuid, an archive-id UUID or a numeric MariaDB server_id, and
+// a binlog file name such as binlog.000004. The identity may not contain "_",
+// which ends it in the local name (see findAnchorIndex).
+var (
+	replaySegmentIDRe  = regexp.MustCompile(`^[0-9A-Za-z-]+$`)
+	replayBinlogNameRe = regexp.MustCompile(`^[0-9A-Za-z_-]+\.[0-9]+$`)
+)
+
+// replayFileName returns the local file name of one archived binlog, rejecting
+// a segment identity or binlog name the archiver could not have produced.
+func replayFileName(serverUUID, name string) (string, error) {
+	if !replaySegmentIDRe.MatchString(serverUUID) {
+		return "", fmt.Errorf("pitr: archive index lists an invalid segment identity %q", serverUUID)
+	}
+	if !replayBinlogNameRe.MatchString(name) {
+		return "", fmt.Errorf("pitr: archive index lists an invalid binlog name %q in segment %s", name, serverUUID)
+	}
+	return serverUUID + "_" + name, nil
+}
+
 // downloadReplayFiles pulls every planned segment file into replayDir, returning
 // the local paths in timeline order. Keys are partitioned by server UUID, so two
 // segments' like-named files (both produce a binlog.000004) never collide on disk.
+// Every file is created through an os.Root on replayDir, so a name that got past
+// replayFileName still cannot land outside it.
 func (o *RestoreOptions) downloadReplayFiles(
 	ctx context.Context, replayDir string, plan binlog.ReplayPlan,
 ) ([]string, error) {
+	root, err := os.OpenRoot(replayDir)
+	if err != nil {
+		return nil, fmt.Errorf("pitr: opening replay scratch dir: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
 	var files []string
 	for _, seg := range plan.Segments {
 		for _, name := range seg.Files {
+			localName, err := replayFileName(seg.ServerUUID, name)
+			if err != nil {
+				return nil, err
+			}
 			keys, err := objectstore.BuildBinlogKeys(o.ObjectStore, o.SourceCluster, seg.ServerUUID, name)
 			if err != nil {
 				return nil, fmt.Errorf("pitr: building key for %s/%s: %w", seg.ServerUUID, name, err)
 			}
-			local := filepath.Join(replayDir, seg.ServerUUID+"_"+name)
-			if err := o.downloadTo(ctx, keys.BinlogKey, local); err != nil {
+			if err := o.downloadTo(ctx, keys.BinlogKey, root, localName); err != nil {
 				return nil, err
 			}
-			files = append(files, local)
+			files = append(files, filepath.Join(replayDir, localName))
 		}
 	}
 	return files, nil
 }
 
-// downloadTo streams one object to a local file.
-func (o *RestoreOptions) downloadTo(ctx context.Context, key, local string) error {
-	f, err := os.Create(local) //nolint:gosec // local path is operator-derived, not user input
+// downloadTo streams one object to a file created under root.
+func (o *RestoreOptions) downloadTo(ctx context.Context, key string, root *os.Root, name string) error {
+	f, err := root.Create(name)
 	if err != nil {
-		return fmt.Errorf("pitr: creating %s: %w", local, err)
+		return fmt.Errorf("pitr: creating %s: %w", name, err)
 	}
 	defer func() { _ = f.Close() }()
 	if _, err := o.binlogClient().Download(ctx, o.ObjectStore.Bucket, key, f); err != nil {
