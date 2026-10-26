@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqlredact"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -123,7 +124,9 @@ func NewManagerWithDialect(conn pool.Connection, v version.Version, d Dialect) *
 
 func (m *Manager) exec(ctx context.Context, stmt string) error {
 	if _, err := m.conn.ExecContext(ctx, stmt); err != nil {
-		return fmt.Errorf("executing %q: %w", stmt, err)
+		// CHANGE REPLICATION SOURCE/MASTER TO carries the replication account's
+		// password; redact before the statement reaches logs and conditions.
+		return fmt.Errorf("executing %q: %w", sqlredact.SQL(stmt), err)
 	}
 	return nil
 }
@@ -426,7 +429,7 @@ func (m *Manager) SetSemiSyncTimeoutMillis(ctx context.Context, timeoutMillis in
 
 func (m *Manager) installPlugin(ctx context.Context, stmt string) error {
 	if _, err := m.conn.ExecContext(ctx, stmt); err != nil && !isPluginAlreadyInstalled(err) {
-		return fmt.Errorf("executing %q: %w", stmt, err)
+		return fmt.Errorf("executing %q: %w", sqlredact.SQL(stmt), err)
 	}
 	return nil
 }

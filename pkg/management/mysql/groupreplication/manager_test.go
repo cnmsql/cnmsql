@@ -18,6 +18,8 @@ package groupreplication
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -123,5 +125,29 @@ func TestSetCommunicationProtocolExecutesUDF(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A failed recovery-channel configuration must not carry SOURCE_PASSWORD (or
+// MASTER_PASSWORD on older servers) out of the statement text.
+func TestConfigureRecoveryChannelErrorRedactsPassword(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("opening sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec("CHANGE REPLICATION SOURCE TO").WillReturnError(errors.New("channel configuration failed"))
+
+	m := NewManager(db, mustVersion(t, "8.0.36"))
+	err = m.ConfigureRecoveryChannel(context.Background(), "repl", "s3cr3t-pw")
+	if err == nil {
+		t.Fatal("ConfigureRecoveryChannel should propagate the execution error")
+	}
+	if strings.Contains(err.Error(), "s3cr3t-pw") {
+		t.Errorf("error leaked the password:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "SOURCE_PASSWORD=<secret>") {
+		t.Errorf("error should redact the password literal:\n%v", err)
 	}
 }

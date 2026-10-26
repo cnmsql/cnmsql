@@ -21,6 +21,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqlredact"
 )
 
 // RunIsolated runs statements on a dedicated connection taken out of db, with
@@ -70,7 +72,9 @@ func RunIsolated(ctx context.Context, db *sql.DB, lockWait time.Duration, statem
 	}
 	for _, stmt := range statements {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("pool: executing %q: %w", stmt, err)
+			// RunIsolated is a generic runner; redact password literals before
+			// the statement text reaches an error a caller may surface.
+			return fmt.Errorf("pool: executing %q: %w", sqlredact.SQL(stmt), err)
 		}
 	}
 	return nil

@@ -18,7 +18,9 @@ package user
 
 import (
 	"context"
+	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -50,6 +52,28 @@ func TestManagerCreateUserExecutesAllStatements(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
+	}
+}
+
+// A failed CREATE USER must not carry the password out of the statement text:
+// the error reaches pod logs and DatabaseUser status conditions.
+func TestManagerCreateUserErrorRedactsPassword(t *testing.T) {
+	m, mock := newManager(t)
+	mock.ExpectExec("CREATE USER IF NOT EXISTS").
+		WillReturnError(errors.New("Operation CREATE USER failed"))
+
+	err := m.CreateUser(context.Background(), CreateUserRequest{
+		Name:     "app",
+		Password: "s3cr3t-pw",
+	})
+	if err == nil {
+		t.Fatal("CreateUser should propagate the execution error")
+	}
+	if strings.Contains(err.Error(), "s3cr3t-pw") {
+		t.Errorf("error leaked the password:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "IDENTIFIED BY <secret>") {
+		t.Errorf("error should redact the password literal:\n%v", err)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +74,27 @@ func TestRunIsolatedReportsAStatementFailure(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
+	}
+}
+
+// RunIsolated is a generic statement runner, so a statement it fails on must
+// not carry a password literal into the error it surfaces.
+func TestRunIsolatedRedactsSecretsInStatementErrors(t *testing.T) {
+	db, mock := newIsolatedFixture(t)
+	stmt := "ALTER USER 'u'@'%' IDENTIFIED BY 's3cr3t-pw'"
+	mock.ExpectExec(regexp.QuoteMeta("SET SESSION lock_wait_timeout = 15")).WillReturnResult(noRows)
+	mock.ExpectExec(regexp.QuoteMeta(stmt)).WillReturnError(errors.New("Error 1064: syntax error"))
+	mock.ExpectExec(regexp.QuoteMeta("SET SESSION lock_wait_timeout = DEFAULT")).WillReturnResult(noRows)
+
+	err := RunIsolated(context.Background(), db, 15*time.Second, stmt)
+	if err == nil {
+		t.Fatal("RunIsolated should propagate the execution error")
+	}
+	if strings.Contains(err.Error(), "s3cr3t-pw") {
+		t.Errorf("error leaked the password:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "IDENTIFIED BY <secret>") {
+		t.Errorf("error should redact the password literal:\n%v", err)
 	}
 }
 

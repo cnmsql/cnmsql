@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqlredact"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -42,7 +43,9 @@ func NewManager(conn pool.Connection, v version.Version) *Manager {
 
 func (m *Manager) exec(ctx context.Context, stmt string) error {
 	if _, err := m.conn.ExecContext(ctx, stmt); err != nil {
-		return fmt.Errorf("executing %q: %w", stmt, err)
+		// The recovery-channel configuration carries the donor account's
+		// password; redact before the statement reaches logs and conditions.
+		return fmt.Errorf("executing %q: %w", sqlredact.SQL(stmt), err)
 	}
 	return nil
 }
