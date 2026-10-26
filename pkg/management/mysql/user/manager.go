@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/pool"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/sqlredact"
 )
 
 // Manager executes user and database management statements against a mysqld
@@ -46,7 +47,9 @@ func NewManagerWithDialect(conn pool.Connection, d Dialect) *Manager {
 
 func (m *Manager) exec(ctx context.Context, stmt string) error {
 	if _, err := m.conn.ExecContext(ctx, stmt); err != nil {
-		return fmt.Errorf("executing %q: %w", stmt, err)
+		// The statement may carry an IDENTIFIED BY password; redact before it
+		// reaches logs and status conditions.
+		return fmt.Errorf("executing %q: %w", sqlredact.SQL(stmt), err)
 	}
 	return nil
 }

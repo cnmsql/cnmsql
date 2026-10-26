@@ -76,6 +76,28 @@ func TestConfigureSourceOrdering(t *testing.T) {
 	}
 }
 
+// A failed CHANGE REPLICATION SOURCE must not carry SOURCE_PASSWORD out of the
+// statement text: the error reaches pod logs and cluster status conditions.
+func TestConfigureSourceErrorRedactsPassword(t *testing.T) {
+	m, mock := newManager(t, "8.0.36")
+
+	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CHANGE REPLICATION SOURCE TO").WillReturnError(errors.New("replication configuration failed"))
+
+	err := m.ConfigureSource(context.Background(), SourceOptions{
+		Host: "primary", Port: 3306, User: "repl", Password: "s3cr3t-pw", AutoPosition: true,
+	})
+	if err == nil {
+		t.Fatal("ConfigureSource should propagate the execution error")
+	}
+	if strings.Contains(err.Error(), "s3cr3t-pw") {
+		t.Errorf("error leaked the password:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "SOURCE_PASSWORD=<secret>") {
+		t.Errorf("error should redact the password literal:\n%v", err)
+	}
+}
+
 func TestProvisionFromBackupOrdering(t *testing.T) {
 	m, mock := newManager(t, "8.0.36")
 
