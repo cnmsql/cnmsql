@@ -253,12 +253,19 @@ log paths affects every tenant on the cluster. cnmsql guards it:
 
 - **Operator-owned keys** (data directory, server id, TLS material, log
   positions, and the rest of the lifecycle-critical set) cannot be overridden.
-  Setting one moves the `Cluster` to `Blocked` with a `phaseReason` naming the
-  offending key, before any Pod is created.
+  The validating webhook rejects one, and a `Cluster` stored before that check
+  moves to `Blocked` with a `phaseReason` naming the offending key, before any
+  Pod is created.
 - **A dangerous-key denylist** rejects keys that are not operator-set but would
   still compromise the deployment (`datadir`, `pid_file`, `port`, `tmpdir`,
-  `plugin_dir`, `secure_file_priv`, `log_error`, `log_output`,
-  `slow_query_log_file`, the admin/TLS cipher knobs, and more) with the same `Blocked` outcome.
+  `plugin_dir`, `plugin_load`, `secure_file_priv`, `init_file`, the InnoDB and
+  log path options, `log_error`, `log_output`, `slow_query_log_file`,
+  `skip_grant_tables`, the admin/TLS cipher knobs, and more) the same way. Keys
+  are matched through option modifiers such as `loose-` and through MariaDB's
+  unique-prefix abbreviations.
+- **Malformed entries** are rejected: keys must be plain option names, and
+  values must not contain line breaks or NUL bytes, so a value cannot add lines
+  to `my.cnf`.
 - **Deprecated keys** that still parse (for example `master_info_repository`,
   `slave_parallel_workers`) are accepted but raise a `DeprecatedParameter`
   warning event so they surface before a version bump removes them.

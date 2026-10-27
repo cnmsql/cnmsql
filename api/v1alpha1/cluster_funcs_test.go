@@ -133,6 +133,26 @@ var _ = Describe("Cluster validation", func() {
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
 
+	It("rejects a mysql parameter value that spans lines", func() {
+		cluster := newValidCluster()
+		cluster.Spec.MySQL.Parameters = map[string]string{"max_connections": "200\nplugin_dir = /tmp"}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Field).To(Equal("spec.mysql.parameters"))
+	})
+
+	It("rejects a denied mysql parameter behind the loose- prefix", func() {
+		cluster := newValidCluster()
+		cluster.Spec.MySQL.Parameters = map[string]string{"loose-plugin_dir": "/tmp"}
+		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("accepts ordinary mysql parameters", func() {
+		cluster := newValidCluster()
+		cluster.Spec.MySQL.Parameters = map[string]string{"max_connections": "200", "general_log": "ON"}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
 	It("rejects zero instances", func() {
 		cluster := newValidCluster()
 		cluster.Spec.Instances = 0

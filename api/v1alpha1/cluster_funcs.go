@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 )
 
@@ -284,6 +285,13 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
 	allErrs = append(allErrs, spec.validateFlavor(specPath)...)
 	allErrs = append(allErrs, cluster.validateFailoverPolicy(specPath.Child("failoverPolicy"))...)
+
+	// The same check the renderer applies, so a bad parameter is refused at
+	// admission instead of stalling the rollout.
+	if err := mysqlconfig.ValidateUserParameters(spec.MySQL.Parameters); err != nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("mysql", "parameters"), spec.MySQL.Parameters, err.Error()))
+	}
 
 	for i := range spec.ExternalClusters {
 		allErrs = append(allErrs, spec.ExternalClusters[i].ObjectStore.Validate(

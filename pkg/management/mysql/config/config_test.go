@@ -662,3 +662,88 @@ func TestGTIDDomainIDIsDenied(t *testing.T) {
 		}
 	}
 }
+
+// The advisory's (GHSA-39hw) PoC: one allowed key whose value carries more
+// my.cnf lines. Values are written verbatim, so line breaks must be refused.
+func TestRenderRejectsLineBreaksInValues(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		"200\nplugin_dir = /var/lib/mysql/data/p\nsecure_file_priv =\n!includedir /var/lib/mysql/data",
+		"200\rplugin_dir = /tmp",
+		"200\x00",
+	} {
+		c := baseConfig()
+		c.UserParameters = map[string]string{"max_connections": value}
+		if out, err := c.Render(); err == nil {
+			t.Errorf("Render() accepted value %q:\n%s", value, out)
+		}
+	}
+}
+
+func TestValidateUserParametersRejectsMalformedKeys(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"", "[client]", "!includedir /x", "!include", "a=b", "max connections",
+		" max_connections", "max_connections\n", "#comment",
+	} {
+		if err := ValidateUserParameters(map[string]string{key: "1"}); err == nil {
+			t.Errorf("ValidateUserParameters accepted key %q", key)
+		}
+	}
+}
+
+// mysqld resolves `loose-plugin_dir` to plugin_dir, and MariaDB expands a
+// unique prefix such as secure_file_pri to secure_file_priv: both were verified
+// to take effect, so both must be denied.
+func TestDeniedKeysCannotBeReachedThroughModifiersOrPrefixes(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"loose_plugin_dir", "loose-secure-file-priv", "LOOSE_INIT_FILE",
+		"enable-skip-grant-tables", "loose-enable-skip-networking",
+		"skip-log-bin", "disable_log_bin", "maximum-port", "autoset_tmpdir",
+		"secure_file_pri", "plugin_di", "init_fil", "group_rep", "plugin_load_a",
+		"loose_secure_file_pri",
+	} {
+		if !IsDeniedKey(key) {
+			t.Errorf("IsDeniedKey(%q) = false, want true", key)
+		}
+	}
+}
+
+func TestSensitiveServerOptionsAreDenied(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		"init_file", "init_replica", "init_slave", "plugin_load", "early_plugin_load",
+		"innodb_data_home_dir", "innodb_log_group_home_dir", "innodb_undo_directory",
+		"log_bin_index", "relay_log_index", "ssl_capath", "ssl_crl",
+		"skip_grant_tables", "skip_networking", "bind_address",
+		"caching_sha2_password_private_key_path", "log_basename", "user",
+	} {
+		if !IsDeniedKey(key) {
+			t.Errorf("IsDeniedKey(%q) = false, want true", key)
+		}
+	}
+}
+
+// Ordinary tunables, including exact option names that are also prefixes of
+// denied keys (general_log, ssl, innodb_doublewrite), must stay allowed.
+func TestCommonTunablesStayAllowed(t *testing.T) {
+	t.Parallel()
+	params := map[string]string{}
+	for _, key := range []string{
+		"max_connections", "innodb_buffer_pool_size", "long_query_time", "slow_query_log",
+		"log_slow_query", "general_log", "require_secure_transport", "ssl", "skip_ssl",
+		"innodb_doublewrite", "lc_messages", "skip-name-resolve", "character_set_server",
+		"collation_server", "sql_mode", "transaction_isolation", "innodb_redo_log_capacity",
+		"loose_validate_password.length", "log_bin_trust_function_creators", "performance_schema",
+		"master_info_repository",
+	} {
+		params[key] = "1"
+	}
+	if err := ValidateUserParameters(params); err != nil {
+		t.Errorf("ValidateUserParameters rejected common tunables: %v", err)
+	}
+	c := baseConfig()
+	c.UserParameters = map[string]string{"sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE"}
+	assertContains(t, mustRender(t, c), "sql_mode = STRICT_TRANS_TABLES,NO_ZERO_DATE\n")
+}
