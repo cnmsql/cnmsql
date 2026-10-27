@@ -72,6 +72,12 @@ type Config struct {
 // DefaultMaxOpenConns is used when Config.MaxOpenConns is zero.
 const DefaultMaxOpenConns = 2
 
+// sessionSQLMode is sent as `SET sql_mode = ...` on every new connection. It
+// drops NO_BACKSLASH_ESCAPES, which spec.mysql.parameters may set server-wide,
+// so the string literals the statement builders render (backslash-escaped)
+// read back as written. The rest of the server's sql_mode is kept.
+const sessionSQLMode = "REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', '')"
+
 // defaultParams are always applied unless overridden by Config.Params.
 func defaultParams() map[string]string {
 	return map[string]string{
@@ -83,6 +89,7 @@ func defaultParams() map[string]string {
 		"multiStatements":      "false",
 		"rejectReadOnly":       "false",
 		"allowNativePasswords": "true",
+		"sql_mode":             sessionSQLMode,
 	}
 }
 
@@ -126,7 +133,7 @@ func (c Config) DSN() (string, error) {
 		}
 		query.WriteString(k)
 		query.WriteByte('=')
-		query.WriteString(params[k])
+		query.WriteString(url.QueryEscape(params[k]))
 	}
 
 	return fmt.Sprintf("%s@%s(%s)/%s%s", auth, net, addr, c.Database, query.String()), nil

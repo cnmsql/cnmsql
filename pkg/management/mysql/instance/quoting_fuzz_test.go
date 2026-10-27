@@ -43,30 +43,39 @@ func unquoteIdent(t *testing.T, quoted string) string {
 	return string(out)
 }
 
-// unquoteLiteral reverses quoteString(): it strips the outer single quotes and
-// undoes backslash escapes, failing if the literal terminates early.
-func unquoteLiteral(t *testing.T, quoted string) string {
+// unquoteLiteral reads quoted the way MySQL's lexer reads a single-quoted
+// literal: a doubled quote is one quote and, unless noBackslashEscapes (the
+// sql_mode flag), a backslash escapes the next byte. It fails if the literal
+// closes before the last byte, since everything after it would be parsed as
+// SQL.
+func unquoteLiteral(t *testing.T, quoted string, noBackslashEscapes bool) string {
 	t.Helper()
-	if len(quoted) < 2 || quoted[0] != '\'' || quoted[len(quoted)-1] != '\'' {
-		t.Fatalf("quoted literal %q is not wrapped in single quotes", quoted)
+	if len(quoted) < 2 || quoted[0] != '\'' {
+		t.Fatalf("quoted literal %q does not start with a single quote", quoted)
 	}
-	body := quoted[1 : len(quoted)-1]
 	var out []byte
-	for i := 0; i < len(body); i++ {
-		switch body[i] {
-		case '\\':
-			if i+1 >= len(body) {
+	for i := 1; i < len(quoted); i++ {
+		switch c := quoted[i]; {
+		case c == '\\' && !noBackslashEscapes:
+			i++
+			if i >= len(quoted) {
 				t.Fatalf("quoted literal %q ends with a dangling backslash", quoted)
 			}
+			out = append(out, quoted[i])
+		case c == '\'' && i+1 < len(quoted) && quoted[i+1] == '\'':
+			out = append(out, '\'')
 			i++
-			out = append(out, body[i])
-		case '\'':
-			t.Fatalf("quoted literal %q contains an unescaped single quote at offset %d", quoted, i)
+		case c == '\'':
+			if i != len(quoted)-1 {
+				t.Fatalf("quoted literal %q closes at offset %d (noBackslashEscapes=%v)", quoted, i, noBackslashEscapes)
+			}
+			return string(out)
 		default:
-			out = append(out, body[i])
+			out = append(out, c)
 		}
 	}
-	return string(out)
+	t.Fatalf("quoted literal %q is never closed (noBackslashEscapes=%v)", quoted, noBackslashEscapes)
+	return ""
 }
 
 // FuzzQuoteIdent checks that bootstrap identifier quoting is reversible, so no
@@ -92,16 +101,19 @@ func FuzzQuoteString(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		quoted := quoteString(s)
-		if got := unquoteLiteral(t, quoted); got != s {
+		if got := unquoteLiteral(t, quoted, false); got != s {
 			t.Fatalf("quoteString(%q) = %q, which unquotes to %q", s, quoted, got)
+		}
+		// Under NO_BACKSLASH_ESCAPES (settable through spec.mysql.parameters)
+		// backslashes read verbatim, but the value must stay one literal.
+		want := strings.ReplaceAll(s, `\`, `\\`)
+		if got := unquoteLiteral(t, quoted, true); got != want {
+			t.Fatalf("quoteString(%q) = %q, which unquotes to %q under NO_BACKSLASH_ESCAPES", s, quoted, got)
 		}
 		// Callers wrap escapeName's output in quotes by hand, so the result
 		// must be byte-identical to what quoteString would have produced.
 		if wrapped := "'" + escapeName(s) + "'"; wrapped != quoted {
 			t.Fatalf("escapeName(%q) wrapped = %q, but quoteString = %q", s, wrapped, quoted)
-		}
-		if strings.Contains(escapeName(s), "'") && !strings.Contains(escapeName(s), `\'`) {
-			t.Fatalf("escapeName(%q) leaves a bare quote: %q", s, escapeName(s))
 		}
 	})
 }

@@ -281,10 +281,12 @@ func onOff(on bool) string {
 }
 
 // quote single-quotes a string literal for use in a MySQL statement, escaping
-// backslashes and single quotes.
+// backslashes and doubling single quotes. A doubled quote never ends the
+// literal, so the result stays a single literal even when sql_mode has
+// NO_BACKSLASH_ESCAPES.
 func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
+	s = strings.ReplaceAll(s, `'`, `''`)
 	return "'" + s + "'"
 }
 

@@ -90,6 +90,22 @@ func TestDSNParamsOverrideDefaults(t *testing.T) {
 	}
 }
 
+// TestDSNPinsSessionSQLMode checks the sql_mode expression survives the DSN
+// round trip intact: the driver sends it verbatim as SET sql_mode = <value>.
+func TestDSNPinsSessionSQLMode(t *testing.T) {
+	dsn, err := Config{Socket: "/s.sock", User: "root"}.DSN()
+	if err != nil {
+		t.Fatalf("DSN() error: %v", err)
+	}
+	mc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("ParseDSN(%q) error: %v", dsn, err)
+	}
+	if got := mc.Params["sql_mode"]; got != sessionSQLMode {
+		t.Errorf("sql_mode = %q, want %q", got, sessionSQLMode)
+	}
+}
+
 func TestDSNParamsAreSortedDeterministically(t *testing.T) {
 	cfg := Config{Socket: "/s.sock", User: "root"}
 	first, _ := cfg.DSN()

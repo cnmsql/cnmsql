@@ -121,7 +121,7 @@ func TestForceMembersStatementEmptyClears(t *testing.T) {
 }
 
 func TestQuoteEscapesEmbeddedQuotes(t *testing.T) {
-	if got := quote("a'b"); got != `'a\'b'` {
+	if got := quote("a'b"); got != `'a''b'` {
 		t.Errorf("quote did not escape embedded quote, got %q", got)
 	}
 }
