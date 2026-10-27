@@ -8154,7 +8154,10 @@ spec:
                 description: |-
                   PasswordStatus records, per managed user ("name@host"), the source Secret
                   resourceVersion last applied to MySQL. It lets the controller re-apply a
-                  password only when its Secret changes.
+                  password only when its Secret changes. Its keys are the accounts this
+                  Database owns: an inline user naming an existing account that is not a
+                  key is a conflict, and the account is left alone. A key is added, with an
+                  empty version, just before the account is created.
                 type: object
             type: object
         required:
@@ -8387,6 +8390,14 @@ spec:
           status:
             description: status defines the observed state of DatabaseUser
             properties:
+              account:
+                description: |-
+                  Account names the MySQL account (name@host) this DatabaseUser owns,
+                  recorded on every successful apply. Changing spec.name or spec.host does
+                  not move ownership: an existing account under the new name is a conflict
+                  unless it is adopted, and reclaim and ensure: absent only drop an owned
+                  account.
+                type: string
               applied:
                 description: Applied is true once the desired state has been reconciled.
                 type: boolean

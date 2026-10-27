@@ -72,6 +72,9 @@ func (r *DatabaseUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	du.SetDefaults()
+	if err := r.recordLegacyAccount(ctx, du); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	cluster := &mysqlv1alpha1.Cluster{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: du.Namespace, Name: du.Spec.Cluster.Name}, cluster)
@@ -170,6 +173,32 @@ func (r *DatabaseUserReconciler) userChanged(ctx context.Context, du *mysqlv1alp
 	return secret.ResourceVersion != du.Status.PasswordSecretResourceVersion
 }
 
+// ownsAccount reports whether du owns the MySQL account key (name@host): it
+// was last applied under that name and host (status.account), or du sent a
+// create for it that never returned success, which may have landed anyway (a
+// timeout, or CREATE USER succeeding before a GRANT failed).
+func ownsAccount(du *mysqlv1alpha1.DatabaseUser, key string) bool {
+	return du.Status.Account == key || du.Status.PendingCreate == key
+}
+
+// recordLegacyAccount fills status.account for a DatabaseUser applied before
+// the field existed, so an upgrade does not turn its own account into a
+// conflict. Only a Ready condition at the current generation proves the
+// current name and host were the ones applied; any other legacy object has to
+// be adopted again.
+func (r *DatabaseUserReconciler) recordLegacyAccount(ctx context.Context, du *mysqlv1alpha1.DatabaseUser) error {
+	if du.Status.Account != "" || du.Status.Applied == nil {
+		return nil
+	}
+	ready := apimeta.FindStatusCondition(du.Status.Conditions, mysqlv1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != du.Generation {
+		return nil
+	}
+	return r.patchUserStatus(ctx, du, func(status *mysqlv1alpha1.DatabaseUserStatus) {
+		status.Account = roleKey(du.UserName(), du.Spec.Host)
+	})
+}
+
 // userConflictError signals that the MySQL account already exists but was not
 // created by this DatabaseUser; the controller refuses to mutate it unless the
 // adopt annotation is set.
@@ -201,6 +230,17 @@ func (r *DatabaseUserReconciler) applyUser(
 		}
 	}
 
+	// If the account exists and this DatabaseUser does not own it (see
+	// ownsAccount), it belongs to something else: refuse to alter or drop it
+	// unless adoption is explicitly requested.
+	pendingCreate := du.Status.PendingCreate == roleKey(name, host)
+	owned := ownsAccount(du, roleKey(name, host))
+	if exists && !owned && !du.AdoptRequested() {
+		return "", userConflictError{msg: fmt.Sprintf(
+			"MySQL account %s@%s already exists and is not managed by this DatabaseUser; "+
+				"set annotation %s=true to adopt it", name, host, mysqlv1alpha1.DatabaseUserAdoptAnnotation)}
+	}
+
 	if du.Spec.Ensure == mysqlv1alpha1.EnsureAbsent {
 		if exists {
 			if err := r.ControlClient.DropUser(ctx, cluster, primary, user.DropUserRequest{Name: name, Host: host}); err != nil {
@@ -209,20 +249,6 @@ func (r *DatabaseUserReconciler) applyUser(
 			r.recordUserEvent(du, corev1.EventTypeNormal, "UserDropped", name)
 		}
 		return "", nil
-	}
-
-	// owned is true once we have successfully applied this account at least once
-	// (markUserApplied is the only writer of Applied), or when we sent a create
-	// for this exact account that never returned success: the create may have
-	// landed anyway (a timeout, or CREATE USER succeeding before a GRANT failed).
-	// If the account exists and neither holds, it belongs to something else:
-	// refuse to clobber it unless adoption is explicitly requested.
-	pendingCreate := du.Status.PendingCreate == roleKey(name, host)
-	owned := du.Status.Applied != nil || pendingCreate
-	if exists && !owned && !du.AdoptRequested() {
-		return "", userConflictError{msg: fmt.Sprintf(
-			"MySQL account %s@%s already exists and is not managed by this DatabaseUser; "+
-				"set annotation %s=true to adopt it", name, host, mysqlv1alpha1.DatabaseUserAdoptAnnotation)}
 	}
 
 	password, secretRV, err := r.resolveDatabaseUserPassword(ctx, du)
@@ -354,6 +380,13 @@ func (r *DatabaseUserReconciler) finalizeUser(
 		return ctrl.Result{}, nil
 	}
 	if strings.EqualFold(du.Spec.ReclaimPolicy, reclaimDelete) {
+		if !ownsAccount(du, roleKey(du.UserName(), du.Spec.Host)) {
+			// Never applied under this name and host: the account, if any,
+			// belongs to something else and is left in place.
+			r.recordUserEvent(du, corev1.EventTypeWarning, "UserNotReclaimed", fmt.Sprintf(
+				"%s is not owned by this DatabaseUser and was not dropped", roleKey(du.UserName(), du.Spec.Host)))
+			return ctrl.Result{}, r.removeUserFinalizer(ctx, du)
+		}
 		if primary == "" {
 			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 		}
@@ -535,6 +568,7 @@ func (r *DatabaseUserReconciler) markUserApplied(ctx context.Context, du *mysqlv
 		status.Message = ""
 		status.ObservedGeneration = du.Generation
 		status.PasswordSecretResourceVersion = secretRV
+		status.Account = roleKey(du.UserName(), du.Spec.Host)
 		status.PendingCreate = ""
 		setUserCondition(status, mysqlv1alpha1.ConditionReady, metav1.ConditionTrue, "Reconciled", "DatabaseUser reconciled", du.Generation)
 	})

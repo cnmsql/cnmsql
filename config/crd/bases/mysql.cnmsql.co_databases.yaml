@@ -269,7 +269,10 @@ spec:
                 description: |-
                   PasswordStatus records, per managed user ("name@host"), the source Secret
                   resourceVersion last applied to MySQL. It lets the controller re-apply a
-                  password only when its Secret changes.
+                  password only when its Secret changes. Its keys are the accounts this
+                  Database owns: an inline user naming an existing account that is not a
+                  key is a conflict, and the account is left alone. A key is added, with an
+                  empty version, just before the account is created.
                 type: object
             type: object
         required:

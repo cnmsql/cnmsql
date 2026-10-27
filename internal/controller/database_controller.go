@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -123,6 +124,12 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	passwords, err := r.applyDatabase(ctx, db, cluster, primary)
+	if _, ok := errors.AsType[userConflictError](err); ok {
+		if r.Recorder != nil {
+			r.Recorder.Event(db, corev1.EventTypeWarning, "UserConflict", err.Error())
+		}
+		return ctrl.Result{RequeueAfter: readyResync}, r.markNotApplied(ctx, db, "UserConflict", err.Error())
+	}
 	if err != nil {
 		log.Info("Database reconciliation failed, will retry", "database", db.Name, "error", err.Error())
 		if r.Recorder != nil {
@@ -258,7 +265,19 @@ func (r *DatabaseReconciler) reconcileDatabaseUser(
 	prevRV string,
 ) (string, error) {
 	host := defaultHost(du.Host)
-	_, exists := observed[roleKey(du.Name, host)]
+	key := roleKey(du.Name, host)
+	_, exists := observed[key]
+
+	// An account this Database did not create belongs to someone else: another
+	// Database, a DatabaseUser, a managed role or an administrator. A Database
+	// is the unit handed to a tenant, so it never adopts one; altering it would
+	// hand the tenant that account and dropping it would lock its owner out.
+	// The keys of status.passwordStatus are the accounts this Database owns.
+	if _, owned := db.Status.PasswordStatus[key]; exists && !owned {
+		return "", userConflictError{msg: fmt.Sprintf(
+			"MySQL account %s already exists and is not managed by this Database; "+
+				"a Database never takes over an existing account, so drop it or declare a different user", key)}
+	}
 
 	if du.Ensure == mysqlv1alpha1.EnsureAbsent {
 		if exists {
@@ -277,6 +296,20 @@ func (r *DatabaseReconciler) reconcileDatabaseUser(
 	privs := dbPrivileges(du.Grants, dbName)
 
 	if !exists {
+		// Claim the account before sending the create, so a create that errors
+		// after MySQL ran it (a timeout, a failed grant) does not turn this
+		// Database's own account into a conflict. The empty Secret version makes
+		// the next reconcile re-apply the password.
+		if _, owned := db.Status.PasswordStatus[key]; !owned {
+			if err := r.patchDatabaseStatus(ctx, db, func(status *mysqlv1alpha1.DatabaseStatus) {
+				if status.PasswordStatus == nil {
+					status.PasswordStatus = map[string]string{}
+				}
+				status.PasswordStatus[key] = ""
+			}); err != nil {
+				return "", fmt.Errorf("recording pending create of %s: %w", key, err)
+			}
+		}
 		if err := r.ControlClient.CreateUser(ctx, cluster, primary, user.CreateUserRequest{
 			Name:       du.Name,
 			Host:       host,
