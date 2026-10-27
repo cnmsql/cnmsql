@@ -129,12 +129,18 @@ const MaxLoadPacketBytes = 1 << 30
 // buildLoadArgs is shared by both engines: both clients load a dump the same
 // way. The dump sets its own session character set, but the client must read
 // the stream as utf8mb4 too.
+//
+// --binary-mode turns off every client command but DELIMITER and \C, as PITR
+// replay does. A dump is untrusted input: routine, trigger, event and view
+// bodies are written verbatim, so a line such as "\! cmd" can reach the client
+// from a schema owner's object, and would otherwise run in the Pod.
 func buildLoadArgs(defaultsFile string) []string {
 	// --defaults-extra-file must be the first argument or the client rejects it.
 	return []string{
 		"--defaults-extra-file=" + defaultsFile,
 		"--default-character-set=utf8mb4",
 		fmt.Sprintf("--max-allowed-packet=%d", MaxLoadPacketBytes),
+		"--binary-mode",
 	}
 }
 

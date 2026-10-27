@@ -143,6 +143,7 @@ func TestLogicalLoadArgs(t *testing.T) {
 			"--defaults-extra-file=/tmp/import/client.cnf",
 			"--default-character-set=utf8mb4",
 			"--max-allowed-packet=1073741824",
+			"--binary-mode",
 		}
 		if !slices.Equal(args, want) {
 			t.Errorf("%s: LoadArgs = %v, want %v", flavor, args, want)
