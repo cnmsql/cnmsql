@@ -21,7 +21,10 @@ limitations under the License.
 package config
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,7 +271,86 @@ var deniedKeys = map[string]struct{}{
 	"admin_ssl_key":          {},
 	"admin_tls_ciphersuites": {},
 	"tls_ciphersuites":       {},
+	// SQL the server runs with full privileges, and plugin loading.
+	"init_file":         {},
+	"init_replica":      {},
+	"init_slave":        {},
+	"plugin_load":       {},
+	"early_plugin_load": {},
+	// Paths the server reads from or writes to as the mysqld UID: pointing them
+	// elsewhere in the Pod reads or overwrites files the instance relies on.
+	"innodb_data_home_dir":         {},
+	"innodb_data_file_path":        {},
+	"innodb_log_group_home_dir":    {},
+	"innodb_undo_directory":        {},
+	"innodb_directories":           {},
+	"innodb_temp_tablespaces_dir":  {},
+	"innodb_temp_data_file_path":   {},
+	"innodb_tmpdir":                {},
+	"innodb_doublewrite_dir":       {},
+	"innodb_redo_log_archive_dirs": {},
+	"innodb_buffer_pool_filename":  {},
+	"log_bin_index":                {},
+	"relay_log_index":              {},
+	"relay_log_info_file":          {},
+	"master_info_file":             {},
+	"log_tc":                       {},
+	"log_basename":                 {},
+	"aria_log_dir_path":            {},
+	"slave_load_tmpdir":            {},
+	"replica_load_tmpdir":          {},
+	"lc_messages_dir":              {},
+	"character_sets_dir":           {},
+	"ft_stopword_file":             {},
+	"debug":                        {},
+	"keyring_file_data":            {},
+	"keyring_encrypted_file_data":  {},
+	"mysqlx_socket":                {},
+	"chroot":                       {},
+	"user":                         {},
+	// Key and CA material: a substituted RSA key pair exposes passwords that
+	// clients send RSA-encrypted.
+	"sha256_password_private_key_path":       {},
+	"sha256_password_public_key_path":        {},
+	"caching_sha2_password_private_key_path": {},
+	"caching_sha2_password_public_key_path":  {},
+	"ssl_capath":                             {},
+	"ssl_crl":                                {},
+	"ssl_crlpath":                            {},
+	"admin_ssl_capath":                       {},
+	"admin_ssl_crl":                          {},
+	"admin_ssl_crlpath":                      {},
+	"skip_grant_tables":                      {},
+	"skip_networking":                        {},
+	"bind_address":                           {},
 }
+
+// optionModifiers are the prefixes mysqld's option parser accepts in front of
+// an option name. loose_ comes first, then at most one value modifier
+// (autoset_ is MariaDB's). `loose-plugin_dir = /x` sets plugin_dir, so the
+// deny check looks through them.
+var optionModifiers = []string{"skip_", "enable_", "disable_", "maximum_", "autoset_"}
+
+// exactOptionPrefixes are real server options that are also proper prefixes of
+// a denied or managed key. MariaDB expands a unique option prefix to the full
+// name (secure_file_pri sets secure_file_priv), so such prefixes are denied,
+// but an exact option name wins over the expansion and these stay allowed.
+// Collected from mysqld --verbose --help on MySQL 8.4/9.7 and MariaDB 10.11.
+var exactOptionPrefixes = map[string]struct{}{
+	"general_log":        {},
+	"innodb":             {},
+	"innodb_doublewrite": {},
+	"lc_messages":        {},
+	"log_slow_query":     {},
+	"mysqlx":             {},
+	"slow_query_log":     {},
+	"ssl":                {},
+}
+
+// validParameterKey is the shape of a my.cnf option name. Anything else
+// (a section header, a !include directive, an embedded "=") would let the key
+// rewrite the file around it.
+var validParameterKey = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 // deprecatedKeys maps [mysqld] keys that are accepted but discouraged to a
 // human-readable replacement. They produce a warning rather than a rejection.
@@ -401,34 +483,83 @@ func IsManagedKey(key string) bool {
 
 // IsDeniedKey reports whether the given my.cnf key is forbidden to users,
 // whether because the operator manages it or because overriding it would
-// destabilise the instance.
+// destabilise the instance. The key is checked under every name mysqld may
+// resolve it to: with its option modifiers removed, and as an abbreviation of a
+// denied name.
 func IsDeniedKey(key string) bool {
 	k := normalizeKey(key)
-	if isGroupReplicationManagedKey(k) {
-		return true
+	names := []string{k}
+	rest, loose := strings.CutPrefix(k, "loose_")
+	if loose {
+		names = append(names, rest)
 	}
-	if _, ok := managedKeys[k]; ok {
-		return true
+	for _, m := range optionModifiers {
+		if name, ok := strings.CutPrefix(rest, m); ok {
+			names = append(names, name)
+			break
+		}
 	}
-	_, ok := deniedKeys[k]
-	return ok
+	return slices.ContainsFunc(names, isDeniedName)
 }
 
-// ValidateUserParameters returns an error listing any user parameters that
-// collide with operator-managed keys or are otherwise denied.
+// isDeniedName reports whether a normalized option name, with no modifiers, is
+// denied or abbreviates a denied name.
+func isDeniedName(name string) bool {
+	if isGroupReplicationManagedKey(name) {
+		return true
+	}
+	if _, ok := managedKeys[name]; ok {
+		return true
+	}
+	if _, ok := deniedKeys[name]; ok {
+		return true
+	}
+	if _, ok := exactOptionPrefixes[name]; ok {
+		return false
+	}
+	if strings.HasPrefix(groupReplicationKeyPrefix, name) || strings.HasPrefix(keyPluginLoadAdd, name) {
+		return true
+	}
+	for _, set := range []map[string]struct{}{managedKeys, deniedKeys} {
+		for full := range set {
+			if strings.HasPrefix(full, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ValidateUserParameters returns an error listing any user parameters that are
+// malformed, collide with operator-managed keys, or are otherwise denied. Keys
+// must be plain option names and values must fit on one my.cnf line: the
+// renderer writes both verbatim.
 func ValidateUserParameters(params map[string]string) error {
-	var conflicts []string
-	for key := range params {
-		if IsDeniedKey(key) {
+	var malformed, conflicts []string
+	for key, value := range params {
+		switch {
+		case !validParameterKey.MatchString(key):
+			malformed = append(malformed, fmt.Sprintf("%q (invalid name)", key))
+		case strings.ContainsAny(value, "\n\r\x00"):
+			malformed = append(malformed, fmt.Sprintf("%s (value contains a line break or NUL)", key))
+		case IsDeniedKey(key):
 			conflicts = append(conflicts, key)
 		}
 	}
-	if len(conflicts) == 0 {
+	var msgs []string
+	if len(malformed) > 0 {
+		sort.Strings(malformed)
+		msgs = append(msgs, "the following parameters are malformed: "+strings.Join(malformed, ", "))
+	}
+	if len(conflicts) > 0 {
+		sort.Strings(conflicts)
+		msgs = append(msgs, "the following parameters are managed by the operator and cannot be set: "+
+			strings.Join(conflicts, ", "))
+	}
+	if len(msgs) == 0 {
 		return nil
 	}
-	sort.Strings(conflicts)
-	return fmt.Errorf("the following parameters are managed by the operator and cannot be set: %s",
-		strings.Join(conflicts, ", "))
+	return errors.New(strings.Join(msgs, "; "))
 }
 
 // DeprecatedUserParameters returns human-readable warnings for any user

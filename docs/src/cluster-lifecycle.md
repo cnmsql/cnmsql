@@ -221,19 +221,32 @@ The operator owns settings required for replication, backup, PITR, and lifecycle
 control. User parameters are applied under the mysqld section, but managed keys
 are protected by the renderer.
 
-The operator checks `spec.mysql.parameters` before it provisions anything. Keys
-are compared case-insensitively, and dashes match underscores (`log-bin` is
-`log_bin`).
+The operator checks `spec.mysql.parameters` in the validating webhook and again
+before it provisions anything. Keys are compared case-insensitively, and dashes
+match underscores (`log-bin` is `log_bin`). Each key must be a plain option name
+(letters, digits, `_`, `-`, `.`), and a value must not contain a line break or a
+NUL byte, since both are written to `my.cnf` as given.
 
-A denied key sets the cluster to `phase: Blocked` with a reason naming the key.
+A key is checked under every name mysqld would resolve it to. The option
+modifiers `loose-`, `skip-`, `enable-`, `disable-`, `maximum-` and `autoset-`
+are looked through (`loose-plugin_dir` is `plugin_dir`), and an abbreviation of
+a denied key is denied too, because MariaDB expands a unique prefix to the full
+option name (`secure_file_pri` is `secure_file_priv`).
+
+The webhook rejects a denied key. A Cluster stored before the check existed is
+set to `phase: Blocked` with a reason naming the key.
 Denied keys are the ones the operator manages itself (replication identity,
 topology, TLS material, binlog durability) and the ones that would move on-disk
-paths or expose the administrative interface, for example `server_id`,
-`gtid_mode`, `read_only`, `log_bin`, `ssl_cert`, `sync_binlog`, `datadir`,
-`socket`, `tmpdir`, `plugin_dir`, `secure_file_priv`, `log_error`,
-`log_output`, `slow_query_log_file`, `admin_address`, `admin_ssl_cert`,
-`tls_ciphersuites`, `skip_replica_start` and `auto_generate_certs`. `require_secure_transport` is allowed: whether clients
-must use TLS is your choice.
+paths, run SQL or load code as the server, or expose the administrative
+interface, for example `server_id`, `gtid_mode`, `read_only`, `log_bin`,
+`ssl_cert`, `sync_binlog`, `datadir`, `socket`, `tmpdir`, `plugin_dir`,
+`plugin_load`, `secure_file_priv`, `init_file`, `init_replica`, `log_error`,
+`log_output`, `slow_query_log_file`, `innodb_data_home_dir`,
+`innodb_undo_directory`, `log_bin_index`, `ssl_crl`, `admin_address`,
+`admin_ssl_cert`, `tls_ciphersuites`, `skip_grant_tables`, `skip_networking`,
+`bind_address`, `skip_replica_start` and `auto_generate_certs`.
+`require_secure_transport` is allowed: whether clients must use TLS is your
+choice.
 
 A deprecated key is accepted, and the operator emits a `DeprecatedParameter`
 Warning event with the current spelling: `slave_parallel_workers` becomes
