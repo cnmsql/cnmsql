@@ -20,6 +20,8 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 const (
@@ -149,44 +151,64 @@ func (u *DatabaseUser) Validate() field.ErrorList {
 			"requireTLS must be one of none, ssl, x509"))
 	}
 	for i := range u.Spec.Grants {
-		global := isGlobalGrantTarget(u.Spec.Grants[i].On)
+		grant := spec.Child("grants").Index(i)
+		global, err := isGlobalGrantTarget(u.Spec.Grants[i].On)
+		if err != nil {
+			allErrs = append(allErrs, field.Invalid(grant.Child("on"), u.Spec.Grants[i].On, err.Error()))
+		}
 		for _, priv := range u.Spec.Grants[i].Privileges {
-			p := strings.ToLower(strings.TrimSpace(priv))
-			if deniedDynamicPrivileges[p] {
+			name, err := engine.NormalizePrivilegeName(priv)
+			if err != nil {
+				allErrs = append(allErrs, field.Invalid(grant.Child("privileges"), priv, err.Error()))
+				continue
+			}
+			if deniedDynamicPrivileges[strings.ToLower(name)] {
 				allErrs = append(allErrs, field.Invalid(
-					spec.Child("grants").Index(i).Child("privileges"), priv,
+					grant.Child("privileges"), priv,
 					"privilege is denied: it would let the user break replication, fencing, or operator accounts"))
 			}
 			// GRANT ALL ON *.* also grants every dynamic privilege (replication,
 			// system-variable, group-replication admin, shutdown, ...), so a global
 			// ALL is as dangerous as superuser and bypasses the denylist above.
 			// Allow ALL only when scoped to a database/table, not the whole instance.
-			if global && (p == "all" || p == "all privileges") {
+			if global && (name == "ALL" || name == "ALL PRIVILEGES") {
 				allErrs = append(allErrs, field.Invalid(
-					spec.Child("grants").Index(i).Child("privileges"), priv,
+					grant.Child("privileges"), priv,
 					"ALL on *.* is not allowed: it grants every dynamic admin privilege; "+
 						"enumerate data privileges, scope ALL to a database (db.*), or set superuser=true"))
 			}
 		}
 	}
 	for i := range u.Spec.Revokes {
+		revoke := spec.Child("revokes").Index(i)
 		if u.Spec.Revokes[i].On == "" {
-			allErrs = append(allErrs, field.Required(
-				spec.Child("revokes").Index(i).Child("on"),
+			allErrs = append(allErrs, field.Required(revoke.Child("on"),
 				"a revoke must name the target to carve out (e.g. mysql.*)"))
+		} else if _, err := engine.ParseGrantTarget(u.Spec.Revokes[i].On); err != nil {
+			allErrs = append(allErrs, field.Invalid(revoke.Child("on"), u.Spec.Revokes[i].On, err.Error()))
 		}
 		if len(u.Spec.Revokes[i].Privileges) == 0 {
-			allErrs = append(allErrs, field.Required(
-				spec.Child("revokes").Index(i).Child("privileges"),
+			allErrs = append(allErrs, field.Required(revoke.Child("privileges"),
 				"a revoke must list at least one privilege"))
+		}
+		for _, priv := range u.Spec.Revokes[i].Privileges {
+			if _, err := engine.NormalizePrivilegeName(priv); err != nil {
+				allErrs = append(allErrs, field.Invalid(revoke.Child("privileges"), priv, err.Error()))
+			}
 		}
 	}
 	return allErrs
 }
 
 // isGlobalGrantTarget reports whether a grant target refers to the whole
-// instance ("*.*"), ignoring identifier quoting and case.
-func isGlobalGrantTarget(on string) bool {
-	t := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(on), "`", ""))
-	return t == "" || t == "*.*"
+// instance ("*.*"). An empty target defaults to "*.*".
+func isGlobalGrantTarget(on string) (bool, error) {
+	if on == "" {
+		return true, nil
+	}
+	target, err := engine.ParseGrantTarget(on)
+	if err != nil {
+		return false, err
+	}
+	return target.IsGlobal(), nil
 }

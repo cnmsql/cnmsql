@@ -377,3 +377,45 @@ func TestDatabaseReconcileRefusesReservedInlineUser(t *testing.T) {
 		t.Errorf("status.message = %q, want it to mention the reserved name", got.Status.Message)
 	}
 }
+
+// A Database stored before the webhook check (or admitted with webhooks off)
+// must not reach MySQL with grants outside its schema (GHSA-jpxg-rv6j-7mf4).
+func TestDatabaseReconcileRefusesInvalidGrants(t *testing.T) {
+	t.Parallel()
+	for name, grant := range map[string]mysqlv1alpha1.DatabaseGrant{
+		"ALL on *.*":       {Privileges: []string{"ALL"}, On: "*.*"},
+		"injected grantee": {Privileges: []string{"SELECT"}, On: "app.* TO 'other'@'%' WITH GRANT OPTION #"},
+		"dynamic":          {Privileges: []string{"SYSTEM_VARIABLES_ADMIN"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			control := &recordingControlClient{}
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "app-pw", Namespace: "default"},
+				Data:       map[string][]byte{"password": []byte("s3cret")},
+			}
+			db := newDatabase(func(d *mysqlv1alpha1.Database) {
+				d.Spec.Users = []mysqlv1alpha1.InlineUser{{
+					Name:           appName,
+					Ensure:         mysqlv1alpha1.EnsurePresent,
+					PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: "app-pw", Key: "password"},
+					Grants:         []mysqlv1alpha1.DatabaseGrant{grant},
+				}}
+			})
+			r := databaseReconciler(t, control, readyClusterForDB(), db, secret)
+
+			got := reconcileToApplied(t, r, db)
+
+			if len(control.createdDatabase)+len(control.created)+len(control.altered) != 0 {
+				t.Fatalf("invalid Database applied: databases=%+v created=%+v altered=%+v",
+					control.createdDatabase, control.created, control.altered)
+			}
+			if got.Status.Applied == nil || *got.Status.Applied {
+				t.Errorf("status.applied = %+v, want false", got.Status.Applied)
+			}
+			if !strings.Contains(got.Status.Message, "spec.users[0].grants[0]") {
+				t.Errorf("status.message = %q, want it to name the grant", got.Status.Message)
+			}
+		})
+	}
+}

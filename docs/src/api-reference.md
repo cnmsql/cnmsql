@@ -774,8 +774,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `privileges` _string array_ | Privileges is the list of privileges (e.g. "SELECT", "INSERT", "ALL"). |  | Required: \{\} <br /> |
-| `on` _string_ | On is the target of the grant (e.g. "mydb.*"). Defaults to the managed<br />database. |  | Optional: \{\} <br /> |
+| `privileges` _string array_ | Privileges is the list of privileges, one name per entry (e.g. "SELECT",<br />"SHOW VIEW", "ALL"). Only schema-level privileges are allowed: SELECT,<br />INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES, CREATE<br />TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, CREATE<br />ROUTINE, ALTER ROUTINE, EVENT, TRIGGER and ALL. Global and dynamic<br />privileges and GRANT OPTION need a DatabaseUser. |  | Required: \{\} <br /> |
+| `on` _string_ | On is the target of the grant: the managed database ("mydb.*") or a<br />table in it ("mydb.orders"), each name bare or backtick-quoted. Defaults<br />to the managed database. |  | Optional: \{\} <br /> |
 
 
 #### DatabaseList
@@ -812,7 +812,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `cluster` _[LocalObjectReference](#localobjectreference)_ | Cluster references the MySQL cluster this database belongs to. |  | Required: \{\} <br /> |
-| `name` _string_ | Name is the name of the MySQL database (schema). Defaults to the resource<br />name if empty. |  | Optional: \{\} <br /> |
+| `name` _string_ | Name is the name of the MySQL database (schema). Defaults to the resource<br />name if empty. It is immutable, since the inline users' grants are<br />confined to it. The system schemas (mysql, information_schema,<br />performance_schema, sys) and the operator's heartbeat schema are<br />reserved, and the name may not contain %, a backslash or a backtick. |  | Optional: \{\} <br /> |
 | `ensure` _[EnsureOption](#ensureoption)_ | Ensure controls whether the database is created or dropped. | present | Enum: [present absent] <br />Optional: \{\} <br /> |
 | `characterSet` _string_ | CharacterSet of the database (e.g. "utf8mb4"). |  | Optional: \{\} <br /> |
 | `collation` _string_ | Collation of the database (e.g. "utf8mb4_0900_ai_ci"). |  | Optional: \{\} <br /> |

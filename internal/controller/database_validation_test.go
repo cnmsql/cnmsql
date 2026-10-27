@@ -27,8 +27,9 @@ import (
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
-// Database has no webhook, so the inline-user name rule lives in the CRD
-// schema (CEL) and is checked against a real API server.
+// The inline-user name rule and spec.name immutability live in the CRD schema
+// (CEL), so they hold even with webhooks disabled and are checked against a
+// real API server.
 var _ = Describe("Database admission", func() {
 	ctx := context.Background()
 
@@ -60,4 +61,28 @@ var _ = Describe("Database admission", func() {
 		Entry("root", "inline-user-root", "root"),
 		Entry("mysql.* system account", "inline-user-sys", "mysql.sys"),
 	)
+
+	// The inline users' grants are confined to the managed schema, so pointing
+	// an existing Database at another schema would move them onto it.
+	It("refuses to change spec.name", func() {
+		db := database("name-immutable", "app")
+		Expect(k8sClient.Create(ctx, db)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, db) })
+
+		for _, name := range []string{"other", ""} {
+			changed := db.DeepCopy()
+			changed.Spec.Name = name
+			err := k8sClient.Update(ctx, changed)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "spec.name=%q: expected Invalid, got %v", name, err)
+			Expect(err.Error()).To(ContainSubstring("spec.name is immutable"))
+		}
+
+		unnamed := database("name-unset", "app")
+		unnamed.Spec.Name = ""
+		Expect(k8sClient.Create(ctx, unnamed)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, unnamed) })
+		unnamed.Spec.Name = "other"
+		err := k8sClient.Update(ctx, unnamed)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "setting spec.name: expected Invalid, got %v", err)
+	})
 })
