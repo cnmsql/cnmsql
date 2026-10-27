@@ -290,11 +290,9 @@ func (d bootstrapDialect) setUserPassword(user, host, password string) string {
 }
 
 // quoteString single-quotes a SQL string literal, escaping backslashes and
-// single quotes.
+// doubling single quotes (safe under NO_BACKSLASH_ESCAPES too).
 func quoteString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	return "'" + s + "'"
+	return "'" + escapeName(s) + "'"
 }
 
 // quoteIdent backtick-quotes a SQL identifier, escaping embedded backticks.
@@ -303,8 +301,10 @@ func quoteIdent(s string) string {
 }
 
 // escapeName escapes a value used inside a single-quoted user name (without
-// adding the surrounding quotes, which the callers supply).
+// adding the surrounding quotes, which the callers supply). Single quotes are
+// doubled rather than backslash-escaped, so a value cannot end the literal
+// when sql_mode has NO_BACKSLASH_ESCAPES.
 func escapeName(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
-	return strings.ReplaceAll(s, `'`, `\'`)
+	return strings.ReplaceAll(s, `'`, `''`)
 }

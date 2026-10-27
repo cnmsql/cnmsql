@@ -127,7 +127,7 @@ func TestChangeSourceEscapesPassword(t *testing.T) {
 		User:     "u",
 		Password: "a'b\\c",
 	})
-	if !strings.Contains(stmt, `SOURCE_PASSWORD='a\'b\\c'`) {
+	if !strings.Contains(stmt, `SOURCE_PASSWORD='a''b\\c'`) {
 		t.Errorf("password not escaped correctly:\n%s", stmt)
 	}
 }
@@ -280,7 +280,7 @@ func TestMariaDBChangeSourceStatementEscapesPassword(t *testing.T) {
 		User:     "u",
 		Password: "a'b\\c",
 	})
-	if !strings.Contains(stmt, `MASTER_PASSWORD='a\'b\\c'`) {
+	if !strings.Contains(stmt, `MASTER_PASSWORD='a''b\\c'`) {
 		t.Errorf("password not escaped correctly:\n%s", stmt)
 	}
 }

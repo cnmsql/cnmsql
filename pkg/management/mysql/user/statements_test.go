@@ -174,9 +174,25 @@ func TestPasswordEscaping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := `IDENTIFIED BY 'a\'b\\c'`; !strings.Contains(stmts[0], want) {
+	if want := `IDENTIFIED BY 'a''b\\c'`; !strings.Contains(stmts[0], want) {
 		t.Errorf("statement %q missing escaped password %q", stmts[0], want)
 	}
+}
+
+// TestPasswordCannotAddAccountUnderNoBackslashEscapes replays GHSA-rf36: with
+// \' escaping, this password ended the literal under NO_BACKSLASH_ESCAPES and
+// turned a rotation into a second ALTER USER on cnmsql_control.
+func TestPasswordCannotAddAccountUnderNoBackslashEscapes(t *testing.T) {
+	pw := "x', cnmsql_control@`%` IDENTIFIED BY \"pwned-by-tenant\" #"
+	stmts, err := AlterUserStatements(AlterUserRequest{Name: "tenant_e", Host: "%", Password: &pw})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const prefix = "ALTER USER 'tenant_e'@'%' IDENTIFIED BY "
+	if !strings.HasPrefix(stmts[0], prefix) {
+		t.Fatalf("unexpected statement %q", stmts[0])
+	}
+	checkQuoted(t, pw, strings.TrimPrefix(stmts[0], prefix))
 }
 
 func TestAlterUserOnlyTouchesSetFields(t *testing.T) {

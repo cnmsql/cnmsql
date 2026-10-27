@@ -139,10 +139,11 @@ func SetCommunicationProtocolStatement(v version.Version) string {
 		quote(fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)))
 }
 
-// quote renders a single-quoted SQL string literal, escaping embedded quotes and
-// backslashes. The inputs here (UUIDs, host:port addresses) are operator-computed
-// and never user free-text, but quoting keeps the builders safe by construction.
+// quote renders a single-quoted SQL string literal, escaping backslashes and
+// doubling embedded quotes (safe under NO_BACKSLASH_ESCAPES too). The inputs
+// here (UUIDs, host:port addresses) are operator-computed and never user
+// free-text, but quoting keeps the builders safe by construction.
 func quote(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+	r := strings.NewReplacer(`\`, `\\`, `'`, `''`)
 	return "'" + r.Replace(s) + "'"
 }

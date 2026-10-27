@@ -343,7 +343,7 @@ func TestBootstrapValidation(t *testing.T) {
 
 func TestBootstrapEscaping(t *testing.T) {
 	out := joinStmts(t, BootstrapParams{RootPassword: `a'b\c`})
-	if !strings.Contains(out, `IDENTIFIED BY 'a\'b\\c'`) {
+	if !strings.Contains(out, `IDENTIFIED BY 'a''b\\c'`) {
 		t.Errorf("password not escaped:\n%s", out)
 	}
 }

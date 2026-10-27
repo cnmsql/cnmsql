@@ -9,7 +9,10 @@ limitations under the License.
 
 package user
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // quotingSeeds cover the escape characters themselves, already-escaped
 // sequences, statement terminators, comment introducers, and non-UTF-8 bytes.
@@ -35,30 +38,53 @@ var quotingSeeds = []string{
 	"emoji \U0001F600",
 }
 
-// unquoteLiteral reverses quote(): it strips the outer single quotes and undoes
-// backslash escapes, failing if the interior terminates the literal early.
-func unquoteLiteral(t *testing.T, quoted string) string {
+// unquoteLiteral reads quoted the way MySQL's lexer reads a single-quoted
+// literal: a doubled quote is one quote and, unless noBackslashEscapes (the
+// sql_mode flag), a backslash escapes the next byte. It fails if the literal
+// closes before the last byte, since everything after it would be parsed as
+// SQL.
+func unquoteLiteral(t *testing.T, quoted string, noBackslashEscapes bool) string {
 	t.Helper()
-	if len(quoted) < 2 || quoted[0] != '\'' || quoted[len(quoted)-1] != '\'' {
-		t.Fatalf("quoted literal %q is not wrapped in single quotes", quoted)
+	if len(quoted) < 2 || quoted[0] != '\'' {
+		t.Fatalf("quoted literal %q does not start with a single quote", quoted)
 	}
-	body := quoted[1 : len(quoted)-1]
 	var out []byte
-	for i := 0; i < len(body); i++ {
-		switch body[i] {
-		case '\\':
-			if i+1 >= len(body) {
+	for i := 1; i < len(quoted); i++ {
+		switch c := quoted[i]; {
+		case c == '\\' && !noBackslashEscapes:
+			i++
+			if i >= len(quoted) {
 				t.Fatalf("quoted literal %q ends with a dangling backslash", quoted)
 			}
+			out = append(out, quoted[i])
+		case c == '\'' && i+1 < len(quoted) && quoted[i+1] == '\'':
+			out = append(out, '\'')
 			i++
-			out = append(out, body[i])
-		case '\'':
-			t.Fatalf("quoted literal %q contains an unescaped single quote at offset %d", quoted, i)
+		case c == '\'':
+			if i != len(quoted)-1 {
+				t.Fatalf("quoted literal %q closes at offset %d (noBackslashEscapes=%v)", quoted, i, noBackslashEscapes)
+			}
+			return string(out)
 		default:
-			out = append(out, body[i])
+			out = append(out, c)
 		}
 	}
-	return string(out)
+	t.Fatalf("quoted literal %q is never closed (noBackslashEscapes=%v)", quoted, noBackslashEscapes)
+	return ""
+}
+
+// checkQuoted asserts quoted is exactly one literal holding s under the
+// default sql_mode, and still exactly one literal (backslashes read verbatim)
+// under NO_BACKSLASH_ESCAPES, which spec.mysql.parameters can set.
+func checkQuoted(t *testing.T, s, quoted string) {
+	t.Helper()
+	if got := unquoteLiteral(t, quoted, false); got != s {
+		t.Fatalf("%q unquotes to %q, want %q", quoted, got, s)
+	}
+	want := strings.ReplaceAll(s, `\`, `\\`)
+	if got := unquoteLiteral(t, quoted, true); got != want {
+		t.Fatalf("%q unquotes to %q under NO_BACKSLASH_ESCAPES, want %q", quoted, got, want)
+	}
 }
 
 // unquoteIdent reverses quoteIdent(): it strips the outer backticks and undoes
@@ -94,12 +120,8 @@ func FuzzQuote(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		quoted := quote(s)
-		if got := unquoteLiteral(t, quoted); got != s {
-			t.Fatalf("quote(%q) = %q, which unquotes to %q", s, quoted, got)
-		}
-		if got := unquoteLiteral(t, quote(quoted)); got != quoted {
-			t.Fatalf("double quoting %q is not reversible: got %q", s, got)
-		}
+		checkQuoted(t, s, quoted)
+		checkQuoted(t, quoted, quote(quoted))
 	})
 }
 
