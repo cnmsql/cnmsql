@@ -159,6 +159,9 @@ func (c *Controller) StartLoad(ctx context.Context, req webserver.LoadRequest) (
 	session.cmd = exec.CommandContext(ctx, path, cfg.Engine.Logical().LoadArgs(defaults)...)
 	session.cmd.Stdout = newProcessLogWriter(log, "stdout")
 	session.cmd.Stderr = io.MultiWriter(newProcessLogWriter(log, "stderr"), session.stderr)
+	// Wait closes stdin only after the output pipes close, so a killed
+	// client's lingering child that still reads stdin would block it forever.
+	session.cmd.WaitDelay = waitDelay
 	stdin, err := session.cmd.StdinPipe()
 	if err != nil {
 		return nil, err
