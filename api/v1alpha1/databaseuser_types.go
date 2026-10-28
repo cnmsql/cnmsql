@@ -174,6 +174,14 @@ type DatabaseUserStatus struct {
 	// +optional
 	PasswordSecretResourceVersion string `json:"passwordSecretResourceVersion,omitempty"`
 
+	// Account names the MySQL account (name@host) this DatabaseUser owns,
+	// recorded on every successful apply. Changing spec.name or spec.host does
+	// not move ownership: an existing account under the new name is a conflict
+	// unless it is adopted, and reclaim and ensure: absent only drop an owned
+	// account.
+	// +optional
+	Account string `json:"account,omitempty"`
+
 	// PendingCreate names the account (name@host) this DatabaseUser asked the
 	// primary to create, recorded before the request is sent and cleared on the
 	// first successful apply. A create that errors (for example a timeout) may

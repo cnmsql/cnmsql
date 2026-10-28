@@ -837,7 +837,7 @@ _Appears in:_
 | `applied` _boolean_ | Applied is true once the desired state has been reconciled. |  | Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional detail, typically an error. |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the generation observed by the controller. |  | Optional: \{\} <br /> |
-| `passwordStatus` _object (keys:string, values:string)_ | PasswordStatus records, per managed user ("name@host"), the source Secret<br />resourceVersion last applied to MySQL. It lets the controller re-apply a<br />password only when its Secret changes. |  | Optional: \{\} <br /> |
+| `passwordStatus` _object (keys:string, values:string)_ | PasswordStatus records, per managed user ("name@host"), the source Secret<br />resourceVersion last applied to MySQL. It lets the controller re-apply a<br />password only when its Secret changes. Its keys are the accounts this<br />Database owns: an inline user naming an existing account that is not a<br />key is a conflict, and the account is left alone. A key is added, with an<br />empty version, just before the account is created. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest observations of the database state. |  | Optional: \{\} <br /> |
 
 
@@ -972,6 +972,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional detail, typically an error. |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the generation observed by the controller. |  | Optional: \{\} <br /> |
 | `passwordSecretResourceVersion` _string_ | PasswordSecretResourceVersion records the source Secret resourceVersion<br />last applied to MySQL, so the password is re-applied only when it changes. |  | Optional: \{\} <br /> |
+| `account` _string_ | Account names the MySQL account (name@host) this DatabaseUser owns,<br />recorded on every successful apply. Changing spec.name or spec.host does<br />not move ownership: an existing account under the new name is a conflict<br />unless it is adopted, and reclaim and ensure: absent only drop an owned<br />account. |  | Optional: \{\} <br /> |
 | `pendingCreate` _string_ | PendingCreate names the account (name@host) this DatabaseUser asked the<br />primary to create, recorded before the request is sent and cleared on the<br />first successful apply. A create that errors (for example a timeout) may<br />still have created the account; the operator treats a matching account as<br />its own on the next reconcile instead of reporting a conflict. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta) array_ | Conditions represent the latest observations of the user state. |  | Optional: \{\} <br /> |
 

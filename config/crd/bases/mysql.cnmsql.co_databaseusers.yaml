@@ -221,6 +221,14 @@ spec:
           status:
             description: status defines the observed state of DatabaseUser
             properties:
+              account:
+                description: |-
+                  Account names the MySQL account (name@host) this DatabaseUser owns,
+                  recorded on every successful apply. Changing spec.name or spec.host does
+                  not move ownership: an existing account under the new name is a conflict
+                  unless it is adopted, and reclaim and ensure: absent only drop an owned
+                  account.
+                type: string
               applied:
                 description: Applied is true once the desired state has been reconciled.
                 type: boolean

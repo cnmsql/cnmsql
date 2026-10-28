@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -34,7 +35,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/user"
 )
 
-func databaseReconciler(t *testing.T, control *recordingControlClient, objs ...client.Object) *DatabaseReconciler {
+func databaseReconciler(t *testing.T, control InstanceControlClient, objs ...client.Object) *DatabaseReconciler {
 	t.Helper()
 	scheme := testScheme(t)
 	builder := fake.NewClientBuilder().
@@ -187,12 +188,16 @@ func TestDatabaseReconcileNoUserChangeWhenMatching(t *testing.T) {
 			PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: "app-pw", Key: "password"},
 			Grants:         []mysqlv1alpha1.DatabaseGrant{{Privileges: []string{"SELECT"}}},
 		}}
+		// The account is this Database's own, its password not applied yet.
+		d.Status.PasswordStatus = map[string]string{"app@%": ""}
 	})
 	r := databaseReconciler(t, control, readyClusterForDB(), db, secret)
 
 	// Two full reconciles; after the password is recorded, the second pass must
 	// not re-alter the matching user.
-	reconcileToApplied(t, r, db)
+	if got := reconcileToApplied(t, r, db); got.Status.Applied == nil || !*got.Status.Applied {
+		t.Fatalf("status.applied = %+v, want true; message %q", got.Status.Applied, got.Status.Message)
+	}
 	control.altered = nil
 	if _, err := r.Reconcile(context.Background(), dbRequest(db)); err != nil {
 		t.Fatal(err)
@@ -417,5 +422,99 @@ func TestDatabaseReconcileRefusesInvalidGrants(t *testing.T) {
 				t.Errorf("status.message = %q, want it to name the grant", got.Status.Message)
 			}
 		})
+	}
+}
+
+func inlineAppUser(ensure mysqlv1alpha1.EnsureOption) func(*mysqlv1alpha1.Database) {
+	return func(d *mysqlv1alpha1.Database) {
+		d.Spec.Users = []mysqlv1alpha1.InlineUser{{
+			Name:           appName,
+			Ensure:         ensure,
+			PasswordSecret: &mysqlv1alpha1.SecretKeySelector{Name: "app-pw", Key: "password"},
+			Grants:         []mysqlv1alpha1.DatabaseGrant{{Privileges: []string{"SELECT"}}},
+		}}
+	}
+}
+
+func appPasswordSecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-pw", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("s3cret")},
+	}
+}
+
+// An inline user naming an existing account this Database did not create
+// (another tenant's, a DatabaseUser's, a managed role's) must neither alter
+// nor drop it (GHSA-rfv8-v7q9-cp69).
+func TestDatabaseReconcileRefusesUnownedAccount(t *testing.T) {
+	t.Parallel()
+	for name, ensure := range map[string]mysqlv1alpha1.EnsureOption{
+		"present": mysqlv1alpha1.EnsurePresent,
+		"absent":  mysqlv1alpha1.EnsureAbsent,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			control := &recordingControlClient{users: []user.UserInfo{{Name: appName, Host: "%"}}}
+			rec := record.NewFakeRecorder(20)
+			db := newDatabase(inlineAppUser(ensure))
+			r := databaseReconciler(t, control, readyClusterForDB(), db, appPasswordSecret())
+			r.Recorder = rec
+
+			got := reconcileToApplied(t, r, db)
+
+			if len(control.created)+len(control.altered)+len(control.dropped) != 0 {
+				t.Fatalf("unowned account touched: created=%+v altered=%+v dropped=%+v",
+					control.created, control.altered, control.dropped)
+			}
+			if got.Status.Applied == nil || *got.Status.Applied {
+				t.Errorf("status.applied = %+v, want false", got.Status.Applied)
+			}
+			if c := apimeta.FindStatusCondition(got.Status.Conditions, mysqlv1alpha1.ConditionReady); c == nil || c.Reason != "UserConflict" {
+				t.Errorf("ready condition = %+v, want reason UserConflict", c)
+			}
+			if !drainEvents(rec.Events, "UserConflict") {
+				t.Errorf("expected a UserConflict event")
+			}
+		})
+	}
+}
+
+// The account is claimed before the create is sent, so a create that errors
+// after MySQL ran it is recovered as this Database's own on the next pass.
+func TestDatabaseReconcileRecoversAccountFromTimedOutCreate(t *testing.T) {
+	t.Parallel()
+	control := &lostCreateControlClient{recordingControlClient: &recordingControlClient{}}
+	db := newDatabase(inlineAppUser(mysqlv1alpha1.EnsurePresent))
+	r := databaseReconciler(t, control, readyClusterForDB(), db, appPasswordSecret())
+	control.onCreate = func() {
+		got := &mysqlv1alpha1.Database{}
+		if err := r.Get(context.Background(), dbRequest(db).NamespacedName, got); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got.Status.PasswordStatus["app@%"]; !ok {
+			t.Errorf("status.passwordStatus at create time = %+v, want app@%% claimed", got.Status.PasswordStatus)
+		}
+	}
+
+	reconcileToApplied(t, r, db) // finalizer, then the create that times out
+	if _, err := r.Reconcile(context.Background(), dbRequest(db)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &mysqlv1alpha1.Database{}
+	if err := r.Get(context.Background(), dbRequest(db).NamespacedName, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Applied == nil || !*got.Status.Applied {
+		t.Fatalf("status.applied = %+v, want true; message %q", got.Status.Applied, got.Status.Message)
+	}
+	if len(control.created) != 1 {
+		t.Errorf("created = %d, want no second create", len(control.created))
+	}
+	if len(control.altered) != 1 || control.altered[0].Password == nil || *control.altered[0].Password != "s3cret" {
+		t.Errorf("altered = %+v, want the password re-applied once", control.altered)
+	}
+	if got.Status.PasswordStatus["app@%"] == "" {
+		t.Errorf("password version not recorded: %+v", got.Status.PasswordStatus)
 	}
 }
