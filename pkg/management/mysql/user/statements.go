@@ -24,6 +24,8 @@ package user
 import (
 	"fmt"
 	"strings"
+
+	"github.com/cnmsql/cnmsql/pkg/engine"
 )
 
 // RequireTLS values accepted on managed roles and reported in UserInfo.
@@ -226,14 +228,37 @@ func grantStatements(name, host string, superuser bool, privileges []Privilege) 
 		if len(p.Privileges) == 0 {
 			return nil, fmt.Errorf("privilege entry has no privileges")
 		}
-		on := p.On
-		if on == "" {
-			on = "*.*"
+		privs, on, err := privilegeClause(p)
+		if err != nil {
+			return nil, err
 		}
-		stmts = append(stmts, fmt.Sprintf("GRANT %s ON %s TO %s",
-			strings.Join(p.Privileges, ", "), on, acct))
+		stmts = append(stmts, fmt.Sprintf("GRANT %s ON %s TO %s", privs, on, acct))
 	}
 	return stmts, nil
+}
+
+// privilegeClause renders a privilege entry's list and target for GRANT or
+// REVOKE. Each name must be a single privilege and the target a plain *.*,
+// db.* or db.table, rendered quoted, so neither can add a clause to the
+// statement whatever the caller validated. An empty target means *.*.
+func privilegeClause(p Privilege) (string, string, error) {
+	names := make([]string, 0, len(p.Privileges))
+	for _, name := range p.Privileges {
+		n, err := engine.NormalizePrivilegeName(name)
+		if err != nil {
+			return "", "", err
+		}
+		names = append(names, n)
+	}
+	on := p.On
+	if on == "" {
+		on = engine.GlobalGrantTarget
+	}
+	target, err := engine.ParseGrantTarget(on)
+	if err != nil {
+		return "", "", err
+	}
+	return strings.Join(names, ", "), target.SQL(), nil
 }
 
 // revokeStatements builds REVOKE statements for a privilege list against an
@@ -260,12 +285,11 @@ func revokeStatements(name, host string, revokes []Privilege, d Dialect) ([]stri
 		if len(p.Privileges) == 0 {
 			return nil, fmt.Errorf("revoke entry has no privileges")
 		}
-		on := p.On
-		if on == "" {
-			on = "*.*"
+		privs, on, err := privilegeClause(p)
+		if err != nil {
+			return nil, err
 		}
-		stmts = append(stmts, fmt.Sprintf("%s%s ON %s FROM %s",
-			verb, strings.Join(p.Privileges, ", "), on, acct))
+		stmts = append(stmts, fmt.Sprintf("%s%s ON %s FROM %s", verb, privs, on, acct))
 	}
 	return stmts, nil
 }

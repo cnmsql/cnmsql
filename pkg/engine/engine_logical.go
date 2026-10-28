@@ -36,7 +36,9 @@ const (
 	// DumpAccountHost pins the dump account to socket connections.
 	DumpAccountHost = "localhost"
 
-	privSelect = "SELECT"
+	privSelect            = "SELECT"
+	privShowView          = "SHOW VIEW"
+	privReplicationClient = "REPLICATION CLIENT"
 )
 
 // DumpOpts configures a logical dump.
@@ -194,7 +196,7 @@ func (mysqlLogicalTool) ParseSnapshotPosition(comments string) (BinlogInfo, erro
 // --source-data takes, REPLICATION CLIENT to read the binlog position.
 func (mysqlLogicalTool) DumpAccountGrants(version.Version) []AccountGrant {
 	return []AccountGrant{{
-		Privileges: []string{privSelect, "SHOW VIEW", "TRIGGER", "EVENT", "RELOAD", "REPLICATION CLIENT"},
+		Privileges: []string{privSelect, privShowView, "TRIGGER", "EVENT", "RELOAD", privReplicationClient},
 		On:         GlobalGrantTarget,
 	}}
 }
@@ -234,7 +236,7 @@ func (mariadbLogicalTool) ParseSnapshotPosition(comments string) (BinlogInfo, er
 // 11.3 added SHOW CREATE ROUTINE, which reads routine bodies without SELECT on
 // mysql.proc.
 func (mariadbLogicalTool) DumpAccountGrants(v version.Version) []AccountGrant {
-	privs := []string{privSelect, "SHOW VIEW", "TRIGGER", "EVENT", "RELOAD", "BINLOG MONITOR"}
+	privs := []string{privSelect, privShowView, "TRIGGER", "EVENT", "RELOAD", "BINLOG MONITOR"}
 	if v.AtLeast(11, 3, 0) {
 		privs = append(privs, "SHOW CREATE ROUTINE")
 	}

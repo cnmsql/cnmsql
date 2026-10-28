@@ -102,6 +102,12 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
+	// The webhook enforces this on admission; a Database stored before it, or
+	// admitted while webhooks were disabled, is caught here and not applied.
+	if errs := db.Validate(); len(errs) > 0 {
+		return ctrl.Result{}, r.markNotApplied(ctx, db, "Invalid", errs.ToAggregate().Error())
+	}
+
 	if primary == "" {
 		return ctrl.Result{RequeueAfter: provisioningRequeue}, r.markNotApplied(ctx, db,
 			"PrimaryNotReady", "Waiting for the cluster primary to be available")
@@ -175,7 +181,7 @@ func (r *DatabaseReconciler) applyDatabase(
 	cluster *mysqlv1alpha1.Cluster,
 	primary string,
 ) (map[string]string, error) {
-	name := databaseName(db)
+	name := db.DatabaseName()
 
 	if db.Spec.Ensure == mysqlv1alpha1.EnsureAbsent {
 		if err := r.ControlClient.DropDatabase(ctx, cluster, primary, user.DropDatabaseRequest{Name: name}); err != nil {
@@ -320,10 +326,10 @@ func (r *DatabaseReconciler) finalize(
 			// Cannot reclaim without a primary; wait for one rather than orphan.
 			return ctrl.Result{RequeueAfter: provisioningRequeue}, nil
 		}
-		if err := r.ControlClient.DropDatabase(ctx, cluster, primary, user.DropDatabaseRequest{Name: databaseName(db)}); err != nil {
+		if err := r.ControlClient.DropDatabase(ctx, cluster, primary, user.DropDatabaseRequest{Name: db.DatabaseName()}); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.recordDBEvent(db, "DatabaseReclaimed", databaseName(db))
+		r.recordDBEvent(db, "DatabaseReclaimed", db.DatabaseName())
 	}
 	return ctrl.Result{}, r.removeFinalizer(ctx, db)
 }
@@ -395,13 +401,6 @@ func defaultGrantTarget(on, dbName string) string {
 		return dbName + ".*"
 	}
 	return on
-}
-
-func databaseName(db *mysqlv1alpha1.Database) string {
-	if db.Spec.Name != "" {
-		return db.Spec.Name
-	}
-	return db.Name
 }
 
 func prevPassword(db *mysqlv1alpha1.Database, key string) string {

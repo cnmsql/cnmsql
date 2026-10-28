@@ -32,13 +32,17 @@ const (
 )
 
 // DatabaseSpec defines the desired state of Database.
+// +kubebuilder:validation:XValidation:rule="has(self.name) == has(oldSelf.name) && (!has(self.name) || self.name == oldSelf.name)",message="spec.name is immutable"
 type DatabaseSpec struct {
 	// Cluster references the MySQL cluster this database belongs to.
 	// +kubebuilder:validation:Required
 	Cluster LocalObjectReference `json:"cluster"`
 
 	// Name is the name of the MySQL database (schema). Defaults to the resource
-	// name if empty.
+	// name if empty. It is immutable, since the inline users' grants are
+	// confined to it. The system schemas (mysql, information_schema,
+	// performance_schema, sys) and the operator's heartbeat schema are
+	// reserved, and the name may not contain %, a backslash or a backtick.
 	// +optional
 	Name string `json:"name,omitempty"`
 
@@ -109,12 +113,18 @@ type InlineUser struct {
 
 // DatabaseGrant describes a single MySQL GRANT statement.
 type DatabaseGrant struct {
-	// Privileges is the list of privileges (e.g. "SELECT", "INSERT", "ALL").
+	// Privileges is the list of privileges, one name per entry (e.g. "SELECT",
+	// "SHOW VIEW", "ALL"). Only schema-level privileges are allowed: SELECT,
+	// INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES, CREATE
+	// TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, CREATE
+	// ROUTINE, ALTER ROUTINE, EVENT, TRIGGER and ALL. Global and dynamic
+	// privileges and GRANT OPTION need a DatabaseUser.
 	// +kubebuilder:validation:Required
 	Privileges []string `json:"privileges"`
 
-	// On is the target of the grant (e.g. "mydb.*"). Defaults to the managed
-	// database.
+	// On is the target of the grant: the managed database ("mydb.*") or a
+	// table in it ("mydb.orders"), each name bare or backtick-quoted. Defaults
+	// to the managed database.
 	// +optional
 	On string `json:"on,omitempty"`
 }

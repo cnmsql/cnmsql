@@ -95,7 +95,10 @@ spec:
               name:
                 description: |-
                   Name is the name of the MySQL database (schema). Defaults to the resource
-                  name if empty.
+                  name if empty. It is immutable, since the inline users' grants are
+                  confined to it. The system schemas (mysql, information_schema,
+                  performance_schema, sys) and the operator's heartbeat schema are
+                  reserved, and the name may not contain %, a backslash or a backtick.
                 type: string
               reclaimPolicy:
                 default: retain
@@ -130,12 +133,18 @@ spec:
                         properties:
                           "on":
                             description: |-
-                              On is the target of the grant (e.g. "mydb.*"). Defaults to the managed
-                              database.
+                              On is the target of the grant: the managed database ("mydb.*") or a
+                              table in it ("mydb.orders"), each name bare or backtick-quoted. Defaults
+                              to the managed database.
                             type: string
                           privileges:
-                            description: Privileges is the list of privileges (e.g.
-                              "SELECT", "INSERT", "ALL").
+                            description: |-
+                              Privileges is the list of privileges, one name per entry (e.g. "SELECT",
+                              "SHOW VIEW", "ALL"). Only schema-level privileges are allowed: SELECT,
+                              INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES, CREATE
+                              TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, CREATE
+                              ROUTINE, ALTER ROUTINE, EVENT, TRIGGER and ALL. Global and dynamic
+                              privileges and GRANT OPTION need a DatabaseUser.
                             items:
                               type: string
                             type: array
@@ -175,6 +184,10 @@ spec:
             required:
             - cluster
             type: object
+            x-kubernetes-validations:
+            - message: spec.name is immutable
+              rule: has(self.name) == has(oldSelf.name) && (!has(self.name) || self.name
+                == oldSelf.name)
           status:
             description: status defines the observed state of Database
             properties:

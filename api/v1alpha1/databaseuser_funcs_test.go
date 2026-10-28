@@ -100,3 +100,39 @@ func TestDatabaseUserValidateRejectsReservedAndSuperuserGrants(t *testing.T) {
 		t.Errorf("expected superuser+grants rejection")
 	}
 }
+
+// Each privilege entry is one normalised name, and the target is parsed, so a
+// list in one entry, odd spacing or a spaced *.* cannot slip past the
+// denylist or the global ALL check (GHSA-9ghw-mcj4-9pp8 items 1 and 2).
+func TestDatabaseUserValidateRejectsDenylistBypasses(t *testing.T) {
+	for name, grant := range map[string]DatabaseUserGrant{
+		"list with SUPER":        {Privileges: []string{"SELECT, SUPER"}, On: "*.*"},
+		"unspaced list":          {Privileges: []string{"SELECT,SYSTEM_VARIABLES_ADMIN"}, On: "app.*"},
+		"tab in ALL PRIVILEGES":  {Privileges: []string{"ALL\tPRIVILEGES"}, On: "*.*"},
+		"spaced global target":   {Privileges: []string{"ALL"}, On: "* . *"},
+		"quoted global ALL":      {Privileges: []string{"ALL"}, On: "`*`.*"},
+		"padded denied name":     {Privileges: []string{" super "}, On: "*.*"},
+		"injected target clause": {Privileges: []string{"SELECT"}, On: "app.* TO 'x'@'%' WITH GRANT OPTION #"},
+	} {
+		u := validUser(func(u *DatabaseUser) { u.Spec.Grants = []DatabaseUserGrant{grant} })
+		if errs := u.Validate(); len(errs) == 0 {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestDatabaseUserValidateRejectsMalformedRevokes(t *testing.T) {
+	for name, revoke := range map[string]DatabaseUserRevoke{
+		"list in one entry": {Privileges: []string{"INSERT, UPDATE"}, On: "mysql.*"},
+		"injected target":   {Privileges: []string{"INSERT"}, On: "mysql.* FROM 'x'@'%' #"},
+	} {
+		u := validUser(func(u *DatabaseUser) { u.Spec.Revokes = []DatabaseUserRevoke{revoke} })
+		if errs := u.Validate(); len(errs) == 0 {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+	u := validUser(func(u *DatabaseUser) { u.Spec.Revokes = SafeDBaaSAdminRevokes() })
+	if errs := u.Validate(); len(errs) != 0 {
+		t.Errorf("safe DBaaS revokes: unexpected errors %v", errs)
+	}
+}

@@ -49,7 +49,7 @@ func TestCreateUserStatements(t *testing.T) {
 			t.Errorf("create statement %q missing %q", create, want)
 		}
 	}
-	if want := "GRANT SELECT, INSERT ON appdb.* TO 'app'@'%'"; stmts[1] != want {
+	if want := "GRANT SELECT, INSERT ON `appdb`.* TO 'app'@'%'"; stmts[1] != want {
 		t.Errorf("grant = %q, want %q", stmts[1], want)
 	}
 }
@@ -76,7 +76,7 @@ func TestCreateUserRevokesFollowGrants(t *testing.T) {
 		t.Errorf("grant = %q, want %q", stmts[1], want)
 	}
 	// Revoke must come after the grant so the carve-out is not re-widened.
-	if want := "REVOKE IF EXISTS INSERT ON mysql.* FROM 'admin'@'%'"; stmts[2] != want {
+	if want := "REVOKE IF EXISTS INSERT ON `mysql`.* FROM 'admin'@'%'"; stmts[2] != want {
 		t.Errorf("revoke = %q, want %q", stmts[2], want)
 	}
 }
@@ -91,7 +91,7 @@ func TestRevokeStatementsMariaDBOmitsIfExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "REVOKE INSERT ON mysql.* FROM 'admin'@'%'"; create[2] != want {
+	if want := "REVOKE INSERT ON `mysql`.* FROM 'admin'@'%'"; create[2] != want {
 		t.Errorf("mariadb revoke = %q, want %q", create[2], want)
 	}
 
@@ -104,7 +104,7 @@ func TestRevokeStatementsMariaDBOmitsIfExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "REVOKE IF EXISTS INSERT ON mysql.* FROM 'admin'@'%'"; mysql[2] != want {
+	if want := "REVOKE IF EXISTS INSERT ON `mysql`.* FROM 'admin'@'%'"; mysql[2] != want {
 		t.Errorf("mysql revoke = %q, want %q", mysql[2], want)
 	}
 }
@@ -124,7 +124,7 @@ func TestAlterUserRevokesFollowGrants(t *testing.T) {
 	if want := "GRANT SELECT ON *.* TO 'admin'@'%'"; stmts[0] != want {
 		t.Errorf("grant = %q, want %q", stmts[0], want)
 	}
-	if want := "REVOKE IF EXISTS UPDATE ON mysql.* FROM 'admin'@'%'"; stmts[1] != want {
+	if want := "REVOKE IF EXISTS UPDATE ON `mysql`.* FROM 'admin'@'%'"; stmts[1] != want {
 		t.Errorf("revoke = %q, want %q", stmts[1], want)
 	}
 }
@@ -243,8 +243,49 @@ func TestAlterUserPrivilegesIssuesGrants(t *testing.T) {
 	if len(stmts) != 1 {
 		t.Fatalf("got %d statements, want 1: %v", len(stmts), stmts)
 	}
-	if want := "GRANT ALL ON db.* TO 'app'@'%'"; stmts[0] != want {
+	if want := "GRANT ALL ON `db`.* TO 'app'@'%'"; stmts[0] != want {
 		t.Errorf("grant = %q, want %q", stmts[0], want)
+	}
+}
+
+func TestGrantStatementsNormaliseNamesAndQuoteTargets(t *testing.T) {
+	stmts, err := AlterUserStatements(AlterUserRequest{
+		Name: "app",
+		Privileges: &[]Privilege{
+			{Privileges: []string{"select", " show  view "}, On: "`my-db`.orders"},
+			{Privileges: []string{"PROCESS"}},
+		},
+		Revokes: &[]Privilege{{Privileges: []string{"insert"}, On: "sys.*"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"GRANT SELECT, SHOW VIEW ON `my-db`.`orders` TO 'app'@'%'",
+		"GRANT PROCESS ON *.* TO 'app'@'%'",
+		"REVOKE IF EXISTS INSERT ON `sys`.* FROM 'app'@'%'",
+	}
+	if strings.Join(stmts, "\n") != strings.Join(want, "\n") {
+		t.Errorf("statements = %q, want %q", stmts, want)
+	}
+}
+
+// A privilege or target that is not a single name or a plain target must be
+// refused, or it would splice raw SQL into the GRANT (GHSA-jpxg-rv6j-7mf4).
+func TestGrantStatementsRefuseInjection(t *testing.T) {
+	for _, p := range []Privilege{
+		{Privileges: []string{"SELECT"}, On: "tenant_a.* TO 'other'@'%' WITH GRANT OPTION #"},
+		{Privileges: []string{"SELECT"}, On: "* . *"},
+		{Privileges: []string{"SELECT, SUPER"}, On: "app.*"},
+		{Privileges: []string{"ALL ON *.* TO 'x'@'%' #"}, On: "app.*"},
+		{Privileges: []string{"SELECT (secret)"}, On: "app.t"},
+	} {
+		if _, err := CreateUserStatements(CreateUserRequest{Name: "app", Privileges: []Privilege{p}}); err == nil {
+			t.Errorf("grant %+v: expected an error", p)
+		}
+		if _, err := AlterUserStatements(AlterUserRequest{Name: "app", Revokes: &[]Privilege{p}}); err == nil {
+			t.Errorf("revoke %+v: expected an error", p)
+		}
 	}
 }
 

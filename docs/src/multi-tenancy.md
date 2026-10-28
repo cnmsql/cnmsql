@@ -205,11 +205,27 @@ the safe path the default.
 
 A `Database` grant whose `on` is omitted applies to the managed schema only
 (`<schema>.*`), so the common case, "this account can use its own schema and
-nothing else", needs no thought. Set `on` explicitly only to widen scope, and
-prefer named privilege lists (`SELECT, INSERT, UPDATE, DELETE`) over `ALL`.
+nothing else", needs no thought. A `Database` cannot grant anything wider:
 
-Avoid `*.*` targets and `superuser: true` for tenant accounts entirely; they
-break the isolation the model depends on.
+- `on` may name only the managed schema (`tenant_a.*`) or a table in it
+  (`tenant_a.orders`). Another schema, or `*.*`, is rejected.
+- Privileges are limited to the schema-level data and DDL set (`SELECT`,
+  `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `INDEX`,
+  `REFERENCES`, `CREATE TEMPORARY TABLES`, `LOCK TABLES`, `EXECUTE`,
+  `CREATE VIEW`, `SHOW VIEW`, `CREATE ROUTINE`, `ALTER ROUTINE`, `EVENT`,
+  `TRIGGER`, `ALL`), one name per list entry. Global and dynamic privileges and
+  `GRANT OPTION` are rejected.
+- `spec.name` is immutable, and the system schemas (`mysql`, `sys`,
+  `performance_schema`, `information_schema`) and the operator's `heartbeat`
+  schema cannot be managed.
+
+The validating webhook rejects a `Database` that breaks these rules, and the
+controller refuses to apply one stored before the check, reporting why in
+`status.message`. Prefer named privilege lists (`SELECT, INSERT, UPDATE,
+DELETE`) over `ALL`. An account that genuinely needs more than one schema
+belongs in a [`DatabaseUser`](./database-users.md), which the platform owner
+controls; avoid `*.*` targets and `superuser: true` for tenant accounts there
+too.
 
 ### Reserved and operator-owned accounts are protected
 
