@@ -431,7 +431,7 @@ var _ = Describe("Manager", Ordered, Label("core", "flavor"), func() {
 			}, e2eTimeout(6*time.Minute), 5*time.Second).Should(Succeed())
 		})
 
-		It("should block a cluster that sets a denied my.cnf parameter", func() {
+		It("should reject a cluster that sets a denied my.cnf parameter", func() {
 			By("applying a Cluster whose spec.mysql.parameters overrides datadir")
 			manifest := fmt.Sprintf(`apiVersion: mysql.cnmsql.co/v1alpha1
 kind: Cluster
@@ -450,31 +450,18 @@ spec:
       database: app
       owner: app
 `, instanceImage)
-			applyManifest("denied-param", manifest)
 			DeferCleanup(func() {
 				deleteCluster("denied-param")
 			})
 
-			By("verifying the cluster is Blocked with a reason naming the denied key")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "cluster", "denied-param",
-					"-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Blocked"))
+			By("verifying the admission webhook rejects it naming the denied key")
+			expectApplyRejected("denied-param", manifest, "datadir")
 
-				cmd = exec.Command("kubectl", "get", "cluster", "denied-param",
-					"-o", "jsonpath={.status.phaseReason}")
-				output, err = utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("datadir"))
-			}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
-
-			By("verifying no instance Pod is ever created for the blocked cluster")
-			cmd := exec.Command("kubectl", "get", "pod", "denied-param-1", "--ignore-not-found")
+			By("verifying no Cluster was stored for the rejected manifest")
+			cmd := exec.Command("kubectl", "get", "cluster", "denied-param", "--ignore-not-found")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(BeEmpty(), "blocked cluster must not provision instances")
+			Expect(output).To(BeEmpty(), "a rejected cluster must not be created")
 		})
 
 		It("should report executable hash in status for operator upgrades", func() {
