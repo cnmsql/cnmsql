@@ -127,8 +127,32 @@ kubectl annotate databaseuser reporter mysql.cnmsql.co/adopt=true --overwrite
 ```
 
 On the next reconcile the operator adopts the account: it reconciles the password
-and grants and sets `status.applied=true`. After that, ownership is implicit and
-you can remove the annotation.
+and grants, sets `status.applied=true` and records the account in
+`status.account`. After that, ownership is implicit and you can remove the
+annotation.
+
+Ownership belongs to the account, not to the object. `status.account` names the
+`name@host` this `DatabaseUser` last applied, and only that account is altered or
+dropped:
+
+- Changing `spec.name` or `spec.host` does not carry ownership over. If the new
+  `name@host` already exists, it is a conflict like any other, and the
+  previously owned account is left as it is.
+- `ensure: absent` drops the account only if this `DatabaseUser` owns it or is
+  annotated to adopt it. Otherwise it reports `UserConflict`.
+- `reclaimPolicy: delete` drops only the owned account. Deleting a
+  `DatabaseUser` that never applied its current `name@host` leaves that account
+  in place and records a `UserNotReclaimed` event.
+
+Anyone who can edit a `DatabaseUser` can set the adopt annotation, and so can
+take over any non-reserved account. Treat `DatabaseUser` as a platform-team
+resource and do not delegate it to tenants; give tenants `Database` objects,
+which never adopt.
+
+A `DatabaseUser` applied by an operator version without `status.account` gets
+the field filled in on its first reconcile after the upgrade, provided its
+`Ready` condition is `True` for the current generation. One whose last apply
+failed, or whose spec changed since, has to be adopted again.
 
 An account the operator created itself is never a conflict, even when the create
 did not report success. Before it asks the primary to create the account, the

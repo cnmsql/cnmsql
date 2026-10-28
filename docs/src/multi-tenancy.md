@@ -236,6 +236,21 @@ operator reserves for its own bootstrap, replication, instance-manager, and
 backup accounts. Tenants cannot declare their way into an account that controls
 the cluster.
 
+### A `Database` never takes over an existing account
+
+A `Database` only alters or drops the accounts it created itself. The keys of
+its `status.passwordStatus` record them, and the operator adds a key just before
+it sends the create. When an inline user names an account that already exists
+and is not one of these (another tenant's inline user, a `DatabaseUser`, a
+managed role, or an account made by hand), the `Database` stops with reason
+`UserConflict` and leaves the account untouched, whatever its `ensure` says.
+There is no adoption for inline users: drop the account, or manage it with a
+[`DatabaseUser`](./database-users.md#conflicts-and-adoption).
+
+Ownership lives in the status subresource, so it is only as strong as your RBAC
+on it. When you delegate `Database` objects to tenants, grant verbs on
+`databases`, never on `databases/status`.
+
 ### Per-account TLS enforcement
 
 A managed role can require encrypted, certificate-authenticated connections with

@@ -470,6 +470,7 @@ func TestDatabaseUserEnsureAbsentDrops(t *testing.T) {
 	}
 	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
 		d.Spec.Ensure = mysqlv1alpha1.EnsureAbsent
+		d.Status.Account = "tenant@%"
 	})
 	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
 
@@ -491,6 +492,7 @@ func TestDatabaseUserReclaimDeleteDropsUser(t *testing.T) {
 		d.Spec.ReclaimPolicy = "delete"
 		d.Finalizers = []string{databaseUserFinalizer}
 		d.DeletionTimestamp = &now
+		d.Status.Account = "tenant@%"
 	})
 	r := databaseUserReconciler(t, control, record.NewFakeRecorder(20), readyClusterForDB(), du, userPasswordSecret())
 
@@ -499,6 +501,125 @@ func TestDatabaseUserReclaimDeleteDropsUser(t *testing.T) {
 	}
 	if len(control.dropped) != 1 || control.dropped[0].Name != testUserName {
 		t.Fatalf("dropped = %+v, want [tenant]", control.dropped)
+	}
+}
+
+// Reclaim drops only the account this DatabaseUser owns: one renamed onto
+// another account before it was ever applied must not drop that account
+// (GHSA-rfv8-v7q9-cp69).
+func TestDatabaseUserReclaimDeleteKeepsUnownedAccount(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{users: []user.UserInfo{{Name: "victim", Host: "%"}}}
+	rec := record.NewFakeRecorder(20)
+	now := metav1.Now()
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.Name = "victim"
+		d.Spec.ReclaimPolicy = "delete"
+		d.Finalizers = []string{databaseUserFinalizer}
+		d.DeletionTimestamp = &now
+		d.Status.Account = "tenant@%"
+	})
+	r := databaseUserReconciler(t, control, rec, readyClusterForDB(), du, userPasswordSecret())
+
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(control.dropped) != 0 {
+		t.Fatalf("dropped = %+v, want none for an unowned account", control.dropped)
+	}
+	if !drainEvents(rec.Events, "UserNotReclaimed") {
+		t.Errorf("expected a UserNotReclaimed event")
+	}
+}
+
+// ensure: absent must not drop an account the DatabaseUser does not own.
+func TestDatabaseUserEnsureAbsentRefusesUnownedAccount(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{users: []user.UserInfo{{Name: testUserName, Host: "%"}}}
+	rec := record.NewFakeRecorder(20)
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Spec.Ensure = mysqlv1alpha1.EnsureAbsent
+	})
+	r := databaseUserReconciler(t, control, rec, readyClusterForDB(), du, userPasswordSecret())
+
+	reconcileUserToApplied(t, r, du)
+
+	if len(control.dropped) != 0 {
+		t.Fatalf("dropped = %+v, want none for an unowned account", control.dropped)
+	}
+	if !drainEvents(rec.Events, "UserConflict") {
+		t.Errorf("expected a UserConflict event")
+	}
+}
+
+// An applied DatabaseUser renamed onto another existing account must not take
+// it over: ownership stays with the account it applied (GHSA-rfv8-v7q9-cp69).
+func TestDatabaseUserRenameDoesNotTakeOverAccount(t *testing.T) {
+	t.Parallel()
+	control := &recordingControlClient{users: []user.UserInfo{
+		{Name: testUserName, Host: "%"},
+		{Name: "victim", Host: "%"},
+	}}
+	rec := record.NewFakeRecorder(20)
+	applied := true
+	du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+		d.Finalizers = []string{databaseUserFinalizer}
+		d.Status.Applied = &applied
+		d.Status.Account = "tenant@%"
+		d.Spec.Name = "victim"
+	})
+	r := databaseUserReconciler(t, control, rec, readyClusterForDB(), du, userPasswordSecret())
+
+	if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.altered)+len(control.created)+len(control.dropped) != 0 {
+		t.Fatalf("renamed DatabaseUser touched MySQL: altered=%+v created=%+v dropped=%+v",
+			control.altered, control.created, control.dropped)
+	}
+	if !drainEvents(rec.Events, "UserConflict") {
+		t.Errorf("expected a UserConflict event")
+	}
+}
+
+// A DatabaseUser applied before status.account existed keeps its account on
+// upgrade, but only when its Ready condition covers the current generation.
+func TestDatabaseUserRecordsLegacyAccount(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		readyGeneration int64
+		wantOwned       bool
+	}{
+		"applied at current generation": {readyGeneration: 2, wantOwned: true},
+		"spec changed since last apply": {readyGeneration: 1, wantOwned: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			control := &recordingControlClient{users: []user.UserInfo{{Name: testUserName, Host: "%"}}}
+			rec := record.NewFakeRecorder(20)
+			applied := true
+			du := newDatabaseUser(func(d *mysqlv1alpha1.DatabaseUser) {
+				d.Generation = 2
+				d.Finalizers = []string{databaseUserFinalizer}
+				d.Status.Applied = &applied
+				d.Status.Conditions = []metav1.Condition{{
+					Type: mysqlv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Reconciled",
+					ObservedGeneration: tc.readyGeneration, LastTransitionTime: metav1.Now(),
+				}}
+			})
+			r := databaseUserReconciler(t, control, rec, readyClusterForDB(), du, userPasswordSecret())
+
+			if _, err := r.Reconcile(context.Background(), userRequest(du)); err != nil {
+				t.Fatal(err)
+			}
+			got := getDatabaseUser(t, r, du)
+			if owned := got.Status.Account == "tenant@%"; owned != tc.wantOwned {
+				t.Fatalf("status.account = %q, want owned=%v", got.Status.Account, tc.wantOwned)
+			}
+			if conflict := drainEvents(rec.Events, "UserConflict"); conflict == tc.wantOwned {
+				t.Errorf("UserConflict event = %v, want %v", conflict, !tc.wantOwned)
+			}
+		})
 	}
 }
 
@@ -654,6 +775,9 @@ func TestDatabaseUserRecoversAccountFromTimedOutCreate(t *testing.T) {
 	}
 	if got.Status.PendingCreate != "" {
 		t.Errorf("status.pendingCreate = %q after apply, want cleared", got.Status.PendingCreate)
+	}
+	if got.Status.Account != "tenant@%" {
+		t.Errorf("status.account = %q after apply, want %q", got.Status.Account, "tenant@%")
 	}
 	if got.Status.PasswordSecretResourceVersion == "" {
 		t.Errorf("password version not recorded")
