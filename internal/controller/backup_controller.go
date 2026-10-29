@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sort"
@@ -70,6 +71,10 @@ type BackupReconciler struct {
 	// manager binary into a shared volume (the instance image no longer ships
 	// it). Falls back to the instance image when empty.
 	OperatorImageName string
+	// ObjectStoreAmbientCredentials lets the operator sign object-store requests
+	// with its own cloud identity for a store that has no static credentials. Off
+	// by default: that identity is shared by every tenant (GHSA-qxwf-59cm-cj4x).
+	ObjectStoreAmbientCredentials bool
 }
 
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;update;patch
@@ -219,7 +224,15 @@ func (r *BackupReconciler) completeBackup(
 	var manifest *objectstore.LogicalBackupMetadata
 	if method == mysqlv1alpha1.BackupMethodLogical {
 		var err error
-		if manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys); err != nil {
+		manifest, err = r.readLogicalManifest(ctx, backup.Namespace, store, keys)
+		if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
+			// The worker uploaded the dump under the cluster's identity; only
+			// the operator cannot read it back. Complete without the manifest's
+			// details rather than failing a good backup.
+			r.recordManifestUnreadable(backup, err)
+			manifest, err = nil, nil
+		}
+		if err != nil {
 			// A missing or undecodable manifest will not fix itself, so fail
 			// the Backup instead of leaving it Running forever. Anything else
 			// (store unreachable, credentials briefly unreadable) is retried.
@@ -476,6 +489,7 @@ func backupJob(
 		"--backup-id=" + backupID,
 		"--backup-name=" + backup.Name,
 		"--cluster-name=" + cluster.Name,
+		"--cluster-uid=" + string(cluster.UID),
 		"--instance-name=" + sourceInstance,
 		"--sha256",
 		"--tls-cert=" + topology.ServerTLSPath + "/tls.crt",
@@ -739,7 +753,18 @@ func (r *BackupReconciler) cleanupObjectStore(ctx context.Context, backup *mysql
 	if err != nil {
 		return err
 	}
-	cfg, err := objectstore.ResolveConfig(ctx, r.Client, backup.Namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, backup.Namespace, store, r.ObjectStoreAmbientCredentials)
+	if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
+		// Holding the finalizer would not help: no retry gets the operator
+		// credentials. Leave the artifacts and say so.
+		log.Info("Skipping backup object-store cleanup: no credentials the operator may use",
+			"backup", backup.Name, "reason", err.Error())
+		if r.Recorder != nil {
+			r.Recorder.Event(backup, corev1.EventTypeWarning, eventObjectStoreCredentialsRequired,
+				fmt.Sprintf("Left the object-store artifacts under s3://%s in place: %v", store.Bucket, err))
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}

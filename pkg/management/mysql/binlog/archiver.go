@@ -65,9 +65,11 @@ type Scanner func(ctx context.Context, path string) (ScanResult, error)
 // store, keeping a gapless, GTID-addressable archive. It is the in-Pod engine
 // the run loop drives while the instance is the current primary.
 type Archiver struct {
-	store        Store
-	objectStore  mysqlv1alpha1.S3ObjectStore
-	clusterName  string
+	store       Store
+	objectStore mysqlv1alpha1.S3ObjectStore
+	clusterName string
+	// clusterUID returns the owning Cluster's UID, or "" while unknown.
+	clusterUID   func() string
 	instanceName string
 	serverUUID   string
 	binlogDir    string
@@ -131,9 +133,14 @@ func (s archivedStamp) matches(fi os.FileInfo) bool {
 
 // ArchiverOptions configures an Archiver.
 type ArchiverOptions struct {
-	Store        Store
-	ObjectStore  mysqlv1alpha1.S3ObjectStore
-	ClusterName  string
+	Store       Store
+	ObjectStore mysqlv1alpha1.S3ObjectStore
+	ClusterName string
+	// ClusterUID returns the owning Cluster's metadata.uid, stamped on every
+	// index write so retention can tell this cluster's archive from another
+	// one at the same location. It may return "" (not observed yet), which
+	// leaves the stamp alone; nil never stamps.
+	ClusterUID   func() string
 	InstanceName string
 	// ServerUUID partitions this instance's segment of the archive.
 	ServerUUID string
@@ -179,6 +186,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		store:         opts.Store,
 		objectStore:   opts.ObjectStore,
 		clusterName:   opts.ClusterName,
+		clusterUID:    opts.ClusterUID,
 		instanceName:  opts.InstanceName,
 		serverUUID:    opts.ServerUUID,
 		binlogDir:     opts.BinlogDir,
@@ -635,6 +643,11 @@ func (a *Archiver) foldFile(
 	index *objectstore.ArchiveIndex, status objectstore.ArchiveStatus, fileName, fileGTIDSet string,
 ) error {
 	index.ClusterName = a.clusterName
+	if a.clusterUID != nil {
+		if uid := a.clusterUID(); uid != "" {
+			index.ClusterUID = uid
+		}
+	}
 
 	seg, ok := index.Segment(a.serverUUID)
 	if !ok {

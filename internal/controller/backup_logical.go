@@ -107,7 +107,7 @@ func (r *BackupReconciler) readLogicalManifest(
 	store *mysqlv1alpha1.S3ObjectStore,
 	keys objectstore.BackupKeys,
 ) (*objectstore.LogicalBackupMetadata, error) {
-	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store, r.ObjectStoreAmbientCredentials)
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +137,21 @@ func (r *BackupReconciler) physicalAnchor(
 	switch {
 	case err == nil:
 		return meta.AnchorGTID, nil
-	case manifestUnrecoverable(err):
+	case manifestUnrecoverable(err), errors.Is(err, objectstore.ErrAmbientCredentialsDisabled):
 		return "", nil
 	default:
 		return "", fmt.Errorf("reading backup metadata: %w", err)
 	}
+}
+
+// recordManifestUnreadable warns that a completed Backup's manifest was not
+// read because the operator has no credentials for its store.
+func (r *BackupReconciler) recordManifestUnreadable(backup *mysqlv1alpha1.Backup, err error) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Event(backup, corev1.EventTypeWarning, eventObjectStoreCredentialsRequired,
+		fmt.Sprintf("Completed without reading the backup manifest: %v", err))
 }
 
 // readBackupMetadata reads a physical backup's metadata.json.
@@ -151,7 +161,7 @@ func (r *BackupReconciler) readBackupMetadata(
 	store *mysqlv1alpha1.S3ObjectStore,
 	keys objectstore.BackupKeys,
 ) (*objectstore.BackupMetadata, error) {
-	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, r.Client, namespace, store, r.ObjectStoreAmbientCredentials)
 	if err != nil {
 		return nil, err
 	}

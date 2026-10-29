@@ -276,6 +276,22 @@ another tenant's cluster or read another tenant's Secret. In **schema-per-tenant
 the boundary is weaker, because every tenant's `Database` and Secret live in the
 one shared namespace; isolation there rests on MySQL grants, not on namespaces.
 
+### Object stores and the operator's cloud identity
+
+A tenant who can edit a `Cluster` or `Backup` chooses its bucket and path. The
+operator lists, reads and deletes objects there itself (retention, Backup
+cleanup and several checks), and it never does so with its own cloud identity
+(IRSA, workload identity, instance profile) unless started with
+`--object-store-ambient-credentials`. Leave that flag off in a multi-tenant
+install: with it, a tenant can point a Cluster at another tenant's bucket and
+have the operator read it. Give each tenant static credentials in its own
+namespace instead. Workers keep using the cluster's own ServiceAccount, so
+per-tenant IRSA on the instance Pods still works for archiving and backups.
+
+Retention also refuses to delete from a store that no object written by the
+Cluster's own workers proves is its own; see
+[the ownership check](backup-retention-deletion.md#ownership-check).
+
 ## Configuration hardening as a tenancy control
 
 In any shared model, `spec.mysql.parameters` is a privileged surface: a

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -28,8 +29,11 @@ import (
 // backupDestinationCheck reports the outcome of the empty-archive safety check.
 type backupDestinationCheck struct {
 	// Blocked is a non-empty human-readable reason when the destination already
-	// holds data and the fresh cluster must not adopt it.
+	// holds data and the fresh cluster must not adopt it, or when the operator
+	// may not look.
 	Blocked string
+	// Reason is the Warning event reason that goes with Blocked.
+	Reason string
 	// Retry is set when the destination could not be verified (e.g. the object
 	// store is unreachable); the caller should requeue rather than block.
 	Retry error
@@ -75,6 +79,11 @@ func (r *ClusterReconciler) checkEmptyPrefix(
 	ctx context.Context, cluster *mysqlv1alpha1.Cluster, store *mysqlv1alpha1.S3ObjectStore,
 ) backupDestinationCheck {
 	osClient, err := r.objectStoreClient(ctx, cluster.Namespace, store)
+	if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
+		// No retry fixes this; the user has to add credentials or the
+		// administrator has to opt in.
+		return backupDestinationCheck{Blocked: err.Error(), Reason: eventObjectStoreCredentialsRequired}
+	}
 	if err != nil {
 		return backupDestinationCheck{Retry: err}
 	}
@@ -85,7 +94,7 @@ func (r *ClusterReconciler) checkEmptyPrefix(
 		return backupDestinationCheck{Retry: err}
 	}
 	if !empty {
-		return backupDestinationCheck{Blocked: fmt.Sprintf(
+		return backupDestinationCheck{Reason: "BackupDestinationNotEmpty", Blocked: fmt.Sprintf(
 			"Backup destination s3://%s/%s is not empty; refusing to overwrite an existing archive. "+
 				"Use a different cluster name or object-store path, or bootstrap with spec.bootstrap.recovery to restore it",
 			store.Bucket, prefix)}
@@ -131,6 +140,11 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 	// binary-log archive store.
 	store := plan.Recovery.BinlogStore
 	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, &store)
+	if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
+		// This is only the early check: the recovery init container runs the
+		// precise one under the cluster's own identity.
+		return recoveryTargetCheck{}
+	}
 	if err != nil {
 		return recoveryTargetCheck{Retry: err}
 	}
@@ -176,6 +190,11 @@ func (r *ClusterReconciler) checkRecoveryTarget(
 	return recoveryTargetCheck{}
 }
 
+// eventObjectStoreCredentialsRequired is the Warning event reason for an
+// operator-side object-store step refused because the store has no static
+// credentials and the operator may not use its own identity.
+const eventObjectStoreCredentialsRequired = "ObjectStoreCredentialsRequired"
+
 // objectStoreClient resolves store's Secrets in namespace and returns a client
 // for it.
 func (r *ClusterReconciler) objectStoreClient(
@@ -195,5 +214,5 @@ func (r *ClusterReconciler) objectStoreConfig(
 	namespace string,
 	store *mysqlv1alpha1.S3ObjectStore,
 ) (objectstore.Config, error) {
-	return objectstore.ResolveConfig(ctx, r.Client, namespace, store)
+	return objectstore.ResolveConfig(ctx, r.Client, namespace, store, r.ObjectStoreAmbientCredentials)
 }

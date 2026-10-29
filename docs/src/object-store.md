@@ -53,6 +53,42 @@ configured, workers fall back to the ambient AWS credential chain, in order: the
 metadata endpoint. That last step covers both an EC2 instance profile and an IRSA
 web-identity token projected into the pod.
 
+### Ambient credentials in the operator
+
+The workers are not the only ones that talk to the store. The operator itself
+lists, reads and deletes objects for retention, Backup cleanup, the
+empty-destination check, completed-backup manifests, point-in-time recovery
+checks, recovery from `externalClusters` and logical restores.
+
+By default the operator never uses its own cloud identity for this. A store
+with no static credentials is refused on the operator side, with an
+`ObjectStoreCredentialsRequired` Warning event:
+
+| Operator step | Without static credentials |
+|---|---|
+| Retention GC | Skipped; nothing is deleted |
+| Backup deletion cleanup | Skipped; the artifacts stay, the finalizer is released |
+| Empty-destination check on a fresh cluster | The cluster is Blocked |
+| Reading a completed backup's manifest | The Backup completes without the manifest's details (anchor GTID, logical dump contents) |
+| Early point-in-time recovery target check | Skipped; the recovery init container runs the full check |
+| Recovery from `externalClusters`, logical import and LogicalRestore | Fail with the error |
+
+The operator's identity reaches every bucket it was granted, and any Cluster
+author chooses the bucket and path. Lending it to them lets one tenant read and
+delete another tenant's backups. Give each store static credentials, or, when
+every Cluster author is trusted with every bucket the operator can reach, start
+the operator with `--object-store-ambient-credentials`:
+
+```yaml
+# config/manager/manager.yaml
+args:
+  - --leader-elect
+  - --object-store-ambient-credentials
+```
+
+The `kubectl cnmsql` plugin is not affected: it runs as you, so it may use your
+own ambient credentials.
+
 ## Per-backup override
 
 A `Backup` can override the Cluster object store:

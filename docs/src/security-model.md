@@ -298,7 +298,13 @@ expected. It can be avoided altogether by using IAM-style workload identity
 instead of static keys.
 
 Credentials may be static Secret references or inherited from IAM-style
-workload identity depending on the object-store configuration.
+workload identity depending on the object-store configuration. Inherited
+credentials are the identity of the Pod that uses them: a worker or instance
+Pod runs under the cluster's ServiceAccount, so it signs as the tenant. The
+operator's own identity is shared by every tenant, and the operator does not use
+it for a store without static credentials unless started with
+`--object-store-ambient-credentials` (see
+[ambient credentials in the operator](object-store.md#ambient-credentials-in-the-operator)).
 
 ## Sensitive data in logs
 

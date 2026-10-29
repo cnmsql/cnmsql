@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -130,6 +132,7 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 
 	scheme := testScheme(t)
 	cluster := baseBackupCluster()
+	cluster.UID = testClusterUID
 	backup := baseBackup()
 	reconciler := &BackupReconciler{
 		Client: fake.NewClientBuilder().
@@ -160,6 +163,8 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 		"--bucket=cluster-backups",
 		"--archive-key=clusters/demo/backup-sample/",
 		"--sha256",
+		// Stamped in the manifest so retention can prove the store is ours.
+		"--cluster-uid=" + testClusterUID,
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("worker args missing %q:\n%s", want, args)
@@ -1396,4 +1401,53 @@ func TestBackupWorkerVolumesProjectOnlyTheCACertificate(t *testing.T) {
 		return
 	}
 	t.Fatal("client-ca volume not found")
+}
+
+// Without the operator flag, deleting a Backup whose store has no static
+// credentials leaves the artifacts in place instead of reaching the store with
+// the operator's identity, and still releases the finalizer.
+func TestBackupDeleteSkipsCleanupWithoutCredentialsTheOperatorMayUse(t *testing.T) {
+	t.Parallel()
+
+	var contacted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		contacted.Store(true)
+		_, _ = w.Write([]byte(listBackupArchive))
+	}))
+	defer server.Close()
+
+	scheme := testScheme(t)
+	backup := baseBackup()
+	backup.Finalizers = []string{backupFinalizer}
+	now := metav1.Now()
+	backup.DeletionTimestamp = &now
+	backup.Status.BackupID = testBackupID
+	backup.Spec.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket: "override-backups", Endpoint: server.URL,
+		Credentials: mysqlv1alpha1.S3Credentials{InheritFromIAMRole: true},
+	}
+	recorder := record.NewFakeRecorder(10)
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(backup).
+			Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	if contacted.Load() {
+		t.Fatal("the operator contacted a store it has no credentials for")
+	}
+	if event := <-recorder.Events; !strings.Contains(event, eventObjectStoreCredentialsRequired) {
+		t.Fatalf("event = %q, want %s", event, eventObjectStoreCredentialsRequired)
+	}
+	got := &mysqlv1alpha1.Backup{}
+	err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("backup should be deleted, got err=%v finalizers=%v", err, got.Finalizers)
+	}
 }

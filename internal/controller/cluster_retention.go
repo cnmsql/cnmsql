@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,6 +34,10 @@ import (
 // pass against the object store. Listing/reading manifests is comparatively
 // expensive, so it runs at most this often rather than every readyResync tick.
 const retentionInterval = time.Hour
+
+// eventRetentionNotOwned is the Warning event reason for a retention pass
+// skipped because nothing at the store proves it is this cluster's.
+const eventRetentionNotOwned = "RetentionNotOwned"
 
 // reconcileRetention expires base backups (and the now-uncoverable binlog
 // segments) and logical backups past spec.backup.retentionPolicy. It is
@@ -62,6 +67,10 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 
 	store := backup.ObjectStore
 	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, store)
+	if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
+		return r.skipRetention(ctx, cluster, eventObjectStoreCredentialsRequired, fmt.Sprintf(
+			"Skipped backup retention: %v", err))
+	}
 	if err != nil {
 		return err
 	}
@@ -74,12 +83,23 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	if err != nil {
 		return err
 	}
+	// Logical backups expire on their own (below), but are listed up front:
+	// their manifests help prove the store is this cluster's.
+	logical, err := objectstore.ListLogicalBackups(ctx, client, *store, cluster.Name)
+	if err != nil {
+		return err
+	}
 	// The archive may live in its own store; base and logical backups stay in
 	// the backup store.
 	binlogStore := cluster.BinlogObjectStore()
 	binlogClient := client
 	if !store.SameLocation(binlogStore) {
-		if binlogClient, err = r.objectStoreClient(ctx, cluster.Namespace, binlogStore); err != nil {
+		binlogClient, err = r.objectStoreClient(ctx, cluster.Namespace, binlogStore)
+		if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
+			return r.skipRetention(ctx, cluster, eventObjectStoreCredentialsRequired, fmt.Sprintf(
+				"Skipped backup retention: %v", err))
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -97,6 +117,11 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		if err := binlogClient.GetJSON(ctx, binlogStore.Bucket, indexKey, index); err != nil {
 			return err
 		}
+	}
+
+	if reason := retentionOwnership(string(cluster.UID), store.SameLocation(binlogStore),
+		backups, logical, binlogs, index); reason != "" {
+		return r.skipRetention(ctx, cluster, eventRetentionNotOwned, "Skipped backup retention: "+reason)
 	}
 
 	if index == nil && len(binlogs) > 0 {
@@ -131,10 +156,6 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 
 	// Logical backups expire on the same window but on their own: they never
 	// anchor recovery, so they neither move the horizon nor keep binlogs.
-	logical, err := objectstore.ListLogicalBackups(ctx, client, *store, cluster.Name)
-	if err != nil {
-		return err
-	}
 	expiredDumps := objectstore.PlanLogicalRetention(logical, cutoff)
 	for _, prefix := range expiredDumps {
 		if err := client.RemovePrefix(ctx, store.Bucket, prefix); err != nil {
@@ -152,4 +173,66 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		now := metav1.Now()
 		s.LastRetentionRunTime = &now
 	})
+}
+
+// skipRetention reports a retention pass that will not run and stamps the run
+// time anyway, so the throttle holds and the warning repeats once an interval.
+func (r *ClusterReconciler) skipRetention(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, reason, message string,
+) error {
+	logf.FromContext(ctx).Info("Skipped backup retention", "reason", reason, "message", message)
+	if r.Recorder != nil {
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, reason, message)
+	}
+	return r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
+		now := metav1.Now()
+		s.LastRetentionRunTime = &now
+	})
+}
+
+// retentionOwnership returns why retention must not delete anything, or "" when
+// every location it would delete from is proven to be this cluster's.
+//
+// Cluster names are only unique per namespace, so the key layout alone cannot
+// tell this cluster's archive from another namespace's same-named one at the
+// same bucket and path. Proof is an object at the location that carries uid:
+// the archive index, or a base or logical backup manifest. Only this
+// cluster's workers stamp it, and they write under the cluster's own
+// credentials, so a Cluster pointed at a store it cannot write to never
+// proves ownership of it. A location with nothing to delete needs no proof.
+func retentionOwnership(
+	uid string,
+	sameLocation bool,
+	backups []objectstore.BackupEntry,
+	logical []objectstore.LogicalBackupEntry,
+	binlogs []objectstore.BinlogEntry,
+	index *objectstore.ArchiveIndex,
+) string {
+	if uid == "" {
+		return "the Cluster has no UID"
+	}
+	backupsOwned := false
+	for _, b := range backups {
+		backupsOwned = backupsOwned || b.Meta.ClusterUID == uid
+	}
+	for _, l := range logical {
+		backupsOwned = backupsOwned || l.Meta.ClusterUID == uid
+	}
+	archiveOwned := index != nil && index.ClusterUID == uid
+	if sameLocation {
+		backupsOwned = backupsOwned || archiveOwned
+		archiveOwned = backupsOwned
+	}
+
+	if !backupsOwned && len(backups)+len(logical) > 0 {
+		return "no backup manifest or archive index at the backup store carries this Cluster's UID, " +
+			"so its backups may belong to another cluster with the same name. " +
+			"The next backup or archived binary log taken by this Cluster proves the store is its own"
+	}
+	if !archiveOwned && (len(binlogs) > 0 || index != nil) {
+		return "the binary-log archive index does not carry this Cluster's UID, " +
+			"so the archive may belong to another cluster with the same name. " +
+			"The next binary log this Cluster archives proves the archive is its own"
+	}
+	return ""
 }
