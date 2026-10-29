@@ -67,9 +67,8 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 
 	store := backup.ObjectStore
 	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, store)
-	if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
-		return r.skipRetention(ctx, cluster, eventObjectStoreCredentialsRequired, fmt.Sprintf(
-			"Skipped backup retention: %v", err))
+	if reason := retentionCredentialsRefused(err); reason != "" {
+		return r.skipRetention(ctx, cluster, reason, fmt.Sprintf("Skipped backup retention: %v", err))
 	}
 	if err != nil {
 		return err
@@ -95,9 +94,8 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	binlogClient := client
 	if !store.SameLocation(binlogStore) {
 		binlogClient, err = r.objectStoreClient(ctx, cluster.Namespace, binlogStore)
-		if errors.Is(err, objectstore.ErrAmbientCredentialsDisabled) {
-			return r.skipRetention(ctx, cluster, eventObjectStoreCredentialsRequired, fmt.Sprintf(
-				"Skipped backup retention: %v", err))
+		if reason := retentionCredentialsRefused(err); reason != "" {
+			return r.skipRetention(ctx, cluster, reason, fmt.Sprintf("Skipped backup retention: %v", err))
 		}
 		if err != nil {
 			return err
@@ -173,6 +171,18 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		now := metav1.Now()
 		s.LastRetentionRunTime = &now
 	})
+}
+
+// retentionCredentialsRefused returns the event reason for an object-store
+// error that no retry fixes, or "" for any other error.
+func retentionCredentialsRefused(err error) string {
+	switch {
+	case errors.Is(err, objectstore.ErrAmbientCredentialsDisabled):
+		return eventObjectStoreCredentialsRequired
+	case errors.Is(err, objectstore.ErrCredentialsSecretRefused):
+		return reasonObjectStoreCredentialsRefused
+	}
+	return ""
 }
 
 // skipRetention reports a retention pass that will not run and stamps the run

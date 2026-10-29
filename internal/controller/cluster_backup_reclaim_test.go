@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 // listClusterArchive is the S3 LIST response for a cluster's whole archive
@@ -146,7 +147,7 @@ func TestClusterDeleteWipesWholeArchive(t *testing.T) {
 	now := metav1.Now()
 	cluster.DeletionTimestamp = &now
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "cluster-s3", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-s3", Namespace: "default", Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
 	}
 	reconciler := &ClusterReconciler{

@@ -110,8 +110,11 @@ func newDownloadFixture(t *testing.T, specEndpoint bool) *downloadFixture {
 		Status: mysqlv1alpha1.BackupStatus{Phase: mysqlv1alpha1.BackupPhaseCompleted, BackupID: "b-1"},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: "default"},
-		Data:       map[string][]byte{"access": []byte("k"), "secret": []byte("s")},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "s3", Namespace: "default",
+			Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"},
+		},
+		Data: map[string][]byte{"access": []byte("k"), "secret": []byte("s")},
 	}
 	return &downloadFixture{
 		client:   clientfake.NewClientBuilder().WithScheme(plugin.Scheme).WithObjects(cluster, secret).Build(),

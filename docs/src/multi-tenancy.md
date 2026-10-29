@@ -292,6 +292,12 @@ Retention also refuses to delete from a store that no object written by the
 Cluster's own workers proves is its own; see
 [the ownership check](backup-retention-deletion.md#ownership-check).
 
+Static credentials must also be opted in: a `Cluster` or `Backup` may only use
+a Secret in its namespace that carries
+`mysql.cnmsql.co/object-store-credentials: "true"`. Being allowed to edit a
+`Backup` does not let someone send another Secret, such as a tenant's password,
+to an endpoint they control.
+
 ## Configuration hardening as a tenancy control
 
 In any shared model, `spec.mysql.parameters` is a privileged surface: a

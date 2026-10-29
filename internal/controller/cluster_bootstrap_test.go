@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -407,7 +408,7 @@ func bootstrapFixture(t *testing.T, cluster *mysqlv1alpha1.Cluster, objs ...clie
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
-		WithObjects(append([]client.Object{cluster}, objs...)...).
+		WithObjects(append([]client.Object{cluster, s3CredentialsSecret()}, objs...)...).
 		Build()
 	return &ClusterReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(20)}, c
 }
@@ -917,5 +918,29 @@ func markVolumeBootstrapped(t *testing.T, ctx context.Context, c client.Client, 
 	pvc.Annotations[pvcStatusAnnotation] = pvcStatusReady
 	if err := c.Patch(ctx, pvc, client.MergeFrom(before)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The archive store's credentials go into every instance Pod, so a Cluster
+// whose archive store names a Secret not opted in does not get a plan.
+func TestBuildPlanRefusesArchiveCredentialSecretsNotOptedIn(t *testing.T) {
+	t.Parallel()
+	cluster := baseBackupCluster()
+	cluster.Spec.Backup.ContinuousArchiving = &mysqlv1alpha1.ContinuousArchivingConfiguration{
+		Enabled: true,
+		ObjectStore: &mysqlv1alpha1.S3ObjectStore{Bucket: "binlogs", Credentials: mysqlv1alpha1.S3Credentials{
+			AccessKeyID:     &mysqlv1alpha1.SecretKeySelector{Name: "demo-control", Key: "password"},
+			SecretAccessKey: &mysqlv1alpha1.SecretKeySelector{Name: "cluster-s3", Key: "secret"},
+		}},
+	}
+	control := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-control", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("control-pw")},
+	}
+	r, _ := bootstrapFixture(t, cluster, control)
+
+	_, err := r.buildPlan(context.Background(), cluster)
+	if _, ok := errors.AsType[*storeSecretsRefusedError](err); !ok {
+		t.Fatalf("buildPlan = %v, want a storeSecretsRefusedError", err)
 	}
 }

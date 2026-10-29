@@ -147,7 +147,7 @@ func TestReconcileRetentionExpiresLogicalBackupsOnTheirOwn(t *testing.T) {
 		},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: cluster.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: cluster.Namespace, Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("k"), "secret": []byte("s")},
 	}
 	scheme := testScheme(t)

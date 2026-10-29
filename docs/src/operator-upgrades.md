@@ -250,6 +250,51 @@ Until then each pass emits a `RetentionNotOwned` Warning event and deletes
 nothing. Take a backup after the upgrade if you don't want to wait for the
 schedule.
 
+#### Object-store credentials Secrets must be labelled
+
+The operator now uses a Secret as object-store credentials (`accessKeyId`,
+`secretAccessKey`, `sessionToken`) only if it carries the label
+`mysql.cnmsql.co/object-store-credentials: "true"`, and never one owned by a
+cnmsql object
+([GHSA-h4q2-3gj8-wfwf](https://github.com/cnmsql/cnmsql/security/advisories/GHSA-h4q2-3gj8-wfwf)).
+See [credentials Secrets must be
+labelled](./object-store.md#credentials-secrets-must-be-labelled) for why.
+
+Label every credentials Secret **before** upgrading. After the upgrade, an
+archiving Cluster whose archive store names an unlabelled Secret is `Blocked`:
+the operator stops managing it, including failover, until the Secret is
+labelled. New Backups that name one fail, and so does a recovery, an import or
+a LogicalRestore that reads from one.
+
+List the Secrets your Clusters and Backups name:
+
+```sh
+{
+  kubectl get mysql -A -o json | jq -r '.items[]
+    | .metadata.namespace as $ns
+    | [.spec.backup.objectStore, .spec.backup.continuousArchiving.objectStore,
+       (.spec.externalClusters // [])[].objectStore][]
+    | select(. != null) | .credentials
+    | [.accessKeyId, .secretAccessKey, .sessionToken][] | select(. != null)
+    | "\($ns) \(.name)"'
+  kubectl get backups.mysql.cnmsql.co -A -o json | jq -r '.items[]
+    | .metadata.namespace as $ns
+    | (.spec.objectStore // empty).credentials
+    | [.accessKeyId, .secretAccessKey, .sessionToken][] | select(. != null)
+    | "\($ns) \(.name)"'
+} | sort -u
+```
+
+and label each one:
+
+```sh
+kubectl label secret -n <namespace> <name> mysql.cnmsql.co/object-store-credentials=true
+```
+
+If one of them is a Secret the operator created for the cluster (such as
+`<cluster>-root`), the label does not help: move the credentials to a Secret of
+their own.
+
 ### Upgrading from 0.8.x to 0.9.0
 
 Upgrading to 0.9.0 restarts every instance once. Most clusters need nothing
