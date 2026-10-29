@@ -129,7 +129,8 @@ func downloadLogicalBackup(
 	if err != nil {
 		return "", err
 	}
-	cfg, err := objectstore.ResolveConfig(ctx, c, backup.Namespace, store)
+	// The plugin runs as the user, so their own ambient identity may sign.
+	cfg, err := objectstore.ResolveConfig(ctx, c, backup.Namespace, store, true)
 	if err != nil {
 		return "", err
 	}

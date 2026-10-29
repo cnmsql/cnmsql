@@ -80,10 +80,11 @@ func (r *ClusterReconciler) resolveImport(
 	imp := cluster.Spec.Bootstrap.InitDB.Import
 
 	resolver := logicalDumpResolver{
-		client:     r.Client,
-		backupNoun: "import backup",
-		sourceNoun: "import source",
-		target:     "this cluster",
+		client:       r.Client,
+		allowAmbient: r.ObjectStoreAmbientCredentials,
+		backupNoun:   "import backup",
+		sourceNoun:   "import source",
+		target:       "this cluster",
 	}
 	var (
 		dump *logicalDump

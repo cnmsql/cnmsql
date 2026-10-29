@@ -269,6 +269,10 @@ type ClusterReconciler struct {
 	// compared against each instance's reported executable hash to detect stale
 	// instance managers that need upgrade.
 	OperatorExecutableHash string
+	// ObjectStoreAmbientCredentials lets the operator sign object-store requests
+	// with its own cloud identity for a store that has no static credentials. Off
+	// by default: that identity is shared by every tenant (GHSA-qxwf-59cm-cj4x).
+	ObjectStoreAmbientCredentials bool
 	// openOperatorBinary returns a reader over the operator's own manager binary,
 	// streamed to instances during an in-place upgrade. It defaults to opening
 	// os.Executable() and is overridable in tests.
@@ -615,8 +619,8 @@ func (r *ClusterReconciler) handleBackupCheck(ctx context.Context, cluster *mysq
 		}), true
 	}
 	if check.Blocked != "" {
-		log.Info("Blocking cluster: backup destination is not empty", "reason", check.Blocked)
-		r.Recorder.Event(cluster, corev1.EventTypeWarning, "BackupDestinationNotEmpty", check.Blocked)
+		log.Info("Blocking cluster: backup destination is not verified empty", "reason", check.Blocked)
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, check.Reason, check.Blocked)
 		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
 			Phase:       topology.PhaseBlocked,
 			PhaseReason: check.Blocked,

@@ -75,6 +75,7 @@ type floorView struct {
 	diverged       []string
 	positions      map[string]string
 	currentPrimary string
+	clusterUID     string
 	generation     int64
 	timeline       engine.MariaDBTimeline
 	epochs         []objectstore.ArchiveEpoch
@@ -99,6 +100,7 @@ func (f *clusterFloor) Observe(cluster *mysqlv1alpha1.Cluster) {
 		diverged:       slices.Clone(cluster.Status.DivergedInstances),
 		positions:      maps.Clone(cluster.Status.GTIDExecutedByInstance),
 		currentPrimary: cluster.Status.CurrentPrimary,
+		clusterUID:     string(cluster.UID),
 		generation:     cluster.Status.CurrentPrimaryGeneration,
 		timeline:       timeline,
 		epochs:         epochs,
@@ -116,6 +118,16 @@ func (f *clusterFloor) Primary() (string, string, bool) {
 	}
 	position, ok := view.positions[view.currentPrimary]
 	return view.currentPrimary, position, ok
+}
+
+// ClusterUID returns the observed Cluster's UID, or "" before the first
+// observation.
+func (f *clusterFloor) ClusterUID() string {
+	view := f.latest.Load()
+	if view == nil {
+		return ""
+	}
+	return view.clusterUID
 }
 
 // Authority implements binlog.AuthoritySource: the primary generation, while
@@ -254,6 +266,7 @@ func startArchiver(
 		Store:        store,
 		ObjectStore:  cfg.ObjectStore,
 		ClusterName:  cfg.ClusterName,
+		ClusterUID:   floor.ClusterUID,
 		InstanceName: cfg.InstanceName,
 		ServerUUID:   serverUUID,
 		BinlogDir:    cfg.BinlogDir,

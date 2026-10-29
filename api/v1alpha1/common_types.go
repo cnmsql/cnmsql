@@ -246,7 +246,9 @@ type S3Credentials struct {
 	SessionToken *SecretKeySelector `json:"sessionToken,omitempty"`
 
 	// InheritFromIAMRole, when true, makes the credentials be retrieved from the
-	// pod's environment (IRSA / instance profile) instead of from a secret.
+	// pod's environment (IRSA / instance profile) instead of from a secret. The
+	// operator's own object-store steps (retention, Backup cleanup, checks) only
+	// do so when it runs with --object-store-ambient-credentials.
 	// +optional
 	// +kubebuilder:default:=false
 	InheritFromIAMRole bool `json:"inheritFromIAMRole,omitempty"`

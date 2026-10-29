@@ -184,6 +184,72 @@ the operator Deployment has been updated to a new image.
 Newest release first. Each section says what changes when you upgrade the
 operator to that release, and what to do.
 
+### Upgrading from 0.9.x to the next release
+
+#### The operator no longer uses its own cloud identity for object stores
+
+In 0.9.x, when an object store had no static credentials
+(`credentials.inheritFromIAMRole: true`, or no credentials at all), the
+operator signed its own object-store requests with its own identity: IRSA,
+workload identity or the node's instance profile. It makes those requests
+for retention, Backup cleanup, the empty-destination check, reading backup
+manifests and recovery. Any Cluster author could point a Cluster at a bucket
+the operator can reach and have it read or delete objects there
+([GHSA-qxwf-59cm-cj4x](https://github.com/cnmsql/cnmsql/security/advisories/GHSA-qxwf-59cm-cj4x)).
+
+After the upgrade the operator refuses those stores unless it runs with
+`--object-store-ambient-credentials`. Workers and instance Pods are not
+affected: archiving and backups keep using the cluster's ServiceAccount.
+
+Check whether you are affected:
+
+```sh
+kubectl get mysql -A -o json | jq -r '.items[]
+  | select(.spec.backup.objectStore != null)
+  | select(.spec.backup.objectStore.credentials.accessKeyId == null)
+  | "\(.metadata.namespace)/\(.metadata.name)"'
+```
+
+Also check `spec.objectStore` on Backups and the object stores under
+`spec.externalClusters`. For each store listed, do one of the following before
+upgrading:
+
+- Add `credentials.accessKeyId` and `credentials.secretAccessKey`, read from a
+  Secret in the Cluster's namespace.
+- If every Cluster author is trusted with every bucket the operator's identity
+  reaches (for example a single-tenant install), add the flag to the manager:
+
+  ```yaml
+  args:
+    - --leader-elect
+    - --object-store-ambient-credentials
+  ```
+
+If you do neither, the operator-side steps for those stores stop as described
+in [ambient credentials in the
+operator](./object-store.md#ambient-credentials-in-the-operator). Retention
+and Backup cleanup are skipped, a new cluster stays `Blocked`, and recovery
+from `externalClusters` fails. Each one emits an
+`ObjectStoreCredentialsRequired` Warning event.
+
+#### Retention waits until it can prove a store is the cluster's
+
+Retention now deletes only from a store that holds a backup manifest or an
+archive index stamped with the Cluster's UID (see [the ownership
+check](./backup-retention-deletion.md#ownership-check)). Nothing written by
+0.9.x carries one, so after the upgrade:
+
+- On an archiving cluster whose archive shares the backup store, retention
+  resumes as soon as the primary archives its next binary log.
+- With a separate archive store, retention resumes in the backup store after
+  the next backup completes, and in the archive store after the next archived
+  binary log.
+- On a cluster without archiving, retention resumes after the next backup.
+
+Until then each pass emits a `RetentionNotOwned` Warning event and deletes
+nothing. Take a backup after the upgrade if you don't want to wait for the
+schedule.
+
 ### Upgrading from 0.8.x to 0.9.0
 
 Upgrading to 0.9.0 restarts every instance once. Most clusters need nothing

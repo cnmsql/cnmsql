@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -252,5 +253,32 @@ func TestCheckBackupDestinationIgnoresArchiveStoreWhenArchivingIsOff(t *testing.
 	if check.Retry != nil || check.Blocked != "" {
 		t.Fatalf("archive store must be ignored while archiving is off, got blocked=%q retry=%v",
 			check.Blocked, check.Retry)
+	}
+}
+
+// Without the operator flag, the guard does not look at a store that has no
+// static credentials, and blocks with a reason no retry would clear.
+func TestCheckBackupDestinationBlocksWithoutCredentialsTheOperatorMayUse(t *testing.T) {
+	t.Parallel()
+
+	var contacted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		contacted.Store(true)
+		_, _ = w.Write([]byte(listEmpty))
+	}))
+	defer server.Close()
+
+	cluster := freshArchivingCluster(server.URL)
+	cluster.Spec.Backup.ObjectStore.Credentials = mysqlv1alpha1.S3Credentials{InheritFromIAMRole: true}
+
+	check := guardReconciler(t).checkBackupDestination(context.Background(), cluster)
+	if check.Retry != nil {
+		t.Fatalf("unexpected retry: %v", check.Retry)
+	}
+	if check.Reason != eventObjectStoreCredentialsRequired || check.Blocked == "" {
+		t.Fatalf("got reason %q blocked %q, want %s", check.Reason, check.Blocked, eventObjectStoreCredentialsRequired)
+	}
+	if contacted.Load() {
+		t.Fatal("the operator contacted a store it has no credentials for")
 	}
 }

@@ -31,11 +31,20 @@ import (
 // into a client Config, reading the referenced Secrets in namespace with c. It
 // serves every caller with API access of its own: the reconcilers and the
 // kubectl plugin.
+//
+// allowAmbient says whether a store with no static credentials may fall back to
+// the caller's own identity. The kubectl plugin passes true: that identity is
+// the user's. The operator passes its --object-store-ambient-credentials flag,
+// off by default: its identity reaches every bucket it was granted, so lending
+// it to any Cluster author would let one tenant read and delete another's
+// backups. A refused store returns an error wrapping
+// ErrAmbientCredentialsDisabled.
 func ResolveConfig(
 	ctx context.Context,
 	c client.Reader,
 	namespace string,
 	store *mysqlv1alpha1.S3ObjectStore,
+	allowAmbient bool,
 ) (Config, error) {
 	var secrets StoreSecrets
 	creds := store.Credentials
@@ -63,7 +72,13 @@ func ResolveConfig(
 		}
 		secrets.CABundle = value
 	}
-	return ConfigFromStore(*store, secrets), nil
+	if !allowAmbient && secrets.AccessKeyID == "" && secrets.SecretAccessKey == "" {
+		return Config{}, fmt.Errorf("object store %s has no static credentials: %w",
+			store.Location(), ErrAmbientCredentialsDisabled)
+	}
+	cfg := ConfigFromStore(*store, secrets)
+	cfg.AllowAmbient = allowAmbient
+	return cfg, nil
 }
 
 func secretValue(

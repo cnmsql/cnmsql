@@ -30,6 +30,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -97,10 +98,8 @@ func TestReconcileRetentionThrottleExpired(t *testing.T) {
 
 	cluster := baseCluster()
 	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
-		ObjectStore: &mysqlv1alpha1.S3ObjectStore{
-			Bucket:   "backups",
-			Endpoint: "http://127.0.0.1:1", // nothing listening → list fails
-		},
+		// Nothing listens there, so the list fails.
+		ObjectStore:     storeAt("http://127.0.0.1:1", "backups", ""),
 		RetentionPolicy: "30d",
 	}
 	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
@@ -108,7 +107,7 @@ func TestReconcileRetentionThrottleExpired(t *testing.T) {
 	cluster.Status.LastRetentionRunTime = &old
 
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(cluster).Build(),
+		Client: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(cluster, s3CredentialsSecret()).Build(),
 		Scheme: testScheme(t),
 	}
 	if err := reconciler.reconcileRetention(context.Background(), cluster); err == nil {
@@ -264,9 +263,9 @@ func TestReconcileRetentionAppliesExpiryPerStore(t *testing.T) {
 	const uuid = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
 	baseSrv, baseWrites := memS3Server(t, map[string]string{
 		"backups/base/demo/bk-old/id-old/metadata.json": mustJSON(t, objectstore.BackupMetadata{
-			StartedAt: old, CompletedAt: old}),
+			ClusterUID: testClusterUID, StartedAt: old, CompletedAt: old}),
 		"backups/base/demo/bk-new/id-new/metadata.json": mustJSON(t, objectstore.BackupMetadata{
-			StartedAt: recent, CompletedAt: recent}),
+			ClusterUID: testClusterUID, StartedAt: recent, CompletedAt: recent}),
 		"backups/base/demo/bk-old/id-old/backup.xbstream": "x",
 	})
 	logSrv, logWrites := memS3Server(t, map[string]string{
@@ -275,11 +274,13 @@ func TestReconcileRetentionAppliesExpiryPerStore(t *testing.T) {
 		"binlogs/archive/demo/binlogs/" + uuid + "/binlog.000001": "b",
 		"binlogs/archive/demo/binlogs/_index.json": mustJSON(t, objectstore.ArchiveIndex{
 			ClusterName: "demo",
+			ClusterUID:  testClusterUID,
 			Segments:    []objectstore.ArchiveSegment{{ServerUUID: uuid, Binlogs: []string{"binlog.000001"}}},
 		}),
 	})
 
 	cluster := baseCluster()
+	cluster.UID = testClusterUID
 	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
 		ObjectStore:     storeAt(baseSrv.URL, "backups", "base"),
 		RetentionPolicy: "30d",
@@ -316,5 +317,158 @@ func TestReconcileRetentionAppliesExpiryPerStore(t *testing.T) {
 	}
 	if anyContains(got, "bk-old") {
 		t.Fatalf("archive store was asked to delete a base backup: %v", got)
+	}
+}
+
+// testClusterUID is the UID the retention fixtures stamp on what the cluster's
+// workers wrote.
+const testClusterUID = "8f0f2a4c-1d9e-4f6b-9a51-2c3d4e5f6a7b"
+
+func TestRetentionOwnership(t *testing.T) {
+	t.Parallel()
+
+	ours := func(uid string) []objectstore.BackupEntry {
+		return []objectstore.BackupEntry{{Meta: objectstore.BackupMetadata{ClusterUID: uid}}}
+	}
+	dump := func(uid string) []objectstore.LogicalBackupEntry {
+		return []objectstore.LogicalBackupEntry{{Meta: objectstore.LogicalBackupMetadata{ClusterUID: uid}}}
+	}
+	index := func(uid string) *objectstore.ArchiveIndex { return &objectstore.ArchiveIndex{ClusterUID: uid} }
+	binlogs := []objectstore.BinlogEntry{{}}
+
+	cases := []struct {
+		name    string
+		uid     string
+		same    bool
+		backups []objectstore.BackupEntry
+		logical []objectstore.LogicalBackupEntry
+		binlogs []objectstore.BinlogEntry
+		index   *objectstore.ArchiveIndex
+		owned   bool
+	}{
+		{name: "nothing to delete", uid: testClusterUID, owned: true},
+		{name: "own base backup and index", uid: testClusterUID,
+			backups: ours(testClusterUID), binlogs: binlogs, index: index(testClusterUID), owned: true},
+		{name: "own logical backup proves the backup store", uid: testClusterUID,
+			backups: ours(""), logical: dump(testClusterUID), owned: true},
+		{name: "same location: the index proves the backups", uid: testClusterUID, same: true,
+			backups: ours(""), binlogs: binlogs, index: index(testClusterUID), owned: true},
+		{name: "same location: a backup proves the archive", uid: testClusterUID, same: true,
+			backups: ours(testClusterUID), binlogs: binlogs, index: index(""), owned: true},
+		{name: "another cluster's backups", uid: testClusterUID,
+			backups: ours("victim"), logical: dump("victim")},
+		{name: "legacy backups without a UID", uid: testClusterUID, backups: ours("")},
+		{name: "another cluster's archive", uid: testClusterUID,
+			backups: ours(testClusterUID), binlogs: binlogs, index: index("victim")},
+		{name: "separate stores: a backup does not prove the archive", uid: testClusterUID,
+			backups: ours(testClusterUID), binlogs: binlogs, index: index("")},
+		{name: "binlogs without an index", uid: testClusterUID, binlogs: binlogs},
+		{name: "cluster without a UID matches no legacy object", uid: "", backups: ours("")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reason := retentionOwnership(tc.uid, tc.same, tc.backups, tc.logical, tc.binlogs, tc.index)
+			if owned := reason == ""; owned != tc.owned {
+				t.Fatalf("owned = %v (reason %q), want %v", owned, reason, tc.owned)
+			}
+		})
+	}
+}
+
+// A Cluster pointed at another namespace's same-named archive (the
+// GHSA-qxwf-59cm-cj4x attack) lists it but deletes nothing, warns, and still
+// stamps the run time so the warning repeats once an interval.
+func TestReconcileRetentionSkipsArchiveItDoesNotOwn(t *testing.T) {
+	t.Parallel()
+
+	old := time.Now().UTC().Add(-60 * 24 * time.Hour)
+	const uuid = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	srv, writes := memS3Server(t, map[string]string{
+		"backups/p/demo/bk-1/id-1/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: "victim", StartedAt: old, CompletedAt: old}),
+		"backups/p/demo/bk-2/id-2/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: "victim", StartedAt: old.Add(time.Hour), CompletedAt: old.Add(time.Hour)}),
+		"backups/p/demo/dump/d1/logical.json": mustJSON(t, objectstore.LogicalBackupMetadata{
+			ClusterUID: "victim", Method: "logical", CompletedAt: old}),
+		"backups/p/demo/binlogs/" + uuid + "/binlog.000001.json": mustJSON(t, objectstore.BinlogMetadata{
+			ServerUUID: uuid, BinlogName: "binlog.000001", LastEventTime: old}),
+		"backups/p/demo/binlogs/_index.json": mustJSON(t, objectstore.ArchiveIndex{
+			ClusterName: "demo", ClusterUID: "victim",
+			Segments: []objectstore.ArchiveSegment{{ServerUUID: uuid, Binlogs: []string{"binlog.000001"}}},
+		}),
+	})
+
+	cluster := baseCluster()
+	cluster.UID = testClusterUID
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		ObjectStore:     storeAt(srv.URL, "backups", "p"),
+		RetentionPolicy: "1d",
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(10)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, s3CredentialsSecret()).Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := writes(); len(got) != 0 {
+		t.Fatalf("retention wrote to a store it does not own: %v", got)
+	}
+	if event := <-recorder.Events; !strings.Contains(event, eventRetentionNotOwned) {
+		t.Fatalf("event = %q, want %s", event, eventRetentionNotOwned)
+	}
+	assertRetentionStamped(t, r, cluster)
+}
+
+// Without the operator flag, a store with no static credentials is never
+// contacted with the operator's own identity.
+func TestReconcileRetentionRefusesAmbientCredentials(t *testing.T) {
+	t.Parallel()
+
+	srv, seen := recordingS3Server(t)
+	store := &mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Endpoint: srv.URL,
+		Credentials: mysqlv1alpha1.S3Credentials{InheritFromIAMRole: true}}
+	store.SetDefaults()
+	cluster := baseCluster()
+	cluster.UID = testClusterUID
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{ObjectStore: store, RetentionPolicy: "1d"}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(10)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).WithObjects(cluster).Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := seen(); len(got) != 0 {
+		t.Fatalf("operator contacted the store: %v", got)
+	}
+	if event := <-recorder.Events; !strings.Contains(event, eventObjectStoreCredentialsRequired) {
+		t.Fatalf("event = %q, want %s", event, eventObjectStoreCredentialsRequired)
+	}
+	assertRetentionStamped(t, r, cluster)
+}
+
+func assertRetentionStamped(t *testing.T, r *ClusterReconciler, cluster *mysqlv1alpha1.Cluster) {
+	t.Helper()
+	latest := &mysqlv1alpha1.Cluster{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(cluster), latest); err != nil {
+		t.Fatal(err)
+	}
+	if latest.Status.LastRetentionRunTime == nil {
+		t.Fatal("lastRetentionRunTime not stamped; the skip would repeat on every reconcile")
 	}
 }

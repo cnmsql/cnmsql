@@ -56,6 +56,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var operatorImage string
+	var objectStoreAmbientCredentials bool
 
 	// zap options are bound to the persistent flags below, so verbosity can be
 	// raised at runtime (e.g. --zap-log-level=debug for the V(1) reconcile trace).
@@ -166,6 +167,8 @@ func main() {
 				OperatorImageName:      operatorImage,
 				OperatorExecutableHash: operatorHash,
 				Namespaced:             watchNamespace != "",
+
+				ObjectStoreAmbientCredentials: objectStoreAmbientCredentials,
 			}
 			if err := clusterReconciler.SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "cluster")
@@ -179,6 +182,8 @@ func main() {
 				Scheme:            mgr.GetScheme(),
 				Recorder:          mgr.GetEventRecorderFor("backup-controller"), //nolint:staticcheck
 				OperatorImageName: operatorImage,
+
+				ObjectStoreAmbientCredentials: objectStoreAmbientCredentials,
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "backup")
 				return err
@@ -227,6 +232,8 @@ func main() {
 				Scheme:            mgr.GetScheme(),
 				Recorder:          mgr.GetEventRecorderFor("logicalrestore-controller"), //nolint:staticcheck
 				OperatorImageName: operatorImage,
+
+				ObjectStoreAmbientCredentials: objectStoreAmbientCredentials,
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "Failed to create controller", "controller", "logicalrestore")
 				return err
@@ -276,6 +283,12 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	root.PersistentFlags().StringVar(&operatorImage, "operator-image", "",
 		"Operator image name (used for bootstrap-controller init container)")
+	// Not persistent: only the operator itself builds clients for stores that
+	// Cluster authors choose, the instance subcommands run as the tenant.
+	root.Flags().BoolVar(&objectStoreAmbientCredentials, "object-store-ambient-credentials", false,
+		"Let the operator use its own cloud identity (IRSA, workload identity, instance profile) for object "+
+			"stores that have no static credentials. That identity is shared by every Cluster author; "+
+			"enable only when all of them are trusted with every bucket it reaches")
 	root.PersistentFlags().AddGoFlagSet(zapFlagSet)
 
 	root.AddCommand(bootstrap.NewCommand())
