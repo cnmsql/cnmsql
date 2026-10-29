@@ -306,6 +306,13 @@ it for a store without static credentials unless started with
 `--object-store-ambient-credentials` (see
 [ambient credentials in the operator](object-store.md#ambient-credentials-in-the-operator)).
 
+A static credentials Secret must be opted in with the
+`mysql.cnmsql.co/object-store-credentials: "true"` label, and a Secret owned by
+a cnmsql object is never accepted, so a Backup or Cluster author cannot turn
+another Secret in the namespace into credentials sent to an endpoint of their
+choosing (see [credentials Secrets must be
+labelled](object-store.md#credentials-secrets-must-be-labelled)).
+
 ## Sensitive data in logs
 
 Operator and instance-manager logs should be structured. Child process output is

@@ -84,6 +84,11 @@ func (r *ClusterReconciler) checkEmptyPrefix(
 		// administrator has to opt in.
 		return backupDestinationCheck{Blocked: err.Error(), Reason: eventObjectStoreCredentialsRequired}
 	}
+	if errors.Is(err, objectstore.ErrCredentialsSecretRefused) {
+		// Nor this, until the Secret is labelled. The cluster is resynced
+		// while Blocked, so the label is picked up.
+		return backupDestinationCheck{Blocked: err.Error(), Reason: reasonObjectStoreCredentialsRefused}
+	}
 	if err != nil {
 		return backupDestinationCheck{Retry: err}
 	}

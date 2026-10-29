@@ -136,6 +136,14 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.failBackup(ctx, backup, "InvalidObjectStore", err.Error())
 	}
+	// The worker Job gets the credential Secrets through the kubelet, so they
+	// are checked here, before the Job exists.
+	if err := objectstore.CheckStoreSecrets(ctx, r.Client, backup.Namespace, store); err != nil {
+		if errors.Is(err, objectstore.ErrCredentialsSecretRefused) {
+			return ctrl.Result{}, r.failBackup(ctx, backup, reasonObjectStoreCredentialsRefused, err.Error())
+		}
+		return ctrl.Result{}, err
+	}
 
 	// A logical backup runs as cnmsql_dump, which the Cluster reconciler creates
 	// (or migrates onto an older cluster). Wait for it rather than fail, until

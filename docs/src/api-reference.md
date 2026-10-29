@@ -1843,7 +1843,9 @@ _Appears in:_
 
 
 S3Credentials holds the references to the secrets containing the credentials
-used to access an S3-compatible object store.
+used to access an S3-compatible object store. Each referenced Secret must
+carry the label mysql.cnmsql.co/object-store-credentials: "true", and may
+not be owned by a cnmsql object.
 
 
 

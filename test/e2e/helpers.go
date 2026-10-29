@@ -705,6 +705,10 @@ func ensureObjectStoreCreds() {
 		"--from-literal=ACCESS_KEY_ID="+objectStoreAccessKey,
 		"--from-literal=SECRET_ACCESS_KEY="+objectStoreSecretKey)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create %s secret in %s", objectStoreCredsSecret, testNamespace)
+	// The operator only uses Secrets opted in as object-store credentials.
+	_, err = kubectl("label", "secret", objectStoreCredsSecret, "-n", testNamespace,
+		"mysql.cnmsql.co/object-store-credentials=true")
+	Expect(err).NotTo(HaveOccurred(), "Failed to label %s secret in %s", objectStoreCredsSecret, testNamespace)
 }
 
 // setupObjectStore ensures the shared store is ready and creates the credentials
@@ -978,6 +982,8 @@ kind: Secret
 metadata:
   name: %[5]s
   namespace: %[2]s
+  labels:
+    mysql.cnmsql.co/object-store-credentials: "true"
 stringData:
   ACCESS_KEY_ID: %[6]s
   SECRET_ACCESS_KEY: %[7]s

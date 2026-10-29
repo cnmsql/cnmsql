@@ -553,6 +553,17 @@ func (r *ClusterReconciler) planFailed(ctx context.Context, cluster *mysqlv1alph
 			Progressing: true,
 		})
 	}
+	if _, ok := errors.AsType[*storeSecretsRefusedError](err); ok {
+		if r.Recorder != nil {
+			r.Recorder.Event(cluster, corev1.EventTypeWarning, reasonObjectStoreCredentialsRefused, err.Error())
+		}
+		return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
+			Phase:       topology.PhaseBlocked,
+			PhaseReason: err.Error(),
+			Ready:       false,
+			Progressing: false,
+		})
+	}
 	if _, ok := errors.AsType[*imageRejectedError](err); ok {
 		return ctrl.Result{RequeueAfter: imageProbeRetry}, r.patchStatus(ctx, cluster, observedCluster{
 			Phase:       topology.PhaseBlocked,

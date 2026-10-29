@@ -472,3 +472,38 @@ func assertRetentionStamped(t *testing.T, r *ClusterReconciler, cluster *mysqlv1
 		t.Fatal("lastRetentionRunTime not stamped; the skip would repeat on every reconcile")
 	}
 }
+
+// A store naming a Secret that is not opted in as credentials (GHSA-h4q2) is
+// skipped like one the operator has no credentials for, instead of retrying
+// on every reconcile.
+func TestReconcileRetentionSkipsRefusedCredentialSecrets(t *testing.T) {
+	t.Parallel()
+
+	srv, seen := recordingS3Server(t)
+	cluster := baseCluster()
+	cluster.UID = testClusterUID
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		ObjectStore: storeAt(srv.URL, "backups", ""), RetentionPolicy: "1d",
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	unlabelled := s3CredentialsSecret()
+	unlabelled.Labels = nil
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(10)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).WithObjects(cluster, unlabelled).Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if got := seen(); len(got) != 0 {
+		t.Fatalf("operator contacted the store: %v", got)
+	}
+	if event := <-recorder.Events; !strings.Contains(event, reasonObjectStoreCredentialsRefused) {
+		t.Fatalf("event = %q, want %s", event, reasonObjectStoreCredentialsRefused)
+	}
+	assertRetentionStamped(t, r, cluster)
+}

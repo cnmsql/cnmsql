@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 const listNonEmpty = `<?xml version="1.0" encoding="UTF-8"?>
@@ -48,9 +49,17 @@ const listEmpty = `<?xml version="1.0" encoding="UTF-8"?>
 
 func s3CredentialsSecret() *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "cluster-s3", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-s3", Namespace: "default", Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
 	}
+}
+
+// overrideCredentialsSecret is s3CredentialsSecret under the name the
+// per-Backup override fixtures use.
+func overrideCredentialsSecret() *corev1.Secret {
+	secret := s3CredentialsSecret()
+	secret.Name = "override-s3"
+	return secret
 }
 
 func freshArchivingCluster(endpoint string) *mysqlv1alpha1.Cluster {
@@ -280,5 +289,25 @@ func TestCheckBackupDestinationBlocksWithoutCredentialsTheOperatorMayUse(t *test
 	}
 	if contacted.Load() {
 		t.Fatal("the operator contacted a store it has no credentials for")
+	}
+}
+
+// A fresh cluster whose backup store names a Secret not opted in as
+// credentials is blocked with that reason rather than retrying the check.
+func TestCheckBackupDestinationBlocksRefusedCredentialSecrets(t *testing.T) {
+	t.Parallel()
+
+	cluster := freshArchivingCluster("http://127.0.0.1:1")
+	unlabelled := s3CredentialsSecret()
+	unlabelled.Labels = nil
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(unlabelled).Build(),
+		Scheme: scheme,
+	}
+	check := r.checkBackupDestination(context.Background(), cluster)
+	if check.Retry != nil || check.Reason != reasonObjectStoreCredentialsRefused {
+		t.Fatalf("got reason %q blocked %q retry %v, want %s", check.Reason, check.Blocked, check.Retry,
+			reasonObjectStoreCredentialsRefused)
 	}
 }
