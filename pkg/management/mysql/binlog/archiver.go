@@ -17,6 +17,7 @@ limitations under the License.
 package binlog
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -90,12 +91,15 @@ type Archiver struct {
 	// disowned tail is deferred forever, and decoding it with mysqlbinlog on
 	// every tick would cost a full read of the file every poll interval.
 	deferredScans map[string]scannedStamp
-	// indexed memoizes the files known to be listed in this instance's index
-	// segment. A file whose manifest landed but whose index write failed is
+	// indexed memoizes the files that belong in this instance's index segment:
+	// the ones this process added, and the ones the index listed when the memo
+	// was seeded. A file whose manifest landed but whose index write failed is
 	// archived yet unindexed, and recovery reads the index: such a file has to
 	// count as advanced so the pass folds it in. indexSeeded is false until the
 	// memo is seeded from one index read, and again after any failed index
-	// write, since the index may then lack files the memo cannot name.
+	// write, since the index may then lack files the memo cannot name. Every
+	// index write also checks the memo against the copy it read (see
+	// restoreDropped).
 	indexed     map[string]bool
 	indexSeeded bool
 }
@@ -420,7 +424,8 @@ func (a *Archiver) seedIndexed(ctx context.Context, bucket string) error {
 	if err != nil {
 		return fmt.Errorf("binlog: reading archive index: %w", err)
 	}
-	a.indexed = make(map[string]bool)
+	// Merged, not replaced: the copy just read may be a stale one, and the
+	// files this process added must stay known (see restoreDropped).
 	if seg, ok := index.Segment(a.serverUUID); exists && ok {
 		for _, name := range seg.Binlogs {
 			a.indexed[name] = true
@@ -619,6 +624,9 @@ func (a *Archiver) updateIndex(
 			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
 				return false, err
 			}
+			if _, err := a.restoreDropped(ctx, bucket, index); err != nil {
+				return false, err
+			}
 			if pass.primary && pass.generation > index.Generation {
 				index.Generation = pass.generation
 			}
@@ -663,9 +671,16 @@ func (a *Archiver) foldFile(
 	}
 	seg.EndedAt = a.now()
 
-	// Add the file's name and fold its coverage in the same write, so recovery's
-	// PlanReplay never sees a covered GTID it has no file to replay. Deduplicated
-	// so retries and idempotent resumes are safe.
+	if err := a.addToSegment(seg, fileName, fileGTIDSet); err != nil {
+		return err
+	}
+	return a.recomputeCovered(index)
+}
+
+// addToSegment adds one file's name and folds its coverage in the same write,
+// so recovery's PlanReplay never sees a covered GTID it has no file to replay.
+// Deduplicated so retries and idempotent resumes are safe.
+func (a *Archiver) addToSegment(seg *objectstore.ArchiveSegment, fileName, fileGTIDSet string) error {
 	if fileName != "" && !slices.Contains(seg.Binlogs, fileName) {
 		seg.Binlogs = append(seg.Binlogs, fileName)
 	}
@@ -679,8 +694,11 @@ func (a *Archiver) foldFile(
 	}
 	segSet.Union(fileSet)
 	seg.GTIDSet = segSet.String()
+	return nil
+}
 
-	// Recompute the cumulative covered set across every segment.
+// recomputeCovered recomputes the cumulative covered set across every segment.
+func (a *Archiver) recomputeCovered(index *objectstore.ArchiveIndex) error {
 	cumulative := a.newSet()
 	for i := range index.Segments {
 		parsed := a.newSet()
@@ -692,6 +710,92 @@ func (a *Archiver) foldFile(
 	index.CoveredGTIDSet = cumulative.String()
 	index.UpdatedAt = a.now()
 	return nil
+}
+
+// restoreDropped puts back into the index the files of this instance's segment
+// that the copy just read no longer lists, and reports whether it restored any.
+//
+// An index write is a read-modify-write of one object. On a store without
+// conditional writes that can serve a stale read (OpenStack Swift), a write
+// that starts from an older copy silently drops whatever was added since: the
+// file, its manifest and the segment status all say archived, and the index,
+// the only record recovery and the gap check read, does not. Every index write
+// therefore re-adds what the memo knows and the copy lacks.
+//
+// Retention removes files too, oldest first, deleting the objects before it
+// rewrites the index. A file older than everything the segment still lists is
+// taken as expired; any other missing file is restored only while its manifest
+// is still in the store.
+func (a *Archiver) restoreDropped(ctx context.Context, bucket string, index *objectstore.ArchiveIndex) (bool, error) {
+	seg, ok := index.Segment(a.serverUUID)
+	listed := make(map[string]struct{})
+	oldest, bounded := int64(0), false
+	if ok {
+		for _, name := range seg.Binlogs {
+			listed[name] = struct{}{}
+			if n, err := ParseSequence(name); err == nil && (!bounded || n < oldest) {
+				oldest, bounded = n, true
+			}
+		}
+	}
+	var dropped []string
+	for name := range a.indexed {
+		if _, ok := listed[name]; ok {
+			continue
+		}
+		if n, err := ParseSequence(name); bounded && err == nil && n < oldest {
+			delete(a.indexed, name)
+			continue
+		}
+		dropped = append(dropped, name)
+	}
+	if len(dropped) == 0 {
+		return false, nil
+	}
+	slices.SortFunc(dropped, func(x, y string) int {
+		nx, _ := ParseSequence(x)
+		ny, _ := ParseSequence(y)
+		return cmp.Compare(nx, ny)
+	})
+	restored := false
+	for _, name := range dropped {
+		keys, err := objectstore.BuildBinlogKeys(a.objectStore, a.clusterName, a.serverUUID, name)
+		if err != nil {
+			return false, err
+		}
+		exists, err := a.store.Exists(ctx, bucket, keys.ManifestKey)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			delete(a.indexed, name)
+			continue
+		}
+		var meta objectstore.BinlogMetadata
+		if err := a.store.GetJSON(ctx, bucket, keys.ManifestKey, &meta); err != nil {
+			return false, fmt.Errorf("binlog: reading manifest %q: %w", keys.ManifestKey, err)
+		}
+		if !ok {
+			index.Segments = append(index.Segments, objectstore.ArchiveSegment{
+				ServerUUID:   a.serverUUID,
+				InstanceName: a.instanceName,
+				StartedAt:    a.now(),
+				EndedAt:      a.now(),
+			})
+			seg, ok = &index.Segments[len(index.Segments)-1], true
+		}
+		if seg.StartGTIDSet == "" {
+			seg.StartGTIDSet = meta.FirstGTID
+		}
+		if err := a.addToSegment(seg, name, meta.GTIDSet); err != nil {
+			return false, err
+		}
+		restored = true
+	}
+	if !restored {
+		return false, nil
+	}
+	return true, a.recomputeCovered(index)
 }
 
 // forkPass carries what one archive pass writes the index as: the primary of
@@ -868,17 +972,21 @@ func (a *Archiver) CheckArchive(ctx context.Context, through time.Time) (ForkRep
 				report = ForkReport{}
 				return false, nil
 			}
+			restored, err := a.restoreDropped(ctx, a.objectStore.Bucket, index)
+			if err != nil {
+				return false, err
+			}
 			var changed bool
 			changed, report = a.checkForks(ctx, index, pass)
 			if report.Err != nil {
 				return false, report.Err
 			}
 			if report.Superseded {
-				return false, nil
+				return restored, nil
 			}
 			stamp := !through.IsZero() && through.After(index.ArchivedThrough)
 			checkDue := report.Checked && (changed || index.ForkCheck == nil || index.Generation < generation)
-			if !checkDue && !stamp {
+			if !checkDue && !stamp && !restored {
 				return false, nil
 			}
 			if stamp {
