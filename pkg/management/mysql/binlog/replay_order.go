@@ -67,12 +67,18 @@ func (p ReplayPlan) Files() []ReplayFile {
 // index entry the primary lost. Replayed after (or before) the whole of the
 // other segment, that file's transactions would be applied out of order.
 //
-// A file is ready once the transaction before its first one is applied; each
-// segment's files stay in their own order. The next file is the first ready
-// one, segments taken in plan order, so successive segments replay exactly as
-// before. When none is ready the archive has a hole nothing fills: the file
-// with the earliest first event goes next, and the check of the recovered set
-// reports the gap. A file missing from spans counts as ready.
+// A file is ready once its first transaction, or the one before it, is
+// applied; each segment's files stay in their own order. The next file is the
+// first ready one, segments taken in plan order, so successive segments replay
+// exactly as before. When none is ready, the file with the earliest first event
+// goes next: a file with no transactions, which has no place by GTID, or a
+// hole nothing fills, which the check of the recovered set reports. A file
+// whose manifest carries no time goes after those that do. A file missing from
+// spans counts as ready.
+//
+// The order matters beyond the transactions: with a time target mysqlbinlog
+// stops at the first event stamped past it, in whatever file that is, so a
+// later file replayed early ends the replay before the earlier ones.
 func OrderReplayFiles(plan ReplayPlan, spans map[ReplayFile]ReplayFileSpan) []ReplayFile {
 	applied, err := replication.ParseGTIDSet(plan.AnchorGTID)
 	if err != nil {
@@ -92,7 +98,7 @@ func OrderReplayFiles(plan ReplayPlan, spans map[ReplayFile]ReplayFileSpan) []Re
 				pick = i
 				break
 			}
-			if fallback < 0 || span.FirstEventTime.Before(fallbackAt) {
+			if fallback < 0 || earlier(span.FirstEventTime, fallbackAt) {
 				fallback, fallbackAt = i, span.FirstEventTime
 			}
 		}
@@ -111,16 +117,29 @@ func OrderReplayFiles(plan ReplayPlan, spans map[ReplayFile]ReplayFileSpan) []Re
 	}
 }
 
-// followsApplied reports whether the transaction before gtid is applied. A
-// file with no transactions follows anything.
+// earlier reports whether a comes before b, an unknown (zero) time coming
+// after every known one.
+func earlier(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return !a.IsZero()
+	}
+	return a.Before(b)
+}
+
+// followsApplied reports whether gtid, a file's first transaction, or the one
+// before it is applied. A file with no transactions follows nothing: it is
+// placed by time.
 func followsApplied(applied replication.GTIDSet, gtid string) bool {
 	at := strings.LastIndex(gtid, ":")
 	if at < 0 {
-		return true
+		return false
 	}
 	n, err := strconv.ParseUint(gtid[at+1:], 10, 64)
 	if err != nil {
 		return false
+	}
+	if first, err := replication.ParseGTIDSet(gtid); err == nil && applied.Contains(first) {
+		return true
 	}
 	if n <= 1 {
 		// What precedes a server's first transaction is not in its GTID: the

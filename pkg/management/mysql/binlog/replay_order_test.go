@@ -184,3 +184,46 @@ func TestOrderReplayFilesHoldsBackAServersFirstTransaction(t *testing.T) {
 		t.Errorf("order = %v, want the successor's file last", got)
 	}
 }
+
+// A file with no transactions has no place by GTID. Replayed first, its
+// header events, stamped later than a time target, would stop mysqlbinlog
+// before anything is applied: it keeps its place by time. A file whose first
+// transaction the base backup already holds is next in line.
+func TestOrderReplayFilesDoesNotLetAnEmptyFileJumpAhead(t *testing.T) {
+	t.Parallel()
+	for _, emptyAt := range []time.Time{time.Date(2026, 10, 20, 6, 30, 0, 0, time.UTC), {}} {
+		plan := ReplayPlan{AnchorGTID: orderPrimary + ":1-10", Segments: []ReplaySegment{
+			{ServerUUID: orderPrimary, Files: []string{"binlog.000001", "binlog.000002"}},
+			{ServerUUID: orderReplica, Files: []string{"binlog.000001", "binlog.000002"}},
+		}}
+		spans := map[ReplayFile]ReplayFileSpan{
+			{orderPrimary, "binlog.000001"}: span(1, 20, 0),
+			{orderPrimary, "binlog.000002"}: span(21, 30, 5),
+			{orderReplica, "binlog.000001"}: {FirstEventTime: emptyAt},
+			{orderReplica, "binlog.000002"}: span(41, 50, 40),
+		}
+		got := orderNames(OrderReplayFiles(plan, spans))
+		want := []string{"a/binlog.000001", "a/binlog.000002", "b/binlog.000001", "b/binlog.000002"}
+		if !slices.Equal(got, want) {
+			t.Errorf("empty file stamped %v: order = %v, want %v", emptyAt, got, want)
+		}
+	}
+}
+
+// With nothing ready, a file whose manifest carries no time does not go
+// before one that does.
+func TestOrderReplayFilesFallsBackToKnownTimesFirst(t *testing.T) {
+	t.Parallel()
+	plan := ReplayPlan{Segments: []ReplaySegment{
+		{ServerUUID: orderReplica, Files: []string{"binlog.000001"}},
+		{ServerUUID: orderPrimary, Files: []string{"binlog.000001"}},
+	}}
+	spans := map[ReplayFile]ReplayFileSpan{
+		{orderReplica, "binlog.000001"}: {},
+		{orderPrimary, "binlog.000001"}: span(1, 20, 0),
+	}
+	got := orderNames(OrderReplayFiles(plan, spans))
+	if want := []string{"a/binlog.000001", "b/binlog.000001"}; !slices.Equal(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+}
