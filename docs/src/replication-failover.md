@@ -222,7 +222,7 @@ maintenance, and a switchover to move the primary role deliberately.
 
 Each cluster creates a standard `coordination.k8s.io/v1` Lease named
 `{cluster}-primary`. Before an instance promotes itself to primary, it must
-acquire this lease. While it is primary, it renews the lease every 30 seconds.
+acquire this lease. While it is primary, it renews the lease every 5 seconds, a third of its 15-second TTL.
 When it demotes or shuts down, it releases (deletes) the lease.
 
 During automatic failover, the operator checks whether the old primary's lease is

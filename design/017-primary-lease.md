@@ -61,7 +61,7 @@ Cluster "demo"
 
   Primary instance manager (demo-1)
     1. On promotion: acquire (create or take over) the lease
-    2. Every reconcile (~30s): renew (update renewTime)
+    2. Every 5s (a third of the TTL): renew (update renewTime)
     3. On demotion: release (delete) the lease
     4. On shutdown (SIGTERM): release the lease
 
@@ -199,7 +199,7 @@ Scoped to the specific lease name:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `leaseDurationSeconds` | 15 | TTL of the lease. Must be longer than the reconcile interval (~10s). Not exposed in `ClusterSpec` for now. |
+| `leaseDurationSeconds` | 15 | TTL of the lease. The primary renews it every third of that (5s), so a healthy primary's lease never reads as expired. Not exposed in `ClusterSpec` for now. |
 | `spec.enablePrimaryLease` | `true` | Feature gate. When false, neither the operator nor the instance manager touches the Lease. |
 
 ## Files

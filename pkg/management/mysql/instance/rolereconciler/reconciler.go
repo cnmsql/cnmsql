@@ -239,9 +239,9 @@ func (r *Reconciler) reconcileAsyncRole(
 				return ctrl.Result{RequeueAfter: waitRequeue}, nil
 			}
 			if current != me {
-				return ctrl.Result{RequeueAfter: steadyRequeue}, r.setCurrentPrimary(ctx, me)
+				return ctrl.Result{RequeueAfter: r.settledPrimaryRequeue()}, r.setCurrentPrimary(ctx, me)
 			}
-			return ctrl.Result{RequeueAfter: steadyRequeue}, nil
+			return ctrl.Result{RequeueAfter: r.settledPrimaryRequeue()}, nil
 		}
 		// A replica must drain its relay log before promoting so we do not lose
 		// received transactions. For a failover the source is gone and the relay
