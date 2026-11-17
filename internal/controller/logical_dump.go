@@ -72,6 +72,8 @@ func dumpErrorf(kind dumpErrorKind, format string, args ...any) error {
 // externalClusters entry's object store. Both callers share its rules.
 type logicalDumpResolver struct {
 	client client.Client
+	// allowAmbient is the reconciler's ObjectStoreAmbientCredentials.
+	allowAmbient bool
 	// backupNoun and sourceNoun name the spec's reference in messages, e.g.
 	// "import backup" and "import source".
 	backupNoun string
@@ -202,7 +204,7 @@ func (d logicalDumpResolver) fromSource(
 func (d logicalDumpResolver) storeClient(
 	ctx context.Context, namespace string, store *mysqlv1alpha1.S3ObjectStore,
 ) (*objectstore.Client, error) {
-	cfg, err := objectstore.ResolveConfig(ctx, d.client, namespace, store)
+	cfg, err := objectstore.ResolveConfig(ctx, d.client, namespace, store, d.allowAmbient)
 	if err != nil {
 		return nil, dumpErrorf(dumpNotReady, "%v", err)
 	}

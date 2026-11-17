@@ -185,6 +185,11 @@ type ArchiveSegment struct {
 type ArchiveIndex struct {
 	// ClusterName is the cluster this index describes.
 	ClusterName string `json:"clusterName"`
+	// ClusterUID is the metadata.uid of the Cluster whose worker wrote this
+	// index. Retention only deletes from a location that holds one carrying its
+	// own UID, which only a writer with the tenant's credentials can put there.
+	// Empty for objects written before it existed.
+	ClusterUID string `json:"clusterUID,omitempty"`
 	// Segments is the ordered timeline, oldest first.
 	Segments []ArchiveSegment `json:"segments"`
 	// CoveredGTIDSet is the cumulative GTID set across the whole archive.

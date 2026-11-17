@@ -320,8 +320,57 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		}
 		plan.Import = imp
 	}
+	if err := r.checkPlanStoreSecrets(ctx, cluster, plan); err != nil {
+		return clusterPlan{imageDecision: decision}, err
+	}
 	return plan, nil
 }
+
+// reasonObjectStoreCredentialsRefused prefixes the reason of a Cluster or
+// Backup whose object store names a Secret that may not be used as
+// credentials.
+const reasonObjectStoreCredentialsRefused = "ObjectStoreCredentialsRefused"
+
+// checkPlanStoreSecrets checks the credential Secrets of every object store
+// the plan renders into a Pod: the archive store into the instance Pods, and
+// the recovery stores into the restore Job. The kubelet resolves them there,
+// so this is the last point anything can refuse them. A logical import's store
+// needs no check here: resolving the dump already read it through
+// objectstore.ResolveConfig, which checks.
+func (r *ClusterReconciler) checkPlanStoreSecrets(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan,
+) error {
+	var stores []*mysqlv1alpha1.S3ObjectStore
+	if cluster.IsArchivingEnabled() {
+		stores = append(stores, cluster.BinlogObjectStore())
+	}
+	if rec := plan.Recovery; rec != nil {
+		stores = append(stores, &rec.Store)
+		if rec.HasTarget && !rec.Store.SameLocation(&rec.BinlogStore) {
+			stores = append(stores, &rec.BinlogStore)
+		}
+	}
+	for _, store := range stores {
+		if err := objectstore.CheckStoreSecrets(ctx, r.Client, cluster.Namespace, store); err != nil {
+			if errors.Is(err, objectstore.ErrCredentialsSecretRefused) {
+				return &storeSecretsRefusedError{err: err}
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// storeSecretsRefusedError blocks the cluster until a Secret is labelled or
+// the spec changes. Labelling a Secret does not trigger a reconcile, so the
+// cluster is looked at again periodically.
+type storeSecretsRefusedError struct{ err error }
+
+func (e *storeSecretsRefusedError) Error() string {
+	return reasonObjectStoreCredentialsRefused + ": " + e.err.Error()
+}
+
+func (e *storeSecretsRefusedError) Unwrap() error { return e.err }
 
 // resolveRecovery locates the object store and archive keys the bootstrap
 // primary restores from when spec.bootstrap.recovery is set. It returns nil when

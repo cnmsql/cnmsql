@@ -127,13 +127,14 @@ func TestReconcileRetentionExpiresLogicalBackupsOnTheirOwn(t *testing.T) {
 	// Three dumps: two past the 30d window, one inside it.
 	for id, age := range map[string]time.Duration{"d1": 60 * day, "d2": 35 * day, "d3": 2 * day} {
 		s3.put(t, "p/demo/dump/"+id+"/logical.json", objectstore.LogicalBackupMetadata{
-			BackupID: id, Method: "logical", CompletedAt: now.Add(-age)})
+			BackupID: id, ClusterUID: testClusterUID, Method: "logical", CompletedAt: now.Add(-age)})
 		s3.objects["p/demo/dump/"+id+"/dump.sql.zst"] = []byte("zst")
 	}
 	server := httptest.NewServer(s3)
 	defer server.Close()
 
 	cluster := baseCluster()
+	cluster.UID = testClusterUID
 	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
 	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
 		RetentionPolicy: "30d",
@@ -146,7 +147,7 @@ func TestReconcileRetentionExpiresLogicalBackupsOnTheirOwn(t *testing.T) {
 		},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: cluster.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: cluster.Namespace, Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("k"), "secret": []byte("s")},
 	}
 	scheme := testScheme(t)

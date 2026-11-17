@@ -298,7 +298,20 @@ expected. It can be avoided altogether by using IAM-style workload identity
 instead of static keys.
 
 Credentials may be static Secret references or inherited from IAM-style
-workload identity depending on the object-store configuration.
+workload identity depending on the object-store configuration. Inherited
+credentials are the identity of the Pod that uses them: a worker or instance
+Pod runs under the cluster's ServiceAccount, so it signs as the tenant. The
+operator's own identity is shared by every tenant, and the operator does not use
+it for a store without static credentials unless started with
+`--object-store-ambient-credentials` (see
+[ambient credentials in the operator](object-store.md#ambient-credentials-in-the-operator)).
+
+A static credentials Secret must be opted in with the
+`mysql.cnmsql.co/object-store-credentials: "true"` label, and a Secret owned by
+a cnmsql object is never accepted, so a Backup or Cluster author cannot turn
+another Secret in the namespace into credentials sent to an endpoint of their
+choosing (see [credentials Secrets must be
+labelled](object-store.md#credentials-secrets-must-be-labelled)).
 
 ## Sensitive data in logs
 

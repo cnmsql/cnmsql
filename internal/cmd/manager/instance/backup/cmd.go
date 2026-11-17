@@ -59,6 +59,7 @@ func newUploadCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.BackupID, "backup-id", "", "Backup identifier")
 	cmd.Flags().StringVar(&opts.BackupName, "backup-name", "", "Backup object name")
 	cmd.Flags().StringVar(&opts.ClusterName, "cluster-name", "", "Cluster object name")
+	cmd.Flags().StringVar(&opts.ClusterUID, "cluster-uid", "", "Cluster object UID, recorded in the manifest")
 	cmd.Flags().StringVar(&opts.InstanceName, "instance-name", "", "Source instance name")
 	cmd.Flags().StringVar(&opts.TLSCert, "tls-cert", "", "Client TLS certificate")
 	cmd.Flags().StringVar(&opts.TLSKey, "tls-key", "", "Client TLS key")

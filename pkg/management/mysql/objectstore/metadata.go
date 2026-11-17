@@ -25,6 +25,11 @@ type BackupMetadata struct {
 	BackupID string `json:"backupID"`
 	// ClusterName is the cluster the backup was taken from.
 	ClusterName string `json:"clusterName"`
+	// ClusterUID is the metadata.uid of the Cluster whose worker wrote this
+	// manifest. Retention only deletes from a location that holds one carrying its
+	// own UID, which only a writer with the tenant's credentials can put there.
+	// Empty for objects written before it existed.
+	ClusterUID string `json:"clusterUID,omitempty"`
 	// BackupName is the Backup object that produced this archive.
 	BackupName string `json:"backupName"`
 	// InstanceName is the instance the backup was streamed from.

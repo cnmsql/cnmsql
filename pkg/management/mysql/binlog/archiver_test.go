@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -566,5 +567,55 @@ func TestArchivePendingShipsStrandedTailPastVerifiedFiles(t *testing.T) {
 	}
 	if res.CoveredGTIDSet != testUUID+":1-6" {
 		t.Fatalf("covered = %q, want %s:1-6", res.CoveredGTIDSet, testUUID)
+	}
+}
+
+// Every index write stamps the owning Cluster's UID once it is known, which is
+// what lets retention tell this cluster's archive from a same-named one at the
+// same location. An unknown UID leaves an earlier stamp alone.
+func TestArchiverStampsClusterUIDOnTheIndex(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeBinlog(t, dir, "binlog.000001", "one")
+	writeBinlog(t, dir, "binlog.000002", "two")
+	writeBinlog(t, dir, "binlog.000003", "three")
+	writeBinlog(t, dir, "binlog.000004", "active-tail")
+	store := newMemStore()
+	a := newTestArchiver(t, store, dir, staticScan(map[string]string{
+		"binlog.000001": testUUID + ":1-3", "binlog.000002": testUUID + ":4-6", "binlog.000003": testUUID + ":7-9",
+	}))
+	readUID := func() string {
+		t.Helper()
+		var idx objectstore.ArchiveIndex
+		if err := store.GetJSON(context.Background(), "backups",
+			objectstore.ArchiveIndexKey(a.objectStore, "demo"), &idx); err != nil {
+			t.Fatal(err)
+		}
+		return idx.ClusterUID
+	}
+
+	uid := "uid-1"
+	a.clusterUID = func() string { return uid }
+	logs := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})
+	if _, err := a.ArchivePending(context.Background(), logs); err != nil {
+		t.Fatal(err)
+	}
+	if got := readUID(); got != "uid-1" {
+		t.Fatalf("index clusterUID = %q, want uid-1", got)
+	}
+
+	uid = ""
+	logs = MarkActive([]BinaryLog{
+		{Name: "binlog.000001"}, {Name: "binlog.000002"}, {Name: "binlog.000003"}, {Name: "binlog.000004"},
+	})
+	res, err := a.ArchivePending(context.Background(), logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(res.Archived, "binlog.000003") {
+		t.Fatalf("second pass archived %v, want binlog.000003 so the index is rewritten", res.Archived)
+	}
+	if got := readUID(); got != "uid-1" {
+		t.Fatalf("index clusterUID = %q after a write with no known UID, want uid-1 kept", got)
 	}
 }

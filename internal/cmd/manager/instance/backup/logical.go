@@ -160,6 +160,7 @@ func runLogicalUpload(
 		FormatVersion:     objectstore.LogicalFormatVersion,
 		BackupID:          opts.BackupID,
 		ClusterName:       opts.ClusterName,
+		ClusterUID:        opts.ClusterUID,
 		BackupName:        opts.BackupName,
 		InstanceName:      opts.InstanceName,
 		Method:            methodLogical,

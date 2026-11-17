@@ -116,7 +116,8 @@ type Config struct {
 	// Region is the bucket region.
 	Region string
 	// AccessKeyID and SecretAccessKey are the static credentials. When both are
-	// empty the AWS default credential chain (IAM role, env, ...) is used.
+	// empty the AWS default credential chain (IAM role, env, ...) is used, but
+	// only if AllowAmbient is set.
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
@@ -137,7 +138,19 @@ type Config struct {
 	// CABundle is a PEM bundle used to verify the endpoint certificate, for
 	// stores fronted by a private CA. It carries the PEM itself, not a path.
 	CABundle string
+	// AllowAmbient lets a Config without static credentials sign with the
+	// process's own identity (the AWS default credential chain). The workers set
+	// it: they run under the cluster's ServiceAccount, so that identity is the
+	// tenant's. The operator sets it only when its administrator opted in (see
+	// ResolveConfig), since its identity is shared by every tenant.
+	AllowAmbient bool
 }
+
+// ErrAmbientCredentialsDisabled is returned for an object store with no static
+// credentials when the caller may not use its own ambient identity.
+var ErrAmbientCredentialsDisabled = errors.New(
+	"ambient object-store credentials are disabled in the operator; set credentials.accessKeyId and " +
+		"credentials.secretAccessKey, or start the operator with --object-store-ambient-credentials")
 
 // ConfigFromEnv builds a Config from the cnmsql_S3_* environment variables.
 func ConfigFromEnv() Config {
@@ -155,6 +168,7 @@ func configFromEnv(getenv func(string) string) Config {
 		ServerSideEncryption: getenv(EnvServerSideEncryption),
 		StorageClass:         getenv(EnvStorageClass),
 		CABundle:             getenv(EnvCABundle),
+		AllowAmbient:         true,
 	}
 	if force, err := strconv.ParseBool(getenv(EnvForcePathStyle)); err == nil {
 		cfg.ForcePathStyle = force
@@ -231,7 +245,10 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, err
 	}
 
-	creds := resolveCredentials(cfg)
+	creds, err := resolveCredentials(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	sse, err := parseServerSideEncryption(cfg.ServerSideEncryption)
 	if err != nil {
@@ -264,20 +281,23 @@ func NewClient(cfg Config) (*Client, error) {
 // resolveCredentials builds the credential provider for cfg. Static keys are
 // used verbatim; with none configured we fall back to the ambient AWS chain
 // (environment, shared credentials file, then the instance/IRSA endpoint), which
-// is what spec.credentials.inheritFromIAMRole means in practice.
-func resolveCredentials(cfg Config) *credentials.Credentials {
+// is what spec.credentials.inheritFromIAMRole means in practice. The fallback
+// needs cfg.AllowAmbient; without it a Config with no static keys is refused.
+func resolveCredentials(cfg Config) (*credentials.Credentials, error) {
 	switch {
 	case cfg.AccessKeyID != "" || cfg.SecretAccessKey != "":
 		if cfg.SignatureV2 {
-			return credentials.NewStaticV2(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+			return credentials.NewStaticV2(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken), nil
 		}
-		return credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken)
+		return credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken), nil
+	case !cfg.AllowAmbient:
+		return nil, ErrAmbientCredentialsDisabled
 	default:
 		return credentials.NewChainCredentials([]credentials.Provider{
 			&credentials.EnvAWS{},
 			&credentials.FileAWSCredentials{},
 			&credentials.IAM{Client: &http.Client{Timeout: 30 * time.Second}},
-		})
+		}), nil
 	}
 }
 

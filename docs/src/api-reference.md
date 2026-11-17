@@ -1843,7 +1843,9 @@ _Appears in:_
 
 
 S3Credentials holds the references to the secrets containing the credentials
-used to access an S3-compatible object store.
+used to access an S3-compatible object store. Each referenced Secret must
+carry the label mysql.cnmsql.co/object-store-credentials: "true", and may
+not be owned by a cnmsql object.
 
 
 
@@ -1855,7 +1857,7 @@ _Appears in:_
 | `accessKeyId` _[SecretKeySelector](#secretkeyselector)_ | The reference to the secret key containing the access key id. |  | Optional: \{\} <br /> |
 | `secretAccessKey` _[SecretKeySelector](#secretkeyselector)_ | The reference to the secret key containing the secret access key. |  | Optional: \{\} <br /> |
 | `sessionToken` _[SecretKeySelector](#secretkeyselector)_ | The reference to the secret key containing the session token, used for<br />temporary credentials. |  | Optional: \{\} <br /> |
-| `inheritFromIAMRole` _boolean_ | InheritFromIAMRole, when true, makes the credentials be retrieved from the<br />pod's environment (IRSA / instance profile) instead of from a secret. | false | Optional: \{\} <br /> |
+| `inheritFromIAMRole` _boolean_ | InheritFromIAMRole, when true, makes the credentials be retrieved from the<br />pod's environment (IRSA / instance profile) instead of from a secret. The<br />operator's own object-store steps (retention, Backup cleanup, checks) only<br />do so when it runs with --object-store-ambient-credentials. | false | Optional: \{\} <br /> |
 
 
 #### S3ObjectStore

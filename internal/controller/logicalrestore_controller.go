@@ -79,6 +79,10 @@ type LogicalRestoreReconciler struct {
 	// OperatorImageName is the image the manager binary is copied from into
 	// the worker Pod, as for backup workers. Falls back to the instance image.
 	OperatorImageName string
+	// ObjectStoreAmbientCredentials lets the operator sign object-store requests
+	// with its own cloud identity for a store that has no static credentials. Off
+	// by default: that identity is shared by every tenant (GHSA-qxwf-59cm-cj4x).
+	ObjectStoreAmbientCredentials bool
 }
 
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=logicalrestores,verbs=get;list;watch;update;patch
@@ -269,10 +273,11 @@ func (r *LogicalRestoreReconciler) resolveDump(
 	cluster *mysqlv1alpha1.Cluster,
 ) (*logicalDump, error) {
 	resolver := logicalDumpResolver{
-		client:     r.Client,
-		backupNoun: "backup",
-		sourceNoun: "source",
-		target:     fmt.Sprintf("cluster %q", cluster.Name),
+		client:       r.Client,
+		allowAmbient: r.ObjectStoreAmbientCredentials,
+		backupNoun:   "backup",
+		sourceNoun:   "source",
+		target:       fmt.Sprintf("cluster %q", cluster.Name),
 	}
 	if restore.Spec.Source != "" {
 		return resolver.fromSource(ctx, restore.Namespace, restore.Spec.Source,

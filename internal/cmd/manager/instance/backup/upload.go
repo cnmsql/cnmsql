@@ -90,6 +90,7 @@ type uploadOptions struct {
 	BackupID                string
 	BackupName              string
 	ClusterName             string
+	ClusterUID              string
 	InstanceName            string
 	TLSCert                 string
 	TLSKey                  string
@@ -232,6 +233,7 @@ func runPhysicalUpload(ctx context.Context, opts uploadOptions, store archiveSto
 	metadata := objectstore.BackupMetadata{
 		BackupID:         opts.BackupID,
 		ClusterName:      opts.ClusterName,
+		ClusterUID:       opts.ClusterUID,
 		BackupName:       opts.BackupName,
 		InstanceName:     opts.InstanceName,
 		Method:           methodXtrabackup,

@@ -59,7 +59,7 @@ func backupReconcilerWith(t *testing.T, objs ...client.Object) *BackupReconciler
 	return &BackupReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).
 			WithStatusSubresource(&mysqlv1alpha1.Backup{}).
-			WithObjects(objs...).Build(),
+			WithObjects(append([]client.Object{s3CredentialsSecret()}, objs...)...).Build(),
 		Scheme: scheme,
 	}
 }
@@ -220,7 +220,7 @@ func TestLogicalBackupCompletionRecordsManifest(t *testing.T) {
 		Status:     batchv1.JobStatus{Succeeded: 1},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "override-s3", Namespace: "default", Labels: map[string]string{objectstore.CredentialsSecretLabel: "true"}},
 		Data:       map[string][]byte{"access": []byte("key"), "secret": []byte("secret")},
 	}
 	r := backupReconcilerWith(t, dumpAccountReady(baseBackupCluster()), backup, readyReplicaPod(), job, secret)

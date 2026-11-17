@@ -193,6 +193,31 @@ A successful pass that deletes anything emits a Normal `BackupRetention` event.
 Transient object-store errors requeue the reconcile rather than corrupting the
 archive.
 
+### Ownership check
+
+Cluster names are only unique per namespace, so two Clusters named `demo` in
+different namespaces use the same keys under the same bucket and path. Before a
+pass deletes anything, it checks that what it found was written by this
+Cluster: the workers stamp the Cluster's UID into every base and logical backup
+manifest and into the archive index. A pass deletes only when:
+
+- some base or logical backup manifest in the backup store, or the archive
+  index when the archive shares that store, carries the Cluster's UID, and
+- the archive index carries it, or the archive shares the backup store and a
+  manifest does.
+
+A store with nothing to delete needs no proof. Otherwise the pass is skipped
+with a `RetentionNotOwned` Warning event and `status.lastRetentionRunTime` is
+still updated, so the warning repeats once an hour.
+
+Backups and archives written before this check existed carry no UID. The next
+binary log the primary archives stamps the index, which proves both stores when
+they are the same. With a separate archive store, the backup store needs one new
+backup before retention resumes there.
+
+Retention also needs credentials the operator may use; see
+[ambient credentials in the operator](object-store.md#ambient-credentials-in-the-operator).
+
 ### What it does not do
 
 - It does **not** delete `Backup` Kubernetes objects, only object-store

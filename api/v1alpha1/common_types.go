@@ -230,7 +230,9 @@ const (
 )
 
 // S3Credentials holds the references to the secrets containing the credentials
-// used to access an S3-compatible object store.
+// used to access an S3-compatible object store. Each referenced Secret must
+// carry the label mysql.cnmsql.co/object-store-credentials: "true", and may
+// not be owned by a cnmsql object.
 type S3Credentials struct {
 	// The reference to the secret key containing the access key id.
 	// +optional
@@ -246,7 +248,9 @@ type S3Credentials struct {
 	SessionToken *SecretKeySelector `json:"sessionToken,omitempty"`
 
 	// InheritFromIAMRole, when true, makes the credentials be retrieved from the
-	// pod's environment (IRSA / instance profile) instead of from a secret.
+	// pod's environment (IRSA / instance profile) instead of from a secret. The
+	// operator's own object-store steps (retention, Backup cleanup, checks) only
+	// do so when it runs with --object-store-ambient-credentials.
 	// +optional
 	// +kubebuilder:default:=false
 	InheritFromIAMRole bool `json:"inheritFromIAMRole,omitempty"`
