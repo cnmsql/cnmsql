@@ -631,8 +631,9 @@ func (o *RestoreOptions) replayMariadbPositional(
 // fileSegments returns, parallel to the files downloadReplayFiles produces,
 // the archive segment each one came from.
 func fileSegments(plan binlog.ReplayPlan) []string {
-	var out []string
-	for _, file := range plan.Files() {
+	files := plan.Files()
+	out := make([]string, 0, len(files))
+	for _, file := range files {
 		out = append(out, file.ServerUUID)
 	}
 	return out

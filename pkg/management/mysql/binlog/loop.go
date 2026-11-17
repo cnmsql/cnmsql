@@ -592,8 +592,15 @@ func (l *Loop) planPurge(logs []BinaryLog, res ArchiveResult) (purgePlan, error)
 // recorded, and the pass stops there so the frontier never moves past it. No
 // error is read as permission.
 //
+// A demoted primary keeps writing binary logs, re-logging what the primary
+// commits, and all of them pass the gates. On MySQL the drain therefore ships
+// only what the archive lacks and will not get from the primary: the stranded
+// tail, and any file that fills a hole in the index (see judgeDrainFile). The
+// rest stays on disk and is judged again on later passes. MariaDB ships every
+// closed file that passes the gates.
+//
 // DrainPending never touches the active log and is idempotent, so a drain
-// ships exactly the closed, un-shipped files and converges. No flush (a
+// ships exactly the closed, un-shipped files it judges needed and converges. No flush (a
 // non-writable server must not rotate), no purge (the purge gate stays with the
 // primary) and no fork check (only the writable primary is an authority).
 func (l *Loop) drain(ctx context.Context) {

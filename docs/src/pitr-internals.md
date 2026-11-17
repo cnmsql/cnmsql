@@ -212,6 +212,15 @@ flowchart LR
   leaves the file archived but unindexed; the archiver remembers which of its
   files the index lists, re-reads the index after any failed write and on start,
   and folds back every archived file it finds missing.
+- **A stale index write is undone.** Every index write is a read-modify-write of
+  one object. On a store that neither enforces conditional writes nor
+  guarantees read-after-update consistency (OpenStack Swift behind an S3 API),
+  a write can start from an older copy and drop the files added since, with no
+  error anywhere. Every index write, and the check after each archive pass,
+  therefore re-adds the files the archiver knows belong in its segment and the
+  copy it read lacks, in sequence order. A file older than everything the
+  segment still lists, or whose manifest is gone, was expired by retention and
+  is forgotten instead.
 - **Archived through.** Once every rotated log is shipped, everything committed
   before the archiver's last forced rotation is archived, and while the active
   log has not grown since, everything committed at all. The primary stamps that
@@ -269,9 +278,11 @@ the ETag it read, `If-None-Match: *` to create it). A writer that loses the race
 re-reads the index and re-applies its change on top of the winner's, so neither
 change is lost, and a primary holding a stale copy cannot bring back a segment
 retention just dropped. A store that does not implement conditional PUTs
-answers 501 and gets unconditional writes from then on; there a lost write only
+answers 501 and gets unconditional writes from then on. There a lost write
 delays a fork record by one pass, because the transactions are still disowned
-and the next check finds them again.
+and the next check finds them again, and an archived file dropped from a
+segment's list is put back by its archiver's next index write (see [Archiving
+guarantees](#archiving-guarantees)).
 
 The primary reports the records it read in its archiving status, and the
 operator mirrors them into `status.continuousArchiving.forkGTIDs` and
@@ -350,6 +361,26 @@ proves nothing there). A file that fails is deferred, not shipped, and the pass
 stops at it. A canonical tail passes within one refresh of the recorded
 positions. The deferred file shows up in the instance's archiving status.
 
+A demoted primary keeps writing binary logs: as a replica it re-logs every
+transaction the primary commits, and every one of those files passes the four
+gates. Shipping them all would store the timeline twice. On MySQL the drain
+therefore judges each closed file against the index's `coveredGTIDSet`, which
+it reads at most every five minutes:
+
+- the archive holds every transaction of the file: not shipped;
+- the file holds transactions of the instance's own UUID that the archive
+  lacks (the stranded tail): shipped;
+- the archive lacks some of the file's transactions and has already moved past
+  them for that server (a hole: an index entry lost to a stale write, a binlog
+  the primary never shipped): shipped, which fills the hole;
+- the file is ahead of the archive: it waits, the primary ships those
+  transactions itself.
+
+A file left out stays on disk and is judged again on every pass, so a hole
+that opens later is still filled while the file exists
+(`binlogExpireSeconds`). MariaDB ships every closed file that passes the
+gates.
+
 ## Restore process
 
 Restore is a bootstrap operation. A recovering cluster starts from an empty PVC,
@@ -366,7 +397,13 @@ The steps:
    `metadata.json` is present it supplies the fully-specified `anchorGTID` (used
    when the in-archive anchor has none) and `anchorServerUUID`.
 3. **Load `_index.json`** and plan the segments and files to replay from the
-   anchor up to the target.
+   anchor up to the target. On MySQL, when the plan spans several segments,
+   the restore also reads each planned file's manifest and orders the files
+   along the timeline: a file is replayed once the transaction before its
+   first one is applied, each segment keeping its own order. Segments that
+   follow one another replay as before; a file of one segment that fills a
+   hole in another lands where it belongs instead of before or after the whole
+   of the other segment.
 4. **Download** the planned files into a scratch dir, named
    `<serverUUID>_<binlogName>` so like-named files from different segments never
    collide on disk.
