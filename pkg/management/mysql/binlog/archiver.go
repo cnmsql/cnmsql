@@ -667,10 +667,13 @@ func (a *Archiver) updateIndex(
 	// so it is a pure function of the index it is handed.
 	err := objectstore.UpdateArchiveIndex(ctx, a.store, bucket, key,
 		func(index *objectstore.ArchiveIndex, _ bool) (bool, error) {
-			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
+			// Restore before folding: the oldest file the copy lists is what
+			// tells an expired file from a dropped one, and the file being
+			// added must not be the one that sets it.
+			if _, err := a.restoreDropped(ctx, bucket, index); err != nil {
 				return false, err
 			}
-			if _, err := a.restoreDropped(ctx, bucket, index); err != nil {
+			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
 				return false, err
 			}
 			if pass.primary && pass.generation > index.Generation {

@@ -133,6 +133,30 @@ func TestStaleIndexReadRestoresEveryDroppedFile(t *testing.T) {
 	}
 }
 
+// A stale read can predate the instance's segment altogether. The files it
+// drops are then older than the one being added, like expired ones, but their
+// manifests are still in the store.
+func TestStaleIndexReadRestoresADroppedSegment(t *testing.T) {
+	t.Parallel()
+	dir, scan, logs := threeFileArchive(t)
+	store := &staleStore{memStore: newMemStore()}
+	a := newTestArchiver(t, store, dir, scan)
+	if _, err := a.ArchivePending(context.Background(), logs(3)); err != nil {
+		t.Fatal(err)
+	}
+
+	store.staleReads = 3
+	if _, err := a.ArchivePending(context.Background(), logs(4)); err != nil {
+		t.Fatal(err)
+	}
+
+	seg := readSegment(t, store.memStore, a)
+	want := []string{"binlog.000001", "binlog.000002", "binlog.000003", "binlog.000004"}
+	if !slices.Equal(seg.Binlogs, want) || seg.GTIDSet != testUUID+":1-12" {
+		t.Errorf("index binlogs = %v set = %q, want %v covering %s:1-12", seg.Binlogs, seg.GTIDSet, want, testUUID)
+	}
+}
+
 // Retention removes a file from the store and then from the index. The
 // archiver must not put it back.
 func TestExpiredFilesAreNotRestoredToTheIndex(t *testing.T) {
