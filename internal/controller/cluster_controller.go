@@ -27,6 +27,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -534,8 +535,10 @@ func (r *ClusterReconciler) resolvePlan(ctx context.Context, cluster *mysqlv1alp
 // cannot be read) resolves on its own, so the cluster keeps provisioning and
 // is looked at again; so does a first image probe still running. A rejected
 // image blocks the cluster, and is probed again later in case the cause was
-// transient (a registry outage); anything else needs a spec change and blocks
-// it.
+// transient (a registry outage). A request the API server failed says nothing
+// about the spec, so the reconcile fails and is retried with backoff, leaving
+// the status as it was. Anything else blocks the cluster; it is still looked
+// at again, since the cause may be an object created later.
 func (r *ClusterReconciler) planFailed(ctx context.Context, cluster *mysqlv1alpha1.Cluster, err error) (ctrl.Result, error) {
 	if decision, ok := imageDecisionForError(err); ok {
 		if recordErr := r.recordImageDecision(ctx, cluster, decision); recordErr != nil {
@@ -572,12 +575,36 @@ func (r *ClusterReconciler) planFailed(ctx context.Context, cluster *mysqlv1alph
 			Progressing: false,
 		})
 	}
-	return ctrl.Result{}, r.patchStatus(ctx, cluster, observedCluster{
+	if transientPlanError(err) {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: readyResync}, r.patchStatus(ctx, cluster, observedCluster{
 		Phase:       topology.PhaseBlocked,
 		PhaseReason: err.Error(),
 		Ready:       false,
 		Progressing: false,
 	})
+}
+
+// transientPlanError reports whether err is the API server (or the path to
+// it) failing a request rather than something the cluster's spec asks for: a
+// timeout, an overloaded or restarting server, a write conflict, or a refusal
+// by an admission plugin, which is how a Pod is turned down while its
+// namespace still lacks the default ServiceAccount. A missing object is not
+// one: the spec names it.
+func transientPlanError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	return apierrors.IsForbidden(err) ||
+		apierrors.IsUnauthorized(err) ||
+		apierrors.IsConflict(err) ||
+		apierrors.IsTimeout(err) ||
+		apierrors.IsServerTimeout(err) ||
+		apierrors.IsTooManyRequests(err) ||
+		apierrors.IsInternalError(err) ||
+		apierrors.IsServiceUnavailable(err) ||
+		apierrors.IsUnexpectedServerError(err)
 }
 
 // ensureInfrastructure provisions the supporting resources a Cluster needs

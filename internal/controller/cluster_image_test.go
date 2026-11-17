@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -262,6 +263,99 @@ func TestResolvePlanRecordsTheImageWhenThePlanFails(t *testing.T) {
 	}
 	if stored.Status.Phase != topology.PhaseBlocked {
 		t.Fatalf("phase = %q, want Blocked", stored.Status.Phase)
+	}
+}
+
+// An API server refusal while the plan is built says nothing about the spec:
+// a Pod is refused for as long as a new namespace has no default
+// ServiceAccount yet. The reconcile fails so that it is retried, and the
+// cluster is not reported Blocked.
+func TestResolvePlanRetriesATransientAPIError(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	cluster.Spec.ImageName = "registry.example/mysql:8.4.11"
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).WithStatusSubresource(cluster).Build()
+	refused := apierrors.NewForbidden(corev1.Resource("pods"), "probe",
+		errors.New(`error looking up service account default/default: serviceaccount "default" not found`))
+	r := &ClusterReconciler{Client: c, Scheme: scheme, ImageProber: fixedImageProber{err: refused}}
+
+	_, stop, err := r.resolvePlan(context.Background(), cluster)
+	if stop == nil {
+		t.Fatal("a plan that could not be built must stop the reconcile")
+	}
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("error = %v, want the API refusal returned so the reconcile is retried", err)
+	}
+	stored := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(cluster), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Phase == topology.PhaseBlocked {
+		t.Fatalf("phase = %q, want a transient API error not to block the cluster", stored.Status.Phase)
+	}
+}
+
+// A blocked cluster is looked at again: what blocked it may be an object that
+// is created later, which no event on the Cluster announces.
+func TestResolvePlanLooksAgainAtABlockedCluster(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	cluster.Spec.ImageName = "registry.example/mysql:8.4.11"
+	cluster.Spec.Bootstrap = &mysqlv1alpha1.BootstrapConfiguration{Recovery: &mysqlv1alpha1.BootstrapRecovery{
+		Backup: &mysqlv1alpha1.LocalObjectReference{Name: "missing"},
+	}}
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).WithStatusSubresource(cluster).Build()
+	r := &ClusterReconciler{
+		Client:      c,
+		Scheme:      scheme,
+		ImageProber: fixedImageProber{info: imageInfo("registry.example/mysql:8.4.11", "8.4.11")},
+	}
+
+	_, stop, err := r.resolvePlan(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stop == nil || stop.RequeueAfter <= 0 {
+		t.Fatalf("result = %+v, want the blocked cluster requeued", stop)
+	}
+	stored := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(cluster), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Phase != topology.PhaseBlocked {
+		t.Fatalf("phase = %q, want Blocked", stored.Status.Phase)
+	}
+}
+
+func TestTransientPlanError(t *testing.T) {
+	t.Parallel()
+	pods := corev1.Resource("pods")
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"forbidden", apierrors.NewForbidden(pods, "probe", errors.New("no service account")), true},
+		{"server timeout", apierrors.NewServerTimeout(pods, "create", 1), true},
+		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), true},
+		{"internal error", apierrors.NewInternalError(errors.New("etcd")), true},
+		{"service unavailable", apierrors.NewServiceUnavailable("starting"), true},
+		{"conflict", apierrors.NewConflict(pods, "probe", errors.New("modified")), true},
+		{"wrapped", fmt.Errorf("probing: %w", apierrors.NewServiceUnavailable("starting")), true},
+		{"deadline", context.DeadlineExceeded, true},
+		{"not found", apierrors.NewNotFound(pods, "probe"), false},
+		{"invalid", apierrors.NewBadRequest("bad"), false},
+		{"spec", errors.New("backup missing is not completed"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := transientPlanError(tc.err); got != tc.want {
+				t.Fatalf("transientPlanError(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
