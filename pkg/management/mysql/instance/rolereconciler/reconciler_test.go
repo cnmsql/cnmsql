@@ -711,3 +711,41 @@ func TestTargetPromotesWithoutTheHandoffPositionOnceTheSourceIsGone(t *testing.T
 		t.Fatal("with the source gone the target must promote on what it has")
 	}
 }
+
+// A settled primary renews the Lease only when it reconciles, so it has to
+// come back well within the Lease's duration. Otherwise the Lease of a healthy
+// primary sits expired, and a switchover target takes it and promotes before
+// the primary has stopped taking writes.
+func TestSettledPrimaryRenewsItsLeaseBeforeItExpires(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	status := &mysqlv1alpha1.ClusterStatus{TargetPrimary: instDemo1, CurrentPrimary: instDemo1}
+	r := newReconciler(t, instDemo1, status, local, heldLease(instDemo1, ""))
+
+	res := reconcile(t, r)
+
+	duration := time.Duration(*getLease(t, r).Spec.LeaseDurationSeconds) * time.Second
+	if res.RequeueAfter <= 0 || res.RequeueAfter > duration/2 {
+		t.Fatalf("RequeueAfter = %s, want the next renewal within half the %s Lease", res.RequeueAfter, duration)
+	}
+}
+
+func TestSettledPrimaryWithoutALeaseKeepsTheSteadyCadence(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{status: &webserver.Status{Role: webserver.RolePrimary}}
+	status := &mysqlv1alpha1.ClusterStatus{TargetPrimary: instDemo1, CurrentPrimary: instDemo1}
+	r := newReconciler(t, instDemo1, status, local)
+	cluster := &mysqlv1alpha1.Cluster{}
+	if err := r.Get(context.Background(), r.ClusterKey, cluster); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	cluster.Spec.EnablePrimaryLease = &disabled
+	if err := r.Update(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := reconcile(t, r); res.RequeueAfter != steadyRequeue {
+		t.Fatalf("RequeueAfter = %s, want %s", res.RequeueAfter, steadyRequeue)
+	}
+}

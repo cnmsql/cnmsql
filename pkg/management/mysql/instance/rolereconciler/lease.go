@@ -30,6 +30,11 @@ import (
 
 const defaultLeaseDuration = 15 * time.Second
 
+// leaseRenewInterval is how often a settled primary renews the Lease. It is a
+// third of the Lease's duration, so the Lease of a healthy primary survives
+// two failed renewals and never reads as expired to a switchover target.
+const leaseRenewInterval = defaultLeaseDuration / 3
+
 // handoffPositionAnnotation records, on the primary Lease, the executed GTID
 // set an outgoing primary had once it was read-only. The instance taking over
 // does not promote until it has applied that set, so a transaction the old
@@ -100,6 +105,15 @@ func (r *Reconciler) acquireOrRenewLease(ctx context.Context, settled bool) (str
 		return handoff, r.Create(ctx, lease)
 	}
 	return handoff, r.Update(ctx, lease)
+}
+
+// settledPrimaryRequeue is when a settled primary reconciles again: in time to
+// renew the Lease when it holds one, at the steady cadence otherwise.
+func (r *Reconciler) settledPrimaryRequeue() time.Duration {
+	if r.primaryLeaseEnabled {
+		return leaseRenewInterval
+	}
+	return steadyRequeue
 }
 
 func leaseExpired(lease *coordinationv1.Lease) bool {
