@@ -679,10 +679,22 @@ func (a *Archiver) foldFile(
 
 // addToSegment adds one file's name and folds its coverage in the same write,
 // so recovery's PlanReplay never sees a covered GTID it has no file to replay.
-// Deduplicated so retries and idempotent resumes are safe.
+// Deduplicated so retries and idempotent resumes are safe. The list stays in
+// sequence order, the order recovery replays it in: a file restored after a
+// later one was added goes back to its place.
 func (a *Archiver) addToSegment(seg *objectstore.ArchiveSegment, fileName, fileGTIDSet string) error {
 	if fileName != "" && !slices.Contains(seg.Binlogs, fileName) {
-		seg.Binlogs = append(seg.Binlogs, fileName)
+		at := len(seg.Binlogs)
+		if n, err := ParseSequence(fileName); err == nil {
+			for at > 0 {
+				prev, err := ParseSequence(seg.Binlogs[at-1])
+				if err != nil || prev < n {
+					break
+				}
+				at--
+			}
+		}
+		seg.Binlogs = slices.Insert(seg.Binlogs, at, fileName)
 	}
 	segSet := a.newSet()
 	if err := segSet.Parse(seg.GTIDSet); err != nil {

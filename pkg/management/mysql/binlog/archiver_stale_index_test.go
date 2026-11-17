@@ -102,8 +102,8 @@ func TestStaleIndexReadDoesNotDropAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// In sequence order: recovery replays a segment's files as listed.
 	seg := readSegment(t, store.memStore, a)
-	slices.Sort(seg.Binlogs)
 	if want := []string{"binlog.000001", "binlog.000002", "binlog.000003"}; !slices.Equal(seg.Binlogs, want) {
 		t.Errorf("index binlogs = %v, want %v", seg.Binlogs, want)
 	}
