@@ -260,6 +260,9 @@ type ReplaySegment struct {
 type ReplayPlan struct {
 	// Segments are the timeline segments to replay, oldest first.
 	Segments []ReplaySegment
+	// Order, when set, is the order to replay the segments' files in (see
+	// OrderReplayFiles); otherwise they are replayed segment by segment.
+	Order []ReplayFile
 	// AnchorGTID is the base backup's anchor, which the recovered set is
 	// checked against after replay.
 	AnchorGTID string
