@@ -124,13 +124,19 @@ func scanMySQL(r io.Reader) (ScanResult, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	expectPrevGTIDs := false
+	var prevGTIDs strings.Builder
 	for scanner.Scan() {
 		line := scanner.Text()
 
 		if expectPrevGTIDs {
 			expectPrevGTIDs = false
 			if m := gtidSetLineRe.FindStringSubmatch(line); m != nil {
-				res.PreviousGTIDs = canonicalGTIDSet(m[1])
+				// One server per line, each but the last ending in a comma.
+				prevGTIDs.WriteString(m[1])
+				expectPrevGTIDs = strings.HasSuffix(m[1], ",")
+				if !expectPrevGTIDs {
+					res.PreviousGTIDs = canonicalGTIDSet(prevGTIDs.String())
+				}
 				continue
 			}
 		}
