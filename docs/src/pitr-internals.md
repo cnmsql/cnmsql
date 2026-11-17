@@ -220,7 +220,10 @@ flowchart LR
   therefore re-adds the files the archiver knows belong in its segment and the
   copy it read lacks, in sequence order. A file older than everything the
   segment still lists, or whose manifest is gone, was expired by retention and
-  is forgotten instead.
+  is forgotten instead. The same stale write can bring back entries retention
+  removed, whose files stay deleted: every retention pass drops the entries
+  whose manifest is gone, checking each one directly, since a file archived
+  after the pass listed the archive is in the index and not in the listing.
 - **Archived through.** Once every rotated log is shipped, everything committed
   before the archiver's last forced rotation is archived, and while the active
   log has not grown since, everything committed at all. The primary stamps that

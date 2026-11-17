@@ -152,6 +152,12 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", msg)
 	}
 
+	// An index write that started from a copy older than a retention pass
+	// brings back the entries that pass removed; their files stay deleted.
+	if err := dropDanglingIndexEntries(ctx, binlogClient, *binlogStore, cluster.Name, binlogs, index); err != nil {
+		return err
+	}
+
 	// Logical backups expire on the same window but on their own: they never
 	// anchor recovery, so they neither move the horizon nor keep binlogs.
 	expiredDumps := objectstore.PlanLogicalRetention(logical, cutoff)
@@ -245,4 +251,24 @@ func retentionOwnership(
 			"The next binary log this Cluster archives proves the archive is its own"
 	}
 	return ""
+}
+
+// dropDanglingIndexEntries removes the archive index entries whose binlogs
+// are gone (see objectstore.DropDanglingIndexEntries). Without an index there
+// is nothing to drop.
+func dropDanglingIndexEntries(
+	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
+	binlogs []objectstore.BinlogEntry, index *objectstore.ArchiveIndex,
+) error {
+	if index == nil {
+		return nil
+	}
+	dropped, err := objectstore.DropDanglingIndexEntries(ctx, client, store, clusterName, binlogs)
+	if err != nil {
+		return err
+	}
+	if dropped > 0 {
+		logf.FromContext(ctx).Info("Dropped archive index entries whose binlogs are gone", "entries", dropped)
+	}
+	return nil
 }
