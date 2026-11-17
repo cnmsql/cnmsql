@@ -430,7 +430,7 @@ func (a *Archiver) archivePending(
 		if err := a.store.PutJSON(ctx, bucket, statusKey, status); err != nil {
 			return result, fmt.Errorf("binlog: writing archive status: %w", err)
 		}
-		if err := a.updateIndex(ctx, bucket, status, l.Name, meta.GTIDSet, pass); err != nil {
+		if err := a.updateIndex(ctx, bucket, status, meta, pass); err != nil {
 			a.indexSeeded = false
 			return result, err
 		}
@@ -583,6 +583,7 @@ func (a *Archiver) archiveFileAllowed(
 		FirstGTID:      scanRes.FirstGTID,
 		LastGTID:       scanRes.LastGTID,
 		GTIDSet:        scanRes.GTIDSet,
+		PreviousGTIDs:  scanRes.PreviousGTIDs,
 		FirstEventTime: scanRes.FirstEventTime,
 		LastEventTime:  scanRes.LastEventTime,
 		SizeBytes:      size,
@@ -659,7 +660,7 @@ func (a *Archiver) loadStatus(ctx context.Context, bucket string) (objectstore.A
 // Folding only fileGTIDSet — the coverage of the file being added — keeps the two
 // in lockstep. Union is idempotent, so retries and resumes are safe.
 func (a *Archiver) updateIndex(
-	ctx context.Context, bucket string, status objectstore.ArchiveStatus, fileName, fileGTIDSet string, pass *forkPass,
+	ctx context.Context, bucket string, status objectstore.ArchiveStatus, file objectstore.BinlogMetadata, pass *forkPass,
 ) error {
 	key := objectstore.ArchiveIndexKey(a.objectStore, a.clusterName)
 	// The fold re-runs on a fresh copy whenever another writer got in first,
@@ -672,7 +673,7 @@ func (a *Archiver) updateIndex(
 			if _, err := a.restoreDropped(ctx, bucket, index); err != nil {
 				return false, err
 			}
-			if err := a.foldFile(index, status, fileName, fileGTIDSet); err != nil {
+			if err := a.foldFile(index, status, file); err != nil {
 				return false, err
 			}
 			if pass.primary && pass.generation > index.Generation {
@@ -696,7 +697,7 @@ func (a *Archiver) updateIndex(
 
 // foldFile adds one archived file and its coverage to the index.
 func (a *Archiver) foldFile(
-	index *objectstore.ArchiveIndex, status objectstore.ArchiveStatus, fileName, fileGTIDSet string,
+	index *objectstore.ArchiveIndex, status objectstore.ArchiveStatus, file objectstore.BinlogMetadata,
 ) error {
 	index.ClusterName = a.clusterName
 	if a.clusterUID != nil {
@@ -719,7 +720,7 @@ func (a *Archiver) foldFile(
 	}
 	seg.EndedAt = a.now()
 
-	if err := a.addToSegment(seg, fileName, fileGTIDSet); err != nil {
+	if err := a.addToSegment(seg, file); err != nil {
 		return err
 	}
 	return a.recomputeCovered(index)
@@ -730,7 +731,8 @@ func (a *Archiver) foldFile(
 // Deduplicated so retries and idempotent resumes are safe. The list stays in
 // sequence order, the order recovery replays it in: a file restored after a
 // later one was added goes back to its place.
-func (a *Archiver) addToSegment(seg *objectstore.ArchiveSegment, fileName, fileGTIDSet string) error {
+func (a *Archiver) addToSegment(seg *objectstore.ArchiveSegment, file objectstore.BinlogMetadata) error {
+	fileName, fileGTIDSet := file.BinlogName, file.GTIDSet
 	if fileName != "" && !slices.Contains(seg.Binlogs, fileName) {
 		at := len(seg.Binlogs)
 		if n, err := ParseSequence(fileName); err == nil {
@@ -754,7 +756,28 @@ func (a *Archiver) addToSegment(seg *objectstore.ArchiveSegment, fileName, fileG
 	}
 	segSet.Union(fileSet)
 	seg.GTIDSet = segSet.String()
+	a.foldSeen(seg, file)
 	return nil
+}
+
+// foldSeen records in the segment what the server had executed by the end of
+// a file (MySQL). Manifests written before the field existed carry no
+// Previous-GTIDs set and leave it alone. The record only helps restore tell a
+// failback from a dead branch, so a set that does not parse is left out
+// rather than failing the archive pass.
+func (a *Archiver) foldSeen(seg *objectstore.ArchiveSegment, file objectstore.BinlogMetadata) {
+	if !a.skipCovered || file.PreviousGTIDs == "" {
+		return
+	}
+	seen := a.newSet()
+	for _, raw := range []string{seg.SeenGTIDSet, file.PreviousGTIDs, file.GTIDSet} {
+		set := a.newSet()
+		if err := set.Parse(raw); err != nil {
+			return
+		}
+		seen.Union(set)
+	}
+	seg.SeenGTIDSet = seen.String()
 }
 
 // recomputeCovered recomputes the cumulative covered set across every segment.
@@ -847,7 +870,8 @@ func (a *Archiver) restoreDropped(ctx context.Context, bucket string, index *obj
 		if seg.StartGTIDSet == "" {
 			seg.StartGTIDSet = meta.FirstGTID
 		}
-		if err := a.addToSegment(seg, name, meta.GTIDSet); err != nil {
+		meta.BinlogName = name
+		if err := a.addToSegment(seg, meta); err != nil {
 			return false, err
 		}
 		restored = true

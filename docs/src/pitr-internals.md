@@ -366,6 +366,11 @@ history. Neither copy is stored:
   worth of transactions twice. A file left out counts as archived for the
   purge gate and for the pending count.
 
+Because a returning primary leaves out the files that re-log its predecessor,
+its segment also records `seenGTIDSet`, everything the server had executed by
+the end of the files it archived (each manifest carries the file's
+`previousGTIDs`). Restore uses it to tell a failback from a dead branch.
+
 The primary reads `coveredGTIDSet` at most every five minutes. A stale copy
 lists less than the archive holds, so it can ship a file that was not needed
 and never leaves out one that was. A file left out stays on disk until it is
@@ -430,11 +435,14 @@ The steps:
 3. **Load `_index.json`** and plan the segments and files to replay from the
    anchor up to the target. On MySQL, when the plan spans several segments,
    the restore also reads each planned file's manifest and orders the files
-   along the timeline: a file is replayed once the transaction before its
-   first one is applied, each segment keeping its own order. Segments that
-   follow one another replay as before; a file of one segment that fills a
-   hole in another lands where it belongs instead of before or after the whole
-   of the other segment.
+   along the timeline: a file is replayed once its first transaction, or the
+   one before it, is applied, each segment keeping its own order. Segments
+   that follow one another replay as before; a file of one segment that fills
+   a hole in another lands where it belongs instead of before or after the
+   whole of the other segment. A file with no transactions is placed by the
+   time of its first event: with a time target `mysqlbinlog` stops at the
+   first event stamped past it, so a later file replayed early would end the
+   replay before the earlier ones.
 4. **Download** the planned files into a scratch dir, named
    `<serverUUID>_<binlogName>` so like-named files from different segments never
    collide on disk.

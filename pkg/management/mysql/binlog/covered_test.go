@@ -18,6 +18,7 @@ package binlog
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -53,11 +54,11 @@ func newPromoted(t *testing.T, oldPrimaryArchived string, skipCovered bool) *pro
 		ObjectStore: testObjectStore,
 		ClusterName: "demo", InstanceName: "demo-1", ServerUUID: testUUID,
 		BinlogDir: dir,
-		Scan: countingScan(staticScan(map[string]string{
+		Scan: countingScan(withPrevious(staticScan(map[string]string{
 			"binlog.000001": otherUUID + ":11-20",
 			"binlog.000002": otherUUID + ":21-30",
 			"binlog.000003": testUUID + ":1-5",
-		}), &p.scans),
+		}), map[string]string{"binlog.000003": otherUUID + ":1-30"}), &p.scans),
 		Now:         func() time.Time { return p.now },
 		SkipCovered: skipCovered,
 	})
@@ -138,6 +139,36 @@ func TestPromotedPrimarySkipsWhatTheArchiveHolds(t *testing.T) {
 	want := ArchivedFile{Name: "binlog.000001", GTIDSet: otherUUID + ":11-20"}
 	if len(res.Files) != 3 || res.Files[0] != want {
 		t.Errorf("files = %+v, want %+v first of three", res.Files, want)
+	}
+}
+
+// A primary that left out the binlogs re-logging its predecessor still records
+// that it had executed them: restore reads a failback from it.
+func TestPromotedPrimaryRecordsWhatItHadExecuted(t *testing.T) {
+	t.Parallel()
+	p := newPromoted(t, otherUUID+":1-30", true)
+	p.archive()
+
+	seg := segmentByUUID(t, readIndex(t, p.store), testUUID)
+	if want := testUUID + ":1-5"; !sameGTIDSet(t, seg.GTIDSet, want) {
+		t.Fatalf("segment holds %q, want only %q", seg.GTIDSet, want)
+	}
+	if want := otherUUID + ":1-30," + testUUID + ":1-5"; !sameGTIDSet(t, seg.SeenGTIDSet, want) {
+		t.Errorf("seen = %q, want %q", seg.SeenGTIDSet, want)
+	}
+}
+
+// The record of what the server had executed is an aid to restore: a set that
+// does not parse never stops the archive.
+func TestUnreadablePreviousGTIDsDoesNotStopArchiving(t *testing.T) {
+	t.Parallel()
+	p := newPromoted(t, otherUUID+":1-30", true)
+	p.a.scan = withPrevious(p.a.scan, map[string]string{"binlog.000003": otherUUID + ":1-30,"})
+	p.archive()
+
+	seg := segmentByUUID(t, readIndex(t, p.store), testUUID)
+	if !slices.Equal(seg.Binlogs, []string{"binlog.000003"}) || seg.SeenGTIDSet != "" {
+		t.Errorf("segment = %v seen %q, want the file archived and nothing recorded", seg.Binlogs, seg.SeenGTIDSet)
 	}
 }
 
@@ -244,4 +275,14 @@ func sameGTIDSet(t *testing.T, got, want string) bool {
 		t.Fatal(err)
 	}
 	return a.Contains(b) && b.Contains(a)
+}
+
+// withPrevious adds to a scan the set the server had executed when it opened
+// the file.
+func withPrevious(scan Scanner, previous map[string]string) Scanner {
+	return func(ctx context.Context, path string) (ScanResult, error) {
+		res, err := scan(ctx, path)
+		res.PreviousGTIDs = previous[filepath.Base(path)]
+		return res, err
+	}
 }

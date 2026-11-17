@@ -377,8 +377,9 @@ func PlanReplay(idx *objectstore.ArchiveIndex, anchorGTID string, target Recover
 // transactions and authored its own afterwards, it took over at the last one
 // it re-logged: the earlier segment's own transactions past that point were
 // never received, a dead branch. The earlier segment holding the later one's
-// transactions means it came back after it (a failback), which gives no
-// verdict. A dead branch the archive does not record fails the recovery with
+// transactions, or having executed them (SeenGTIDSet: a primary leaves out the
+// binlogs the archive already covers), means it came back after it (a
+// failback), which gives no verdict. A dead branch the archive does not record fails the recovery with
 // ErrForkedTimeline rather than splicing it in.
 func checkUnrecordedForks(idx *objectstore.ArchiveIndex, recorded string) error {
 	known, err := replication.ParseGTIDSet(recorded)
@@ -386,9 +387,13 @@ func checkUnrecordedForks(idx *objectstore.ArchiveIndex, recorded string) error 
 		return fmt.Errorf("binlog: parsing disowned set: %w", err)
 	}
 	sets := make([]replication.GTIDSet, len(idx.Segments))
+	seen := make([]replication.GTIDSet, len(idx.Segments))
 	for i, seg := range idx.Segments {
 		if sets[i], err = replication.ParseGTIDSet(seg.GTIDSet); err != nil {
 			return fmt.Errorf("binlog: parsing segment %q GTID set: %w", seg.ServerUUID, err)
+		}
+		if seen[i], err = replication.ParseGTIDSet(seg.SeenGTIDSet); err != nil {
+			return fmt.Errorf("binlog: parsing what segment %q had executed: %w", seg.ServerUUID, err)
 		}
 	}
 	for i, earlier := range idx.Segments {
@@ -400,7 +405,8 @@ func checkUnrecordedForks(idx *objectstore.ArchiveIndex, recorded string) error 
 		for j := i + 1; j < len(idx.Segments); j++ {
 			successor := strings.ToLower(idx.Segments[j].ServerUUID)
 			relogged := sets[j][author]
-			if len(relogged) == 0 || len(sets[j][successor]) == 0 || len(sets[i][successor]) > 0 {
+			cameBack := len(sets[i][successor]) > 0 || len(seen[i][successor]) > 0
+			if len(relogged) == 0 || len(sets[j][successor]) == 0 || cameBack {
 				continue
 			}
 			tookOverAt := relogged[len(relogged)-1].End

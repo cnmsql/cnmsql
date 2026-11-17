@@ -116,6 +116,9 @@ type BinlogMetadata struct {
 	FirstGTID string `json:"firstGTID,omitempty"`
 	LastGTID  string `json:"lastGTID,omitempty"`
 	GTIDSet   string `json:"gtidSet,omitempty"`
+	// PreviousGTIDs is what the server had executed when it opened this file
+	// (the file's Previous-GTIDs event). Absent from older manifests.
+	PreviousGTIDs string `json:"previousGTIDs,omitempty"`
 	// FirstEventTime and LastEventTime bound the file in wall-clock time, for
 	// targetTime recovery.
 	FirstEventTime time.Time `json:"firstEventTime,omitempty"`
@@ -161,6 +164,12 @@ type ArchiveSegment struct {
 	// GTIDSet is the full GTID set the segment contributes (its last/covered
 	// position).
 	GTIDSet string `json:"gtidSet,omitempty"`
+	// SeenGTIDSet (MySQL) is everything the server had executed by the end of
+	// the files it archived, whether or not this segment holds it. A primary
+	// leaves out the binlogs the archive already covers, so after a failback
+	// its segment need not hold its predecessor's transactions; this is what
+	// still shows it came back after it. Absent from older segments.
+	SeenGTIDSet string `json:"seenGTIDSet,omitempty"`
 	// StartGTIDSet is the segment's first archived GTID position. With GTIDSet it
 	// bounds the segment's per-domain sequence range [start, end], which recovery
 	// uses to stitch a gap-free replay from segments that individually have gaps

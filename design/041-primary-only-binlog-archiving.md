@@ -72,6 +72,20 @@ Recovery then reads those transactions from the old primary's segment. A file
 there may mix them with transactions the timeline disowned; replay already
 handles that with `--exclude-gtids` (038).
 
+### 2a. A failback stays recognisable at restore
+
+Restore has a backstop for forks no primary recorded (`checkUnrecordedForks`).
+It told a failback (A, then S, then A again) from a dead branch by A's segment
+holding S's transactions, which A re-logged while it was S's replica. With the
+skip, A leaves those files out, and the backstop refused a legitimate failback
+with `ErrForkedTimeline`.
+
+Each manifest now records the file's Previous-GTIDs set (`previousGTIDs`), and
+each MySQL segment records `seenGTIDSet`: everything its server had executed by
+the end of the files it archived. A segment that has seen its successor's
+transactions came back after it, whether or not it archived them. Older
+manifests and segments lack the fields and behave as before.
+
 ### 3. Coverage that outlives its files (accepted limitation)
 
 The skip trusts `coveredGTIDSet`. Retention keeps a segment's set when it
@@ -127,6 +141,8 @@ the first case rarer.
 |------|--------|
 | `binlog/loop.go` | `tick` drains on MariaDB only |
 | `binlog/archiver.go` | coverage skip in the primary pass; drain-only filter removed |
+| `binlog/replay.go`, `objectstore/binlog.go` | `seenGTIDSet` on segments, `previousGTIDs` on manifests, used by the restore-time failback check |
+| `binlog/replay_order.go` | a file with no transactions is placed by time, not replayed first; a file whose first transaction is already applied is ready; unknown times sort last |
 | `binlog/drain_uncovered.go` | removed |
 | `binlog/archiver.go` | `updateIndex` restores dropped files before folding the new one, so a stale read that lacks the whole segment restores it |
 | `binlog/covered.go` | new: coverage read and comparison |
