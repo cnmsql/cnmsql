@@ -45,6 +45,13 @@ func (v *fakeView) Timeline() (engine.MariaDBTimeline, bool) {
 	return v.timeline, v.hasTimeline
 }
 
+// canonicalTail is a MariaDB cluster view whose primary holds, on its
+// timeline, the tail mariadbDrainFixture stranded.
+func canonicalTail() *fakeView {
+	return &fakeView{primary: "demo-2", position: "0-2-20", known: true, hasTimeline: true,
+		timeline: engine.MariaDBTimeline{{ServerID: 1}, {ServerID: 2, Handoff: "0-1-9"}}}
+}
+
 // strandedSeed is the listing a former primary had while it archived.
 func strandedSeed() []BinaryLog {
 	return MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}})
@@ -60,13 +67,15 @@ func drainTick(t *testing.T, loop *Loop, mock sqlmock.Sqlmock) {
 	loop.tick(context.Background(), &lastFlush, &lastSize)
 }
 
-func drainLoop(arch *Archiver, db *sql.DB, view ClusterView, mariadb bool) *Loop {
+func drainLoop(arch *Archiver, db *sql.DB, view ClusterView) *Loop {
 	return NewLoop(LoopOptions{
 		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
 		Replication: fakeProbe{streaming: true},
-		Cluster:     view, Instance: "demo-1", MariaDB: mariadb,
+		Cluster:     view, Instance: "demo-1", MariaDB: true,
 	})
 }
+
+// The drain is MariaDB's (design 041), so these run a MariaDB former primary.
 
 // Case 5 of the design: the stranded tail is canonical, but the current
 // primary's recorded position does not show it yet. The drain defers rather
@@ -74,9 +83,10 @@ func drainLoop(arch *Archiver, db *sql.DB, view ClusterView, mariadb bool) *Loop
 // position refresh covers it.
 func TestDrainDefersUntilThePrimaryPositionCoversTheFile(t *testing.T) {
 	t.Parallel()
-	db, mock, arch, store := drainFixture(t)
-	view := &fakeView{primary: "demo-2", position: testUUID + ":1-5", known: true}
-	loop := drainLoop(arch, db, view, false)
+	db, mock, arch, store := mariadbDrainFixture(t)
+	view := canonicalTail()
+	view.position = "0-1-6"
+	loop := drainLoop(arch, db, view)
 
 	drainTick(t, loop, mock)
 	if got, want := archivedNames(store), []string{shippedLog}; !slices.Equal(got, want) {
@@ -87,7 +97,7 @@ func TestDrainDefersUntilThePrimaryPositionCoversTheFile(t *testing.T) {
 		t.Fatalf("state = %+v, want %s deferred and still pending", state, strandedLog)
 	}
 
-	view.position = testUUID + ":1-9"
+	view.position = "0-2-20"
 	drainTick(t, loop, mock)
 	if got, want := archivedNames(store), []string{shippedLog, strandedLog}; !slices.Equal(got, want) {
 		t.Fatalf("archived %v, want the stranded file shipped once covered", got)
@@ -100,13 +110,13 @@ func TestDrainDefersUntilThePrimaryPositionCoversTheFile(t *testing.T) {
 	}
 }
 
-// A diverged instance never drains, even while its replication streams (MySQL
-// AUTO_POSITION accepts errant transactions).
+// A diverged instance never drains, even while its replication streams.
 func TestDrainBlockedForADivergedInstance(t *testing.T) {
 	t.Parallel()
-	db, mock, arch, store := drainFixture(t)
-	view := &fakeView{primary: "demo-2", position: testUUID + ":1-9", known: true, diverged: []string{"demo-1"}}
-	loop := drainLoop(arch, db, view, false)
+	db, mock, arch, store := mariadbDrainFixture(t)
+	view := canonicalTail()
+	view.diverged = []string{"demo-1"}
+	loop := drainLoop(arch, db, view)
 	mock.ExpectQuery("super_read_only").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
 	var lastFlush time.Time
 	var lastSize int64
@@ -126,17 +136,17 @@ func TestDrainDefersWithoutAProvingPrimary(t *testing.T) {
 	for name, view := range map[string]*fakeView{
 		"no cluster view":          nil,
 		"unknown primary position": {primary: "demo-2", known: false},
-		"this instance is primary": {primary: "demo-1", position: testUUID + ":1-9", known: true},
+		"this instance is primary": {primary: "demo-1", position: "0-2-20", known: true},
 		"primary has no position":  {primary: "demo-2", position: "", known: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			db, mock, arch, store := drainFixture(t)
+			db, mock, arch, store := mariadbDrainFixture(t)
 			var cv ClusterView
 			if view != nil {
 				cv = view
 			}
-			loop := drainLoop(arch, db, cv, false)
+			loop := drainLoop(arch, db, cv)
 			drainTick(t, loop, mock)
 			if got, want := archivedNames(store), []string{shippedLog}; !slices.Equal(got, want) {
 				t.Fatalf("archived %v, want the tail deferred", got)
@@ -145,23 +155,8 @@ func TestDrainDefersWithoutAProvingPrimary(t *testing.T) {
 	}
 }
 
-// Case 7: a replica that received the dead tail and went down keeps its stale
-// position on record. Only the current primary's position counts, so that
-// stale record never authorises the drain.
-func TestDrainIgnoresOtherInstancesPositions(t *testing.T) {
-	t.Parallel()
-	db, mock, arch, store := drainFixture(t)
-	// The primary never received 4-9; a stale replica record would have.
-	view := &fakeView{primary: "demo-2", position: testUUID + ":1-3", known: true}
-	loop := drainLoop(arch, db, view, false)
-	drainTick(t, loop, mock)
-	if got, want := archivedNames(store), []string{shippedLog}; !slices.Equal(got, want) {
-		t.Fatalf("archived %v", got)
-	}
-}
-
-// Files ship in order: a deferred file stops the pass, so a later file the
-// primary happens to cover never moves the frontier past the gap.
+// Files ship in order: a deferred file stops the pass, so a later file never
+// moves the frontier past the gap. It is not even decoded.
 func TestDrainStopsAtTheFirstDeferredFile(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New()
@@ -174,17 +169,20 @@ func TestDrainStopsAtTheFirstDeferredFile(t *testing.T) {
 		writeBinlog(t, dir, n, n)
 	}
 	store := newMemStore()
-	arch := newTestArchiver(t, store, dir, staticScan(map[string]string{
-		"binlog.000001": testUUID + ":1-3",
-		"binlog.000002": testUUID + ":4-9",
-		"binlog.000003": otherUUID + ":1-2",
-	}))
+	scans := 0
+	arch := mariadbArchiver(t, store, dir, countingScan(staticScan(map[string]string{
+		"binlog.000001": "0-1-3",
+		"binlog.000002": "0-1-9",
+		"binlog.000003": "0-1-12",
+	}), &scans))
 	seed := MarkActive([]BinaryLog{{Name: "binlog.000001"}, {Name: "binlog.000002"}})
 	if _, err := arch.ArchivePending(context.Background(), seed); err != nil {
 		t.Fatal(err)
 	}
-	view := &fakeView{primary: "demo-2", position: testUUID + ":1-3," + otherUUID + ":1-2", known: true}
-	loop := drainLoop(arch, db, view, false)
+	scans = 0
+	view := canonicalTail()
+	view.position = "0-1-6"
+	loop := drainLoop(arch, db, view)
 	mock.ExpectQuery("super_read_only").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
 	mock.ExpectQuery("SHOW BINARY LOGS").WillReturnRows(sqlmock.NewRows([]string{"Log_name", "File_size"}).
 		AddRow("binlog.000001", "1").AddRow("binlog.000002", "1").AddRow("binlog.000003", "1").AddRow("binlog.000004", "1"))
@@ -198,6 +196,9 @@ func TestDrainStopsAtTheFirstDeferredFile(t *testing.T) {
 	state := loop.State()
 	if state.DeferredFile != "binlog.000002" || state.PendingFiles != 2 {
 		t.Fatalf("state = %+v, want binlog.000002 deferred and two files pending", state)
+	}
+	if scans != 1 {
+		t.Fatalf("decoded %d files, want only the deferred one", scans)
 	}
 }
 
@@ -215,14 +216,16 @@ func TestDrainScansADeferredFileOnce(t *testing.T) {
 	writeBinlog(t, dir, strandedLog, "stranded")
 	writeBinlog(t, dir, activeLog3, "active")
 	scans := 0
-	arch := newTestArchiver(t, newMemStore(), dir, countingScan(staticScan(map[string]string{
-		shippedLog: testUUID + ":1-3", strandedLog: testUUID + ":4-9",
+	arch := mariadbArchiver(t, newMemStore(), dir, countingScan(staticScan(map[string]string{
+		shippedLog: "0-1-3", strandedLog: "0-1-9",
 	}), &scans))
 	if _, err := arch.ArchivePending(context.Background(), strandedSeed()); err != nil {
 		t.Fatal(err)
 	}
 	scans = 0
-	loop := drainLoop(arch, db, &fakeView{primary: "demo-2", position: testUUID + ":1-3", known: true}, false)
+	view := canonicalTail()
+	view.position = "0-1-6"
+	loop := drainLoop(arch, db, view)
 	for range 3 {
 		drainTick(t, loop, mock)
 	}
@@ -235,11 +238,6 @@ func TestDrainScansADeferredFileOnce(t *testing.T) {
 // index writes never run the fork check, whatever fork source it carries.
 func TestDrainNeverRunsTheForkCheck(t *testing.T) {
 	t.Parallel()
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 	dir := t.TempDir()
 	writeBinlog(t, dir, shippedLog, "shipped")
 	writeBinlog(t, dir, strandedLog, "stranded")
@@ -253,8 +251,11 @@ func TestDrainNeverRunsTheForkCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	arch := newForkArchiver(t, store, dir, scan, src.source)
-	loop := drainLoop(arch, db, &fakeView{primary: "demo-2", position: testUUID + ":1-9", known: true}, false)
-	drainTick(t, loop, mock)
+	logs := MarkActive([]BinaryLog{{Name: shippedLog}, {Name: strandedLog}, {Name: activeLog3}})
+	allow := func(string, ScanResult) (bool, error) { return true, nil }
+	if _, err := arch.DrainPending(context.Background(), logs, allow); err != nil {
+		t.Fatal(err)
+	}
 
 	if got, want := archivedNames(store), []string{shippedLog, strandedLog}; !slices.Equal(got, want) {
 		t.Fatalf("archived %v", got)
@@ -281,21 +282,28 @@ func mariadbDrainFixture(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Archiver, *me
 	writeBinlog(t, dir, strandedLog, "stranded")
 	writeBinlog(t, dir, activeLog3, "active")
 	store := newMemStore()
+	arch := mariadbArchiver(t, store, dir, staticScan(map[string]string{shippedLog: "0-1-3", strandedLog: "0-1-9"}))
+	if _, err := arch.ArchivePending(context.Background(), strandedSeed()); err != nil {
+		t.Fatal(err)
+	}
+	return db, mock, arch, store
+}
+
+// mariadbArchiver is newTestArchiver for MariaDB.
+func mariadbArchiver(t *testing.T, store Store, dir string, scan Scanner) *Archiver {
+	t.Helper()
 	model := engine.MustForFlavor(engine.FlavorMariaDB).GTID()
 	arch, err := NewArchiver(ArchiverOptions{
 		Store: store, ObjectStore: testObjectStore, ClusterName: "demo", InstanceName: "demo-1",
 		ServerUUID: "token-1", BinlogDir: dir,
-		Scan:   staticScan(map[string]string{shippedLog: "0-1-3", strandedLog: "0-1-9"}),
+		Scan:   scan,
 		Now:    func() time.Time { return time.Unix(1700000000, 0).UTC() },
 		NewSet: func() GTIDOps { return NewMariadbGTIDSet(model) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := arch.ArchivePending(context.Background(), strandedSeed()); err != nil {
-		t.Fatal(err)
-	}
-	return db, mock, arch, store
+	return arch
 }
 
 // On MariaDB position containment is blind to forks (a dead 0-1-9 compares as
@@ -323,7 +331,7 @@ func TestDrainMariaDBGate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			db, mock, arch, store := mariadbDrainFixture(t)
-			loop := drainLoop(arch, db, tc.view, true)
+			loop := drainLoop(arch, db, tc.view)
 			drainTick(t, loop, mock)
 			shipped := slices.Contains(archivedNames(store), strandedLog)
 			if shipped != tc.shipped {

@@ -141,8 +141,8 @@ func (r *ClusterReconciler) applyArchiveGapCondition(ctx context.Context, latest
 		if len(open) > 0 && !archiveGapSettled(latest, ca, time.Now()) {
 			condition.Reason = "GapPendingRepair"
 			condition.Message = fmt.Sprintf(
-				"The binary-log archive is missing %s; waiting for a former primary to ship it before taking a base backup",
-				strings.Join(open, "; "))
+				"The binary-log archive is missing %s; waiting %s for it to be repaired before taking a base backup",
+				strings.Join(open, "; "), archiveGapGrace(latest))
 			apimeta.SetStatusCondition(&latest.Status.Conditions, condition)
 			return
 		}
@@ -163,12 +163,20 @@ func (r *ClusterReconciler) applyArchiveGapCondition(ctx context.Context, latest
 	apimeta.SetStatusCondition(&latest.Status.Conditions, condition)
 }
 
-// archiveGapGrace is how long a gap may stand before it counts: after a
-// failover the former primary's drain ships its stranded tail once the new
-// primary's recorded position covers it, one position refresh at most, which
-// closes the gap a successor's clone point left.
-func archiveGapGrace(*mysqlv1alpha1.Cluster) time.Duration {
-	return gtidPersistInterval + 2*time.Minute
+// archiveGapSettle is how long any gap may stand before it counts: an index
+// entry lost to a racing write is restored by the primary's next index write.
+const archiveGapSettle = 2 * time.Minute
+
+// archiveGapGrace is how long a gap may stand before it counts. On MariaDB a
+// former primary's drain ships its stranded tail once the new primary's
+// recorded position covers it, one position refresh at most, which closes the
+// gap a successor's clone point left. MySQL has no drain (design 041): nothing
+// but a base backup closes that gap, so it only waits for the index to settle.
+func archiveGapGrace(cluster *mysqlv1alpha1.Cluster) time.Duration {
+	if cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB {
+		return gtidPersistInterval + archiveGapSettle
+	}
+	return archiveGapSettle
 }
 
 // archiveGapSettled reports whether the archive's gaps have stood for the

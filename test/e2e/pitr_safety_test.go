@@ -265,8 +265,9 @@ func lostIndexWriteSpec(f forkFlavor, cluster string) {
 }
 
 // cloneGapSpec: a replica is re-cloned past transactions the archive then
-// loses, and the primary dies with a dead tail, so it is diverged and its
-// drain can never ship them again. The re-clone rotates the primary's binary
+// loses, and the primary dies with a dead tail, so it is diverged and nothing
+// it holds can enter the archive again (MySQL has no drain at all, and
+// MariaDB's refuses a diverged instance). The re-clone rotates the primary's binary
 // log, which it archives at once, so the spec plays the store that lost those
 // files: the archive is missing the stretch the clone point covers, while the
 // successor archives from after it. Recovery used to replay straight over the
@@ -321,7 +322,7 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 		}
 		f.covers(cluster, executed, 5*time.Minute)
 
-		By(fmt.Sprintf("letting %s return: it is diverged, so its drain never ships the gap", primary))
+		By(fmt.Sprintf("letting %s return: it is diverged, so it never ships the gap", primary))
 		unfence(primary)
 		expectDiverged(cluster, primary)
 
@@ -339,7 +340,7 @@ func cloneGapSpec(f forkFlavor, cluster string) {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(gaps)).NotTo(BeEmpty(), "the archive gap must be reported")
 		}, e2eTimeout(5*time.Minute), 10*time.Second).Should(Succeed())
-		By("waiting out the grace a former primary's drain gets")
+		By("waiting out the grace a gap gets before it counts")
 		// ArchiveGap is True only until the backup it triggers completes, which
 		// a small database can do between two polls. The backup and the event
 		// are what last; the condition's settled reason is checked below.

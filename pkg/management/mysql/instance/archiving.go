@@ -275,7 +275,7 @@ func startArchiver(
 		Forks:        forkSource(reader, floor, cfg.MariaDB),
 		Authority:    floor.Authority,
 
-		DrainOnlyUncovered: !cfg.MariaDB,
+		SkipCovered: !cfg.MariaDB,
 	})
 	if err != nil {
 		return nil, nil, err

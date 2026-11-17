@@ -102,14 +102,15 @@ type Archiver struct {
 	// restoreDropped).
 	indexed     map[string]bool
 	indexSeeded bool
-	// drainUncovered makes a drain ship only what the archive lacks (see
-	// judgeDrainFile). unneeded memoizes the scan of the files a drain left
-	// out, which are judged again on every pass: a hole can open later.
-	// coverage is the archive coverage a drain last read, at coverageAt.
-	drainUncovered bool
-	unneeded       map[string]scannedStamp
-	coverage       string
-	coverageAt     time.Time
+	// skipCovered makes the primary leave out the binlogs whose transactions
+	// the archive already holds (see archiveCovers). covered memoizes the scan
+	// of the files left out, which are judged again on every pass: the
+	// coverage can shrink. coverage is the archive coverage last read, at
+	// coverageAt.
+	skipCovered bool
+	covered     map[string]scannedStamp
+	coverage    string
+	coverageAt  time.Time
 }
 
 // scannedStamp is a scan result together with the identity of the file it was
@@ -170,10 +171,11 @@ type ArchiverOptions struct {
 	Forks ForkSource
 	// Authority fences the primary's index writes with its primary generation.
 	Authority AuthoritySource
-	// DrainOnlyUncovered makes a drain (DrainPending) leave out the binlogs
-	// whose transactions the archive already holds or is about to receive
-	// from the primary. It judges MySQL GTID sets, so it stays off on MariaDB.
-	DrainOnlyUncovered bool
+	// SkipCovered makes the primary (ArchivePending) leave out the binlogs
+	// whose transactions the archive already holds: what a promoted replica
+	// re-logged from a primary that archived it. It judges MySQL GTID sets,
+	// so it stays off on MariaDB.
+	SkipCovered bool
 }
 
 // NewArchiver builds an Archiver from validated options.
@@ -215,8 +217,8 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		deferredScans: make(map[string]scannedStamp),
 		indexed:       make(map[string]bool),
 
-		drainUncovered: opts.DrainOnlyUncovered,
-		unneeded:       make(map[string]scannedStamp),
+		skipCovered: opts.SkipCovered,
+		covered:     make(map[string]scannedStamp),
 	}, nil
 }
 
@@ -285,7 +287,9 @@ type ForkReport struct {
 	Err error
 }
 
-// ArchivedFile is one binlog known to be in the object store.
+// ArchivedFile is one binlog whose transactions are known to be in the object
+// store: archived by this instance, or left out because the archive already
+// held them.
 type ArchivedFile struct {
 	Name    string
 	GTIDSet string
@@ -346,7 +350,9 @@ func (a *Archiver) archivePending(
 	}
 
 	defer func() { result.ForkCheck = pass.report }()
-	for _, l := range Archivable(logs) {
+	archivable := Archivable(logs)
+	a.forgetCovered(archivable)
+	for _, l := range archivable {
 		select {
 		case <-ctx.Done():
 			return result, ctx.Err()
@@ -354,7 +360,11 @@ func (a *Archiver) archivePending(
 		}
 
 		meta, archived, deferred, err := a.archiveFile(ctx, bucket, l, allow)
-		if errors.Is(err, errUnneeded) {
+		if errors.Is(err, errCovered) {
+			// Nothing to ship or record, and the frontier moves past it: the
+			// purge gate and the pending count treat it as archived.
+			result.Files = append(result.Files, ArchivedFile{Name: l.Name, GTIDSet: meta.GTIDSet})
+			result.LastArchivedBinlog = l.Name
 			continue
 		}
 		if err != nil {
@@ -472,10 +482,11 @@ func (a *Archiver) archiveFile(
 // file.
 var errDeferred = errors.New("binlog: file deferred")
 
-// errUnneeded is archiveFileAllowed's internal signal that a drain left the
-// file out: the archive holds its transactions, or the primary is about to
-// ship them. Unlike a deferred file it does not stop the pass.
-var errUnneeded = errors.New("binlog: file not needed by the archive")
+// errCovered is archiveFileAllowed's internal signal that the primary left the
+// file out because the archive holds its transactions. The manifest returned
+// with it carries only the file's GTID set. Unlike a deferred file it does not
+// stop the pass.
+var errCovered = errors.New("binlog: archive already holds the file's transactions")
 
 func (a *Archiver) archiveFileAllowed(
 	ctx context.Context, bucket string, l BinaryLog, allow FileFilter,
@@ -498,19 +509,12 @@ func (a *Archiver) archiveFileAllowed(
 	if stamp, ok := a.verified[l.Name]; ok && stamp.matches(st) {
 		return stamp.meta, false, nil
 	}
-	draining := allow != nil && a.drainUncovered
-	if left, ok := a.unneeded[l.Name]; draining && ok && left.matches(st) {
-		ship, err := a.worthDraining(ctx, left.scan.GTIDSet)
-		if err != nil {
-			return objectstore.BinlogMetadata{}, false, err
+	skipping := allow == nil && a.skipCovered
+	if skipping {
+		if meta, err := a.stillCovered(ctx, l.Name, st); err != nil {
+			return meta, false, err
 		}
-		if !ship {
-			return objectstore.BinlogMetadata{}, false, errUnneeded
-		}
-		// A hole opened: ship it after all, without decoding it again.
-		a.deferredScans[l.Name] = left
 	}
-	delete(a.unneeded, l.Name)
 
 	// Check the archive before reading the file. A manifest means this file
 	// landed on a prior pass, and then only its hash is needed — to prove the
@@ -559,14 +563,9 @@ func (a *Archiver) archiveFileAllowed(
 		}
 	}
 	delete(a.deferredScans, l.Name)
-	if draining {
-		ship, err := a.worthDraining(ctx, scanRes.GTIDSet)
-		if err != nil {
-			return objectstore.BinlogMetadata{}, false, err
-		}
-		if !ship {
-			a.unneeded[l.Name] = scannedStamp{info: st, scan: scanRes}
-			return objectstore.BinlogMetadata{}, false, errUnneeded
+	if skipping {
+		if meta, err := a.leaveOutIfCovered(ctx, l.Name, scannedStamp{info: st, scan: scanRes}); err != nil {
+			return meta, false, err
 		}
 	}
 	sum, size, err := hashFile(path)

@@ -242,8 +242,9 @@ func (l *Loop) Run(ctx context.Context) error {
 }
 
 // tick runs one archive pass. It gates on writability so only the primary
-// rotates and ships on the RPO cadence; a non-primary clears its Active flag and
-// at most drains a tail it stranded while it was primary (see drain).
+// rotates and ships on the RPO cadence; a non-primary clears its Active flag.
+// On MySQL it archives nothing (design 041); on MariaDB it at most drains a
+// tail it stranded while it was primary (see drain).
 func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *int64) {
 	writable, err := l.reader.Writable(ctx)
 	if err != nil {
@@ -267,7 +268,10 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.flushedAt, l.flushedActive, l.stampedThrough = time.Time{}, "", time.Time{}
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
 		*lastFlush = time.Time{}
-		l.drain(ctx)
+		l.archiver.ForgetCoverage()
+		if l.mariadb {
+			l.drain(ctx)
+		}
 		return
 	}
 
@@ -554,8 +558,10 @@ func (l *Loop) planPurge(logs []BinaryLog, res ArchiveResult) (purgePlan, error)
 	return purgePlan{to: limit}, nil
 }
 
-// drain ships the closed binlogs a former primary stranded when it stopped being
-// writable, and does nothing at all on any other instance.
+// drain ships the closed binlogs a former MariaDB primary stranded when it
+// stopped being writable, and does nothing at all on any other instance. MySQL
+// has no drain: only the writable primary archives, and a promoted replica
+// ships what it re-logged of the old primary's unarchived tail (design 041).
 //
 // Its purpose is filling canonical holes: transactions the surviving timeline
 // executed but never logged. A successor provisioned by clone holds the clone
@@ -592,15 +598,8 @@ func (l *Loop) planPurge(logs []BinaryLog, res ArchiveResult) (purgePlan, error)
 // recorded, and the pass stops there so the frontier never moves past it. No
 // error is read as permission.
 //
-// A demoted primary keeps writing binary logs, re-logging what the primary
-// commits, and all of them pass the gates. On MySQL the drain therefore ships
-// only what the archive lacks and will not get from the primary: the stranded
-// tail, and any file that fills a hole in the index (see judgeDrainFile). The
-// rest stays on disk and is judged again on later passes. MariaDB ships every
-// closed file that passes the gates.
-//
 // DrainPending never touches the active log and is idempotent, so a drain
-// ships exactly the closed, un-shipped files it judges needed and converges. No flush (a
+// ships exactly the closed, un-shipped files and converges. No flush (a
 // non-writable server must not rotate), no purge (the purge gate stays with the
 // primary) and no fork check (only the writable primary is an authority).
 func (l *Loop) drain(ctx context.Context) {

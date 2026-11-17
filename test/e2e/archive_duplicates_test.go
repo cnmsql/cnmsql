@@ -6,7 +6,6 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -17,10 +16,10 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/replication"
 )
 
-// A demoted primary keeps writing binary logs: as a replica it re-logs every
-// transaction its successor commits, and the successor archives those itself.
-// These specs check the archive does not store that copy, and that the copy is
-// still used when it is the only source of a binlog the archive lost.
+// A replica re-logs every transaction it replicates. After a failover both
+// instances hold such copies: the promoted replica of what the old primary
+// archived, the demoted primary of what its successor archives. These specs
+// check the archive stores neither (design 041).
 
 // archivedBinlog is one binary log the archive index lists, with its manifest.
 type archivedBinlog struct {
@@ -100,68 +99,22 @@ func closeBinlog(cluster, replica string) {
 	Expect(err).NotTo(HaveOccurred(), "FLUSH LOCAL BINARY LOGS failed on %s", replica)
 }
 
-// loseArchivedBinlogs removes from the archive every binary log of instance
-// that holds part of gtids: the bytes, the manifest and the index entry. It
-// returns the names removed and everything they held.
-func loseArchivedBinlogs(cluster, instance, gtids string) (names []string, lost string) {
-	GinkgoHelper()
-	files, err := archivedBinlogsOf(cluster, instance)
-	Expect(err).NotTo(HaveOccurred())
-	for _, file := range files {
-		hit, err := replication.IntersectsGTIDStrings(file.meta.GTIDSet, gtids)
-		Expect(err).NotTo(HaveOccurred())
-		if !hit {
-			continue
-		}
-		names = append(names, file.meta.BinlogName)
-		lost, err = replication.UnionGTIDStrings(lost, file.meta.GTIDSet)
-		Expect(err).NotTo(HaveOccurred())
-		manifest := binlogManifestKey(cluster, file.segment.ServerUUID, file.meta.BinlogName)
-		for _, key := range []string{manifest, strings.TrimSuffix(manifest, objectstore.BinlogManifestSuffix)} {
-			out, err := rcloneExec("deletefile", key)
-			Expect(err).NotTo(HaveOccurred(), "deleting %s: %s", key, out)
-		}
+// archivedBy returns the GTID set of everything the index says instance
+// archived.
+func archivedBy(cluster, instance string) (string, error) {
+	idx, err := readArchiveIndex(cluster)
+	if err != nil {
+		return "", err
 	}
-	Expect(names).NotTo(BeEmpty(), "%s archived no binary log holding %s", instance, gtids)
-
-	// The primary rewrites the index on every pass, and a write of its own can
-	// land over this one: drop the entries until they stay dropped.
-	indexKey := objectKey("%s/binlogs/%s", cluster, objectstore.ArchiveIndexName)
-	Eventually(func(g Gomega) {
-		idx, err := readArchiveIndex(cluster)
-		g.Expect(err).NotTo(HaveOccurred())
-		listed := false
-		var covered []string
-		for i := range idx.Segments {
-			seg := &idx.Segments[i]
-			if seg.InstanceName == instance {
-				kept := slices.DeleteFunc(slices.Clone(seg.Binlogs), func(name string) bool {
-					return slices.Contains(names, name)
-				})
-				if len(kept) != len(seg.Binlogs) {
-					listed = true
-					seg.Binlogs = kept
-					seg.GTIDSet, err = replication.DifferenceGTIDStrings(seg.GTIDSet, lost)
-					g.Expect(err).NotTo(HaveOccurred())
-				}
-			}
-			covered = append(covered, seg.GTIDSet)
-		}
-		if !listed {
-			return
-		}
-		idx.CoveredGTIDSet, err = replication.UnionGTIDStrings(covered...)
-		g.Expect(err).NotTo(HaveOccurred())
-		raw, err := json.Marshal(idx)
-		g.Expect(err).NotTo(HaveOccurred())
-		s3Pipe(string(raw), indexKey)
-		g.Expect(listed).To(BeFalse(), "the index still listed %v", names)
-	}, e2eTimeout(3*time.Minute), 15*time.Second).Should(Succeed())
-	return names, lost
+	var sets []string
+	for _, seg := range segmentsOf(idx, instance) {
+		sets = append(sets, seg.GTIDSet)
+	}
+	return replication.UnionGTIDStrings(sets...)
 }
 
-// demotedPrimarySpec fails over from A to B and lets A rejoin as a replica.
-func demotedPrimarySpec(cluster string) {
+// failoverSpec fails over from A to B and lets A rejoin as a replica.
+func failoverSpec(cluster string) {
 	f := mysqlForkFlavor
 	s := &forkSuite{f: f, cluster: cluster, instances: 2, rpoSeconds: 10}
 	s.setUp()
@@ -169,16 +122,17 @@ func demotedPrimarySpec(cluster string) {
 	pre := idRange(1, 10)
 	relogged := idRange(101, 130)
 	late := idRange(201, 205)
-	hole := idRange(301, 305)
-	after := idRange(401, 405)
-	var a, b, holePos, lost string
+	var a, b string
 
-	It("demotes a primary that then re-logs its successor's transactions", func() {
+	It("fails over between two instances that re-log each other", func() {
 		a = clusterPrimary(cluster)
 		b = otherInstance(cluster, s.instances, a)
 		writeForkRows(f, a, s.password, "pre", pre)
 		f.covers(cluster, f.flush(cluster, a, s.password), 5*time.Minute)
+
+		By(fmt.Sprintf("closing the binlog %s re-logged them into", b))
 		waitReplicated(f, b, s.password, pre)
+		closeBinlog(cluster, b)
 
 		By(fmt.Sprintf("failing over from %s to %s, and letting %s rejoin as a replica", a, b, a))
 		failOver(f, cluster, a, b, s.password, false)
@@ -195,67 +149,35 @@ func demotedPrimarySpec(cluster string) {
 		waitReplicated(f, a, s.password, relogged)
 		closeBinlog(cluster, a)
 
-		// The archive moves past the copy, which leaves it nothing to wait for.
 		writeForkRows(f, b, s.password, "late", late)
 		f.covers(cluster, f.flush(cluster, b, s.password), 5*time.Minute)
 	})
 
-	It("never archives the demoted primary's copy", func() {
+	It("archives neither copy", func() {
 		Consistently(func(g Gomega) {
 			relogs, err := relogsOf(cluster, a)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(relogs).To(BeEmpty(), "%s archived transactions %s archives itself", a, b)
+			g.Expect(relogs).To(BeEmpty(), "%s archived as a replica", a)
+
+			// A file of the promoted replica may hold the old primary's
+			// unarchived tail, but never only what the old primary archived.
+			archived, err := archivedBy(cluster, a)
+			g.Expect(err).NotTo(HaveOccurred())
+			relogs, err = relogsOf(cluster, b)
+			g.Expect(err).NotTo(HaveOccurred())
+			for _, file := range relogs {
+				repeats, err := replication.GTIDContains(archived, file.meta.GTIDSet)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(repeats).To(BeFalse(), "%s holds only what %s archived (%s)", file, a, archived)
+			}
 		}, e2eTimeout(3*time.Minute), 15*time.Second).Should(Succeed())
 	})
 
-	It("archives the demoted primary's copy of a binlog the archive lost", func() {
-		before := f.position(b, s.password)
-		writeForkRows(f, b, s.password, "hole", hole)
-		holePos = f.flush(cluster, b, s.password)
-		f.covers(cluster, holePos, 5*time.Minute)
-		holeSet, err := replication.DifferenceGTIDStrings(holePos, before)
-		Expect(err).NotTo(HaveOccurred())
-
-		writeForkRows(f, b, s.password, "after", after)
-		afterPos := f.flush(cluster, b, s.password)
-		f.covers(cluster, afterPos, 5*time.Minute)
-		waitReplicated(f, a, s.password, ids(hole, after))
-		closeBinlog(cluster, a)
-
-		By(fmt.Sprintf("losing the binlogs %s archived the hole rows in", b))
-		var names []string
-		names, lost = loseArchivedBinlogs(cluster, b, holeSet)
-
-		By(fmt.Sprintf("waiting for %s to ship its copy of %v", a, names))
-		// The demoted primary re-reads the archive's coverage every five minutes.
-		Eventually(func(g Gomega) {
-			idx, err := readArchiveIndex(cluster)
-			g.Expect(err).NotTo(HaveOccurred())
-			covers, err := replication.GTIDContains(idx.CoveredGTIDSet, lost)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(covers).To(BeTrue(), "the archive covers %q, still without %q", idx.CoveredGTIDSet, lost)
-		}, e2eTimeout(12*time.Minute), 15*time.Second).Should(Succeed())
-		f.covers(cluster, afterPos, 5*time.Minute)
-
-		By("checking it shipped nothing but what the archive lacked")
-		relogs, err := relogsOf(cluster, a)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(relogs).NotTo(BeEmpty(), "%s must be the one that filled the hole", a)
-		for _, file := range relogs {
-			fills, err := replication.IntersectsGTIDStrings(file.meta.GTIDSet, lost)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(fills).To(BeTrue(), "%s holds nothing the archive lacked", file)
-		}
-	})
-
-	It("recovers across the binlogs the demoted primary filled in", func() {
-		restoreAndExpectRows(f, cluster+"-latest", s.backup, s.password, pitrTarget{},
-			ids(pre, relogged, late, hole, after))
-		restoreAndExpectRows(f, cluster+"-hole", s.backup, s.password, pitrTarget{GTID: holePos},
-			ids(pre, relogged, late, hole))
+	It("recovers across the failover", func() {
+		restoreAndExpectRows(f, cluster+"-latest", s.backup, s.password, pitrTarget{}, ids(pre, relogged, late))
 	})
 }
 
-var _ = Describe("Archive duplicates: demoted primary", Ordered, Label("feature", "pitr"), func() {
-	demotedPrimarySpec("dup-demoted")
+var _ = Describe("Archive duplicates: failover", Ordered, Label("feature", "pitr"), func() {
+	failoverSpec("dup-failover")
 })

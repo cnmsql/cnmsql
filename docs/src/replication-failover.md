@@ -679,9 +679,10 @@ A lagged promotion can leave a dead branch in the binlog archive if the old
 primary uploaded it before crashing. The new primary records it on the segment
 that holds it and the cluster reports the `ArchiveForked` condition; point-in-time
 recovery to a time or to the latest point leaves those transactions out. A
-former primary that rejoins never adds a disowned transaction through its drain:
-it ships a stranded file only once the current primary's recorded position
-proves it canonical.
+former primary that rejoins never adds a disowned transaction: on MySQL a
+replica archives nothing, and on MariaDB its drain ships a stranded file only
+once the current primary's recorded position proves it canonical (see [PITR
+internals](./pitr-internals.md#who-archives-after-a-failover)).
 
 Each promotion raises `status.currentPrimaryGeneration` by one, in the same
 update that names the new `currentPrimary`; the status webhook refuses any

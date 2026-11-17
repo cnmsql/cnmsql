@@ -174,13 +174,44 @@ func expectDemotedWithLogs(mock sqlmock.Sqlmock) {
 			AddRow(activeLog3, "120"))
 }
 
-// A demoted primary whose source accepted its GTID position is proven to be an
-// ancestor of the surviving timeline, so the tail it stranded is shipped. Without
-// this the transactions in that tail exist only on its PVC, and a recovery
-// spanning them fails against a hole no segment can bridge.
-func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
+// On MySQL only the writable primary archives (design 041): a demoted primary
+// that replicates, owns a segment and holds a canonical stranded tail does not
+// even list its binary logs.
+func TestLoopDoesNotDrainOnMySQL(t *testing.T) {
 	t.Parallel()
 	db, mock, arch, store := drainFixture(t)
+	mock.ExpectQuery("super_read_only").WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	writes := len(store.objects)
+
+	loop := NewLoop(LoopOptions{
+		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
+		Replication: fakeProbe{streaming: true},
+		Cluster:     &fakeView{primary: "demo-2", position: testUUID + ":1-9", known: true},
+		Instance:    "demo-1",
+	})
+	var lastFlush time.Time
+	var lastSize int64
+	loop.tick(context.Background(), &lastFlush, &lastSize)
+
+	if state := loop.State(); state.Active || state.LastError != "" || state.PendingFiles != 0 {
+		t.Fatalf("state = %+v, want an idle replica", state)
+	}
+	if got, want := archivedNames(store), []string{shippedLog}; !slices.Equal(got, want) || len(store.objects) != writes {
+		t.Fatalf("archived %v (%d objects, was %d), want nothing new", got, len(store.objects), writes)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A demoted MariaDB primary whose source accepted its GTID position is proven
+// to be an ancestor of the surviving timeline, so the tail it stranded is
+// shipped. Without this the transactions in that tail exist only on its PVC,
+// and a recovery spanning them fails against a hole no segment can bridge.
+func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
+	t.Parallel()
+	db, mock, arch, store := mariadbDrainFixture(t)
 	expectDemotedWithLogs(mock)
 
 	// The current primary's recorded position holds the stranded tail, which is
@@ -188,8 +219,8 @@ func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
 	loop := NewLoop(LoopOptions{
 		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
 		Replication: fakeProbe{streaming: true},
-		Cluster:     &fakeView{primary: "demo-2", position: testUUID + ":1-9", known: true},
-		Instance:    "demo-1",
+		Cluster:     canonicalTail(),
+		Instance:    "demo-1", MariaDB: true,
 	})
 	var lastFlush time.Time
 	var lastSize int64
@@ -222,7 +253,7 @@ func TestLoopDrainsStrandedTailWhenReplicating(t *testing.T) {
 // non-streaming instance ships nothing, and recovery keeps failing closed.
 func TestLoopDrainRefusesWhenNotReplicating(t *testing.T) {
 	t.Parallel()
-	db, mock, arch, store := drainFixture(t)
+	db, mock, arch, store := mariadbDrainFixture(t)
 	// Only the writability probe runs: no SHOW BINARY LOGS, no upload.
 	mock.ExpectQuery("super_read_only").WillReturnRows(
 		sqlmock.NewRows([]string{"v"}).AddRow("1"))
@@ -230,6 +261,7 @@ func TestLoopDrainRefusesWhenNotReplicating(t *testing.T) {
 	loop := NewLoop(LoopOptions{
 		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
 		Replication: fakeProbe{streaming: false},
+		Cluster:     canonicalTail(), Instance: "demo-1", MariaDB: true,
 	})
 	var lastFlush time.Time
 	var lastSize int64
@@ -265,6 +297,7 @@ func TestLoopDrainSkipsReplicaWithoutSegment(t *testing.T) {
 	loop := NewLoop(LoopOptions{
 		Reader: NewReader(db), Archiver: arch, Logger: logr.Discard(),
 		Replication: fakeProbe{streaming: true},
+		Cluster:     canonicalTail(), Instance: "demo-1", MariaDB: true,
 	})
 	var lastFlush time.Time
 	var lastSize int64
