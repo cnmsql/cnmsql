@@ -114,6 +114,9 @@ target that stops before it is fine.
 
 ### 4. Archive gaps at archive time
 
+> **MySQL: superseded by [041-primary-only-binlog-archiving.md](041-primary-only-binlog-archiving.md).**
+> The grace period is two minutes on MySQL, where no drain fills a gap.
+
 The primary's check also computes the archive's gaps: MySQL, the holes of the
 index's covered set; MariaDB, the gaps in the union of segment ranges per
 domain. They are reported in archiving status and mirrored into

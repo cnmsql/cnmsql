@@ -321,6 +321,9 @@ past them.
 
 ### 5. Drain gate: ship only what the surviving timeline provably holds
 
+> **MySQL: superseded by [041-primary-only-binlog-archiving.md](041-primary-only-binlog-archiving.md).**
+> MySQL no longer drains; this section applies to MariaDB only.
+
 The drain's authorization becomes four conditions, all required:
 
 1. `HasSegment` — the instance archived while primary (unchanged).

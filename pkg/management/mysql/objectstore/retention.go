@@ -340,3 +340,64 @@ func rewriteArchiveIndex(ctx context.Context, store VersionedStore, bucket, key 
 		return true, nil
 	})
 }
+
+// DanglingStore is what DropDanglingIndexEntries needs of the archive store.
+type DanglingStore interface {
+	VersionedStore
+	Exists(ctx context.Context, bucket, key string) (bool, error)
+}
+
+// DropDanglingIndexEntries removes from the archive index the binlogs it
+// lists whose files are gone, and returns how many it removed.
+//
+// Retention deletes a file and then drops it from the index. On a store
+// without conditional writes that can serve a stale read, another writer's
+// index write can start from a copy older than that and bring the entries
+// back. The files stay deleted, so a recovery that planned them would fail on
+// the download. binlogs is the listing of manifests a retention pass already
+// made; an entry it lacks is dropped only once a direct look confirms the
+// manifest is gone, since a file archived after the listing is in the index
+// and not in the listing.
+func DropDanglingIndexEntries(
+	ctx context.Context, store DanglingStore, objectStore mysqlv1alpha1.S3ObjectStore, clusterName string,
+	binlogs []BinlogEntry,
+) (int, error) {
+	listed := make(map[BinlogKeys]struct{}, len(binlogs))
+	for _, entry := range binlogs {
+		listed[entry.Keys] = struct{}{}
+	}
+	key := ArchiveIndexKey(objectStore, clusterName)
+	var index ArchiveIndex
+	if _, exists, err := store.GetJSONVersion(ctx, objectStore.Bucket, key, &index); err != nil || !exists {
+		return 0, err
+	}
+	dangling := map[string]map[string]struct{}{}
+	count := 0
+	for _, seg := range index.Segments {
+		for _, name := range seg.Binlogs {
+			keys, err := BuildBinlogKeys(objectStore, clusterName, seg.ServerUUID, name)
+			if err != nil {
+				return 0, err
+			}
+			if _, ok := listed[keys]; ok {
+				continue
+			}
+			exists, err := store.Exists(ctx, objectStore.Bucket, keys.ManifestKey)
+			if err != nil {
+				return 0, err
+			}
+			if exists {
+				continue
+			}
+			if dangling[seg.ServerUUID] == nil {
+				dangling[seg.ServerUUID] = map[string]struct{}{}
+			}
+			dangling[seg.ServerUUID][name] = struct{}{}
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	return count, rewriteArchiveIndex(ctx, store, objectStore.Bucket, key, RetentionPlan{DeletedBinlogs: dangling})
+}

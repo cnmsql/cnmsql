@@ -449,9 +449,10 @@ func failbackSpec(f forkFlavor, cluster string) {
 }
 
 // drainGateSpec is cases 2 and 3: the dead branch was never rotated, so it can
-// only reach the archive through the returning old primary's drain. The drain
-// gate must defer it forever, whether or not replication streams before the
-// operator marks the instance diverged.
+// only reach the archive through the returning old primary. On MariaDB the
+// drain gate must defer it forever, whether or not replication streams before
+// the operator marks the instance diverged; on MySQL a replica archives
+// nothing (design 041).
 func drainGateSpec(f forkFlavor, cluster string) {
 	// No forced rotation: the archiver ships only what the spec flushes, so the
 	// dead tail stays in the old primary's active binlog until it restarts.

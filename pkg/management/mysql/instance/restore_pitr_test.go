@@ -18,12 +18,16 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/engine"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -259,5 +263,50 @@ func TestRestoreBinlogClientDefaultsToBaseStore(t *testing.T) {
 	o.BinlogStore = archive
 	if o.binlogClient() != archive {
 		t.Fatal("a separate binlog store must be used for the archive")
+	}
+}
+
+// The spans that order a replay come from each planned file's manifest, read
+// under the segment the file belongs to.
+func TestLoadReplaySpansReadsEveryPlannedManifest(t *testing.T) {
+	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cnmsql"}
+	plan := binlog.ReplayPlan{Segments: []binlog.ReplaySegment{
+		{ServerUUID: "aaaa", Files: []string{"binlog.000001", "binlog.000002"}},
+		{ServerUUID: "bbbb", Files: []string{"binlog.000001"}},
+	}}
+	var mu sync.Mutex
+	read := map[string]bool{}
+	spans, err := loadReplaySpans(context.Background(), store, "demo", plan,
+		func(_ context.Context, key string, v any) error {
+			mu.Lock()
+			read[key] = true
+			mu.Unlock()
+			meta := v.(*objectstore.BinlogMetadata)
+			meta.FirstGTID = key
+			meta.GTIDSet = "set-of-" + key
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spans) != 3 || len(read) != 3 {
+		t.Fatalf("spans = %d, manifests read = %d, want 3 and 3", len(spans), len(read))
+	}
+	keys, err := objectstore.BuildBinlogKeys(store, "demo", "bbbb", "binlog.000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := spans[binlog.ReplayFile{ServerUUID: "bbbb", Name: "binlog.000001"}]
+	if got.FirstGTID != keys.ManifestKey || got.GTIDSet != "set-of-"+keys.ManifestKey {
+		t.Errorf("span of bbbb/binlog.000001 = %+v, want the manifest at %s", got, keys.ManifestKey)
+	}
+}
+
+func TestLoadReplaySpansReportsAnUnreadableManifest(t *testing.T) {
+	plan := binlog.ReplayPlan{Segments: []binlog.ReplaySegment{{ServerUUID: "aaaa", Files: []string{"binlog.000001"}}}}
+	_, err := loadReplaySpans(context.Background(), mysqlv1alpha1.S3ObjectStore{Bucket: "backups"}, "demo", plan,
+		func(context.Context, string, any) error { return errors.New("gone") })
+	if err == nil || !strings.Contains(err.Error(), "binlog.000001") {
+		t.Fatalf("err = %v, want one naming the file", err)
 	}
 }

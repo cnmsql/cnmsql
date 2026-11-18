@@ -199,3 +199,28 @@ SET @@SESSION.GTID_NEXT= '3e11fa47-71ca-11e1-9e33-c80aa9429562:1'/*!*/;
 		t.Fatalf("GTIDSet = %q", res.GTIDSet)
 	}
 }
+
+// mysqlbinlog prints a Previous-GTIDs set with several servers one per line,
+// each but the last ending in a comma.
+func TestScanReadsAMultiLinePreviousGTIDs(t *testing.T) {
+	t.Parallel()
+	const out = `# at 126
+#260612 10:00:00 server id 1  end_log_pos 237 CRC32 0x00000000 	Previous-GTIDs
+# 3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5,
+# 4379b15c-e2bd-11f1-8148-a64e60e7dd5d:34-79
+# at 237
+#260612 10:00:05 server id 1  end_log_pos 314 CRC32 0x11111111 	GTID	last_committed=0	sequence_number=1
+SET @@SESSION.GTID_NEXT= '3e11fa47-71ca-11e1-9e33-c80aa9429562:6'/*!*/;
+`
+	res, err := Scan(strings.NewReader(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5,4379b15c-e2bd-11f1-8148-a64e60e7dd5d:34-79"
+	if res.PreviousGTIDs != want {
+		t.Fatalf("PreviousGTIDs = %q, want %q", res.PreviousGTIDs, want)
+	}
+	if res.GTIDSet != "3e11fa47-71ca-11e1-9e33-c80aa9429562:6" {
+		t.Fatalf("GTIDSet = %q", res.GTIDSet)
+	}
+}

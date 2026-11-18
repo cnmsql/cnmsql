@@ -147,7 +147,21 @@ func TestArchiveGapTakesABackup(t *testing.T) {
 	}
 }
 
-// A fresh gap waits for the former primary's drain before it counts.
+// On MySQL nothing but a base backup closes a gap, so it waits only for the
+// index to settle; MariaDB also waits for a former primary's drain.
+func TestArchiveGapGraceByFlavor(t *testing.T) {
+	mysql := gapCluster(gapUUID + ":101-150")
+	mariadb := gapCluster(gapUUID + ":101-150")
+	mariadb.Spec.Flavor = mysqlv1alpha1.FlavorMariaDB
+	if got := archiveGapGrace(mysql); got != archiveGapSettle {
+		t.Errorf("mysql grace = %s, want %s", got, archiveGapSettle)
+	}
+	if got, want := archiveGapGrace(mariadb), gtidPersistInterval+archiveGapSettle; got != want {
+		t.Errorf("mariadb grace = %s, want %s", got, want)
+	}
+}
+
+// A fresh gap waits for the grace before it counts.
 func TestArchiveGapWaitsForTheGrace(t *testing.T) {
 	ctx := context.Background()
 	cluster := gapCluster(gapUUID + ":101-150")

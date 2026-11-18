@@ -141,6 +141,14 @@ func TestUnrecordedMySQLForkFailsClosed(t *testing.T) {
 	if _, err := PlanReplay(failback, testUUID+":1-100", RecoveryTarget{}); err != nil {
 		t.Fatalf("a failback must plan: %v", err)
 	}
+	// A returning primary leaves out the binlogs that re-log its predecessor,
+	// which the archive already holds: what it had executed still shows the
+	// failback.
+	skipped := forked()
+	skipped.Segments[0].SeenGTIDSet = testUUID + ":1-219," + otherUUID + ":1-30"
+	if _, err := PlanReplay(skipped, testUUID+":1-100", RecoveryTarget{}); err != nil {
+		t.Fatalf("a failback whose re-logged binlogs were left out must plan: %v", err)
+	}
 	target := testUUID + ":1-219"
 	if _, err := PlanReplay(forked(), testUUID+":1-100", RecoveryTarget{GTID: target}); err != nil {
 		t.Fatalf("an explicit targetGTID is never second-guessed: %v", err)

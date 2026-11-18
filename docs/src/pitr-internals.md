@@ -212,6 +212,18 @@ flowchart LR
   leaves the file archived but unindexed; the archiver remembers which of its
   files the index lists, re-reads the index after any failed write and on start,
   and folds back every archived file it finds missing.
+- **A stale index write is undone.** Every index write is a read-modify-write of
+  one object. On a store that neither enforces conditional writes nor
+  guarantees read-after-update consistency (OpenStack Swift behind an S3 API),
+  a write can start from an older copy and drop the files added since, with no
+  error anywhere. Every index write, and the check after each archive pass,
+  therefore re-adds the files the archiver knows belong in its segment and the
+  copy it read lacks, in sequence order. A file older than everything the
+  segment still lists, or whose manifest is gone, was expired by retention and
+  is forgotten instead. The same stale write can bring back entries retention
+  removed, whose files stay deleted: every retention pass drops the entries
+  whose manifest is gone, checking each one directly, since a file archived
+  after the pass listed the archive is in the index and not in the listing.
 - **Archived through.** Once every rotated log is shipped, everything committed
   before the archiver's last forced rotation is archived, and while the active
   log has not grown since, everything committed at all. The primary stamps that
@@ -263,15 +275,17 @@ writable.
   the segment holds past it is disowned. History the timeline has no verdict on
   records nothing.
 
-The primary, a draining former primary and retention all write the index, so
-every index write is a compare-and-swap: an S3 conditional PUT (`If-Match` on
+The primary, retention and (on MariaDB) a draining former primary all write the
+index, so every index write is a compare-and-swap: an S3 conditional PUT (`If-Match` on
 the ETag it read, `If-None-Match: *` to create it). A writer that loses the race
 re-reads the index and re-applies its change on top of the winner's, so neither
 change is lost, and a primary holding a stale copy cannot bring back a segment
 retention just dropped. A store that does not implement conditional PUTs
-answers 501 and gets unconditional writes from then on; there a lost write only
+answers 501 and gets unconditional writes from then on. There a lost write
 delays a fork record by one pass, because the transactions are still disowned
-and the next check finds them again.
+and the next check finds them again, and an archived file dropped from a
+segment's list is put back by its archiver's next index write (see [Archiving
+guarantees](#archiving-guarantees)).
 
 The primary reports the records it read in its archiving status, and the
 operator mirrors them into `status.continuousArchiving.forkGTIDs` and
@@ -309,9 +323,11 @@ file and promoted after that primary died: its clone point is in no binary log
 the archive will ever receive. A binary log expired before it was archived
 (`binlogExpireSeconds` applies to unarchived logs too) leaves one as well. The
 primary reports gaps in its archiving status; the operator mirrors them into
-`status.continuousArchiving.gaps` and `gapsSince`. A former primary's drain
-usually fills the clone-point gap within a recorded-position refresh, so a gap
-counts after seven minutes. The `ArchiveGap` condition is then True while the
+`status.continuousArchiving.gaps` and `gapsSince`. An index entry lost to a
+racing write is put back by the primary's next index write, so a gap counts
+after two minutes on MySQL. On MariaDB a former primary's drain usually fills
+the clone-point gap within a recorded-position refresh, so a gap counts after
+seven minutes. The `ArchiveGap` condition is then True while the
 newest completed base backup does not hold it, with a Warning event, and the
 operator takes a base backup on the primary (`<cluster>-archive-gap-<hash>`,
 owned by the Cluster), which clears the condition once it completes.
@@ -331,24 +347,75 @@ completed before it read the primary's position. A backup on a dead branch gets 
 `DeadBranch` condition and a Warning event, and what it holds is folded into
 the index's `disowned` set, where recovery from raw S3 sees it too.
 
-### The drain gate
+### Who archives after a failover
 
-A former primary may still hold closed binlogs it never shipped. The drain ships
-them once it rejoins, which fills canonical holes: transactions the surviving
-timeline executed but never logged, for example the stretch between the old
-primary's last rotation and a successor's clone point. Four gates authorise an
-upload, all required: the instance owns a segment, its replication is streaming,
-it is not listed in `status.divergedInstances`, and each file is on the
-surviving timeline. The last one means the file's GTIDs are in the current
-primary's recorded position, and on MariaDB that every domain's last GTID is
-also on the primary timeline.
+Only the writable primary archives on MySQL. A replica uploads nothing and
+never writes the index, whether or not it was the primary before.
+
+A replica re-logs every transaction it replicates (`log_replica_updates`), so
+after a failover both instances hold binary logs that repeat the other's
+history. Neither copy is stored:
+
+- **The demoted primary** keeps writing binary logs as a replica. It does not
+  archive them: its successor archives those transactions itself.
+- **The promoted replica** holds closed binary logs from before its promotion.
+  For each one that is not archived yet it compares the file's GTID set with
+  the index's `coveredGTIDSet`. A file whose transactions the archive holds in
+  full is left out. Any other file ships whole, including the one that carries
+  the old primary's unarchived tail, so a failover stores at most one file's
+  worth of transactions twice. A file left out counts as archived for the
+  purge gate and for the pending count.
+
+Because a returning primary leaves out the files that re-log its predecessor,
+its segment also records `seenGTIDSet`, everything the server had executed by
+the end of the files it archived (each manifest carries the file's
+`previousGTIDs`). Restore uses it to tell a failback from a dead branch.
+
+The primary reads `coveredGTIDSet` at most every five minutes. A stale copy
+lists less than the archive holds, so it can ship a file that was not needed
+and never leaves out one that was. A file left out stays on disk until it is
+purged or expires and is judged again on every pass, so it ships after all if
+the coverage shrinks.
+
+What the old primary committed and its successor never received is disowned
+(see [the fork check](#the-fork-check)) and is never archived. What the
+successor did receive is in its own binary logs, with two exceptions, both of
+which leave a [gap](#gaps):
+
+- the successor was seeded (clone or backup) after the old primary's last
+  archived file and promoted before the old primary archived the rest: it
+  holds those transactions as data and in no binary log;
+- archiving was failing for longer than `binlogExpireSeconds`, and the
+  successor's copies expired.
+
+Nothing is lost in the running cluster. Recovery from a base backup older than
+the gap cannot cross it and fails with `ErrArchiveGap`; the `ArchiveGap`
+condition reports it and the operator takes a base backup past it.
+
+One limitation follows from trusting `coveredGTIDSet`: if an archived file
+inside the recovery window disappears from the store, retention drops its index
+entry but the coverage still names its transactions, so a primary that still
+has the file does not ship it again. The post-replay check still refuses a
+recovery that crosses it.
+
+### The drain gate (MariaDB)
+
+MariaDB keeps a second archiver. A former primary may still hold closed binlogs
+it never shipped, and the drain ships them once it rejoins, which fills
+canonical holes: transactions the surviving timeline executed but never logged,
+for example the stretch between the old primary's last rotation and a
+successor's clone point. Four gates authorise an upload, all required: the
+instance owns a segment, its replication is streaming, it is not listed in
+`status.divergedInstances`, and each file is on the surviving timeline. The
+last one means the file's GTIDs are in the current primary's recorded position
+and every domain's last GTID is on the primary timeline.
 
 That last gate is what makes it impossible for the drain to add a disowned
 transaction, even in the window before the operator marks a returning primary
-diverged (MySQL's `AUTO_POSITION` accepts errant transactions, so streaming
-proves nothing there). A file that fails is deferred, not shipped, and the pass
-stops at it. A canonical tail passes within one refresh of the recorded
-positions. The deferred file shows up in the instance's archiving status.
+diverged. A file that fails is deferred, not shipped, and the pass stops at it.
+A canonical tail passes within one refresh of the recorded positions. The
+deferred file shows up in the instance's archiving status. The drain ships
+every closed file that passes the gates.
 
 ## Restore process
 
@@ -366,7 +433,16 @@ The steps:
    `metadata.json` is present it supplies the fully-specified `anchorGTID` (used
    when the in-archive anchor has none) and `anchorServerUUID`.
 3. **Load `_index.json`** and plan the segments and files to replay from the
-   anchor up to the target.
+   anchor up to the target. On MySQL, when the plan spans several segments,
+   the restore also reads each planned file's manifest and orders the files
+   along the timeline: a file is replayed once its first transaction, or the
+   one before it, is applied, each segment keeping its own order. Segments
+   that follow one another replay as before; a file of one segment that fills
+   a hole in another lands where it belongs instead of before or after the
+   whole of the other segment. A file with no transactions is placed by the
+   time of its first event: with a time target `mysqlbinlog` stops at the
+   first event stamped past it, so a later file replayed early would end the
+   replay before the earlier ones.
 4. **Download** the planned files into a scratch dir, named
    `<serverUUID>_<binlogName>` so like-named files from different segments never
    collide on disk.
@@ -598,7 +674,8 @@ as `anchorServerUUID`, loaded onto `ReplayPlan.AnchorServerUUID`, and read by
 | Archiving loop and commit order | `instance/archiving.go`, `binlog/archiver.go` |
 | Replay planning (both flavors) | `binlog/replay.go`, `binlog/replay_mariadb_forks.go` |
 | Fork check and judges | `binlog/forks.go`, `binlog/archiver.go` |
-| Drain gate | `binlog/loop.go` |
+| Drain gate (MariaDB) | `binlog/loop.go` |
+| Coverage skip on the primary (MySQL) | `binlog/covered.go` |
 | MariaDB primary timeline | `engine/mariadb_timeline.go`, `controller/cluster_timeline.go` |
 | Restore and replay execution | `instance/restore_pitr.go` |
 | MariaDB archive identity | `instance/archiveid.go` |

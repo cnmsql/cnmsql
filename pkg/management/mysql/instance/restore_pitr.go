@@ -28,11 +28,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/engine"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/binlog"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -160,6 +162,18 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		if err != nil {
 			return fmt.Errorf("pitr: planning replay from base backup %s: %w", o.MetadataKey, err)
 		}
+		// One segment can hold a file that fills a hole in another, so several
+		// segments are replayed along the timeline, not one after the other.
+		if len(plan.Segments) > 1 {
+			spans, err := loadReplaySpans(ctx, o.ObjectStore, o.SourceCluster, plan,
+				func(ctx context.Context, key string, v any) error {
+					return o.binlogClient().GetJSON(ctx, o.ObjectStore.Bucket, key, v)
+				})
+			if err != nil {
+				return err
+			}
+			plan.Order = binlog.OrderReplayFiles(plan, spans)
+		}
 	}
 	logReplayForks(log, plan)
 	if len(plan.Segments) == 0 {
@@ -261,23 +275,66 @@ func (o *RestoreOptions) downloadReplayFiles(
 	defer func() { _ = root.Close() }()
 
 	var files []string
-	for _, seg := range plan.Segments {
-		for _, name := range seg.Files {
-			localName, err := replayFileName(seg.ServerUUID, name)
-			if err != nil {
-				return nil, err
-			}
-			keys, err := objectstore.BuildBinlogKeys(o.ObjectStore, o.SourceCluster, seg.ServerUUID, name)
-			if err != nil {
-				return nil, fmt.Errorf("pitr: building key for %s/%s: %w", seg.ServerUUID, name, err)
-			}
-			if err := o.downloadTo(ctx, keys.BinlogKey, root, localName); err != nil {
-				return nil, err
-			}
-			files = append(files, filepath.Join(replayDir, localName))
+	for _, file := range plan.Files() {
+		localName, err := replayFileName(file.ServerUUID, file.Name)
+		if err != nil {
+			return nil, err
 		}
+		keys, err := objectstore.BuildBinlogKeys(o.ObjectStore, o.SourceCluster, file.ServerUUID, file.Name)
+		if err != nil {
+			return nil, fmt.Errorf("pitr: building key for %s/%s: %w", file.ServerUUID, file.Name, err)
+		}
+		if err := o.downloadTo(ctx, keys.BinlogKey, root, localName); err != nil {
+			return nil, err
+		}
+		files = append(files, filepath.Join(replayDir, localName))
 	}
 	return files, nil
+}
+
+// replaySpanReaders bounds how many manifests loadReplaySpans reads at once.
+const replaySpanReaders = 8
+
+// loadReplaySpans reads the manifest of every planned file: its first
+// transaction and GTID set place it on the timeline (binlog.OrderReplayFiles).
+func loadReplaySpans(
+	ctx context.Context, store mysqlv1alpha1.S3ObjectStore, cluster string, plan binlog.ReplayPlan,
+	read func(ctx context.Context, key string, v any) error,
+) (map[binlog.ReplayFile]binlog.ReplayFileSpan, error) {
+	files := plan.Files()
+	spans := make([]binlog.ReplayFileSpan, len(files))
+	errs := make([]error, len(files))
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, replaySpanReaders)
+	for i, file := range files {
+		keys, err := objectstore.BuildBinlogKeys(store, cluster, file.ServerUUID, file.Name)
+		if err != nil {
+			return nil, fmt.Errorf("pitr: building key for %s/%s: %w", file.ServerUUID, file.Name, err)
+		}
+		wg.Add(1)
+		slots <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			var meta objectstore.BinlogMetadata
+			if err := read(ctx, keys.ManifestKey, &meta); err != nil {
+				errs[i] = fmt.Errorf("pitr: reading manifest of %s/%s: %w", file.ServerUUID, file.Name, err)
+				return
+			}
+			spans[i] = binlog.ReplayFileSpan{
+				FirstGTID: meta.FirstGTID, GTIDSet: meta.GTIDSet, FirstEventTime: meta.FirstEventTime,
+			}
+		}()
+	}
+	wg.Wait()
+	out := make(map[binlog.ReplayFile]binlog.ReplayFileSpan, len(files))
+	for i, file := range files {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		out[file] = spans[i]
+	}
+	return out, nil
 }
 
 // downloadTo streams one object to a file created under root.
@@ -574,11 +631,10 @@ func (o *RestoreOptions) replayMariadbPositional(
 // fileSegments returns, parallel to the files downloadReplayFiles produces,
 // the archive segment each one came from.
 func fileSegments(plan binlog.ReplayPlan) []string {
-	var out []string
-	for _, seg := range plan.Segments {
-		for range seg.Files {
-			out = append(out, seg.ServerUUID)
-		}
+	files := plan.Files()
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		out = append(out, file.ServerUUID)
 	}
 	return out
 }

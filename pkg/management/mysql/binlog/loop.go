@@ -242,8 +242,9 @@ func (l *Loop) Run(ctx context.Context) error {
 }
 
 // tick runs one archive pass. It gates on writability so only the primary
-// rotates and ships on the RPO cadence; a non-primary clears its Active flag and
-// at most drains a tail it stranded while it was primary (see drain).
+// rotates and ships on the RPO cadence; a non-primary clears its Active flag.
+// On MySQL it archives nothing (design 041); on MariaDB it at most drains a
+// tail it stranded while it was primary (see drain).
 func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *int64) {
 	writable, err := l.reader.Writable(ctx)
 	if err != nil {
@@ -267,7 +268,10 @@ func (l *Loop) tick(ctx context.Context, lastFlush *time.Time, lastFlushSize *in
 		l.flushedAt, l.flushedActive, l.stampedThrough = time.Time{}, "", time.Time{}
 		// Reset the flush schedule so a freshly-promoted primary flushes promptly.
 		*lastFlush = time.Time{}
-		l.drain(ctx)
+		l.archiver.ForgetCoverage()
+		if l.mariadb {
+			l.drain(ctx)
+		}
 		return
 	}
 
@@ -554,8 +558,10 @@ func (l *Loop) planPurge(logs []BinaryLog, res ArchiveResult) (purgePlan, error)
 	return purgePlan{to: limit}, nil
 }
 
-// drain ships the closed binlogs a former primary stranded when it stopped being
-// writable, and does nothing at all on any other instance.
+// drain ships the closed binlogs a former MariaDB primary stranded when it
+// stopped being writable, and does nothing at all on any other instance. MySQL
+// has no drain: only the writable primary archives, and a promoted replica
+// ships what it re-logged of the old primary's unarchived tail (design 041).
 //
 // Its purpose is filling canonical holes: transactions the surviving timeline
 // executed but never logged. A successor provisioned by clone holds the clone
