@@ -65,6 +65,7 @@ func ControlConfig(hasAdminInterface bool, p ControlParams) Config {
 		cfg.Host = addr
 		cfg.Port = port
 		cfg.MaxOpenConns = ControlPoolSize
+		cfg.Params = loopbackTLSParams()
 		return cfg
 	}
 
@@ -82,7 +83,19 @@ func ExtraPortControlConfig(p ControlParams, port int) Config {
 	cfg.Host = defaultAdminAddress
 	cfg.Port = port
 	cfg.MaxOpenConns = ControlPoolSize
+	cfg.Params = loopbackTLSParams()
 	return cfg
+}
+
+// loopbackTLSParams makes a loopback TCP control connection use TLS whenever
+// the server offers it. With require_secure_transport=ON, which
+// spec.mysql.parameters may set, mysqld refuses a plaintext TCP connection, and
+// neither the admin interface nor extra_port is exempt: only the socket counts
+// as secure. The certificate is not verified: the peer is the mysqld of the
+// same Pod on loopback, and its certificate names the Pod, not 127.0.0.1. A
+// server without TLS is still reached in plaintext.
+func loopbackTLSParams() map[string]string {
+	return map[string]string{"tls": "preferred"}
 }
 
 func (p ControlParams) config() Config {

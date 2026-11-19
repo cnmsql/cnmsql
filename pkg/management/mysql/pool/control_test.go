@@ -18,6 +18,8 @@ package pool
 
 import (
 	"testing"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 func TestControlConfigUsesAdminInterfaceWhenAvailable(t *testing.T) {
@@ -107,5 +109,36 @@ func TestControlConfigCarriesPasswordFunc(t *testing.T) {
 	}
 	if (ControlParams{Password: "s", PasswordFunc: f}).CurrentPassword() != "x" {
 		t.Fatal("PasswordFunc must win over Password")
+	}
+}
+
+// TestControlConfigTCPPrefersTLS checks the loopback TCP listeners are reached
+// over TLS when the server offers it: with require_secure_transport=ON mysqld
+// refuses a plaintext TCP connection, the admin interface included.
+func TestControlConfigTCPPrefersTLS(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"admin interface": ControlConfig(true, ControlParams{User: "manager"}),
+		"extra port":      ExtraPortControlConfig(ControlParams{User: "manager"}, 33062),
+	} {
+		dsn, err := cfg.DSN()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		mc, err := mysql.ParseDSN(dsn)
+		if err != nil {
+			t.Fatalf("%s: parsing dsn: %v", name, err)
+		}
+		if mc.TLSConfig != "preferred" {
+			t.Errorf("%s: tls = %q, want preferred", name, mc.TLSConfig)
+		}
+	}
+}
+
+// TestControlConfigSocketHasNoTLS checks the socket pool is left alone: mysqld
+// treats a socket connection as secure, and TLS over it buys nothing.
+func TestControlConfigSocketHasNoTLS(t *testing.T) {
+	cfg := ControlConfig(false, ControlParams{User: "manager", Socket: "/var/run/mysqld/mysqld.sock"})
+	if v, ok := cfg.Params["tls"]; ok {
+		t.Errorf("socket control config sets tls=%q", v)
 	}
 }

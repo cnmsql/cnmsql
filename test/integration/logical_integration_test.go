@@ -58,6 +58,8 @@ type logicalImage struct {
 	cnf     string
 	// runArgs are extra flags for `instance run`, each with a leading space.
 	runArgs string
+	// files are extra files copied into the container before it starts.
+	files []testcontainers.ContainerFile
 }
 
 func mariadbImageRepo() string {
@@ -233,6 +235,7 @@ func startLogicalNode(ctx context.Context, t *testing.T, img logicalImage, imp *
 	files := []testcontainers.ContainerFile{{
 		HostFilePath: buildManager(t), ContainerFilePath: "/usr/local/bin/manager", FileMode: 0o755,
 	}}
+	files = append(files, img.files...)
 	if imp != nil {
 		importStep = fmt.Sprintf(`fakes3 --addr=%[1]s --bucket=%[2]s --objects=/tmp/objects.json &
 until (exec 3<>/dev/tcp/%[3]s) 2>/dev/null; do sleep 0.2; done

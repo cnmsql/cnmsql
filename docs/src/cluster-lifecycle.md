@@ -195,6 +195,9 @@ on the Pod IP; any account can connect to it, but its last slot is reserved for
 privileged accounts like the manager's. Servers without either listener fall
 back to local socket access and reserved privileges.
 
+The manager connects to these listeners over loopback TCP, using TLS whenever
+the server offers it, so it keeps working with `require_secure_transport: "ON"`.
+
 ## Configuration surface
 
 cnmsql renders the managed MySQL configuration and lets users add safe MySQL
