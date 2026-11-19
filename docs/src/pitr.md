@@ -527,8 +527,9 @@ after that primary died with the stretch only in its unarchived binary log, or a
 binary log `binlogExpireSeconds` removed before it was archived. Recovery cannot
 cross a gap: it fails with `ErrArchiveGap` (MySQL) or `ErrForkedTimeline`
 (MariaDB) instead of building a state that never existed. The cluster reports
-`status.continuousArchiving.gaps`, and once a gap has stood for seven minutes
-(a returning former primary usually ships the missing stretch before that), the
+`status.continuousArchiving.gaps`, and once a gap has stood for two minutes on
+MySQL or seven on MariaDB (where a returning former primary usually ships the
+missing stretch before that), the
 `ArchiveGap` condition turns True with a Warning event and the operator takes a
 base backup on the primary (`<cluster>-archive-gap-<hash>`). Once it completes,
 recovery to any point after it works again; points inside the gap stay out of

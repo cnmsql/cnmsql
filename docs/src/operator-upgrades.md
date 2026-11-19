@@ -184,7 +184,61 @@ the operator Deployment has been updated to a new image.
 Newest release first. Each section says what changes when you upgrade the
 operator to that release, and what to do.
 
-### Upgrading from 0.9.x to the next release
+### Upgrading from 0.9.x to 0.10.0
+
+0.10.0 is mostly a security release. Several of its fixes refuse things that
+0.9.x accepted, so an object that works today can stop being managed after the
+upgrade: a Cluster goes `Blocked`, a Database or DatabaseUser is no longer
+applied, and retention or recovery stops for an object store. Go through
+[Before upgrading](#before-upgrading-to-0100) first; every check there is a
+command.
+
+Data, backups and archives carry over. Nothing in the instance Pods changes
+apart from the instance manager, so this is an ordinary operator upgrade:
+[rolling](#rolling-upgrade-default) by default, or with no restart when
+`inPlaceInstanceManagerUpdates` is enabled.
+
+#### What changes
+
+These need no action, but change what you see:
+
+- **On MySQL, only the primary archives binary logs.** In 0.9.x a demoted
+  primary kept shipping its binary logs, which repeat what its successor
+  archives. Replicas now upload nothing, and a promoted replica leaves out the
+  files the archive already holds. MariaDB is unchanged. See [who archives
+  after a failover](./pitr-internals.md#who-archives-after-a-failover).
+- **On MySQL, an archive gap counts after two minutes, not seven.** No former
+  primary will fill it, so the `ArchiveGap` condition and its
+  `<cluster>-archive-gap-<hash>` base backup come sooner after a failover that
+  leaves one. See [Archive gaps](./pitr.md#archive-gaps).
+- **`require_secure_transport: "ON"` works.** On 0.9.x it made MySQL instances
+  crash-loop with error 3159, because the instance manager reached the server
+  over plaintext loopback TCP. It now uses TLS there.
+- **The primary renews its Lease every 5 seconds**, not every 30. On 0.9.x the
+  15-second Lease of a healthy primary sat expired half the time. Each cluster
+  now makes twelve Lease updates a minute, not two.
+- **A `Blocked` cluster is looked at again every 30 seconds**, so one blocked
+  on a missing object recovers when the object appears. A request the API
+  server failed (a timeout, a conflict, an admission refusal) no longer blocks
+  a cluster at all: the reconcile is retried.
+- **Point-in-time recovery downloads only the binary logs it replays**, and
+  retention reads the archive's per-file manifests only when a base backup
+  expired. Both are much faster on a long archive. A binary log uploaded long
+  after it was written is now kept until the retention horizon passes its
+  upload time.
+- **Logical restores and imports run the dump with `--binary-mode`.** Client
+  commands in a dump (`\!`, `source`) are no longer executed. Dumps made by
+  `mysqldump` and `mariadb-dump` contain none.
+- **SQL in error messages has its passwords redacted**, in instance logs and
+  in `DatabaseUser` and `Cluster` status conditions.
+- **`kubectl cnmsql report` redacts more**: the `last-applied-configuration`
+  annotation of Secrets and ConfigMaps, and ConfigMap `binaryData`.
+- **`spec.mysql.plugins` loads server plugins by name**, since `plugin_load`
+  is now refused (see [below](#parameters-that-are-now-refused)).
+- There is a validating webhook for `Database`, a `status.account` field on
+  `DatabaseUser`, and new events: `ObjectStoreCredentialsRequired`,
+  `ObjectStoreCredentialsRefused`, `RetentionNotOwned`, `UserConflict` on a
+  Database and `UserNotReclaimed`.
 
 #### The operator no longer uses its own cloud identity for object stores
 
@@ -224,6 +278,10 @@ upgrading:
     - --leader-elect
     - --object-store-ambient-credentials
   ```
+
+  With the Helm chart, set the same list as `manager.args`. Set it in the
+  same `helm upgrade` that moves to 0.10.0: the 0.9.x manager does not know
+  the flag and will not start with it.
 
 If you do neither, the operator-side steps for those stores stop as described
 in [ambient credentials in the
@@ -294,6 +352,330 @@ kubectl label secret -n <namespace> <name> mysql.cnmsql.co/object-store-credenti
 If one of them is a Secret the operator created for the cluster (such as
 `<cluster>-root`), the label does not help: move the credentials to a Secret of
 their own.
+
+#### Parameters that are now refused
+
+`spec.mysql.parameters` is checked more strictly
+([GHSA-39hw-4x86-wwhc](https://github.com/cnmsql/cnmsql/security/advisories/GHSA-39hw-4x86-wwhc)):
+
+- More keys are denied: the ones that run SQL or load code as the server
+  (`init_file`, `init_replica`, `plugin_load`, `early_plugin_load`), that move
+  files the server reads or writes (the InnoDB and log path options,
+  `log_basename`, `lc_messages_dir`, `ft_stopword_file`, the keyring and
+  password key-pair paths, `ssl_capath`, `ssl_crl`), and `skip_grant_tables`,
+  `skip_networking`, `bind_address`, `user`, `chroot` and `debug`. The command
+  in [Before upgrading](#before-upgrading-to-0100) has the full list.
+- A key is checked under every name mysqld resolves it to. `loose-plugin_dir`
+  is `plugin_dir`, and so is any key behind `skip-`, `enable-`, `disable-`,
+  `maximum-` or `autoset-`. An abbreviation of a denied key is denied too
+  (`secure_file_pri`), because MariaDB expands it.
+- A key must be a plain option name (letters, digits, `_`, `-`, `.`), and a
+  value may not contain a line break or a NUL byte.
+
+A cluster that sets one goes `Blocked` after the upgrade, with a `phaseReason`
+that names the key. Its instances keep serving, but the operator does not
+manage it, not even to fail over. The webhook now runs the same check, so it
+also rejects every update to that Cluster until the key is removed. Remove the
+keys before upgrading. See [Configuration
+surface](./cluster-lifecycle.md#configuration-surface).
+
+A cluster that loaded a plugin with `plugin_load` moves to the new
+`spec.mysql.plugins` field, which takes plugin names from a fixed list
+(`connection_control` and `mysql_no_login` on MySQL, nine more on MariaDB; see
+[Plugins](./cluster-lifecycle.md#plugins)). The field does not exist in 0.9.x,
+so the move takes two edits, and the plugin is off in between:
+
+1. Before upgrading, remove `plugin_load`. In the same edit, write the
+   plugin's own variables with the `loose-` prefix
+   (`loose-connection_control_failed_connections_threshold`): without the
+   plugin they are unknown, and an unknown variable stops the server from
+   starting. The instances restart without the plugin.
+2. After upgrading, list the plugin in `spec.mysql.plugins`. The instances
+   restart once more. The `loose-` prefix can stay.
+
+A plugin outside the list, such as `audit_log` or `validate_password`, can
+only be loaded if the operator runs with `--extra-plugins` (see [allowing more
+plugins](./cluster-lifecycle.md#allowing-more-plugins)). Read what that flag
+gives every Cluster author before setting it.
+
+#### Database grants are confined to the managed schema
+
+A `Database` is the object the [multi-tenancy guide](./multi-tenancy.md) hands
+to tenants, and in 0.9.x its inline users could be granted anything, `ALL` on
+`*.*` included
+([GHSA-jpxg-rv6j-7mf4](https://github.com/cnmsql/cnmsql/security/advisories/GHSA-jpxg-rv6j-7mf4)).
+From 0.10.0:
+
+- A grant's `on` may name only the managed schema (`tenant_a.*`) or a table in
+  it (`tenant_a.orders`).
+- Privileges are limited to the schema-level ones: `SELECT`, `INSERT`,
+  `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `INDEX`, `REFERENCES`,
+  `CREATE TEMPORARY TABLES`, `LOCK TABLES`, `EXECUTE`, `CREATE VIEW`,
+  `SHOW VIEW`, `CREATE ROUTINE`, `ALTER ROUTINE`, `EVENT`, `TRIGGER` and `ALL`.
+- The schema cannot be `mysql`, `information_schema`, `performance_schema`,
+  `sys` or `heartbeat`, and its name cannot contain `%`, a backslash or a
+  backtick.
+- `spec.name` is immutable.
+- An inline user cannot be named `root`, `mysql.*` or `cnmsql_*`.
+
+A Database that breaks one of these is no longer applied after the upgrade: its
+`Ready` condition turns `False` with reason `Invalid`, and password rotations
+and spec changes stop until it is fixed. The upgrade revokes nothing, so the
+accounts keep the grants they have. Move an account that needs more than its
+schema to a [`DatabaseUser`](./database-users.md), which the platform team
+owns.
+
+Removing a grant from a Database does not revoke it in MySQL, in this release
+or before. After you narrow a Database, revoke the wider grant by hand (see
+[After upgrading](#after-upgrading-to-0100)).
+
+#### Databases and DatabaseUsers only touch the accounts they own
+
+In 0.9.x a Database inline user that named an existing account took it over:
+the password was reset and the grants added, or the account dropped with
+`ensure: absent`. A DatabaseUser that had been applied once owned whatever
+account its `spec.name` and `spec.host` later pointed at
+([GHSA-rfv8-v7q9-cp69](https://github.com/cnmsql/cnmsql/security/advisories/GHSA-rfv8-v7q9-cp69)).
+Ownership is now recorded per account:
+
+- **Database.** The keys of `status.passwordStatus` are the accounts the
+  Database owns. An inline user that names any other existing account stops
+  the Database with reason `UserConflict`, and the account is left alone.
+  Inline users never adopt.
+- **DatabaseUser.** `status.account` holds the `name@host` last applied. Only
+  that account is altered or dropped. Changing `spec.name` or `spec.host` to an
+  account that exists is a conflict unless the DatabaseUser is annotated to
+  adopt it.
+
+What 0.9.x recorded carries over: a Database owns the accounts of its last
+successful apply, and a DatabaseUser whose `Ready` condition is `True` for its
+current generation gets `status.account` filled in on the first reconcile.
+Objects that were not `Ready` when you upgraded are the exception:
+
+- A Database whose last apply failed part-way may have created accounts it
+  never recorded. They are conflicts after the upgrade.
+- A DatabaseUser that was applied once but is not `Ready`, or whose spec
+  changed since, has to adopt its account again.
+
+So get every Database and DatabaseUser `Ready` before upgrading. See [a
+Database never takes over an existing
+account](./multi-tenancy.md#a-database-never-takes-over-an-existing-account)
+and [Conflicts and adoption](./database-users.md#conflicts-and-adoption).
+
+#### Grant entries are parsed
+
+Every grant the operator writes now goes through one validator, whether it
+comes from a Database, a DatabaseUser, a managed role or
+`spec.monitoring.privileges`:
+
+- Each entry of `privileges` is one privilege name. `"SELECT, INSERT"` in a
+  single entry and column lists such as `"SELECT (id)"` are refused.
+- `on` is `*.*`, `db.*` or `db.table`, each name bare or backtick-quoted.
+  Anything else, such as `* . *` or `PROCEDURE db.proc`, is refused.
+
+On a DatabaseUser this also closes two ways around the privilege denylist
+([GHSA-9ghw-mcj4-9pp8](https://github.com/cnmsql/cnmsql/security/advisories/GHSA-9ghw-mcj4-9pp8)).
+A Database or DatabaseUser with such an entry reports `Invalid` and is not
+applied, and neither is a managed role or a metrics grant with one.
+Split lists into one entry per privilege before upgrading.
+
+#### Before upgrading {#before-upgrading-to-0100}
+
+1. If you apply CRDs yourself rather than through `helm upgrade`, apply the
+   0.10.0 CRDs first.
+
+2. Check that every cluster is `Ready`, and list the Databases and
+   DatabaseUsers that are not `Ready` for their current generation:
+
+   ```bash
+   kubectl get clusters -A
+   kubectl get databases.mysql.cnmsql.co,databaseusers.mysql.cnmsql.co -A -o json | jq -r '.items[]
+     | .metadata.generation as $gen
+     | select([.status.conditions[]? | select(.type == "Ready" and .status == "True"
+               and .observedGeneration == $gen)] | length == 0)
+     | "\(.kind) \(.metadata.namespace)/\(.metadata.name)"'
+   ```
+
+   Fix each one listed, or expect it to report `UserConflict` after the upgrade
+   (see [above](#databases-and-databaseusers-only-touch-the-accounts-they-own)).
+
+3. Give every object store static credentials, or decide to run the operator
+   with `--object-store-ambient-credentials` (see
+   [above](#the-operator-no-longer-uses-its-own-cloud-identity-for-object-stores)).
+
+4. Label every object-store credentials Secret (see
+   [above](#object-store-credentials-secrets-must-be-labelled)).
+
+5. Remove the parameters that are now refused (see
+   [above](#parameters-that-are-now-refused)). This lists the clusters that
+   set one:
+
+   ```bash
+   kubectl get clusters -A -o json | jq -r '
+     ["init_file","init_replica","init_slave","plugin_load","early_plugin_load",
+      "innodb_data_home_dir","innodb_data_file_path","innodb_log_group_home_dir",
+      "innodb_undo_directory","innodb_directories","innodb_temp_tablespaces_dir",
+      "innodb_temp_data_file_path","innodb_tmpdir","innodb_doublewrite_dir",
+      "innodb_redo_log_archive_dirs","innodb_buffer_pool_filename","log_bin_index",
+      "relay_log_index","relay_log_info_file","master_info_file","log_tc",
+      "log_basename","aria_log_dir_path","slave_load_tmpdir","replica_load_tmpdir",
+      "lc_messages_dir","character_sets_dir","ft_stopword_file","debug",
+      "keyring_file_data","keyring_encrypted_file_data","mysqlx_socket","chroot",
+      "user","sha256_password_private_key_path","sha256_password_public_key_path",
+      "caching_sha2_password_private_key_path","caching_sha2_password_public_key_path",
+      "ssl_capath","ssl_crl","ssl_crlpath","admin_ssl_capath","admin_ssl_crl",
+      "admin_ssl_crlpath","skip_grant_tables","skip_networking","bind_address"] as $refused
+     | .items[]
+     | [ (.spec.mysql.parameters // {}) | to_entries[]
+         | (.key | ascii_downcase | gsub("-"; "_")) as $k
+         | ($k | sub("^loose_"; "") | sub("^(skip|enable|disable|maximum|autoset)_"; "")) as $bare
+         | select(($k | IN($refused[])) or ($bare | IN($refused[]))
+                  or (.key | test("^[A-Za-z0-9_.-]+$") | not) or (.value | test("[\r\n]")))
+         | .key ] as $bad
+     | select($bad | length > 0)
+     | "\(.metadata.namespace)/\(.metadata.name): \($bad | join(", "))"'
+   ```
+
+   It does not catch a key that 0.9.x already denied written with a modifier
+   or abbreviated (`loose-datadir`, `secure_file_pri`). If you used either
+   form to get around the denylist, remove those too.
+
+   For a cluster listed because of `plugin_load`, follow the two steps
+   [above](#parameters-that-are-now-refused) to keep its plugin.
+
+6. Narrow the Databases that grant outside their schema (see
+   [above](#database-grants-are-confined-to-the-managed-schema)). This lists
+   them, with each grant, reserved user name or reserved schema at fault:
+
+   ```bash
+   kubectl get databases.mysql.cnmsql.co -A -o json | jq -r '
+     ["ALL","ALL PRIVILEGES","SELECT","INSERT","UPDATE","DELETE","CREATE","DROP","ALTER",
+      "INDEX","REFERENCES","CREATE TEMPORARY TABLES","LOCK TABLES","EXECUTE","CREATE VIEW",
+      "SHOW VIEW","CREATE ROUTINE","ALTER ROUTINE","EVENT","TRIGGER"] as $allowed
+     | .items[]
+     | (.spec.name // .metadata.name) as $schema
+     | [ (if $schema | ascii_downcase
+             | IN("mysql","information_schema","performance_schema","sys","heartbeat")
+          then "reserved schema" else empty end),
+         ((.spec.users // [])[]
+          | select(.name == "root" or (.name | startswith("mysql."))
+                   or (.name | startswith("cnmsql_")))
+          | "reserved user \(.name)"),
+         ((.spec.users // [])[] | .name as $user | (.grants // [])[]
+          | select(((.on // "" | gsub("`"; "")) as $on
+                    | ($on == "" or ($on | startswith($schema + "."))) | not)
+                   or any(.privileges[];
+                          ([splits(" +")] | join(" ") | ascii_upcase | IN($allowed[])) | not))
+          | "\($user): \(.privileges | join(", ")) on \(.on // "(managed schema)")") ] as $bad
+     | select($bad | length > 0)
+     | "\(.metadata.namespace)/\(.metadata.name): \($bad | join("; "))"'
+   ```
+
+7. Split the grant entries the validator refuses (see
+   [above](#grant-entries-are-parsed)). This lists them across Clusters,
+   Databases and DatabaseUsers:
+
+   ```bash
+   kubectl get clusters.mysql.cnmsql.co,databases.mysql.cnmsql.co,databaseusers.mysql.cnmsql.co \
+     -A -o json | jq -r '
+     "^(\\*\\.\\*|(`[^`]+`|[A-Za-z0-9_$]+)\\.(\\*|`[^`]+`|[A-Za-z0-9_$]+))$" as $target
+     | .items[] | "\(.kind) \(.metadata.namespace)/\(.metadata.name)" as $obj
+     | .spec | .. | objects
+     | select((.privileges | type) == "array" and (.privileges | all(type == "string")))
+     | select(any(.privileges[]; test("[,()]"))
+              or ((.on // "") != "" and (.on | test($target) | not)))
+     | "\($obj): \(.privileges | join(" | ")) on \(.on // "(default)")"'
+   ```
+
+8. With the default rolling upgrade, plan for one restart of every instance
+   and a switchover.
+
+#### Upgrading {#upgrading-to-0100}
+
+```bash
+helm upgrade cnmsql oci://ghcr.io/cnmsql/charts/cnmsql \
+  -n <operator-namespace> --version 0.10.0
+```
+
+Watch `kubectl get clusters -A` until every cluster is `Ready` again.
+
+#### After upgrading {#after-upgrading-to-0100}
+
+1. If a cluster is `Blocked`, read the reason. It names the parameter, or the
+   Secret behind `ObjectStoreCredentialsRefused`:
+
+   ```bash
+   kubectl get cluster <name> -n <namespace> -o jsonpath='{.status.phaseReason}{"\n"}'
+   ```
+
+   Removing the parameter or labelling the Secret unblocks it. A label change
+   is picked up within 30 seconds.
+
+2. List the Databases and DatabaseUsers that are not `Ready`, with the reason:
+
+   ```bash
+   kubectl get databases.mysql.cnmsql.co,databaseusers.mysql.cnmsql.co -A -o json | jq -r '.items[]
+     | (.status.conditions // [] | map(select(.type == "Ready")) | first) as $ready
+     | select($ready.status != "True")
+     | "\(.kind) \(.metadata.namespace)/\(.metadata.name): \($ready.reason // "-") \($ready.message // "")"'
+   ```
+
+   - `Invalid`: fix the spec as the message says.
+   - `UserConflict` on a DatabaseUser: if the account is the one it was meant
+     to manage, adopt it with `kubectl cnmsql -n <namespace> databaseuser
+     adopt <name>`.
+   - `UserConflict` on a Database: the account exists and the Database has no
+     record of creating it. If it belongs to something else, declare a
+     different user. If this Database did create it, on 0.9.x, in an apply
+     that then failed, record it as owned. This needs write access to
+     `databases/status`, which tenants should not have:
+
+     ```bash
+     kubectl patch databases.mysql.cnmsql.co <name> -n <namespace> \
+       --subresource=status --type=merge \
+       -p '{"status":{"passwordStatus":{"<user>@<host>":""}}}'
+     ```
+
+     The next reconcile sets the account's password from its Secret again.
+
+3. Revoke the grants you removed from Databases in step 6 of [Before
+   upgrading](#before-upgrading-to-0100). On the primary:
+
+   ```bash
+   echo "SHOW GRANTS FOR '<user>'@'<host>';" | \
+     kubectl cnmsql -n <namespace> shell <cluster> -- -N
+   echo "REVOKE ALL PRIVILEGES ON *.* FROM '<user>'@'<host>';" | \
+     kubectl cnmsql -n <namespace> shell <cluster>
+   ```
+
+4. Check the events of each cluster for `ObjectStoreCredentialsRequired` and
+   `RetentionNotOwned`. The second one is expected until the next backup or
+   archived binary log (see
+   [above](#retention-waits-until-it-can-prove-a-store-is-the-clusters)); take
+   a backup if you don't want to wait.
+
+5. Upgrade the `kubectl cnmsql` plugin.
+
+#### Downgrading to 0.9.x {#downgrading-to-09x}
+
+A downgrade is another instance-manager upgrade: rolling, or in place. Data is
+not affected. Keep in mind:
+
+- The fixes above are undone, and 0.9.x applies again what 0.10.0 refused: a
+  Database that was `Invalid` gets its grants, and an inline user in
+  `UserConflict` takes the account over. Fix those objects before downgrading
+  rather than after.
+- Remove `--object-store-ambient-credentials` from the manager's arguments.
+  `helm rollback` does that by restoring the previous values; `helm upgrade
+  --version 0.9.0` with your 0.10.0 values does not, and the 0.9.x manager
+  does not start with a flag it does not know.
+- On MySQL, take a base backup after the downgrade. 0.9.x can refuse a
+  point-in-time recovery that crosses a failback archived by 0.10.0 with
+  `ErrForkedTimeline`, because it does not read the `seenGTIDSet` that 0.10.0
+  records in place of the binary logs it leaves out.
+- The label on credentials Secrets and the Cluster UID in manifests and the
+  archive index are ignored by 0.9.x. Leave them.
+- Use the 0.9.x plugin after the downgrade.
 
 ### Upgrading from 0.8.x to 0.9.0
 
