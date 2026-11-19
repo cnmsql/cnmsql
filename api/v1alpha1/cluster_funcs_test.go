@@ -153,6 +153,33 @@ var _ = Describe("Cluster validation", func() {
 		Expect(cluster.Validate()).To(BeEmpty())
 	})
 
+	It("accepts supported plugins", func() {
+		cluster := newValidCluster()
+		cluster.Spec.MySQL.Plugins = []string{"connection_control", "mysql_no_login"}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects a plugin that is not supported", func() {
+		cluster := newValidCluster()
+		cluster.Spec.MySQL.Plugins = []string{"audit_log"}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Field).To(Equal("spec.mysql.plugins"))
+		Expect(errs[0].Detail).To(ContainSubstring("supported: connection_control, mysql_no_login"))
+	})
+
+	It("checks plugins against the cluster's flavor", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Flavor = FlavorMariaDB
+		cluster.Spec.ImageName = "ghcr.io/cnmsql/cnmsql-mariadb-instance:11.4"
+		cluster.Spec.MySQL.Plugins = []string{"connection_control"}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Field).To(Equal("spec.mysql.plugins"))
+		cluster.Spec.MySQL.Plugins = []string{"auth_ed25519"}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
 	It("rejects zero instances", func() {
 		cluster := newValidCluster()
 		cluster.Spec.Instances = 0

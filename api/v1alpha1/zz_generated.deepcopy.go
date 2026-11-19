@@ -2011,6 +2011,11 @@ func (in *MySQLConfiguration) DeepCopyInto(out *MySQLConfiguration) {
 			(*out)[key] = val
 		}
 	}
+	if in.Plugins != nil {
+		in, out := &in.Plugins, &out.Plugins
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.SemiSync != nil {
 		in, out := &in.SemiSync, &out.SemiSync
 		*out = new(SemiSyncConfiguration)
