@@ -19,10 +19,12 @@ package objectstore
 import (
 	"context"
 	"fmt"
-	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
@@ -62,20 +64,13 @@ type BackupEntry struct {
 	Meta BackupMetadata
 }
 
-// BinlogEntry pairs an archived binlog file's keys with its manifest.
-type BinlogEntry struct {
-	// Keys are the binlog file and manifest object keys.
-	Keys BinlogKeys
-	// Meta is the per-file manifest.
-	Meta BinlogMetadata
-}
-
 // RetentionPlan is the pure decision of a retention pass: which base backups and
 // binlog files to delete, and the rewritten archive index.
 type RetentionPlan struct {
 	// DeleteBackupPrefixes are the backup directory prefixes to remove wholesale.
 	DeleteBackupPrefixes []string
-	// DeleteBinlogKeys are the object keys (file + manifest) to remove.
+	// DeleteBinlogKeys are the object keys to remove: each file's key followed
+	// by its manifest's.
 	DeleteBinlogKeys []string
 	// NewIndex is the rewritten archive index, or nil when no binlog was removed
 	// (so the existing index is left untouched).
@@ -95,8 +90,9 @@ func (p RetentionPlan) Empty() bool {
 	return len(p.DeleteBackupPrefixes) == 0 && len(p.DeleteBinlogKeys) == 0
 }
 
-// PlanRetention computes a retention plan over already-loaded archive metadata.
-// It is pure so the keep/expire policy is exhaustively unit-testable.
+// PlanRetention plans which base backups a retention pass expires, and the
+// recovery horizon that leaves. It is pure so the keep/expire policy is
+// exhaustively unit-testable.
 //
 // Policy (CloudNativePG-parity, GTID-adapted, anchor-horizon binlog GC):
 //   - A base backup expires when CompletedAt < cutoff.
@@ -104,17 +100,10 @@ func (p RetentionPlan) Empty() bool {
 //     expired — a cluster must always have something to recover from.
 //   - The recovery horizon is the oldest retained base backup's StartedAt. A
 //     binlog file whose last event predates the horizon is uncoverable (no
-//     retained base to apply it onto) and is deleted; the index is rewritten to
-//     drop it. Binlogs with an unknown (zero) last-event time are kept.
-//   - Binlog GC requires the cluster archive index. Without it no deletion can be
-//     reflected back into the record recovery discovers the archive through, so
-//     retention expires base backups only and leaves the archive whole.
-func PlanRetention(
-	backups []BackupEntry,
-	binlogs []BinlogEntry,
-	index *ArchiveIndex,
-	cutoff time.Time,
-) RetentionPlan {
+//     retained base to apply it onto): ExpiredBinlogs finds those files and
+//     ExpireBinlogs adds them to the plan. The horizon is zero, and no binlog
+//     expires, unless a base backup did.
+func PlanRetention(backups []BackupEntry, cutoff time.Time) RetentionPlan {
 	var plan RetentionPlan
 	if len(backups) == 0 {
 		// No base backups to anchor a horizon: never strand the binlog archive.
@@ -144,12 +133,11 @@ func PlanRetention(
 	}
 
 	plan.Horizon = retained[0].Meta.StartedAt
-	plan.applyBinlogGC(binlogs, index)
 	return plan
 }
 
-// applyBinlogGC selects binlog files older than the horizon and rewrites the
-// index to drop them.
+// ExpireBinlogs adds to the plan the archived files found behind its horizon
+// (ExpiredBinlogs) and rewrites the index to drop them.
 //
 // A nil index parks the whole pass. The index is the only record tying archived
 // files to timeline segments, and rewriting it is what keeps the two in step.
@@ -158,24 +146,20 @@ func PlanRetention(
 // same silent gap the archiver's lockstep write exists to prevent. Keeping
 // binlogs the horizon calls uncoverable only costs storage, and the archiver
 // restores the index on its next pass, so the stall clears itself.
-func (plan *RetentionPlan) applyBinlogGC(binlogs []BinlogEntry, index *ArchiveIndex) {
+func (plan *RetentionPlan) ExpireBinlogs(expired []ArchivedBinlog, index *ArchiveIndex) {
 	if plan.Horizon.IsZero() || index == nil {
 		return
 	}
 
 	deleted := map[string]map[string]struct{}{} // serverUUID -> set of binlog basenames
-	for _, entry := range binlogs {
-		last := entry.Meta.LastEventTime
-		if last.IsZero() || !last.Before(plan.Horizon) {
-			continue
-		}
-		plan.DeleteBinlogKeys = append(plan.DeleteBinlogKeys, entry.Keys.BinlogKey, entry.Keys.ManifestKey)
-		set := deleted[entry.Meta.ServerUUID]
+	for _, file := range expired {
+		plan.DeleteBinlogKeys = append(plan.DeleteBinlogKeys, file.Keys.BinlogKey, file.Keys.ManifestKey)
+		set := deleted[file.ServerUUID]
 		if set == nil {
 			set = map[string]struct{}{}
-			deleted[entry.Meta.ServerUUID] = set
+			deleted[file.ServerUUID] = set
 		}
-		set[entry.Meta.BinlogName] = struct{}{}
+		set[file.Name] = struct{}{}
 	}
 
 	if len(deleted) == 0 {
@@ -249,56 +233,53 @@ func ListBaseBackups(
 	return entries, nil
 }
 
-// ListArchivedBinlogKeys walks a cluster's binlog archive and returns the keys
-// of every archived file and its manifest, skipping the per-segment status
-// and cluster index objects. It is one listing: no manifest is read.
-func ListArchivedBinlogKeys(
+// ListArchivedBinlogs walks a cluster's binlog archive and returns every
+// archived file, skipping the per-segment status and cluster index objects. It
+// is one listing: no manifest is read.
+func ListArchivedBinlogs(
 	ctx context.Context,
 	client *Client,
 	store mysqlv1alpha1.S3ObjectStore,
 	clusterName string,
-) ([]BinlogKeys, error) {
+) ([]ArchivedBinlog, error) {
 	prefix := BinlogPrefix(store, clusterName)
 	objects, err := client.ListObjects(ctx, store.Bucket, prefix, true)
 	if err != nil {
 		return nil, err
 	}
-	var keys []BinlogKeys
+	var files []ArchivedBinlog
 	for _, object := range objects {
-		if !strings.HasSuffix(object.Key, BinlogManifestSuffix) {
+		// A file's manifest is at <server uuid>/<name><suffix>.
+		serverUUID, manifest, ok := strings.Cut(strings.TrimPrefix(object.Key, prefix), "/")
+		name, isManifest := strings.CutSuffix(manifest, BinlogManifestSuffix)
+		if !ok || !isManifest || strings.Contains(manifest, "/") || manifest == ArchiveStatusName {
 			continue
 		}
-		base := path.Base(object.Key)
-		if base == ArchiveStatusName || base == ArchiveIndexName {
-			continue
-		}
-		keys = append(keys, BinlogKeys{
-			BinlogKey:   strings.TrimSuffix(object.Key, BinlogManifestSuffix),
-			ManifestKey: object.Key,
+		files = append(files, ArchivedBinlog{
+			Keys: BinlogKeys{
+				BinlogKey:   strings.TrimSuffix(object.Key, BinlogManifestSuffix),
+				ManifestKey: object.Key,
+			},
+			ServerUUID: serverUUID,
+			Name:       name,
+			UploadedAt: object.LastModified,
 		})
 	}
-	return keys, nil
+	return files, nil
 }
 
-// ReadArchivedBinlogs reads the per-file manifest of every listed binlog. A
-// retention pass only needs them once a base backup expired, so it reads them
-// then rather than on every pass.
-func ReadArchivedBinlogs(
-	ctx context.Context,
-	client *Client,
-	store mysqlv1alpha1.S3ObjectStore,
-	keys []BinlogKeys,
-) ([]BinlogEntry, error) {
-	entries := make([]BinlogEntry, 0, len(keys))
-	for _, k := range keys {
+// ReadBinlogManifests returns the ManifestReader of the archive in bucket.
+func ReadBinlogManifests(client *Client, bucket string) ManifestReader {
+	return func(ctx context.Context, keys BinlogKeys) (BinlogMetadata, error) {
 		var meta BinlogMetadata
-		if err := client.GetJSON(ctx, store.Bucket, k.ManifestKey, &meta); err != nil {
-			return nil, err
-		}
-		entries = append(entries, BinlogEntry{Keys: k, Meta: meta})
+		err := client.GetJSON(ctx, bucket, keys.ManifestKey, &meta)
+		return meta, err
 	}
-	return entries, nil
 }
+
+// binlogDeleteConcurrency is how many archived binlogs a retention pass deletes
+// at once. Deletes stay one object per request (see Client.Remove).
+const binlogDeleteConcurrency = 8
 
 // ApplyBackupExpiry deletes the expired base backups from the store holding
 // them. It runs before ApplyBinlogExpiry so a failure on the binlog side never
@@ -321,6 +302,10 @@ func ApplyBackupExpiry(
 // then rewrites the archive index. The index rewrite is done last so a mid-run
 // failure leaves a still-valid index; any objects deleted but not yet
 // de-indexed are cleaned up on the next pass.
+//
+// Files are deleted binlogDeleteConcurrency at a time, each one's manifest
+// after the file: the listing finds a file by its manifest, so a manifest
+// deleted first would leave a file no later pass sees.
 func ApplyBinlogExpiry(
 	ctx context.Context,
 	client *Client,
@@ -328,10 +313,20 @@ func ApplyBinlogExpiry(
 	clusterName string,
 	plan RetentionPlan,
 ) error {
-	for _, key := range plan.DeleteBinlogKeys {
-		if err := client.Remove(ctx, store.Bucket, key); err != nil {
-			return err
-		}
+	deletes, deleteCtx := errgroup.WithContext(ctx)
+	deletes.SetLimit(binlogDeleteConcurrency)
+	for file := range slices.Chunk(plan.DeleteBinlogKeys, 2) {
+		deletes.Go(func() error {
+			for _, key := range file {
+				if err := client.Remove(deleteCtx, store.Bucket, key); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+	if err := deletes.Wait(); err != nil {
+		return err
 	}
 	return rewriteArchiveIndex(ctx, client, store.Bucket, ArchiveIndexKey(store, clusterName), plan)
 }

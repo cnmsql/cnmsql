@@ -195,6 +195,16 @@ func TestReconcileRetentionListsBinlogsInArchiveStore(t *testing.T) {
 // "METHOD /bucket/key" for every DELETE, PUT and GET of an object.
 func memS3Server(t *testing.T, objects map[string]string) (*httptest.Server, func() []string) {
 	t.Helper()
+	return memS3ServerModified(t, objects, nil)
+}
+
+// memS3ServerModified is memS3Server with a listing that says when each object
+// was last modified. modified returns the zero time for an object it has no
+// time for, and the listing then leaves it out, as memS3Server's does.
+func memS3ServerModified(
+	t *testing.T, objects map[string]string, modified func(key string) time.Time,
+) (*httptest.Server, func() []string) {
+	t.Helper()
 	var mu sync.Mutex
 	var writes []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -213,8 +223,12 @@ func memS3Server(t *testing.T, objects map[string]string) (*httptest.Server, fun
 				`</Name><IsTruncated>false</IsTruncated>`)
 			for k, body := range objects {
 				if strings.HasPrefix(k, bucket+"/"+prefix) {
-					fmt.Fprintf(&b, "<Contents><Key>%s</Key><Size>%d</Size></Contents>",
-						strings.TrimPrefix(k, bucket+"/"), len(body))
+					lastModified := ""
+					if modified != nil && !modified(k).IsZero() {
+						lastModified = "<LastModified>" + modified(k).UTC().Format(time.RFC3339) + "</LastModified>"
+					}
+					fmt.Fprintf(&b, "<Contents><Key>%s</Key><Size>%d</Size>%s</Contents>",
+						strings.TrimPrefix(k, bucket+"/"), len(body), lastModified)
 				}
 			}
 			b.WriteString(`</ListBucketResult>`)
@@ -377,6 +391,84 @@ func TestReconcileRetentionReadsNoManifestWhenNothingExpired(t *testing.T) {
 	}
 	if anyContains(got, "DELETE") || anyContains(got, "PUT") {
 		t.Fatalf("archive store was written to with nothing expired: %v", got)
+	}
+}
+
+// A pass that does expire a base backup finds the binlogs behind the horizon
+// from the listing and a binary search: on a long archive, reading every
+// manifest holds the reconcile for minutes.
+func TestReconcileRetentionExpiresBinlogsWithoutReadingEveryManifest(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	old, recent := now.Add(-60*24*time.Hour), now.Add(-24*time.Hour)
+	const uuid = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	baseSrv, _ := memS3Server(t, map[string]string{
+		"backups/base/demo/bk-old/id-old/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: testClusterUID, StartedAt: old, CompletedAt: old}),
+		"backups/base/demo/bk-new/id-new/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: testClusterUID, StartedAt: recent, CompletedAt: recent}),
+	})
+	// 200 files, one every 8 hours since the old backup: files 1 to 176 end
+	// before the retained backup started.
+	const files, expired = 200, 176
+	objects := map[string]string{}
+	uploaded := map[string]time.Time{}
+	names := make([]string, 0, files)
+	for i := 1; i <= files; i++ {
+		name := fmt.Sprintf("binlog.%06d", i)
+		key := "binlogs/archive/demo/binlogs/" + uuid + "/" + name
+		last := old.Add(time.Duration(i) * 8 * time.Hour)
+		objects[key] = "b"
+		objects[key+".json"] = mustJSON(t, objectstore.BinlogMetadata{
+			ServerUUID: uuid, BinlogName: name, LastEventTime: last})
+		uploaded[key+".json"] = last.Add(time.Minute)
+		names = append(names, name)
+	}
+	objects["binlogs/archive/demo/binlogs/_index.json"] = mustJSON(t, objectstore.ArchiveIndex{
+		ClusterName: "demo",
+		ClusterUID:  testClusterUID,
+		Segments:    []objectstore.ArchiveSegment{{ServerUUID: uuid, Binlogs: names}},
+	})
+	logSrv, logRequests := memS3ServerModified(t, objects, func(key string) time.Time { return uploaded[key] })
+
+	cluster := baseCluster()
+	cluster.UID = testClusterUID
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		ObjectStore:     storeAt(baseSrv.URL, "backups", "base"),
+		RetentionPolicy: "30d",
+		ContinuousArchiving: &mysqlv1alpha1.ContinuousArchivingConfiguration{
+			Enabled: true, ObjectStore: storeAt(logSrv.URL, "binlogs", "archive"),
+		},
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, s3CredentialsSecret()).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestReads, deletedFiles := 0, 0
+	for _, request := range logRequests() {
+		switch {
+		case strings.HasPrefix(request, "GET ") && strings.Contains(request, "/binlog.") &&
+			strings.HasSuffix(request, ".json"):
+			manifestReads++
+		case strings.HasPrefix(request, "DELETE ") && !strings.HasSuffix(request, ".json"):
+			deletedFiles++
+		}
+	}
+	if deletedFiles != expired {
+		t.Fatalf("deleted %d binlogs, want the %d that end before the retained backup", deletedFiles, expired)
+	}
+	if manifestReads > 12 {
+		t.Fatalf("read %d of %d manifests, want a binary search", manifestReads, files)
 	}
 }
 

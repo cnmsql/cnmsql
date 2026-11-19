@@ -101,9 +101,13 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 			return err
 		}
 	}
-	binlogKeys, index, err := listArchive(ctx, binlogClient, *binlogStore, cluster.Name)
+	archived, index, err := listArchive(ctx, binlogClient, *binlogStore, cluster.Name)
 	if err != nil {
 		return err
+	}
+	binlogKeys := make([]objectstore.BinlogKeys, 0, len(archived))
+	for _, file := range archived {
+		binlogKeys = append(binlogKeys, file.Keys)
 	}
 
 	if reason := retentionOwnership(string(cluster.UID), store.SameLocation(binlogStore),
@@ -120,7 +124,7 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	}
 
 	cutoff := time.Now().Add(-window)
-	plan, err := planRetention(ctx, binlogClient, *binlogStore, backups, binlogKeys, index, cutoff)
+	plan, err := planRetention(ctx, binlogClient, *binlogStore, backups, archived, index, cutoff)
 	if err != nil {
 		return err
 	}
@@ -172,13 +176,13 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 }
 
 // listArchive lists the archived files and reads the archive index, nil when
-// there is none. One listing gives the files; their manifests are read later
-// (planRetention), only once a base backup expired and there may be binlogs to
-// expire.
+// there is none. One listing gives the files and when each was uploaded; the
+// few manifests a pass needs are read later (planRetention), only once a base
+// backup expired and there may be binlogs to expire.
 func listArchive(
 	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
-) ([]objectstore.BinlogKeys, *objectstore.ArchiveIndex, error) {
-	keys, err := objectstore.ListArchivedBinlogKeys(ctx, client, store, clusterName)
+) ([]objectstore.ArchivedBinlog, *objectstore.ArchiveIndex, error) {
+	keys, err := objectstore.ListArchivedBinlogs(ctx, client, store, clusterName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -195,23 +199,26 @@ func listArchive(
 }
 
 // planRetention plans a pass. Binlogs only expire behind an expired base
-// backup, so the per-file manifests, one read each, are only read once a
-// backup did expire and there is an index to reflect the deletions in. Most
-// passes expire nothing and read none.
+// backup, so manifests are only read once a backup did expire and there is an
+// index to reflect the deletions in; most passes expire nothing and read
+// none. A pass that does reads a dozen per server, not one per file (see
+// objectstore.ExpiredBinlogs).
 func planRetention(
 	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore,
-	backups []objectstore.BackupEntry, binlogKeys []objectstore.BinlogKeys, index *objectstore.ArchiveIndex,
+	backups []objectstore.BackupEntry, archived []objectstore.ArchivedBinlog, index *objectstore.ArchiveIndex,
 	cutoff time.Time,
 ) (objectstore.RetentionPlan, error) {
-	plan := objectstore.PlanRetention(backups, nil, nil, cutoff)
+	plan := objectstore.PlanRetention(backups, cutoff)
 	if len(plan.DeleteBackupPrefixes) == 0 || index == nil {
 		return plan, nil
 	}
-	binlogs, err := objectstore.ReadArchivedBinlogs(ctx, client, store, binlogKeys)
+	expired, err := objectstore.ExpiredBinlogs(
+		ctx, objectstore.ReadBinlogManifests(client, store.Bucket), archived, plan.Horizon)
 	if err != nil {
 		return objectstore.RetentionPlan{}, err
 	}
-	return objectstore.PlanRetention(backups, binlogs, index, cutoff), nil
+	plan.ExpireBinlogs(expired, index)
+	return plan, nil
 }
 
 // retentionCredentialsRefused returns the event reason for an object-store
