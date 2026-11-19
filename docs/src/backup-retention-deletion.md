@@ -175,7 +175,10 @@ and an established primary. Each pass:
 3. **Expires uncoverable binlog segments.** The PITR horizon is the oldest
    *retained* base backup's start time. Binlog segments whose last event predates
    that horizon can no longer be replayed onto any retained base, so they are
-   deleted and `_index.json` is rewritten to match.
+   deleted and `_index.json` is rewritten to match. A binlog only expires behind
+   an expired base backup, so a pass lists the archive but reads the per-file
+   manifests (one object each) only when step 1 expired something; the usual
+   pass that expires nothing reads the index and nothing else from the archive.
 4. **Expires old logical backups** on the same window, keeping the newest one.
    Dumps are counted on their own: they never keep a base backup or a binlog
    alive, and they never count as the newest base backup.
