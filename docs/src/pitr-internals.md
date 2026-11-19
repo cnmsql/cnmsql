@@ -445,7 +445,14 @@ The steps:
    replay before the earlier ones.
 4. **Download** the planned files into a scratch dir, named
    `<serverUUID>_<binlogName>` so like-named files from different segments never
-   collide on disk.
+   collide on disk. On MySQL the planner keeps a segment whole as soon as the
+   base backup lacks any of it, so before downloading, every planned file's
+   manifest is read (a few at a time) and the files the replay would discard
+   are left out: a file whose every transaction is in the exclude set (the
+   backup's, plus what the archive disowned), and with a time target a file
+   whose first event is at or past the target. A long-lived primary's segment
+   is thus downloaded from the backup's position, not from its first file. A
+   file whose manifest cannot judge it is kept.
 5. **Replay** into a temporary socket-only `mysqld` started with
    `--skip-networking --skip-grant-tables`, then write the `.cnmsql-pitr-done`
    sentinel. The replay stream opens with `FLUSH PRIVILEGES` (kept off the
@@ -528,7 +535,7 @@ it contains: `targetTime` and latest fail with `ErrBackupOnDeadBranch`, while a
 records it applied, and says so when the archive was never fork-checked.
 
 Because GTID de-duplicates, the planner is free to over-download and the server
-drops what it already has. The plan fails closed rather than guess:
+drops what it already has; file pruning (step 4) only saves the download. The plan fails closed rather than guess:
 `ErrTargetBeforeBackup` (target older than the anchor), `ErrTargetBeyondArchive`
 (target not covered), and `ErrForkedTimeline` (the index's declared coverage
 cannot be reconstructed from its segments, meaning a missing segment or a real

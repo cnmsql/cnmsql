@@ -310,3 +310,38 @@ func TestLoadReplaySpansReportsAnUnreadableManifest(t *testing.T) {
 		t.Fatalf("err = %v, want one naming the file", err)
 	}
 }
+
+// A MySQL replay reads every planned file's manifest, even for a single
+// segment, and downloads only the files the base backup does not already
+// hold.
+func TestSelectMySQLReplayFilesPrunesWhatTheBackupHolds(t *testing.T) {
+	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cnmsql"}
+	const uuid = "aaaaaaaa-0000-0000-0000-000000000001"
+	plan := binlog.ReplayPlan{
+		AnchorGTID: uuid + ":1-20", ExcludeGTIDs: uuid + ":1-20",
+		Segments: []binlog.ReplaySegment{{
+			ServerUUID: uuid, Files: []string{"binlog.000001", "binlog.000002", "binlog.000003"},
+		}},
+	}
+	sets := map[string]string{
+		"binlog.000001": uuid + ":1-10", "binlog.000002": uuid + ":11-20", "binlog.000003": uuid + ":21-30",
+	}
+	var mu sync.Mutex
+	read := 0
+	got, err := selectMySQLReplayFiles(context.Background(), store, "demo", plan,
+		func(_ context.Context, key string, v any) error {
+			mu.Lock()
+			read++
+			mu.Unlock()
+			name := strings.TrimSuffix(key[strings.LastIndex(key, "/")+1:], objectstore.BinlogManifestSuffix)
+			v.(*objectstore.BinlogMetadata).GTIDSet = sets[name]
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := got.Files()
+	if read != 3 || len(files) != 1 || files[0].Name != "binlog.000003" {
+		t.Fatalf("read %d manifests, files = %v; want 3 and only binlog.000003", read, files)
+	}
+}

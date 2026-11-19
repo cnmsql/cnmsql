@@ -162,21 +162,18 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 		if err != nil {
 			return fmt.Errorf("pitr: planning replay from base backup %s: %w", o.MetadataKey, err)
 		}
-		// One segment can hold a file that fills a hole in another, so several
-		// segments are replayed along the timeline, not one after the other.
-		if len(plan.Segments) > 1 {
-			spans, err := loadReplaySpans(ctx, o.ObjectStore, o.SourceCluster, plan,
-				func(ctx context.Context, key string, v any) error {
-					return o.binlogClient().GetJSON(ctx, o.ObjectStore.Bucket, key, v)
-				})
-			if err != nil {
-				return err
-			}
-			plan.Order = binlog.OrderReplayFiles(plan, spans)
+		planned := len(plan.Files())
+		plan, err = selectMySQLReplayFiles(ctx, o.ObjectStore, o.SourceCluster, plan,
+			func(ctx context.Context, key string, v any) error {
+				return o.binlogClient().GetJSON(ctx, o.ObjectStore.Bucket, key, v)
+			})
+		if err != nil {
+			return err
 		}
+		log.Info("Selected archived binlogs to download", "planned", planned, "selected", len(plan.Files()))
 	}
 	logReplayForks(log, plan)
-	if len(plan.Segments) == 0 {
+	if len(plan.Files()) == 0 {
 		log.Info("No archived binlogs to replay; data is already at the recovery target")
 		return nil
 	}
@@ -290,6 +287,26 @@ func (o *RestoreOptions) downloadReplayFiles(
 		files = append(files, filepath.Join(replayDir, localName))
 	}
 	return files, nil
+}
+
+// selectMySQLReplayFiles reads every planned file's manifest, leaves out the
+// files the replay would download and discard (binlog.PruneReplayFiles) and,
+// when several segments remain, orders the rest along the timeline: one
+// segment can hold a file that fills a hole in another, so they are replayed
+// along the timeline, not one after the other.
+func selectMySQLReplayFiles(
+	ctx context.Context, store mysqlv1alpha1.S3ObjectStore, cluster string, plan binlog.ReplayPlan,
+	read func(ctx context.Context, key string, v any) error,
+) (binlog.ReplayPlan, error) {
+	spans, err := loadReplaySpans(ctx, store, cluster, plan, read)
+	if err != nil {
+		return binlog.ReplayPlan{}, err
+	}
+	plan = binlog.PruneReplayFiles(plan, spans)
+	if len(plan.Segments) > 1 {
+		plan.Order = binlog.OrderReplayFiles(plan, spans)
+	}
+	return plan, nil
 }
 
 // replaySpanReaders bounds how many manifests loadReplaySpans reads at once.
