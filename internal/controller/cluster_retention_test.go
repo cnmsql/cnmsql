@@ -192,7 +192,7 @@ func TestReconcileRetentionListsBinlogsInArchiveStore(t *testing.T) {
 
 // memS3Server is an in-memory S3 bucket store: LIST filters keys by prefix,
 // GET/HEAD serve stored bodies, DELETE removes and PUT stores. It records
-// "METHOD /bucket/key" for every DELETE and PUT.
+// "METHOD /bucket/key" for every DELETE, PUT and GET of an object.
 func memS3Server(t *testing.T, objects map[string]string) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -220,6 +220,9 @@ func memS3Server(t *testing.T, objects map[string]string) (*httptest.Server, fun
 			b.WriteString(`</ListBucketResult>`)
 			_, _ = w.Write([]byte(b.String()))
 		case r.Method == http.MethodGet || r.Method == http.MethodHead:
+			if r.Method == http.MethodGet {
+				writes = append(writes, "GET /"+bucket+"/"+key)
+			}
 			body, ok := objects[bucket+"/"+key]
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -320,6 +323,63 @@ func TestReconcileRetentionAppliesExpiryPerStore(t *testing.T) {
 	}
 }
 
+// A pass that expires no base backup has no binlog to delete, so it reads no
+// per-file manifest: on a long archive those are thousands of GETs an hour
+// for nothing. The index is still read, since it proves the archive is ours.
+func TestReconcileRetentionReadsNoManifestWhenNothingExpired(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	recent := now.Add(-24 * time.Hour)
+	const uuid = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	baseSrv, _ := memS3Server(t, map[string]string{
+		"backups/base/demo/bk-new/id-new/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: testClusterUID, StartedAt: recent, CompletedAt: recent}),
+	})
+	logSrv, logRequests := memS3Server(t, map[string]string{
+		"binlogs/archive/demo/binlogs/" + uuid + "/binlog.000001.json": mustJSON(t, objectstore.BinlogMetadata{
+			ServerUUID: uuid, BinlogName: "binlog.000001", LastEventTime: recent}),
+		"binlogs/archive/demo/binlogs/" + uuid + "/binlog.000001": "b",
+		"binlogs/archive/demo/binlogs/_index.json": mustJSON(t, objectstore.ArchiveIndex{
+			ClusterName: "demo",
+			ClusterUID:  testClusterUID,
+			Segments:    []objectstore.ArchiveSegment{{ServerUUID: uuid, Binlogs: []string{"binlog.000001"}}},
+		}),
+	})
+
+	cluster := baseCluster()
+	cluster.UID = testClusterUID
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		ObjectStore:     storeAt(baseSrv.URL, "backups", "base"),
+		RetentionPolicy: "30d",
+		ContinuousArchiving: &mysqlv1alpha1.ContinuousArchivingConfiguration{
+			Enabled: true, ObjectStore: storeAt(logSrv.URL, "binlogs", "archive"),
+		},
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, s3CredentialsSecret()).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	got := logRequests()
+	if anyContains(got, "binlog.000001.json") {
+		t.Fatalf("archive store requests %v include a per-file manifest read with nothing expired", got)
+	}
+	if !slices.Contains(got, "GET /binlogs/archive/demo/binlogs/_index.json") {
+		t.Fatalf("archive store requests %v do not read the index", got)
+	}
+	if anyContains(got, "DELETE") || anyContains(got, "PUT") {
+		t.Fatalf("archive store was written to with nothing expired: %v", got)
+	}
+}
+
 // testClusterUID is the UID the retention fixtures stamp on what the cluster's
 // workers wrote.
 const testClusterUID = "8f0f2a4c-1d9e-4f6b-9a51-2c3d4e5f6a7b"
@@ -334,7 +394,7 @@ func TestRetentionOwnership(t *testing.T) {
 		return []objectstore.LogicalBackupEntry{{Meta: objectstore.LogicalBackupMetadata{ClusterUID: uid}}}
 	}
 	index := func(uid string) *objectstore.ArchiveIndex { return &objectstore.ArchiveIndex{ClusterUID: uid} }
-	binlogs := []objectstore.BinlogEntry{{}}
+	binlogs := 1
 
 	cases := []struct {
 		name    string
@@ -342,7 +402,7 @@ func TestRetentionOwnership(t *testing.T) {
 		same    bool
 		backups []objectstore.BackupEntry
 		logical []objectstore.LogicalBackupEntry
-		binlogs []objectstore.BinlogEntry
+		binlogs int
 		index   *objectstore.ArchiveIndex
 		owned   bool
 	}{
@@ -419,7 +479,7 @@ func TestReconcileRetentionSkipsArchiveItDoesNotOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := writes(); len(got) != 0 {
+	if got := slices.DeleteFunc(writes(), func(s string) bool { return strings.HasPrefix(s, "GET ") }); len(got) != 0 {
 		t.Fatalf("retention wrote to a store it does not own: %v", got)
 	}
 	if event := <-recorder.Events; !strings.Contains(event, eventRetentionNotOwned) {

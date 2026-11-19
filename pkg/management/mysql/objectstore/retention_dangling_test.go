@@ -36,7 +36,7 @@ func (d *danglingFake) Exists(_ context.Context, _, key string) (bool, error) {
 
 func danglingFixture(
 	t *testing.T, listed []string, existing ...string,
-) (*danglingFake, mysqlv1alpha1.S3ObjectStore, []BinlogEntry) {
+) (*danglingFake, mysqlv1alpha1.S3ObjectStore, []BinlogKeys) {
 	t.Helper()
 	store := mysqlv1alpha1.S3ObjectStore{Bucket: "backups", Path: "cnmsql"}
 	fake := &danglingFake{manifests: map[string]bool{}}
@@ -46,14 +46,14 @@ func danglingFixture(
 	if err := fake.PutJSONIf(context.Background(), "", "", &idx, ""); err != nil {
 		t.Fatal(err)
 	}
-	entries := make([]BinlogEntry, 0, len(existing))
+	entries := make([]BinlogKeys, 0, len(existing))
 	for _, name := range existing {
 		keys, err := BuildBinlogKeys(store, "demo", "uuid-a", name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		fake.manifests[keys.ManifestKey] = true
-		entries = append(entries, BinlogEntry{Keys: keys, Meta: BinlogMetadata{ServerUUID: "uuid-a", BinlogName: name}})
+		entries = append(entries, keys)
 	}
 	return fake, store, entries
 }

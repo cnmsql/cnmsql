@@ -101,37 +101,29 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 			return err
 		}
 	}
-	binlogs, err := objectstore.ListArchivedBinlogs(ctx, binlogClient, *binlogStore, cluster.Name)
+	binlogKeys, index, err := listArchive(ctx, binlogClient, *binlogStore, cluster.Name)
 	if err != nil {
 		return err
 	}
 
-	var index *objectstore.ArchiveIndex
-	indexKey := objectstore.ArchiveIndexKey(*binlogStore, cluster.Name)
-	if exists, err := binlogClient.Exists(ctx, binlogStore.Bucket, indexKey); err != nil {
-		return err
-	} else if exists {
-		index = &objectstore.ArchiveIndex{}
-		if err := binlogClient.GetJSON(ctx, binlogStore.Bucket, indexKey, index); err != nil {
-			return err
-		}
-	}
-
 	if reason := retentionOwnership(string(cluster.UID), store.SameLocation(binlogStore),
-		backups, logical, binlogs, index); reason != "" {
+		backups, logical, len(binlogKeys), index); reason != "" {
 		return r.skipRetention(ctx, cluster, eventRetentionNotOwned, "Skipped backup retention: "+reason)
 	}
 
-	if index == nil && len(binlogs) > 0 {
+	if index == nil && len(binlogKeys) > 0 {
 		// The archiver writes the index in the same pass as every file it ships, so
 		// a non-empty archive with no index means the index was lost. PlanRetention
 		// expires base backups but parks binlog GC until it comes back.
 		log.Info("Archive index missing; retaining all archived binlogs this pass",
-			"archivedBinlogs", len(binlogs))
+			"archivedBinlogs", len(binlogKeys))
 	}
 
 	cutoff := time.Now().Add(-window)
-	plan := objectstore.PlanRetention(backups, binlogs, index, cutoff)
+	plan, err := planRetention(ctx, binlogClient, *binlogStore, backups, binlogKeys, index, cutoff)
+	if err != nil {
+		return err
+	}
 
 	// Base backups and binlogs anchor recovery, so their expiry is applied
 	// before the logical pass below: a failure on the logical side must not
@@ -154,7 +146,7 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 
 	// An index write that started from a copy older than a retention pass
 	// brings back the entries that pass removed; their files stay deleted.
-	if err := dropDanglingIndexEntries(ctx, binlogClient, *binlogStore, cluster.Name, binlogs, index); err != nil {
+	if err := dropDanglingIndexEntries(ctx, binlogClient, *binlogStore, cluster.Name, binlogKeys, index); err != nil {
 		return err
 	}
 
@@ -177,6 +169,49 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		now := metav1.Now()
 		s.LastRetentionRunTime = &now
 	})
+}
+
+// listArchive lists the archived files and reads the archive index, nil when
+// there is none. One listing gives the files; their manifests are read later
+// (planRetention), only once a base backup expired and there may be binlogs to
+// expire.
+func listArchive(
+	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
+) ([]objectstore.BinlogKeys, *objectstore.ArchiveIndex, error) {
+	keys, err := objectstore.ListArchivedBinlogKeys(ctx, client, store, clusterName)
+	if err != nil {
+		return nil, nil, err
+	}
+	indexKey := objectstore.ArchiveIndexKey(store, clusterName)
+	exists, err := client.Exists(ctx, store.Bucket, indexKey)
+	if err != nil || !exists {
+		return keys, nil, err
+	}
+	index := &objectstore.ArchiveIndex{}
+	if err := client.GetJSON(ctx, store.Bucket, indexKey, index); err != nil {
+		return nil, nil, err
+	}
+	return keys, index, nil
+}
+
+// planRetention plans a pass. Binlogs only expire behind an expired base
+// backup, so the per-file manifests, one read each, are only read once a
+// backup did expire and there is an index to reflect the deletions in. Most
+// passes expire nothing and read none.
+func planRetention(
+	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore,
+	backups []objectstore.BackupEntry, binlogKeys []objectstore.BinlogKeys, index *objectstore.ArchiveIndex,
+	cutoff time.Time,
+) (objectstore.RetentionPlan, error) {
+	plan := objectstore.PlanRetention(backups, nil, nil, cutoff)
+	if len(plan.DeleteBackupPrefixes) == 0 || index == nil {
+		return plan, nil
+	}
+	binlogs, err := objectstore.ReadArchivedBinlogs(ctx, client, store, binlogKeys)
+	if err != nil {
+		return objectstore.RetentionPlan{}, err
+	}
+	return objectstore.PlanRetention(backups, binlogs, index, cutoff), nil
 }
 
 // retentionCredentialsRefused returns the event reason for an object-store
@@ -221,7 +256,7 @@ func retentionOwnership(
 	sameLocation bool,
 	backups []objectstore.BackupEntry,
 	logical []objectstore.LogicalBackupEntry,
-	binlogs []objectstore.BinlogEntry,
+	archivedBinlogs int,
 	index *objectstore.ArchiveIndex,
 ) string {
 	if uid == "" {
@@ -245,7 +280,7 @@ func retentionOwnership(
 			"so its backups may belong to another cluster with the same name. " +
 			"The next backup or archived binary log taken by this Cluster proves the store is its own"
 	}
-	if !archiveOwned && (len(binlogs) > 0 || index != nil) {
+	if !archiveOwned && (archivedBinlogs > 0 || index != nil) {
 		return "the binary-log archive index does not carry this Cluster's UID, " +
 			"so the archive may belong to another cluster with the same name. " +
 			"The next binary log this Cluster archives proves the archive is its own"
@@ -258,12 +293,12 @@ func retentionOwnership(
 // is nothing to drop.
 func dropDanglingIndexEntries(
 	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
-	binlogs []objectstore.BinlogEntry, index *objectstore.ArchiveIndex,
+	keys []objectstore.BinlogKeys, index *objectstore.ArchiveIndex,
 ) error {
 	if index == nil {
 		return nil
 	}
-	dropped, err := objectstore.DropDanglingIndexEntries(ctx, client, store, clusterName, binlogs)
+	dropped, err := objectstore.DropDanglingIndexEntries(ctx, client, store, clusterName, keys)
 	if err != nil {
 		return err
 	}
