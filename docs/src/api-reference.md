@@ -1611,6 +1611,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `parameters` _object (keys:string, values:string)_ | Parameters is a key/value map of my.cnf settings applied under the<br />[mysqld] section. |  | Optional: \{\} <br /> |
+| `plugins` _string array_ | Plugins lists the server plugins to load at startup, by name. The<br />operator chooses the library for each one; plugin_load and<br />plugin_load_add cannot be set through parameters. Supported on MySQL:<br />connection_control, mysql_no_login. Supported on MariaDB: auth_ed25519,<br />auth_mysql_sha2, auth_parsec, disks, locales, metadata_lock_info,<br />query_cache_info, query_response_time, type_mysql_json. Changing the list<br />restarts the instances. |  | MaxItems: 16 <br />Optional: \{\} <br /> |
 | `binlogFormat` _string_ | BinlogFormat is the binary log format. ROW is required for safe<br />replication and PITR and is the default. | ROW | Enum: [ROW STATEMENT MIXED] <br />Optional: \{\} <br /> |
 | `semiSync` _[SemiSyncConfiguration](#semisyncconfiguration)_ | SemiSync configures semi-synchronous replication. |  | Optional: \{\} <br /> |
 | `additionalConfigFiles` _object (keys:string, values:string)_ | AdditionalConfigFiles are extra files dropped into the MySQL configuration<br />directory, keyed by file name. |  | Optional: \{\} <br /> |

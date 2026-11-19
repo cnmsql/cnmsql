@@ -202,6 +202,10 @@ func unsupportedReason(cluster *mysqlv1alpha1.Cluster) string {
 	if err := mysqlconfig.ValidateUserParameters(cluster.Spec.MySQL.Parameters); err != nil {
 		return "spec.mysql.parameters: " + err.Error()
 	}
+	mariadb := cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB
+	if _, err := mysqlconfig.PluginLibraries(cluster.Spec.MySQL.Plugins, mariadb); err != nil {
+		return "spec.mysql.plugins: " + err.Error()
+	}
 	return ""
 }
 

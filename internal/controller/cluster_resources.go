@@ -257,6 +257,11 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 	if !inst.IsPrimary {
 		role = mysqlconfig.RoleReplica
 	}
+	plugins, err := mysqlconfig.PluginLibraries(
+		cluster.Spec.MySQL.Plugins, cluster.ResolvedFlavor() == mysqlv1alpha1.FlavorMariaDB)
+	if err != nil {
+		return "", fmt.Errorf("spec.mysql.plugins: %w", err)
+	}
 	cfg := &mysqlconfig.ServerConfig{
 		ServerID:     inst.ServerID,
 		Version:      plan.ServerVersion,
@@ -277,8 +282,9 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 			Cert: topology.ServerTLSPath + "/tls.crt",
 			Key:  topology.ServerTLSPath + "/tls.key",
 		},
-		UserParameters: cluster.Spec.MySQL.Parameters,
-		Archiving:      archivingConfig(cluster),
+		UserParameters:  cluster.Spec.MySQL.Parameters,
+		PluginLibraries: plugins,
+		Archiving:       archivingConfig(cluster),
 	}
 	r.topologyReconciler(cluster).ConfigureServer(cluster, topology.ServerConfigInput{
 		InstanceName: inst.Name,

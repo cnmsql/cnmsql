@@ -365,6 +365,18 @@ type MySQLConfiguration struct {
 	// +optional
 	Parameters map[string]string `json:"parameters,omitempty"`
 
+	// Plugins lists the server plugins to load at startup, by name. The
+	// operator chooses the library for each one; plugin_load and
+	// plugin_load_add cannot be set through parameters. Supported on MySQL:
+	// connection_control, mysql_no_login. Supported on MariaDB: auth_ed25519,
+	// auth_mysql_sha2, auth_parsec, disks, locales, metadata_lock_info,
+	// query_cache_info, query_response_time, type_mysql_json. Changing the list
+	// restarts the instances.
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Plugins []string `json:"plugins,omitempty"`
+
 	// BinlogFormat is the binary log format. ROW is required for safe
 	// replication and PITR and is the default.
 	// +kubebuilder:validation:Enum=ROW;STATEMENT;MIXED
