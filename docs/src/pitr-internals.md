@@ -445,7 +445,19 @@ The steps:
    replay before the earlier ones.
 4. **Download** the planned files into a scratch dir, named
    `<serverUUID>_<binlogName>` so like-named files from different segments never
-   collide on disk.
+   collide on disk. On MySQL the planner keeps a segment whole as soon as the
+   base backup lacks any of it, so before downloading, each segment is
+   narrowed to the files the replay applies: within a segment the files whose
+   every transaction the base backup holds form a prefix (the disowned
+   transactions also excluded sit mid-segment, so they do not drive the
+   search), and with a time target the files whose
+   first event is at or past the target form a suffix, so each boundary is
+   found by binary search over the manifests, a dozen reads for a 3000-file
+   segment. A long-lived primary's segment is thus downloaded from the
+   backup's position, not from its first file. A base backup with holes in its
+   executed set (taken from a replica applying in parallel) can break the
+   prefix; a file skipped that way leaves a hole the check of the recovered
+   set does not explain, and the recovery fails rather than finish wrong.
 5. **Replay** into a temporary socket-only `mysqld` started with
    `--skip-networking --skip-grant-tables`, then write the `.cnmsql-pitr-done`
    sentinel. The replay stream opens with `FLUSH PRIVILEGES` (kept off the
@@ -528,7 +540,7 @@ it contains: `targetTime` and latest fail with `ErrBackupOnDeadBranch`, while a
 records it applied, and says so when the archive was never fork-checked.
 
 Because GTID de-duplicates, the planner is free to over-download and the server
-drops what it already has. The plan fails closed rather than guess:
+drops what it already has; narrowing (step 4) only saves the download. The plan fails closed rather than guess:
 `ErrTargetBeforeBackup` (target older than the anchor), `ErrTargetBeyondArchive`
 (target not covered), and `ErrForkedTimeline` (the index's declared coverage
 cannot be reconstructed from its segments, meaning a missing segment or a real
