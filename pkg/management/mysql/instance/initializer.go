@@ -264,14 +264,14 @@ func (o *InitOptions) initArgs() []string {
 }
 
 // writeInitConfig writes a temporary copy of the runtime config with the Group
-// Replication block stripped, suitable for `mysqld --initialize`, and returns
-// its path. The caller is responsible for removing it.
+// Replication block and the plugin settings stripped, suitable for
+// `mysqld --initialize`, and returns its path. The caller is responsible for removing it.
 func (o *InitOptions) writeInitConfig() (string, error) {
 	content, err := os.ReadFile(o.ConfigFile)
 	if err != nil {
 		return "", fmt.Errorf("reading config file: %w", err)
 	}
-	stripped := config.StripGroupReplication(string(content))
+	stripped := config.StripForInitialize(string(content))
 	f, err := os.CreateTemp("", "mysqld-init-*.cnf")
 	if err != nil {
 		return "", fmt.Errorf("creating init config: %w", err)

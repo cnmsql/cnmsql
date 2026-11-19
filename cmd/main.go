@@ -29,6 +29,7 @@ import (
 	"github.com/cnmsql/cnmsql/internal/cmd/manager/instance"
 	"github.com/cnmsql/cnmsql/internal/controller"
 	webhookv1alpha1 "github.com/cnmsql/cnmsql/internal/webhook/v1alpha1"
+	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/executablehash"
 	instancemgr "github.com/cnmsql/cnmsql/pkg/management/mysql/instance"
 	// +kubebuilder:scaffold:imports
@@ -57,6 +58,7 @@ func main() {
 	var enableHTTP2 bool
 	var operatorImage string
 	var objectStoreAmbientCredentials bool
+	var extraPlugins []string
 
 	// zap options are bound to the persistent flags below, so verbosity can be
 	// raised at runtime (e.g. --zap-log-level=debug for the V(1) reconcile trace).
@@ -75,6 +77,14 @@ func main() {
 			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Before any webhook or controller validates a Cluster.
+			if err := mysqlconfig.SetExtraPlugins(extraPlugins); err != nil {
+				setupLog.Error(err, "Invalid --extra-plugins")
+				return err
+			}
+			if len(extraPlugins) > 0 {
+				setupLog.Info("Extended the supported plugins", "extraPlugins", extraPlugins)
+			}
 			var tlsOpts []func(*tls.Config)
 
 			disableHTTP2 := func(c *tls.Config) {
@@ -289,6 +299,10 @@ func main() {
 		"Let the operator use its own cloud identity (IRSA, workload identity, instance profile) for object "+
 			"stores that have no static credentials. That identity is shared by every Cluster author; "+
 			"enable only when all of them are trusted with every bucket it reaches")
+	root.Flags().StringSliceVar(&extraPlugins, "extra-plugins", nil,
+		"Server plugins that spec.mysql.plugins accepts on top of the built-in list, as name or "+
+			"name=library.so (the library defaults to name.so), comma-separated or repeated. Every Cluster "+
+			"author can then load them; the operator knows nothing about what they do")
 	root.PersistentFlags().AddGoFlagSet(zapFlagSet)
 
 	root.AddCommand(bootstrap.NewCommand())

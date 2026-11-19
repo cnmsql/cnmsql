@@ -292,6 +292,10 @@ func (cluster *Cluster) Validate() field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("mysql", "parameters"), spec.MySQL.Parameters, err.Error()))
 	}
+	if _, err := mysqlconfig.PluginLibraries(spec.MySQL.Plugins, cluster.ResolvedFlavor() == FlavorMariaDB); err != nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("mysql", "plugins"), spec.MySQL.Plugins, err.Error()))
+	}
 
 	for i := range spec.ExternalClusters {
 		allErrs = append(allErrs, spec.ExternalClusters[i].ObjectStore.Validate(

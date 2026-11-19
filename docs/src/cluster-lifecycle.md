@@ -255,6 +255,108 @@ A deprecated key is accepted, and the operator emits a `DeprecatedParameter`
 Warning event with the current spelling: `slave_parallel_workers` becomes
 `replica_parallel_workers`, and `master_info_repository` is gone from 8.0.23.
 
+### Plugins
+
+`plugin_load`, `plugin_load_add` and `plugin_dir` are denied in
+`spec.mysql.parameters`, because whoever sets them chooses code the server
+loads. To load a plugin, name it in `spec.mysql.plugins`; the operator picks
+the library. The plugin's own variables go in `parameters` as usual:
+
+```yaml
+spec:
+  mysql:
+    plugins:
+      - connection_control
+    parameters:
+      connection_control_failed_connections_threshold: "5"
+      connection_control_min_connection_delay: "2000"
+```
+
+Each plugin is loaded at startup on every instance, so changing the list
+restarts the instances one by one, like a parameter that needs a restart.
+
+These are all the plugins a cluster can load. On MySQL (the Percona Server
+images):
+
+| Plugin | What it adds | Images |
+|---|---|---|
+| `connection_control` | A growing delay after consecutive failed logins, and the `CONNECTION_CONTROL_FAILED_LOGIN_ATTEMPTS` table | 8.0, 8.4, 9.7 |
+| `mysql_no_login` | An authentication method that refuses every login, for accounts that only own stored programs and views | 8.0, 8.4, 9.7 |
+
+On MariaDB:
+
+| Plugin | What it adds | Images |
+|---|---|---|
+| `auth_ed25519` | The `ed25519` authentication method | 10.11, 11.4, 11.8, 12.3 |
+| `auth_mysql_sha2` | The `caching_sha2_password` authentication method, for clients that expect MySQL 8 accounts | 11.4, 11.8, 12.3 |
+| `auth_parsec` | The `parsec` authentication method | 11.8, 12.3 |
+| `disks` | The `information_schema.DISKS` table | 10.11, 11.4, 11.8, 12.3 |
+| `locales` | The `information_schema.LOCALES` table | 10.11, 11.4, 11.8, 12.3 |
+| `metadata_lock_info` | The `information_schema.METADATA_LOCK_INFO` table | 10.11, 11.4, 11.8, 12.3 |
+| `query_cache_info` | The `information_schema.QUERY_CACHE_INFO` table | 10.11, 11.4, 11.8, 12.3 |
+| `query_response_time` | A histogram of query response times in `information_schema.QUERY_RESPONSE_TIME` | 10.11, 11.4, 11.8, 12.3 |
+| `type_mysql_json` | The `MYSQL_JSON` type, to read JSON columns of tables that came from MySQL | 10.11, 11.4, 11.8, 12.3 |
+
+A name outside the cluster's flavor list is rejected by the webhook, unless
+the operator was started with it [allowed](#allowing-more-plugins). If the
+image does not ship a plugin's library (an older series, or a custom image),
+the server logs `Can't open shared library` and starts without it; a parameter
+that belongs to the missing plugin then stops the server from starting, unless
+it is written with the `loose-` prefix.
+
+The list is short on purpose. These are left out:
+
+- Plugins that write to a path they are given (`audit_log`, `server_audit`,
+  `sql_errlog`), hold key material (the keyring plugins,
+  `file_key_management`), add a storage engine or a listener (`ha_*`,
+  `handlersocket`), or authenticate against files in the Pod (`auth_pam`,
+  `auth_socket`).
+- Password validation plugins (`validate_password`, `simple_password_check`,
+  `password_reuse_check`): they would also judge the passwords the operator
+  generates for its own accounts.
+- Semi-sync, clone and Group Replication, which the operator loads itself.
+- MySQL components (`component_validate_password`,
+  `component_connection_control`): a component is installed with
+  `INSTALL COMPONENT`, not from `my.cnf`.
+
+An account that uses one of the authentication plugins has to be created by
+hand: managed roles and `DatabaseUser` set passwords with the server's default
+method.
+
+#### Allowing more plugins
+
+Whoever deploys the operator can extend the list with the `--extra-plugins`
+manager flag. Each entry is a name, or `name=library.so` when the library is
+not `<name>.so`:
+
+```yaml
+# Helm values
+manager:
+  args:
+    - --leader-elect
+    - --extra-plugins=audit_log,validate_password
+```
+
+Every cluster the operator manages, MySQL or MariaDB, can then list those
+names in `spec.mysql.plugins`. The library must be a file name in the server's
+plugin directory, never a path, and the libraries the operator loads itself
+(semi-sync, clone, Group Replication) are refused.
+
+The operator knows nothing about an extra plugin, so what it does is yours to
+vet:
+
+- Every Cluster author can load it. A plugin that writes to a path it is
+  given, such as `audit_log`, lets them write files as the server anywhere in
+  the Pod. Add one only when you trust every Cluster author with that.
+- A password validation plugin also applies to the passwords the operator
+  generates for its own accounts, which are 48 hexadecimal characters. Set
+  the policy so that it accepts them, or the cluster will not bootstrap.
+- Write the plugin's variables with the `loose-` prefix
+  (`loose-audit_log_format: JSON`). Data directory initialization loads no
+  plugin, and without the prefix the variable stops it.
+- Removing a name from the flag while a Cluster still lists it sets that
+  Cluster to `Blocked`.
+
 Scheduling and pod shape are controlled through the Cluster spec:
 `resources`, `affinity`, `topologySpreadConstraints`, `priorityClassName`,
 `schedulerName`, `imagePullPolicy`, `imagePullSecrets`, `env`, `envFrom`,

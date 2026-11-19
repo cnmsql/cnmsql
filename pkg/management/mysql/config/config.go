@@ -133,6 +133,10 @@ type ServerConfig struct {
 	GroupReplication GroupReplication
 	// UserParameters are operator-validated user my.cnf settings.
 	UserParameters map[string]string
+	// PluginLibraries are the shared objects of the plugins spec.mysql.plugins
+	// asks for, as PluginLibraries resolved them. Each is rendered as a
+	// plugin_load_add line.
+	PluginLibraries []string
 	// HasAdminInterface reports whether to render admin_address/admin_port.
 	// Set from the engine to avoid flavor-dependent version.Version methods.
 	HasAdminInterface bool
@@ -471,6 +475,36 @@ func StripGroupReplication(content string) string {
 	return strings.Join(kept, "\n")
 }
 
+// StripForInitialize returns a rendered my.cnf fit for initializing a data
+// directory. On top of StripGroupReplication it drops the variables of the
+// plugins the file loads: no plugin is loaded during initialization, so
+// connection_control_failed_connections_threshold and the like would be
+// unknown variables there, as the group_replication_* ones are.
+func StripForInitialize(content string) string {
+	libraries := map[string]struct{}{}
+	for line := range strings.SplitSeq(content, "\n") {
+		if key, value, ok := strings.Cut(strings.TrimSpace(line), "="); ok && normalizeKey(key) == keyPluginLoadAdd {
+			libraries[strings.TrimSpace(value)] = struct{}{}
+		}
+	}
+	prefixes := pluginVariablePrefixes(libraries)
+
+	lines := strings.Split(StripGroupReplication(content), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "[") {
+			key, _, _ := strings.Cut(trimmed, "=")
+			name := strings.TrimPrefix(normalizeKey(key), "loose_")
+			if slices.ContainsFunc(prefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) }) {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // IsManagedKey reports whether the given my.cnf key is owned by the operator.
 func IsManagedKey(key string) bool {
 	k := normalizeKey(key)
@@ -790,6 +824,10 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 
 	if c.TopologyMode == TopologyGroupReplication {
 		pairs = append(pairs, c.groupReplicationSettings(ver)...)
+	}
+
+	for _, library := range c.PluginLibraries {
+		pairs = append(pairs, pair{keyPluginLoadAdd, library})
 	}
 
 	return pairs
