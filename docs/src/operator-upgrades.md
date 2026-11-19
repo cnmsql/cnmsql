@@ -233,6 +233,8 @@ These need no action, but change what you see:
   in `DatabaseUser` and `Cluster` status conditions.
 - **`kubectl cnmsql report` redacts more**: the `last-applied-configuration`
   annotation of Secrets and ConfigMaps, and ConfigMap `binaryData`.
+- **`spec.mysql.plugins` loads server plugins by name**, since `plugin_load`
+  is now refused (see [below](#parameters-that-are-now-refused)).
 - There is a validating webhook for `Database`, a `status.account` field on
   `DatabaseUser`, and new events: `ObjectStoreCredentialsRequired`,
   `ObjectStoreCredentialsRefused`, `RetentionNotOwned`, `UserConflict` on a
@@ -377,6 +379,25 @@ also rejects every update to that Cluster until the key is removed. Remove the
 keys before upgrading. See [Configuration
 surface](./cluster-lifecycle.md#configuration-surface).
 
+A cluster that loaded a plugin with `plugin_load` moves to the new
+`spec.mysql.plugins` field, which takes plugin names from a fixed list
+(`connection_control` and `mysql_no_login` on MySQL, nine more on MariaDB; see
+[Plugins](./cluster-lifecycle.md#plugins)). The field does not exist in 0.9.x,
+so the move takes two edits, and the plugin is off in between:
+
+1. Before upgrading, remove `plugin_load`. In the same edit, write the
+   plugin's own variables with the `loose-` prefix
+   (`loose-connection_control_failed_connections_threshold`): without the
+   plugin they are unknown, and an unknown variable stops the server from
+   starting. The instances restart without the plugin.
+2. After upgrading, list the plugin in `spec.mysql.plugins`. The instances
+   restart once more. The `loose-` prefix can stay.
+
+A plugin outside the list, such as `audit_log` or `validate_password`, can
+only be loaded if the operator runs with `--extra-plugins` (see [allowing more
+plugins](./cluster-lifecycle.md#allowing-more-plugins)). Read what that flag
+gives every Cluster author before setting it.
+
 #### Database grants are confined to the managed schema
 
 A `Database` is the object the [multi-tenancy guide](./multi-tenancy.md) hands
@@ -518,6 +539,9 @@ Split lists into one entry per privilege before upgrading.
    It does not catch a key that 0.9.x already denied written with a modifier
    or abbreviated (`loose-datadir`, `secure_file_pri`). If you used either
    form to get around the denylist, remove those too.
+
+   For a cluster listed because of `plugin_load`, follow the two steps
+   [above](#parameters-that-are-now-refused) to keep its plugin.
 
 6. Narrow the Databases that grant outside their schema (see
    [above](#database-grants-are-confined-to-the-managed-schema)). This lists
