@@ -289,33 +289,55 @@ func (o *RestoreOptions) downloadReplayFiles(
 	return files, nil
 }
 
-// selectMySQLReplayFiles reads every planned file's manifest, leaves out the
-// files the replay would download and discard (binlog.PruneReplayFiles) and,
-// when several segments remain, orders the rest along the timeline: one
-// segment can hold a file that fills a hole in another, so they are replayed
-// along the timeline, not one after the other.
+// selectMySQLReplayFiles leaves out the files the replay would download and
+// discard, found by binary search over each segment's manifests
+// (binlog.NarrowReplayFiles) and, when several segments are planned, reads the
+// manifests of the files left and orders them along the timeline: one segment
+// can hold a file that fills a hole in another, so they are replayed along the
+// timeline, not one after the other.
 func selectMySQLReplayFiles(
 	ctx context.Context, store mysqlv1alpha1.S3ObjectStore, cluster string, plan binlog.ReplayPlan,
 	read func(ctx context.Context, key string, v any) error,
 ) (binlog.ReplayPlan, error) {
-	spans, err := loadReplaySpans(ctx, store, cluster, plan, read)
-	if err != nil {
-		return binlog.ReplayPlan{}, err
+	readSpan := func(ctx context.Context, file binlog.ReplayFile) (binlog.ReplayFileSpan, error) {
+		keys, err := objectstore.BuildBinlogKeys(store, cluster, file.ServerUUID, file.Name)
+		if err != nil {
+			return binlog.ReplayFileSpan{}, err
+		}
+		var meta objectstore.BinlogMetadata
+		if err := read(ctx, keys.ManifestKey, &meta); err != nil {
+			return binlog.ReplayFileSpan{}, err
+		}
+		return spanOf(meta), nil
 	}
-	plan = binlog.PruneReplayFiles(plan, spans)
+	plan, spans, err := binlog.NarrowReplayFiles(ctx, plan, readSpan)
+	if err != nil {
+		return binlog.ReplayPlan{}, fmt.Errorf("pitr: %w", err)
+	}
 	if len(plan.Segments) > 1 {
-		plan.Order = binlog.OrderReplayFiles(plan, spans)
+		rest, err := loadReplaySpans(ctx, store, cluster, plan, spans, read)
+		if err != nil {
+			return binlog.ReplayPlan{}, err
+		}
+		plan.Order = binlog.OrderReplayFiles(plan, rest)
 	}
 	return plan, nil
+}
+
+// spanOf is what a manifest says about a file's place on the timeline.
+func spanOf(meta objectstore.BinlogMetadata) binlog.ReplayFileSpan {
+	return binlog.ReplayFileSpan{FirstGTID: meta.FirstGTID, GTIDSet: meta.GTIDSet, FirstEventTime: meta.FirstEventTime}
 }
 
 // replaySpanReaders bounds how many manifests loadReplaySpans reads at once.
 const replaySpanReaders = 8
 
-// loadReplaySpans reads the manifest of every planned file: its first
-// transaction and GTID set place it on the timeline (binlog.OrderReplayFiles).
+// loadReplaySpans reads the manifest of every planned file not already in
+// known: its first transaction and GTID set place it on the timeline
+// (binlog.OrderReplayFiles). It returns known and the spans read together.
 func loadReplaySpans(
 	ctx context.Context, store mysqlv1alpha1.S3ObjectStore, cluster string, plan binlog.ReplayPlan,
+	known map[binlog.ReplayFile]binlog.ReplayFileSpan,
 	read func(ctx context.Context, key string, v any) error,
 ) (map[binlog.ReplayFile]binlog.ReplayFileSpan, error) {
 	files := plan.Files()
@@ -324,6 +346,10 @@ func loadReplaySpans(
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, replaySpanReaders)
 	for i, file := range files {
+		if s, ok := known[file]; ok {
+			spans[i] = s
+			continue
+		}
 		keys, err := objectstore.BuildBinlogKeys(store, cluster, file.ServerUUID, file.Name)
 		if err != nil {
 			return nil, fmt.Errorf("pitr: building key for %s/%s: %w", file.ServerUUID, file.Name, err)
@@ -338,9 +364,7 @@ func loadReplaySpans(
 				errs[i] = fmt.Errorf("pitr: reading manifest of %s/%s: %w", file.ServerUUID, file.Name, err)
 				return
 			}
-			spans[i] = binlog.ReplayFileSpan{
-				FirstGTID: meta.FirstGTID, GTIDSet: meta.GTIDSet, FirstEventTime: meta.FirstEventTime,
-			}
+			spans[i] = spanOf(meta)
 		}()
 	}
 	wg.Wait()
