@@ -249,20 +249,21 @@ func ListBaseBackups(
 	return entries, nil
 }
 
-// ListArchivedBinlogs walks a cluster's binlog archive and reads every per-file
-// manifest, skipping the per-segment status and cluster index objects.
-func ListArchivedBinlogs(
+// ListArchivedBinlogKeys walks a cluster's binlog archive and returns the keys
+// of every archived file and its manifest, skipping the per-segment status
+// and cluster index objects. It is one listing: no manifest is read.
+func ListArchivedBinlogKeys(
 	ctx context.Context,
 	client *Client,
 	store mysqlv1alpha1.S3ObjectStore,
 	clusterName string,
-) ([]BinlogEntry, error) {
+) ([]BinlogKeys, error) {
 	prefix := BinlogPrefix(store, clusterName)
 	objects, err := client.ListObjects(ctx, store.Bucket, prefix, true)
 	if err != nil {
 		return nil, err
 	}
-	var entries []BinlogEntry
+	var keys []BinlogKeys
 	for _, object := range objects {
 		if !strings.HasSuffix(object.Key, BinlogManifestSuffix) {
 			continue
@@ -271,17 +272,30 @@ func ListArchivedBinlogs(
 		if base == ArchiveStatusName || base == ArchiveIndexName {
 			continue
 		}
+		keys = append(keys, BinlogKeys{
+			BinlogKey:   strings.TrimSuffix(object.Key, BinlogManifestSuffix),
+			ManifestKey: object.Key,
+		})
+	}
+	return keys, nil
+}
+
+// ReadArchivedBinlogs reads the per-file manifest of every listed binlog. A
+// retention pass only needs them once a base backup expired, so it reads them
+// then rather than on every pass.
+func ReadArchivedBinlogs(
+	ctx context.Context,
+	client *Client,
+	store mysqlv1alpha1.S3ObjectStore,
+	keys []BinlogKeys,
+) ([]BinlogEntry, error) {
+	entries := make([]BinlogEntry, 0, len(keys))
+	for _, k := range keys {
 		var meta BinlogMetadata
-		if err := client.GetJSON(ctx, store.Bucket, object.Key, &meta); err != nil {
+		if err := client.GetJSON(ctx, store.Bucket, k.ManifestKey, &meta); err != nil {
 			return nil, err
 		}
-		entries = append(entries, BinlogEntry{
-			Keys: BinlogKeys{
-				BinlogKey:   strings.TrimSuffix(object.Key, BinlogManifestSuffix),
-				ManifestKey: object.Key,
-			},
-			Meta: meta,
-		})
+		entries = append(entries, BinlogEntry{Keys: k, Meta: meta})
 	}
 	return entries, nil
 }
@@ -354,17 +368,17 @@ type DanglingStore interface {
 // without conditional writes that can serve a stale read, another writer's
 // index write can start from a copy older than that and bring the entries
 // back. The files stay deleted, so a recovery that planned them would fail on
-// the download. binlogs is the listing of manifests a retention pass already
+// the download. keys is the listing of archived files a retention pass already
 // made; an entry it lacks is dropped only once a direct look confirms the
 // manifest is gone, since a file archived after the listing is in the index
 // and not in the listing.
 func DropDanglingIndexEntries(
 	ctx context.Context, store DanglingStore, objectStore mysqlv1alpha1.S3ObjectStore, clusterName string,
-	binlogs []BinlogEntry,
+	keys []BinlogKeys,
 ) (int, error) {
-	listed := make(map[BinlogKeys]struct{}, len(binlogs))
-	for _, entry := range binlogs {
-		listed[entry.Keys] = struct{}{}
+	listed := make(map[BinlogKeys]struct{}, len(keys))
+	for _, k := range keys {
+		listed[k] = struct{}{}
 	}
 	key := ArchiveIndexKey(objectStore, clusterName)
 	var index ArchiveIndex
