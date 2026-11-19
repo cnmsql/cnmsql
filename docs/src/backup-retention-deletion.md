@@ -176,9 +176,11 @@ and an established primary. Each pass:
    *retained* base backup's start time. Binlog segments whose last event predates
    that horizon can no longer be replayed onto any retained base, so they are
    deleted and `_index.json` is rewritten to match. A binlog only expires behind
-   an expired base backup, so a pass lists the archive but reads the per-file
-   manifests (one object each) only when step 1 expired something; the usual
-   pass that expires nothing reads the index and nothing else from the archive.
+   an expired base backup, so a pass lists the archive but reads per-file
+   manifests only when step 1 expired something; the usual pass that expires
+   nothing reads the index and nothing else from the archive. A pass that does
+   expire a base backup reads about a dozen manifests per server, not one per
+   file (see [finding the expired binlogs](#finding-the-expired-binlogs)).
 4. **Expires old logical backups** on the same window, keeping the newest one.
    Dumps are counted on their own: they never keep a base backup or a binlog
    alive, and they never count as the newest base backup.
@@ -191,6 +193,31 @@ Binlog GC is conservative: a segment with an unknown (zero) last-event time is
 kept rather than risk shortening the PITR window. The index is rewritten **last**,
 so a mid-run failure leaves a still-valid index and orphans are cleaned on the
 next pass.
+
+#### Finding the expired binlogs
+
+A binlog expires when its last event predates the horizon. The pass finds those
+files from two clues and deletes a file only when both agree:
+
+- **When the file was uploaded**, which the listing gives for free. A file is
+  uploaded after its last event was written, so only files uploaded more than
+  ten minutes before the horizon are considered. A file uploaded later is kept
+  whatever its manifest says, since an event timestamp is whatever the session
+  that wrote it set (`SET TIMESTAMP`).
+- **The last-event time in the manifests**, by binary search. Among the files
+  considered, in each server's sequence order, the expired ones come first, so
+  the pass searches for where they end instead of reading every manifest. This
+  also covers a store whose clock runs behind and makes recent files look old.
+
+The upload time errs towards keeping: a binlog uploaded long after it was
+written (a backlog, or a drain after a failover) stays until the horizon passes
+its upload time. A manifest the search reads that has no last-event time
+counts as not expired, which keeps that file and the ones after it. A file the
+store lists without a modification time is judged by its own manifest, one read
+each.
+
+Expired files are deleted eight at a time, one object per request, each file
+before its manifest.
 
 A successful pass that deletes anything emits a Normal `BackupRetention` event.
 Transient object-store errors requeue the reconcile rather than corrupting the

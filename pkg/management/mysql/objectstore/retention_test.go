@@ -36,10 +36,14 @@ func backup(prefix string, started, completed time.Time) BackupEntry {
 	}
 }
 
-func binlog(uuid, name string, last time.Time) BinlogEntry {
-	return BinlogEntry{
-		Keys: BinlogKeys{BinlogKey: uuid + "/" + name, ManifestKey: uuid + "/" + name + ".json"},
-		Meta: BinlogMetadata{ServerUUID: uuid, BinlogName: name, LastEventTime: last},
+// expiredBinlog is a server's binlog.000001, as ExpiredBinlogs returns a file
+// it found behind the horizon.
+func expiredBinlog(uuid string) ArchivedBinlog {
+	const name = "binlog.000001"
+	return ArchivedBinlog{
+		Keys:       BinlogKeys{BinlogKey: uuid + "/" + name, ManifestKey: uuid + "/" + name + ".json"},
+		ServerUUID: uuid,
+		Name:       name,
 	}
 }
 
@@ -54,7 +58,8 @@ func TestPlanRetention(t *testing.T) {
 
 	t.Run("no backups leaves binlogs untouched", func(t *testing.T) {
 		t.Parallel()
-		plan := PlanRetention(nil, []BinlogEntry{binlog(uuid, "binlog.000001", now.Add(-30*day))}, nil, cutoff)
+		plan := PlanRetention(nil, cutoff)
+		plan.ExpireBinlogs([]ArchivedBinlog{expiredBinlog(uuid)}, &ArchiveIndex{})
 		if !plan.Empty() {
 			t.Fatalf("expected empty plan, got %+v", plan)
 		}
@@ -66,7 +71,7 @@ func TestPlanRetention(t *testing.T) {
 			backup("c/b1/", now.Add(-3*day), now.Add(-3*day)),
 			backup("c/b2/", now.Add(-1*day), now.Add(-1*day)),
 		}
-		plan := PlanRetention(backups, nil, nil, cutoff)
+		plan := PlanRetention(backups, cutoff)
 		if !plan.Empty() {
 			t.Fatalf("expected empty plan, got %+v", plan)
 		}
@@ -80,7 +85,7 @@ func TestPlanRetention(t *testing.T) {
 			backup("c/b3/", now.Add(-10*day), now.Add(-10*day)),
 			backup("c/b2/", now.Add(-20*day), now.Add(-20*day)),
 		}
-		plan := PlanRetention(backups, nil, nil, cutoff)
+		plan := PlanRetention(backups, cutoff)
 		if got := plan.DeleteBackupPrefixes; len(got) != 2 {
 			t.Fatalf("expected 2 deleted, got %v", got)
 		}
@@ -102,11 +107,6 @@ func TestPlanRetention(t *testing.T) {
 			backup("c/b_old/", now.Add(-20*day), now.Add(-20*day)),
 			backup("c/b_new/", now.Add(-2*day), now.Add(-2*day)),
 		}
-		binlogs := []BinlogEntry{
-			binlog(uuid, "binlog.000001", now.Add(-19*day)), // before horizon → delete
-			binlog(uuid, "binlog.000002", now.Add(-1*day)),  // after horizon → keep
-			binlog(uuid, "binlog.000003", time.Time{}),      // unknown time → keep
-		}
 		index := &ArchiveIndex{
 			ClusterName: "c",
 			Segments: []ArchiveSegment{{
@@ -114,14 +114,16 @@ func TestPlanRetention(t *testing.T) {
 				Binlogs:    []string{"binlog.000001", "binlog.000002", "binlog.000003"},
 			}},
 		}
-		plan := PlanRetention(backups, binlogs, index, cutoff)
+		plan := PlanRetention(backups, cutoff)
+		plan.ExpireBinlogs([]ArchivedBinlog{expiredBinlog(uuid)}, index)
 
 		if len(plan.DeleteBackupPrefixes) != 1 || plan.DeleteBackupPrefixes[0] != "c/b_old/" {
 			t.Fatalf("deleted backups = %v", plan.DeleteBackupPrefixes)
 		}
-		// One binlog deleted = its file + manifest = 2 keys.
-		if len(plan.DeleteBinlogKeys) != 2 {
-			t.Fatalf("deleted binlog keys = %v", plan.DeleteBinlogKeys)
+		// One binlog deleted = its file, then its manifest.
+		wantKeys := []string{uuid + "/binlog.000001", uuid + "/binlog.000001.json"}
+		if !slices.Equal(plan.DeleteBinlogKeys, wantKeys) {
+			t.Fatalf("deleted binlog keys = %v, want %v", plan.DeleteBinlogKeys, wantKeys)
 		}
 		if plan.NewIndex == nil {
 			t.Fatal("expected rewritten index")
@@ -147,11 +149,8 @@ func TestPlanRetention(t *testing.T) {
 			backup("c/b_old/", now.Add(-20*day), now.Add(-20*day)),
 			backup("c/b_new/", now.Add(-2*day), now.Add(-2*day)),
 		}
-		binlogs := []BinlogEntry{
-			binlog(uuid, "binlog.000001", now.Add(-19*day)),
-			binlog(uuid, "binlog.000002", now.Add(-1*day)),
-		}
-		plan := PlanRetention(backups, binlogs, nil, cutoff)
+		plan := PlanRetention(backups, cutoff)
+		plan.ExpireBinlogs([]ArchivedBinlog{expiredBinlog(uuid)}, nil)
 
 		if len(plan.DeleteBackupPrefixes) != 1 || plan.DeleteBackupPrefixes[0] != "c/b_old/" {
 			t.Fatalf("deleted backups = %v, want [c/b_old/]", plan.DeleteBackupPrefixes)
@@ -171,10 +170,6 @@ func TestPlanRetention(t *testing.T) {
 			backup("c/b_new/", now.Add(-2*day), now.Add(-2*day)),
 		}
 		oldUUID := "22222222-2222-2222-2222-222222222222"
-		binlogs := []BinlogEntry{
-			binlog(oldUUID, "binlog.000001", now.Add(-19*day)),
-			binlog(uuid, "binlog.000007", now.Add(-1*day)),
-		}
 		index := &ArchiveIndex{
 			ClusterName: "c",
 			Segments: []ArchiveSegment{
@@ -182,7 +177,8 @@ func TestPlanRetention(t *testing.T) {
 				{ServerUUID: uuid, Binlogs: []string{"binlog.000007"}},
 			},
 		}
-		plan := PlanRetention(backups, binlogs, index, cutoff)
+		plan := PlanRetention(backups, cutoff)
+		plan.ExpireBinlogs([]ArchivedBinlog{expiredBinlog(oldUUID)}, index)
 		if plan.NewIndex == nil || len(plan.NewIndex.Segments) != 1 {
 			t.Fatalf("expected one segment left, got %+v", plan.NewIndex)
 		}
