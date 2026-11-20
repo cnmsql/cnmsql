@@ -1,3 +1,19 @@
-- op: replace
-  path: /webhooks/0/rules/0/resources/0
-  value: clusters/status
+# Point the Cluster status webhook at the status subresource only;
+# controller-gen cannot express a subresource in the webhook marker. A strategic
+# merge patch keyed by webhook name (see pod_instance_selector.yaml); `rules` is
+# replaced whole.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- name: vclusterstatus-v1alpha1.cnmsql.co
+  rules:
+  - apiGroups:
+    - mysql.cnmsql.co
+    apiVersions:
+    - v1alpha1
+    operations:
+    - UPDATE
+    resources:
+    - clusters/status

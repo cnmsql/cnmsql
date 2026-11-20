@@ -12212,6 +12212,29 @@ webhooks:
     service:
       name: cnmsql-webhook-service
       namespace: cnmsql-system
+      path: /validate--v1-pod
+  failurePolicy: Fail
+  name: vinstancepod-v1alpha1.cnmsql.co
+  objectSelector:
+    matchExpressions:
+    - key: mysql.cnmsql.co/cluster
+      operator: Exists
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - UPDATE
+    resources:
+    - pods
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: cnmsql-webhook-service
+      namespace: cnmsql-system
       path: /validate-mysql-cnmsql-io-v1alpha1-cluster-status
   failurePolicy: Fail
   name: vclusterstatus-v1alpha1.cnmsql.co
@@ -12254,10 +12277,6 @@ webhooks:
       path: /validate-mysql-cnmsql-io-v1alpha1-database
   failurePolicy: Fail
   name: vdatabase-v1alpha1.cnmsql.co
-  objectSelector:
-    matchExpressions:
-    - key: mysql.cnmsql.co/cluster
-      operator: Exists
   rules:
   - apiGroups:
     - mysql.cnmsql.co
@@ -12288,23 +12307,4 @@ webhooks:
     - UPDATE
     resources:
     - databaseusers
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: cnmsql-webhook-service
-      namespace: cnmsql-system
-      path: /validate--v1-pod
-  failurePolicy: Fail
-  name: vinstancepod-v1alpha1.cnmsql.co
-  rules:
-  - apiGroups:
-    - ""
-    apiVersions:
-    - v1
-    operations:
-    - UPDATE
-    resources:
-    - pods
   sideEffects: None

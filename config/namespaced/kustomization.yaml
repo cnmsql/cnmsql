@@ -64,12 +64,6 @@ patches:
 - path: manager_watch_namespace_patch.yaml
   target:
     kind: Deployment
-# Restrict the validating webhook to this namespace only.
-- path: webhook_namespace_selector_patch.yaml
-  target:
-    group: admissionregistration.k8s.io
-    version: v1
-    kind: ValidatingWebhookConfiguration
 
 replacements:
 # --- cert-manager CA injection (mirrors config/default) ---
@@ -139,7 +133,10 @@ replacements:
       delimiter: '/'
       index: 1
       create: true
-# --- namespace-scope the webhook to this namespace ---
+# --- namespace-scope every webhook to this namespace ---
+# The wildcard covers each webhook in the configuration, so one added later is
+# scoped too; selecting webhooks by index scoped the wrong ones once a webhook
+# was inserted before them.
 - source:
     kind: Service
     version: v1
@@ -149,6 +146,6 @@ replacements:
   - select:
       kind: ValidatingWebhookConfiguration
     fieldPaths:
-    - .webhooks.0.namespaceSelector.matchExpressions.0.values.0
-    - .webhooks.1.namespaceSelector.matchExpressions.0.values.0
-    - .webhooks.2.namespaceSelector.matchExpressions.0.values.0
+    - .webhooks.*.namespaceSelector.matchLabels.[kubernetes.io/metadata.name]
+    options:
+      create: true

@@ -4,9 +4,17 @@
 # an outage is limited to the operator's own instance Pods (which carry the
 # mysql.cnmsql.co/cluster label) — and when the webhook is down the operator,
 # the main writer of those Pods, is almost certainly down too.
-- op: add
-  path: /webhooks/2/objectSelector
-  value:
+#
+# A strategic merge patch keyed by webhook name: controller-gen orders the
+# webhooks by name, so a JSON patch by index lands on another webhook whenever
+# one is added.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- name: vinstancepod-v1alpha1.cnmsql.co
+  objectSelector:
     matchExpressions:
     - key: mysql.cnmsql.co/cluster
       operator: Exists

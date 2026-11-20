@@ -235,6 +235,19 @@ These need no action, but change what you see:
   annotation of Secrets and ConfigMaps, and ConfigMap `binaryData`.
 - **`spec.mysql.plugins` loads server plugins by name**, since `plugin_load`
   is now refused (see [below](#parameters-that-are-now-refused)).
+- **The admission webhooks are scoped as intended.** In 0.9.x the instance
+  Pod webhook, which fails closed, received every Pod update in the cluster,
+  so an operator outage blocked Pod updates in every namespace. The
+  `DatabaseUser` webhook never ran. With the namespaced install, the Pod
+  webhook never ran either. Now the Pod webhook sees only instance Pods, and
+  the namespaced install scopes every webhook to its own namespace. A
+  `DatabaseUser` with `spec.revokes` on a MariaDB cluster is now refused when
+  it is created or updated, not only left unapplied by the controller.
+- **`spec.storageProtection` can hold the primary read-only when its data
+  volume fills.** It is off by default, so nothing changes until you set
+  `readOnlyOnPressure: true`. Turning it on restarts every instance, like any
+  Pod template change. See [Protecting a full volume with read-only
+  mode](./storage.md#protecting-a-full-volume-with-read-only-mode).
 - There is a validating webhook for `Database`, a `status.account` field on
   `DatabaseUser`, and new events: `ObjectStoreCredentialsRequired`,
   `ObjectStoreCredentialsRefused`, `RetentionNotOwned`, `UserConflict` on a
@@ -673,6 +686,28 @@ not affected. Keep in mind:
   point-in-time recovery that crosses a failback archived by 0.10.0 with
   `ErrForkedTimeline`, because it does not read the `seenGTIDSet` that 0.10.0
   records in place of the binary logs it leaves out.
+- 0.9.x has no storage protection. A cluster that 0.10.0 holds read-only
+  because a volume is full takes writes again after the downgrade, and nothing
+  stops that volume from filling: as the primary's own volume, or as a replica
+  copying the primary's writes. Before downgrading, check that no cluster
+  reports the condition, and grow the volume or free space on any that does:
+
+  ```sh
+  kubectl get clusters.mysql.cnmsql.co -A -o json | jq -r '.items[]
+    | select(any(.status.conditions[]?; .type == "StorageReadOnly" and .status == "True"))
+    | "\(.metadata.namespace)/\(.metadata.name)"'
+  ```
+
+  `spec.storageProtection` is ignored by 0.9.x. Leave it. On a cluster where
+  `readOnlyOnPressure` is on, the downgrade recreates every instance Pod, even
+  with `inPlaceInstanceManagerUpdates`: the Pods lose the protection argument.
+- If you install with `kubectl apply --server-side`, delete the operator's
+  `ValidatingWebhookConfiguration` before applying the 0.9.x manifests, and
+  apply them right away. 0.9.x has no `vdatabase-v1alpha1.cnmsql.co` webhook,
+  but cert-manager's CA injector keeps the entry alive, so the apply is
+  refused. The stale entry keeps sending `Database` requests to a path the
+  0.9.x manager does not serve, and they all fail. Client-side `kubectl apply`
+  and Helm remove the entry themselves.
 - The label on credentials Secrets and the Cluster UID in manifests and the
   archive index are ignored by 0.9.x. Leave them.
 - Use the 0.9.x plugin after the downgrade.
