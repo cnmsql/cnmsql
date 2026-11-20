@@ -51,11 +51,13 @@ type SpanReader func(ctx context.Context, file ReplayFile) (ReplayFileSpan, erro
 // explains, and VerifyReplayedGTIDs fails the recovery rather than finish
 // with a state that never existed.
 //
-// A file with no transactions or no time stamp is neither needed nor in the
-// way, so where the search lands it is kept or left out harmlessly. A plan
-// The spans read are
-// returned so the caller need not read them again; the caller's plan is not
-// modified. A plan whose anchor does not parse is returned as is.
+// A file with no transactions (FLUSH BINARY LOGS on an idle server) holds
+// nothing to judge, so it takes the verdict of the nearest file before it that
+// holds some: judged as not needed, one after the needed files would break the
+// prefix and let the search skip them. A file with no time stamp is not in the
+// way, so where the end search lands it is kept or left out harmlessly. The
+// spans read are returned so the caller need not read them again; the caller's
+// plan is not modified. A plan whose anchor does not parse is returned as is.
 func NarrowReplayFiles(
 	ctx context.Context, plan ReplayPlan, read SpanReader,
 ) (ReplayPlan, map[ReplayFile]ReplayFileSpan, error) {
@@ -77,13 +79,21 @@ func NarrowReplayFiles(
 		spans[file] = s
 		return s
 	}
+	needed := func(seg ReplaySegment, i int) bool {
+		for ; i >= 0; i-- {
+			if s := span(seg, i); s.GTIDSet != "" {
+				return holdsNeeded(s, anchor)
+			}
+		}
+		return false
+	}
 
 	out := plan
 	out.Segments = make([]ReplaySegment, len(plan.Segments))
 	for i, seg := range plan.Segments {
 		n := len(seg.Files)
 		// First file that holds something the base backup lacks.
-		start := sort.Search(n, func(k int) bool { return holdsNeeded(span(seg, k), anchor) })
+		start := sort.Search(n, func(k int) bool { return needed(seg, k) })
 		end := n
 		if !plan.TargetTime.IsZero() {
 			// First file whose first event is at or past the target.

@@ -138,6 +138,40 @@ func TestNarrowReplayFilesIgnoresAnEmptyFileInTheCoveredPrefix(t *testing.T) {
 	}
 }
 
+// A file with no transactions after the needed ones does not move the start
+// past them, wherever the search probes it.
+func TestNarrowReplayFilesIgnoresAnEmptyFileAfterTheStart(t *testing.T) {
+	t.Parallel()
+	for _, empty := range []int{42, 49, 56, 63, 64} {
+		l := newLongSegment(64, 40)
+		l.spans[ReplayFile{orderPrimary, fmt.Sprintf("binlog.%06d", empty)}] = ReplayFileSpan{}
+		got, _, err := NarrowReplayFiles(context.Background(), l.plan, l.read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if names := fileNames(got.Files()); len(names) == 0 || names[0] != "binlog.000041" {
+			t.Fatalf("empty binlog.%06d: files = %v, want binlog.000041 onwards", empty, names)
+		}
+	}
+}
+
+// Files with no transactions at the end of a segment leave the needed ones
+// before them in place.
+func TestNarrowReplayFilesIgnoresEmptyFilesAtTheEnd(t *testing.T) {
+	t.Parallel()
+	l := newLongSegment(8, 1)
+	for i := 3; i <= 8; i++ {
+		l.spans[ReplayFile{orderPrimary, fmt.Sprintf("binlog.%06d", i)}] = ReplayFileSpan{}
+	}
+	got, _, err := NarrowReplayFiles(context.Background(), l.plan, l.read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := fileNames(got.Files()); len(names) == 0 || names[0] != "binlog.000002" {
+		t.Fatalf("files = %v, want binlog.000002 onwards", names)
+	}
+}
+
 // The spans read during the search are returned, so the caller does not read
 // them again to order the files.
 func TestNarrowReplayFilesReturnsWhatItRead(t *testing.T) {
