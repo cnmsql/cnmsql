@@ -97,9 +97,11 @@ func (r *ClusterReconciler) reconcileBackupReclaimFinalizer(
 // The archive is removed only once nothing can write to it any more. With the
 // default background cascade the garbage collector deletes the instance Pods
 // only after the Cluster itself is gone, which this finalizer delays: wiping
-// first let the still-running instances archive again, and a Pod archives its
-// last binary log as it shuts down, so objects reappeared under the removed
-// prefix. The operator therefore stops its instance Pods itself and waits for
+// first let the still-running instances archive again, so objects reappeared
+// under the removed prefix. A primary with a replica streaming from it keeps
+// archiving for up to 25s more once its Pod is deleted, while its preStop hook
+// waits for a demotion that a deleted Cluster never sends. The operator
+// therefore stops its instance Pods itself and waits for
 // every Pod of the cluster (instances and backup workers) to stop.
 func (r *ClusterReconciler) reconcileClusterDelete(
 	ctx context.Context,
