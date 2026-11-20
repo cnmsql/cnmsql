@@ -165,6 +165,11 @@ spec:
 `readOnlyThresholdPercent` alone (without `readOnlyOnPressure`) is allowed: it
 tunes reporting ahead of turning the action on later.
 
+The threshold is passed to the instance manager when its Pod starts, so turning
+the action on or off, or changing the threshold while it is on, recreates every
+instance Pod in a rolling restart, primary last through a switchover (see
+`spec.primaryUpdateMethod`).
+
 ### Behaviour
 
 - The instance manager inside each Pod runs a watchdog over the data volume.
