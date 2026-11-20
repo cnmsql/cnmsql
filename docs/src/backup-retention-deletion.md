@@ -129,7 +129,14 @@ spec:
 ```
 
 When set, the operator adds a `mysql.cnmsql.co/cleanup-object-store` finalizer to
-the Cluster. On Cluster deletion it wipes the cluster's entire archive prefix
+the Cluster. On Cluster deletion it first stops whatever can still write to the
+archive: it deletes the instance Pods, which archive their last binary log as
+they shut down, and waits for them and any running backup Pod of the cluster to
+stop (a `CleanupWaiting` event names them). A Pod still `Terminating` 30 seconds
+after its grace period ended is not waited for: its node is not answering. A
+deletion with `--cascade=orphan` keeps the Pods and does not wait for them, so
+they can write to the archive again after it is wiped. The operator then wipes
+the cluster's entire archive prefix
 (every base backup, the archived binlogs, and the archive index) before releasing
 the finalizer. With a separate archive store (`continuousArchiving.objectStore`)
 the cluster's prefix is wiped in both stores. As with the Backup path, a cleanup failure requeues and emits a
