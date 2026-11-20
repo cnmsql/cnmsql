@@ -115,6 +115,12 @@ type RunOptions struct {
 	// of the read Services until it has caught up. Zero leaves readiness exactly
 	// as before: replication threads running is enough.
 	MaxReadyLag time.Duration
+	// ReadOnlyProtectionThreshold, when above zero, enables the storage
+	// protection watchdog (design/042): the writable primary is held read-only
+	// while its data volume usage is at or above this percent of capacity, and
+	// until usage drops back below the threshold by the hysteresis margin.
+	// Zero (the default) disables the watchdog.
+	ReadOnlyProtectionThreshold int
 	// SemiSyncEnabled installs and enables the semi-synchronous replication
 	// plugins after mysqld starts. The initial wait/timeout values mirror the
 	// rendered loose- my.cnf values, but are applied explicitly after plugin load.
@@ -663,6 +669,21 @@ func Run(ctx context.Context, opts RunOptions) error {
 		controller.SetReadyLagGate(opts.MaxReadyLag)
 	}
 
+	// Storage protection (design/042): when enabled, a watchdog holds the
+	// writable primary read-only while the data volume is at the usage
+	// threshold. Like the purge gate's floor it follows the Cluster through the
+	// role reconciler's feed; without one (standalone boot) the expected role
+	// is the only authority it consults.
+	protectionView := newStorageProtectionClusterView(opts.InstanceName)
+	if opts.ReadOnlyProtectionThreshold > 0 {
+		log.Info("Enabling storage protection watchdog",
+			"thresholdPercent", opts.ReadOnlyProtectionThreshold)
+		protectionCtx, cancelProtection := context.WithCancel(logf.IntoContext(ctx, log))
+		defer cancelProtection()
+		startStorageProtection(protectionCtx, controller, opts.DataDir,
+			opts.ReadOnlyProtectionThreshold, protectionView)
+	}
+
 	var cm *webserver.TLSCertManager
 	srv, err := buildServer(opts, controller)
 	if err != nil {
@@ -785,7 +806,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 	roleErr := make(chan error, 1)
 	mgrCtx, cancelMgr := context.WithCancel(ctx)
 	defer cancelMgr()
-	onCluster := floor.Observe
+	onCluster := func(c *mysqlv1alpha1.Cluster) {
+		floor.Observe(c)
+		protectionView.Observe(c)
+	}
 	if roleManaged {
 		// Custom monitoring queries come from ConfigMaps and Secrets the
 		// Cluster names; without an API client the default queries still run.
@@ -795,6 +819,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 			go querySource.Run(logf.IntoContext(mgrCtx, log))
 			onCluster = func(c *mysqlv1alpha1.Cluster) {
 				floor.Observe(c)
+				protectionView.Observe(c)
 				querySource.Observe(c)
 			}
 		}

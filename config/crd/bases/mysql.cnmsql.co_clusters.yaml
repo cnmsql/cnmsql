@@ -5183,6 +5183,35 @@ spec:
                       storage class.
                     type: string
                 type: object
+              storageProtection:
+                description: |-
+                  StorageProtection configures automatic protective actions that keep a
+                  full data volume from corrupting data. Every action is opt-in; with no
+                  storageProtection stanza the operator only reports pressure through the
+                  StoragePressure condition.
+                properties:
+                  readOnlyOnPressure:
+                    description: |-
+                      ReadOnlyOnPressure, when true, puts an instance whose data volume usage
+                      reaches ReadOnlyThresholdPercent (or whose space free to unprivileged
+                      writers is exhausted) into read-only mode — super_read_only on MySQL,
+                      read_only on MariaDB — before the disk fills, so a full volume cannot
+                      corrupt data or crash-loop the server. Reads and replication continue;
+                      writes resume once usage drops back below the threshold (after a volume
+                      expansion, for example). Defaults to false.
+                    type: boolean
+                  readOnlyThresholdPercent:
+                    default: 90
+                    description: |-
+                      ReadOnlyThresholdPercent is the data-volume usage (percent of capacity)
+                      at or above which the instance switches to read-only. It must be between
+                      50 and 99 so the last percent points of the volume stay free for
+                      replication bookkeeping and temporary files. Defaults to 90.
+                    format: int32
+                    maximum: 99
+                    minimum: 50
+                    type: integer
+                type: object
               topologySpreadConstraints:
                 description: |-
                   TopologySpreadConstraints describes how the instance pods should be spread

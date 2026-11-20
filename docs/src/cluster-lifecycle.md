@@ -419,6 +419,7 @@ The Cluster sets these condition types:
 | `DumpAccountReady` | The `cnmsql_dump` account exists on the primary with the password from the `<cluster>-dump` Secret, so logical backups can run. |
 | `MetricsAccountReady` | The `cnmsql_metrics` account exists on the primary with its built-in grants plus exactly those in `spec.monitoring.privileges`. |
 | `StoragePressure` | An instance's data volume is at least 85% full. See [Storage](./storage.md#the-storagepressure-condition). |
+| `StorageReadOnly` | Storage protection holds the primary read-only because its data volume reached the configured threshold. Only exists when `spec.storageProtection.readOnlyOnPressure` is enabled. See [Protecting a full volume with read-only mode](./storage.md#protecting-a-full-volume-with-read-only-mode). |
 | `BinlogPurgeHeld` | The purge gate has kept the same archived binary log for a while because an instance has not applied it. The message names the instances. Absent when the gate is off. |
 
 `Backup` and `LogicalRestore` use `Ready`, `Progressing` and `Degraded` with the

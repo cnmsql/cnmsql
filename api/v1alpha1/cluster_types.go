@@ -165,6 +165,13 @@ type ClusterSpec struct {
 	// +optional
 	BinlogStorage *StorageConfiguration `json:"binlogStorage,omitempty"`
 
+	// StorageProtection configures automatic protective actions that keep a
+	// full data volume from corrupting data. Every action is opt-in; with no
+	// storageProtection stanza the operator only reports pressure through the
+	// StoragePressure condition.
+	// +optional
+	StorageProtection *StorageProtection `json:"storageProtection,omitempty"`
+
 	// Bootstrap describes how the cluster is initialised (fresh init or recovery
 	// from a backup).
 	// +optional
@@ -726,6 +733,51 @@ func (cluster *Cluster) BackupBeforeUpgradeEnabled() bool {
 		return true
 	}
 	return *cluster.Spec.Upgrade.BackupBeforeUpgrade
+}
+
+// StorageProtection configures automatic protective actions that keep a full
+// data volume from corrupting data. All actions are opt-in. See
+// design/042-storage-full-read-only.md.
+type StorageProtection struct {
+	// ReadOnlyOnPressure, when true, puts an instance whose data volume usage
+	// reaches ReadOnlyThresholdPercent (or whose space free to unprivileged
+	// writers is exhausted) into read-only mode — super_read_only on MySQL,
+	// read_only on MariaDB — before the disk fills, so a full volume cannot
+	// corrupt data or crash-loop the server. Reads and replication continue;
+	// writes resume once usage drops back below the threshold (after a volume
+	// expansion, for example). Defaults to false.
+	// +optional
+	ReadOnlyOnPressure bool `json:"readOnlyOnPressure,omitempty"`
+
+	// ReadOnlyThresholdPercent is the data-volume usage (percent of capacity)
+	// at or above which the instance switches to read-only. It must be between
+	// 50 and 99 so the last percent points of the volume stay free for
+	// replication bookkeeping and temporary files. Defaults to 90.
+	// +kubebuilder:default:=90
+	// +kubebuilder:validation:Minimum=50
+	// +kubebuilder:validation:Maximum=99
+	// +optional
+	ReadOnlyThresholdPercent int32 `json:"readOnlyThresholdPercent,omitempty"`
+}
+
+// DefaultReadOnlyThresholdPercent is the data-volume usage percent at which
+// read-only protection engages when the spec does not name a threshold.
+const DefaultReadOnlyThresholdPercent = 90
+
+// ReadOnlyOnPressureEnabled reports whether read-only protection on storage
+// pressure is enabled. It is opt-in and off unless the spec asks for it.
+func (cluster *Cluster) ReadOnlyOnPressureEnabled() bool {
+	return cluster.Spec.StorageProtection != nil && cluster.Spec.StorageProtection.ReadOnlyOnPressure
+}
+
+// ReadOnlyThresholdPercent reports the effective read-only threshold. The CRD
+// default normally fills the spec value; the fallback covers objects built in
+// Go that bypass structural defaulting (unit tests, client code).
+func (cluster *Cluster) ReadOnlyThresholdPercent() int32 {
+	if cluster.Spec.StorageProtection == nil || cluster.Spec.StorageProtection.ReadOnlyThresholdPercent == 0 {
+		return DefaultReadOnlyThresholdPercent
+	}
+	return cluster.Spec.StorageProtection.ReadOnlyThresholdPercent
 }
 
 // BootstrapConfiguration describes how the cluster is initialised.

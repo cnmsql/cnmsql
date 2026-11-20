@@ -123,6 +123,14 @@ type Status struct {
 	// instance manager that predates this field), in which case the operator
 	// treats the instance as contributing no storage signal.
 	Storage *StorageStatus `json:"storage,omitempty"`
+
+	// ReadOnlyProtectionEngaged reports that this instance's storage-protection
+	// watchdog is currently holding the server read-only because the data
+	// volume reached the configured usage threshold (design/042). The operator
+	// aggregates it into the StorageReadOnly condition. It is false when
+	// protection is disabled or not engaged, and on an instance manager that
+	// predates the field.
+	ReadOnlyProtectionEngaged bool `json:"readOnlyProtectionEngaged,omitempty"`
 }
 
 // ReplicationLagStatus is one instance's heartbeat reading: how old the newest

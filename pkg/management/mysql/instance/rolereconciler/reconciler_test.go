@@ -403,6 +403,31 @@ func TestTargetPrimaryAlreadyPrimarySetsCurrentPrimary(t *testing.T) {
 	}
 }
 
+// TestStorageProtectionHoldsThePrimaryReadOnly asserts the reconciler does not
+// promote over a primary the storage-protection watchdog holds read-only on
+// purpose (design/042): the watchdog owns the read-only flags until usage
+// recovers, and promoting over it would flap the server in and out of
+// read-only. A read-only primary WITHOUT an active protection keeps the
+// existing promote-to-clear behaviour (the test above).
+func TestStorageProtectionHoldsThePrimaryReadOnly(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{status: &webserver.Status{
+		Role:                      webserver.RolePrimary,
+		ReadOnly:                  true,
+		SuperReadOnly:             true,
+		ReadOnlyProtectionEngaged: true,
+	}}
+	r := newReconciler(t, instDemo1,
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: instDemo1, CurrentPrimary: instDemo1}, local)
+	res := reconcile(t, r)
+	if local.promoted {
+		t.Fatal("storage protection owns the read-only flags; the reconciler must not promote over it")
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("expected a requeue while storage protection holds the pause")
+	}
+}
+
 func TestTargetPrimaryReplicaCaughtUpPromotes(t *testing.T) {
 	t.Parallel()
 	behind := int64(0)

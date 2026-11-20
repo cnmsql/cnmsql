@@ -144,3 +144,53 @@ down):
 
 A usage ratio alert is `used_bytes / capacity_bytes`; pair it with
 [online expansion](#online-expansion-default) to grow a volume before it fills.
+
+## Protecting a full volume with read-only mode
+
+When a data volume fills completely, InnoDB starts failing writes and mysqld can
+crash-loop (binlog `ABORT_SERVER` shuts the server down when the binlog shares
+the volume), risking corruption. Storage protection makes the operator hold the
+writable primary in **read-only mode** instead, so reads and replication keep
+serving while you expand the volume.
+
+The feature is **off by default** and opt-in per cluster:
+
+```yaml
+spec:
+  storageProtection:
+    readOnlyOnPressure: true
+    readOnlyThresholdPercent: 90 # 50-99, defaults to 90
+```
+
+`readOnlyThresholdPercent` alone (without `readOnlyOnPressure`) is allowed: it
+tunes reporting ahead of turning the action on later.
+
+### Behaviour
+
+- The instance manager inside each Pod runs a watchdog over the data volume.
+  When the writable primary's volume reaches the threshold — or the space free
+  to an unprivileged writer reaches zero, which can happen below the threshold
+  because root-reserved blocks hide usage — it issues `SET GLOBAL
+  super_read_only=ON` (MariaDB: `read_only=ON`).
+- Reads and replication continue; writes are paused with `ER_READ_ONLY_MODE`.
+- The engagement clears itself after usage drops **5 points below** the
+  threshold (hysteresis, so a volume hovering at the threshold does not flap).
+- The watchdog lives inside the instance Pod on purpose: a wedged operator
+  cannot disable the protection, and a manager that boots into a still-full
+  volume re-engages before its control API starts serving.
+- Failover policy is unchanged: a protected primary is still healthy and keeps
+  its primary lease. To resume writes immediately, expand the volume — or
+  promote another instance manually.
+- The role reconciler does not promote over a protected primary, so nothing
+  fights the watchdog while the pause is active.
+
+### Observability
+
+Each instance reports the pause in its status (`readOnlyProtectionEngaged`).
+The operator aggregates it into a `StorageReadOnly` condition on the Cluster —
+only present for opted-in clusters — with reason `InstancesReadOnly` while
+writes are paused and `InstancesWritable` after release. The condition message
+names the paused instances; live percentages stay in the metrics above.
+Transitions record `StorageReadOnly` (Warning) and `StorageReadOnlyReleased`
+(Normal) events. The `StoragePressure` condition keeps firing independently at
+its own 85% reporting threshold.

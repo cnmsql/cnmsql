@@ -1003,6 +1003,167 @@ func TestPatchStatusStoragePressureConditionAndEvent(t *testing.T) {
 	assertEvent(t, recorder, eventStoragePressureResolved)
 }
 
+// storageProtectionStatus mirrors storageStatus for the protection signal.
+func storageProtectionStatus(instance string, engaged bool) *webserver.Status {
+	return &webserver.Status{InstanceName: instance, ReadOnlyProtectionEngaged: engaged}
+}
+
+func TestEvaluateReadOnlyProtection(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		statuses     map[string]*webserver.Status
+		wantObserved bool
+		wantEngaged  []string
+	}{
+		{
+			name: "no instance reported a status",
+			statuses: map[string]*webserver.Status{
+				testPrimary: nil,
+			},
+		},
+		{
+			name: "protection not engaged anywhere",
+			statuses: map[string]*webserver.Status{
+				testPrimary:  storageProtectionStatus(testPrimary, false),
+				testReplica2: storageProtectionStatus(testReplica2, false),
+			},
+			wantObserved: true,
+		},
+		{
+			name: "one instance engaged",
+			statuses: map[string]*webserver.Status{
+				testPrimary:  storageProtectionStatus(testPrimary, true),
+				testReplica2: storageProtectionStatus(testReplica2, false),
+			},
+			wantObserved: true,
+			wantEngaged:  []string{testPrimary},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			observed := observedCluster{
+				InstanceNames:    []string{testPrimary, testReplica2},
+				StatusByInstance: tc.statuses,
+			}
+			gotObserved, gotEngaged := evaluateReadOnlyProtection(observed)
+			if gotObserved != tc.wantObserved {
+				t.Fatalf("observed = %v, want %v", gotObserved, tc.wantObserved)
+			}
+			if len(gotEngaged) != len(tc.wantEngaged) {
+				t.Fatalf("engaged = %v, want %v", gotEngaged, tc.wantEngaged)
+			}
+			for i, name := range tc.wantEngaged {
+				if gotEngaged[i] != name {
+					t.Fatalf("engaged = %v, want %v", gotEngaged, tc.wantEngaged)
+				}
+			}
+		})
+	}
+}
+
+func TestPatchStatusStorageReadOnlyConditionAndEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	cluster.Spec.Instances = 1
+	cluster.Spec.StorageProtection = &mysqlv1alpha1.StorageProtection{ReadOnlyOnPressure: true}
+	scheme := testScheme(t)
+	recorder := record.NewFakeRecorder(4)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+		WithObjects(cluster).
+		Build()
+	reconciler := &ClusterReconciler{Client: c, Scheme: scheme, Recorder: recorder}
+	plan := testPlan()
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+
+	// 1) The watchdog engages: condition flips True and a Warning fires.
+	if err := reconciler.patchStatus(ctx, cluster, observedCluster{
+		Plan:                       plan,
+		InstanceNames:              []string{testPrimary},
+		Phase:                      topology.PhaseReady,
+		Ready:                      true,
+		ReadyInstances:             1,
+		ReadOnlyProtectionObserved: true,
+		ReadOnlyProtectionEngaged:  []string{testPrimary},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, conditionStorageReadOnly)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("StorageReadOnly condition = %+v, want True", cond)
+	}
+	if !strings.Contains(cond.Message, testPrimary) {
+		t.Fatalf("StorageReadOnly message = %q, want to name %q", cond.Message, testPrimary)
+	}
+	assertEvent(t, recorder, eventStorageReadOnly)
+
+	// 2) Steady-state resync while still protected: no duplicate event.
+	if err := reconciler.patchStatus(ctx, got, observedCluster{
+		Plan:                       plan,
+		InstanceNames:              []string{testPrimary},
+		Phase:                      topology.PhaseReady,
+		Ready:                      true,
+		ReadyInstances:             1,
+		ReadOnlyProtectionObserved: true,
+		ReadOnlyProtectionEngaged:  []string{testPrimary},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertNoEvent(t, recorder, eventStorageReadOnly)
+
+	// 3) Usage recovers: condition flips False and a released event fires.
+	if err := reconciler.patchStatus(ctx, got, observedCluster{
+		Plan:                       plan,
+		InstanceNames:              []string{testPrimary},
+		Phase:                      topology.PhaseReady,
+		Ready:                      true,
+		ReadyInstances:             1,
+		ReadOnlyProtectionObserved: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got2 := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got2); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got2.Status.Conditions, conditionStorageReadOnly); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("StorageReadOnly condition = %+v, want False", cond)
+	}
+	assertEvent(t, recorder, eventStorageReadOnlyReleased)
+
+	// 4) Disabling the stanza removes the condition and stops the events.
+	got2.Spec.StorageProtection.ReadOnlyOnPressure = false
+	if err := c.Update(ctx, got2); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.patchStatus(ctx, got2, observedCluster{
+		Plan:                       plan,
+		InstanceNames:              []string{testPrimary},
+		Phase:                      topology.PhaseReady,
+		Ready:                      true,
+		ReadyInstances:             1,
+		ReadOnlyProtectionObserved: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got3 := &mysqlv1alpha1.Cluster{}
+	if err := c.Get(ctx, key, got3); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(got3.Status.Conditions, conditionStorageReadOnly); cond != nil {
+		t.Fatalf("StorageReadOnly condition = %+v, want removed", cond)
+	}
+	assertNoEvent(t, recorder, eventStorageReadOnlyReleased)
+}
+
 // assertEvent drains every currently buffered event and fails unless one of them
 // contains reason. A patchStatus call may emit several events (e.g. a phase
 // transition alongside the storage one), so it scans rather than peeking the head.

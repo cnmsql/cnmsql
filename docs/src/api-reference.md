@@ -571,6 +571,7 @@ _Appears in:_
 | `replication` _[ReplicationConfiguration](#replicationconfiguration)_ | Replication selects and tunes the replication topology (asynchronous /<br />semi-synchronous GTID replication, or quorum-based Group Replication). The<br />mode is immutable after creation; when omitted the cluster is async. |  | Optional: \{\} <br /> |
 | `storage` _[StorageConfiguration](#storageconfiguration)_ | Storage configuration for the instance data directory. |  | Required: \{\} <br /> |
 | `binlogStorage` _[StorageConfiguration](#storageconfiguration)_ | BinlogStorage, when set, places the binary logs on a separate volume from<br />the data directory. |  | Optional: \{\} <br /> |
+| `storageProtection` _[StorageProtection](#storageprotection)_ | StorageProtection configures automatic protective actions that keep a<br />full data volume from corrupting data. Every action is opt-in; with no<br />storageProtection stanza the operator only reports pressure through the<br />StoragePressure condition. |  | Optional: \{\} <br /> |
 | `bootstrap` _[BootstrapConfiguration](#bootstrapconfiguration)_ | Bootstrap describes how the cluster is initialised (fresh init or recovery<br />from a backup). |  | Optional: \{\} <br /> |
 | `rootPasswordSecret` _[LocalObjectReference](#localobjectreference)_ | RootPasswordSecret references a secret containing the password for the<br />MySQL root user. If not provided, a secret is generated. |  | Optional: \{\} <br /> |
 | `enableSuperuserAccess` _boolean_ | EnableSuperuserAccess, when true, makes the root user reachable through the<br />generated/provided secret. Defaults to false. | false | Optional: \{\} <br /> |
@@ -2173,6 +2174,25 @@ _Appears in:_
 | `size` _string_ | Size of the storage. Required if not already specified in the PVC template.<br />Changes to this field are automatically reapplied to the created PVCs.<br />Size cannot be decreased. |  | Optional: \{\} <br /> |
 | `resizeInUseVolumes` _boolean_ | ResizeInUseVolumes, when true (the default), grows mounted PVCs in place and<br />relies on the storage backend to expand the filesystem online. Set it to<br />false when the backend cannot expand a volume in use: the operator then<br />completes a resize by recycling the instance Pod (serialised<br />replica-by-replica, primary last) so the volume is detached and remounted. | true | Optional: \{\} <br /> |
 | `pvcTemplate` _[PersistentVolumeClaimSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#persistentvolumeclaimspec-v1-core)_ | Template to be used to generate the Persistent Volume Claim |  | Optional: \{\} <br /> |
+
+
+#### StorageProtection
+
+
+
+StorageProtection configures automatic protective actions that keep a full
+data volume from corrupting data. All actions are opt-in. See
+design/042-storage-full-read-only.md.
+
+
+
+_Appears in:_
+- [ClusterSpec](#clusterspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `readOnlyOnPressure` _boolean_ | ReadOnlyOnPressure, when true, puts an instance whose data volume usage<br />reaches ReadOnlyThresholdPercent (or whose space free to unprivileged<br />writers is exhausted) into read-only mode — super_read_only on MySQL,<br />read_only on MariaDB — before the disk fills, so a full volume cannot<br />corrupt data or crash-loop the server. Reads and replication continue;<br />writes resume once usage drops back below the threshold (after a volume<br />expansion, for example). Defaults to false. |  | Optional: \{\} <br /> |
+| `readOnlyThresholdPercent` _integer_ | ReadOnlyThresholdPercent is the data-volume usage (percent of capacity)<br />at or above which the instance switches to read-only. It must be between<br />50 and 99 so the last percent points of the volume stay free for<br />replication bookkeeping and temporary files. Defaults to 90. | 90 | Maximum: 99 <br />Minimum: 50 <br />Optional: \{\} <br /> |
 
 
 #### UpgradeConfiguration

@@ -119,6 +119,12 @@ func (cluster *Cluster) SetDefaults() {
 		spec.MaxStartDelay = DefaultStartupDelay
 	}
 
+	// The read-only threshold defaults inside a present storageProtection
+	// stanza; the stanza itself stays nil unless the user opts in.
+	if spec.StorageProtection != nil && spec.StorageProtection.ReadOnlyThresholdPercent == 0 {
+		spec.StorageProtection.ReadOnlyThresholdPercent = DefaultReadOnlyThresholdPercent
+	}
+
 	if spec.MaxStopDelay == 0 {
 		spec.MaxStopDelay = DefaultShutdownDelay
 	}
@@ -282,6 +288,7 @@ func (cluster *Cluster) Validate() field.ErrorList {
 	allErrs = append(allErrs, spec.validateManagedServices(specPath.Child("managed", "services"))...)
 	allErrs = append(allErrs, spec.validateManagedRoles(specPath.Child("managed", "roles"))...)
 	allErrs = append(allErrs, spec.validateMonitoringPrivileges(specPath.Child("monitoring", "privileges"))...)
+	allErrs = append(allErrs, spec.validateStorageProtection(specPath.Child("storageProtection"))...)
 	allErrs = append(allErrs, spec.validateReplication(specPath.Child("replication"))...)
 	allErrs = append(allErrs, spec.validateFlavor(specPath)...)
 	allErrs = append(allErrs, cluster.validateFailoverPolicy(specPath.Child("failoverPolicy"))...)
@@ -859,6 +866,24 @@ func (spec *ClusterSpec) validateMonitoringPrivileges(path *field.Path) field.Er
 		if _, err := engine.ParseMetricsGrantTarget(grant.On); err != nil {
 			allErrs = append(allErrs, field.Invalid(entry.Child("on"), grant.On, err.Error()))
 		}
+	}
+	return allErrs
+}
+
+// validateStorageProtection checks the storage-protection stanza. The CRD
+// schema bounds the threshold, but objects built in Go bypass the schema, so
+// the range is enforced here too. A threshold without an action is allowed:
+// it reads as pre-staging the value for when the action is enabled.
+func (spec *ClusterSpec) validateStorageProtection(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	protection := spec.StorageProtection
+	if protection == nil {
+		return allErrs
+	}
+	if t := protection.ReadOnlyThresholdPercent; t != 0 && (t < 50 || t > 99) {
+		allErrs = append(allErrs, field.Invalid(
+			path.Child("readOnlyThresholdPercent"), t,
+			"readOnlyThresholdPercent must be between 50 and 99"))
 	}
 	return allErrs
 }
