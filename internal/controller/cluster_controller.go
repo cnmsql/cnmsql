@@ -338,8 +338,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// (when opted in) and otherwise keep the teardown finalizer in sync with the
 	// reclaim policy. This short-circuits reconcile while the Cluster is being
 	// deleted or when the finalizer set just changed.
-	if handled, err := r.handleBackupReclaimLifecycle(ctx, cluster); handled {
-		return ctrl.Result{}, err
+	if handled, result, err := r.handleBackupReclaimLifecycle(ctx, cluster); handled {
+		return result, err
 	}
 
 	if reason := unsupportedReason(cluster); reason != "" {
