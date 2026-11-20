@@ -19,8 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -46,19 +51,20 @@ func (r *ClusterReconciler) wantsObjectStoreCleanup(cluster *mysqlv1alpha1.Clust
 // the Cluster lifecycle. While the Cluster is being deleted it wipes the archive
 // (when opted in) and releases the finalizer; otherwise it keeps the finalizer in
 // sync with the reclaim policy. It returns handled=true when the caller should
-// stop and return immediately (with the given error).
+// stop and return immediately (with the given result and error).
 func (r *ClusterReconciler) handleBackupReclaimLifecycle(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
-) (bool, error) {
+) (bool, ctrl.Result, error) {
 	if !cluster.DeletionTimestamp.IsZero() {
-		return true, r.reconcileClusterDelete(ctx, cluster)
+		result, err := r.reconcileClusterDelete(ctx, cluster)
+		return true, result, err
 	}
 	changed, err := r.reconcileBackupReclaimFinalizer(ctx, cluster)
 	if err != nil || changed {
-		return true, err
+		return true, ctrl.Result{}, err
 	}
-	return false, nil
+	return false, ctrl.Result{}, nil
 }
 
 // reconcileBackupReclaimFinalizer keeps the teardown finalizer in sync with the
@@ -87,19 +93,99 @@ func (r *ClusterReconciler) reconcileBackupReclaimFinalizer(
 // error) so deletion never silently leaves half-removed remote state; an
 // operator can remove the finalizer by hand to force teardown if the object
 // store is permanently unreachable.
+//
+// The archive is removed only once nothing can write to it any more. With the
+// default background cascade the garbage collector deletes the instance Pods
+// only after the Cluster itself is gone, which this finalizer delays: wiping
+// first let the still-running instances archive again, so objects reappeared
+// under the removed prefix. A primary with a replica streaming from it keeps
+// archiving for up to 25s more once its Pod is deleted, while its preStop hook
+// waits for a demotion that a deleted Cluster never sends. The operator
+// therefore stops its instance Pods itself and waits for
+// every Pod of the cluster (instances and backup workers) to stop.
 func (r *ClusterReconciler) reconcileClusterDelete(
 	ctx context.Context,
 	cluster *mysqlv1alpha1.Cluster,
-) error {
+) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(cluster, clusterBackupFinalizer) {
-		return nil
+		return ctrl.Result{}, nil
+	}
+	if wait, err := r.stopArchiveWriters(ctx, cluster); err != nil || wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, err
 	}
 	if err := r.cleanupClusterObjectStore(ctx, cluster); err != nil {
 		r.Recorder.Event(cluster, corev1.EventTypeWarning, "CleanupFailed", err.Error())
-		return err
+		return ctrl.Result{}, err
 	}
 	controllerutil.RemoveFinalizer(cluster, clusterBackupFinalizer)
-	return r.Update(ctx, cluster)
+	return ctrl.Result{}, r.Update(ctx, cluster)
+}
+
+const (
+	// archiveWriterPoll is how often a deletion re-checks the cluster's Pods.
+	// Instance Pods are owned and re-trigger reconcile as they go; backup
+	// worker Pods are not, so the deletion also polls.
+	archiveWriterPoll = 5 * time.Second
+	// stuckPodMargin is how long past the end of its grace period a
+	// terminating Pod is still waited for. A Pod left Terminating beyond that
+	// sits on a node that no longer answers, and waiting for it would block
+	// the deletion for as long as the node is lost.
+	stuckPodMargin = 30 * time.Second
+)
+
+// stopArchiveWriters deletes the cluster's instance Pods and reports how long to
+// wait before the archive can be removed: zero once no Pod of the cluster is
+// running or still within its termination grace period. Pods the deletion
+// orphans are left alone, and not waited for: the user asked to keep them.
+func (r *ClusterReconciler) stopArchiveWriters(
+	ctx context.Context,
+	cluster *mysqlv1alpha1.Cluster,
+) (time.Duration, error) {
+	if controllerutil.ContainsFinalizer(cluster, metav1.FinalizerOrphanDependents) {
+		return 0, nil
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(cluster.Namespace),
+		client.MatchingLabels{clusterLabel: cluster.Name}); err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var writers []string
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp == nil && metav1.IsControlledBy(pod, cluster) {
+			if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+				return 0, fmt.Errorf("stopping instance Pod %s before removing the archive: %w", pod.Name, err)
+			}
+			writers = append(writers, pod.Name)
+			continue
+		}
+		if mayWriteArchive(pod, now) {
+			writers = append(writers, pod.Name)
+		}
+	}
+	if len(writers) == 0 {
+		return 0, nil
+	}
+	logf.FromContext(ctx).Info("Waiting for Pods to stop before removing the object-store archive",
+		"cluster", cluster.Name, "pods", writers)
+	r.Recorder.Event(cluster, corev1.EventTypeNormal, "CleanupWaiting",
+		fmt.Sprintf("Waiting for %s to stop before removing the object-store archive", strings.Join(writers, ", ")))
+	return archiveWriterPoll, nil
+}
+
+// mayWriteArchive reports whether pod can still upload to the archive: it has
+// not finished, and it is not deleted or still within its grace period (plus
+// stuckPodMargin). A Pod that never started (Pending) is counted too, since it
+// would archive once scheduled.
+func mayWriteArchive(pod *corev1.Pod, now time.Time) bool {
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return false
+	}
+	if pod.DeletionTimestamp == nil {
+		return true
+	}
+	return now.Before(pod.DeletionTimestamp.Add(stuckPodMargin))
 }
 
 // cleanupClusterObjectStore removes the cluster's whole archive prefix (every
