@@ -122,6 +122,15 @@ type observedCluster struct {
 	// storagePressurePercent. StoragePressureReason names the offending instances.
 	StoragePressure       bool
 	StoragePressureReason string
+	// ReadOnlyProtectionObserved is true when at least one reachable instance
+	// reported its storage-protection state (design/042), so the StorageReadOnly
+	// condition is only set once there is a signal to base it on.
+	ReadOnlyProtectionObserved bool
+	// ReadOnlyProtectionEngaged lists the instances whose storage-protection
+	// watchdog is currently holding the server read-only because the data
+	// volume reached the threshold. Empty when protection is disabled or not
+	// engaged anywhere.
+	ReadOnlyProtectionEngaged []string
 	// GroupReplication is the operator's aggregated view of the group under GR
 	// mode (primary, members, quorum); nil for async clusters or before any
 	// member is observed ONLINE. The sticky groupName/bootstrapped fields are
@@ -267,6 +276,8 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.StorageObserved, observed.StoragePressure, observed.StoragePressureReason = evaluateStoragePressure(observed)
 
+	observed.ReadOnlyProtectionObserved, observed.ReadOnlyProtectionEngaged = evaluateReadOnlyProtection(observed)
+
 	if err := r.observeProvisioning(ctx, cluster, plan, &observed); err != nil {
 		return observedCluster{}, err
 	}
@@ -384,6 +395,25 @@ func evaluateStoragePressure(observed observedCluster) (bool, bool, string) {
 	}
 	return true, true, fmt.Sprintf("Data volume usage is at or above %d%% on instance(s): %s",
 		storagePressurePercent, strings.Join(pressured, ", "))
+}
+
+// evaluateReadOnlyProtection collects the instances whose storage-protection
+// watchdog is holding the server read-only (design/042). It reports whether any
+// instance status was observed at all, and the engaged instance names.
+func evaluateReadOnlyProtection(observed observedCluster) (bool, []string) {
+	var engaged []string
+	var anyObserved bool
+	for _, name := range observed.InstanceNames {
+		status := observed.StatusByInstance[name]
+		if status == nil {
+			continue
+		}
+		anyObserved = true
+		if status.ReadOnlyProtectionEngaged {
+			engaged = append(engaged, name)
+		}
+	}
+	return anyObserved, engaged
 }
 
 // computeClusterPhase sets the Phase, PhaseReason, Ready, and Progressing
@@ -829,6 +859,8 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	// below fires only on the transition, not on every reconcile while pressured.
 	wasStoragePressured := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStoragePressure)
 	r.applyStoragePressureCondition(latest, observed)
+	wasStorageProtected := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStorageReadOnly)
+	r.applyStorageReadOnlyCondition(latest, observed)
 	wasBootstrapFailed := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed)
 	if len(observed.InstanceNames) > 0 {
 		r.applyBootstrapFailedCondition(latest, observed)
@@ -892,7 +924,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"from", before.Status.Phase, "to", observed.Phase,
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
-	r.recordPhaseEvents(latest, before, observed, wasStoragePressured)
+	r.recordPhaseEvents(latest, before, observed, wasStoragePressured, wasStorageProtected)
 	r.recordBinlogPurgeHeldEvent(latest, wasPurgeHeld)
 	r.recordArchiveForkedEvent(latest, wasForked)
 	r.recordTimelineTruncatedEvent(latest, observed.MariaDBTimeline)
@@ -1056,7 +1088,37 @@ func (r *ClusterReconciler) applyStoragePressureCondition(latest *mysqlv1alpha1.
 	}
 }
 
-func (r *ClusterReconciler) recordPhaseEvents(latest *mysqlv1alpha1.Cluster, before *mysqlv1alpha1.Cluster, observed observedCluster, wasStoragePressured bool) {
+// applyStorageReadOnlyCondition mirrors the StorageReadOnly signal (design/042)
+// into a condition: true while any instance's storage-protection watchdog holds
+// the server read-only. The condition exists only for clusters that opted in;
+// disabling the spec stanza removes it. Like the StoragePressure message, the
+// text names instances without live percentages so the condition does not churn
+// on every write.
+func (r *ClusterReconciler) applyStorageReadOnlyCondition(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
+	if !latest.ReadOnlyOnPressureEnabled() {
+		apimeta.RemoveStatusCondition(&latest.Status.Conditions, conditionStorageReadOnly)
+		return
+	}
+	engaged := len(observed.ReadOnlyProtectionEngaged) > 0
+	reason := "InstancesWritable"
+	message := "No instance's data volume is at the read-only threshold"
+	if engaged {
+		reason = "InstancesReadOnly"
+		message = fmt.Sprintf("Storage protection holds the data volume at or above the read-only threshold; writes are paused on: %s",
+			strings.Join(observed.ReadOnlyProtectionEngaged, ", "))
+	}
+	if observed.ReadOnlyProtectionObserved {
+		apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               conditionStorageReadOnly,
+			Status:             conditionStatus(engaged),
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: latest.Generation,
+		})
+	}
+}
+
+func (r *ClusterReconciler) recordPhaseEvents(latest *mysqlv1alpha1.Cluster, before *mysqlv1alpha1.Cluster, observed observedCluster, wasStoragePressured, wasStorageProtected bool) {
 	r.recordPhaseTransition(latest, before.Status.Phase, observed)
 	if observed.Phase == topology.PhaseBlocked && latest.IsGroupReplication() &&
 		latest.Status.GroupReplication != nil && !latest.Status.GroupReplication.HasQuorum {
@@ -1078,6 +1140,17 @@ func (r *ClusterReconciler) recordPhaseEvents(latest *mysqlv1alpha1.Cluster, bef
 		case !observed.StoragePressure && wasStoragePressured:
 			r.Recorder.Event(latest, corev1.EventTypeNormal, eventStoragePressureResolved,
 				observed.StoragePressureReason)
+		}
+	}
+	if r.Recorder != nil && latest.ReadOnlyOnPressureEnabled() {
+		switch {
+		case len(observed.ReadOnlyProtectionEngaged) > 0 && !wasStorageProtected:
+			r.Recorder.Event(latest, corev1.EventTypeWarning, eventStorageReadOnly,
+				fmt.Sprintf("Storage protection engaged; writes are paused on: %s",
+					strings.Join(observed.ReadOnlyProtectionEngaged, ", ")))
+		case len(observed.ReadOnlyProtectionEngaged) == 0 && wasStorageProtected:
+			r.Recorder.Event(latest, corev1.EventTypeNormal, eventStorageReadOnlyReleased,
+				"Storage protection released; writes resumed")
 		}
 	}
 }

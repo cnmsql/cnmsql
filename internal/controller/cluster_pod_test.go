@@ -18,11 +18,13 @@ package controller
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
@@ -99,6 +101,32 @@ func TestBootstrapArgsNameCluster(t *testing.T) {
 		if !slices.Contains(args, want) {
 			t.Fatalf("%s args %v lack %s", name, args, want)
 		}
+	}
+}
+
+// TestStorageProtectionThresholdInRunArgs asserts the opted-in cluster's
+// threshold is rendered into the instance manager's args explicitly (design
+// 042): a threshold edit must change the rendered Pod and roll the instance,
+// not hide inside an in-image flag default. Without the stanza no flag shows.
+func TestStorageProtectionThresholdInRunArgs(t *testing.T) {
+	t.Parallel()
+	cluster := baseCluster()
+	plan := testPlan()
+	r := &ClusterReconciler{}
+	args := r.runArgs(cluster, plan, instancePlan{})
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--read-only-protection-threshold=") {
+			t.Fatalf("disabled cluster renders %q in run args %v", arg, args)
+		}
+	}
+	cluster.Spec.StorageProtection = &mysqlv1alpha1.StorageProtection{
+		ReadOnlyOnPressure:       true,
+		ReadOnlyThresholdPercent: 73,
+	}
+	args = r.runArgs(cluster, plan, instancePlan{})
+	want := "--read-only-protection-threshold=73"
+	if !slices.Contains(args, want) {
+		t.Errorf("opted-in run args %v lack %s", args, want)
 	}
 }
 

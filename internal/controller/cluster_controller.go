@@ -135,10 +135,13 @@ const (
 	conditionProgressing         = "Progressing"
 	conditionContinuousArchiving = "ContinuousArchiving"
 	conditionStoragePressure     = "StoragePressure"
+	conditionStorageReadOnly     = "StorageReadOnly"
 
 	eventFailoverObserved        = "FailoverObserved"
 	eventStoragePressure         = "StoragePressure"
 	eventStoragePressureResolved = "StoragePressureResolved"
+	eventStorageReadOnly         = "StorageReadOnly"
+	eventStorageReadOnlyReleased = "StorageReadOnlyReleased"
 
 	// storagePressurePercent is the data-volume usage (percent of capacity) at or
 	// above which an instance is considered under storage pressure. It is a fixed

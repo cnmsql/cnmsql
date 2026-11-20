@@ -48,6 +48,7 @@ No operator exists to manage MySQL in a good way — some exist but they all hav
 - Binlog streaming (continuous archiving, PITR)
 - Declarative management of MySQL configurations (settings, users, databases)
 - Self-healing (PDBs, semi-sync reconciliation, liveness isolation)
+- Storage protection (opt-in read-only primary at a chosen data-volume threshold, design/042)
 - Guards (fencing, deletion guard, primary lease)
 - Monitoring (Prometheus metrics, PodMonitor, mysqld_exporter scrapers)
 - User-defined service exposition (additional services, templates)

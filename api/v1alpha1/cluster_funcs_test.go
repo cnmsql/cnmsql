@@ -127,6 +127,47 @@ var _ = Describe("Cluster validation", func() {
 		Expect(newValidCluster().Validate()).To(BeEmpty())
 	})
 
+	It("accepts an opt-in storage protection stanza with a valid threshold", func() {
+		cluster := newValidCluster()
+		cluster.Spec.StorageProtection = &StorageProtection{
+			ReadOnlyOnPressure:       true,
+			ReadOnlyThresholdPercent: 90,
+		}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("accepts a storage protection threshold outside the range only when zero", func() {
+		// A zero threshold means "not chosen yet": SetDefaults fills it and the
+		// validation accepts the stanza without an action.
+		cluster := newValidCluster()
+		cluster.Spec.StorageProtection = &StorageProtection{}
+		cluster.SetDefaults()
+		Expect(cluster.Spec.StorageProtection.ReadOnlyThresholdPercent).To(Equal(int32(DefaultReadOnlyThresholdPercent)))
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects a storage protection threshold below 50", func() {
+		cluster := newValidCluster()
+		cluster.Spec.StorageProtection = &StorageProtection{ReadOnlyThresholdPercent: 30}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Field).To(Equal("spec.storageProtection.readOnlyThresholdPercent"))
+	})
+
+	It("rejects a storage protection threshold above 99", func() {
+		cluster := newValidCluster()
+		cluster.Spec.StorageProtection = &StorageProtection{ReadOnlyThresholdPercent: 100}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Field).To(Equal("spec.storageProtection.readOnlyThresholdPercent"))
+	})
+
+	It("leaves storage protection disabled by default", func() {
+		cluster := newValidCluster()
+		Expect(cluster.Spec.StorageProtection).To(BeNil())
+		Expect(cluster.ReadOnlyOnPressureEnabled()).To(BeFalse())
+	})
+
 	It("rejects setting both imageName and imageCatalogRef", func() {
 		cluster := newValidCluster()
 		cluster.Spec.ImageCatalogRef = &ImageCatalogRef{Series: "8.0"}

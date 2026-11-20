@@ -196,6 +196,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	return r.reconcileAsyncRole(ctx, cluster, status)
 }
 
+// holdPrimary keeps the primary lease alive and currentPrimary in step without
+// touching the server's read-only flags. It serves both the steady writable
+// primary and one the storage-protection watchdog is holding read-only on
+// purpose (design/042).
+func (r *Reconciler) holdPrimary(ctx context.Context, me, current string) (ctrl.Result, error) {
+	if _, err := r.acquireOrRenewLease(ctx, true); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not secure primary lease; will retry", "instance", me)
+		return ctrl.Result{RequeueAfter: waitRequeue}, nil
+	}
+	if current != me {
+		return ctrl.Result{RequeueAfter: r.settledPrimaryRequeue()}, r.setCurrentPrimary(ctx, me)
+	}
+	return ctrl.Result{RequeueAfter: r.settledPrimaryRequeue()}, nil
+}
+
 // reconcileAsyncRole is the asynchronous topology role strategy: the CNPG
 // pull-model where an instance promotes itself when it is the target and follows
 // the current primary otherwise. Its behaviour is unchanged from before the
@@ -232,16 +247,14 @@ func (r *Reconciler) reconcileAsyncRole(
 
 	// I am the designated primary.
 	if target == me {
-		// Already a writable primary: just keep currentPrimary in step.
-		if amPrimary && !status.ReadOnly && !status.SuperReadOnly {
-			if _, err := r.acquireOrRenewLease(ctx, true); err != nil {
-				log.Error(err, "Could not secure primary lease; will retry", "instance", me)
-				return ctrl.Result{RequeueAfter: waitRequeue}, nil
-			}
-			if current != me {
-				return ctrl.Result{RequeueAfter: r.settledPrimaryRequeue()}, r.setCurrentPrimary(ctx, me)
-			}
-			return ctrl.Result{RequeueAfter: r.settledPrimaryRequeue()}, nil
+		// A writable primary, or one the storage-protection watchdog
+		// (design/042) holds read-only on purpose while its data volume is at
+		// the usage threshold: in both cases this instance stays the serving
+		// primary. The watchdog owns the read-only flags until usage recovers,
+		// and promoting over it would flap the server in and out of
+		// read-only, so hold the lease without touching the server.
+		if amPrimary && (status.ReadOnlyProtectionEngaged || (!status.ReadOnly && !status.SuperReadOnly)) {
+			return r.holdPrimary(ctx, me, current)
 		}
 		// A replica must drain its relay log before promoting so we do not lose
 		// received transactions. For a failover the source is gone and the relay

@@ -355,6 +355,13 @@ func (r *ClusterReconciler) runArgs(cluster *mysqlv1alpha1.Cluster, plan cluster
 		args = append(args, fmt.Sprintf("--heartbeat-interval-millis=%d",
 			cluster.HeartbeatInterval().Milliseconds()))
 	}
+	if cluster.ReadOnlyOnPressureEnabled() {
+		// Storage protection (design/042). Passed explicitly rather than left
+		// to the flag default so a threshold change is recorded in the rendered
+		// args and rolls the Pod instead of silently keeping the old value.
+		args = append(args, fmt.Sprintf("--read-only-protection-threshold=%d",
+			cluster.ReadOnlyThresholdPercent()))
+	}
 	// The replica readiness lag gate rides along with the heartbeat it reads.
 	// Passed explicitly rather than left to the flag default so the rendered args
 	// record the effective bound, and so a change to spec.replication.maxReadyLag

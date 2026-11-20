@@ -74,6 +74,7 @@ func NewCommand() *cobra.Command {
 		archivePurge      bool
 		heartbeatMillis   int
 		maxReadyLagMillis int
+		storageProtectPct int
 		mysqlbinlogPath   string
 		semiSync          bool
 		semiSyncWait      int
@@ -187,33 +188,34 @@ func NewCommand() *cobra.Command {
 			}
 
 			return instance.Run(cmd.Context(), instance.RunOptions{
-				MysqldPath:            mysqldPath,
-				ConfigFile:            configFile,
-				DataDir:               dataDir,
-				Socket:                socket,
-				Version:               serverVersion,
-				InstanceName:          instanceName,
-				Role:                  expectedRole,
-				Source:                source,
-				ClusterName:           clusterName,
-				Namespace:             namespace,
-				GroupReplication:      groupReplication,
-				SourceTemplate:        sourceTemplate,
-				WebserverAddr:         webAddr,
-				HealthAddr:            healthAddr,
-				MetricsAddr:           metricsAddr,
-				SlowLogRotateBytes:    slowLogRotate,
-				MetricsTLS:            metricsTLS,
-				Backup:                backup,
-				Archiving:             archive,
-				Heartbeat:             beat,
-				MaxReadyLag:           time.Duration(maxReadyLagMillis) * time.Millisecond,
-				SemiSyncEnabled:       semiSync,
-				SemiSyncWaitCount:     semiSyncWait,
-				SemiSyncTimeoutMillis: semiSyncTimeout,
-				StopDelay:             time.Duration(stopDelay) * time.Second,
-				SmartShutdownTimeout:  time.Duration(smartShutdownTimeout) * time.Second,
-				MetricsUser:           metricsUser,
+				MysqldPath:                  mysqldPath,
+				ConfigFile:                  configFile,
+				DataDir:                     dataDir,
+				Socket:                      socket,
+				Version:                     serverVersion,
+				InstanceName:                instanceName,
+				Role:                        expectedRole,
+				Source:                      source,
+				ClusterName:                 clusterName,
+				Namespace:                   namespace,
+				GroupReplication:            groupReplication,
+				SourceTemplate:              sourceTemplate,
+				WebserverAddr:               webAddr,
+				HealthAddr:                  healthAddr,
+				MetricsAddr:                 metricsAddr,
+				SlowLogRotateBytes:          slowLogRotate,
+				MetricsTLS:                  metricsTLS,
+				Backup:                      backup,
+				Archiving:                   archive,
+				Heartbeat:                   beat,
+				MaxReadyLag:                 time.Duration(maxReadyLagMillis) * time.Millisecond,
+				ReadOnlyProtectionThreshold: storageProtectPct,
+				SemiSyncEnabled:             semiSync,
+				SemiSyncWaitCount:           semiSyncWait,
+				SemiSyncTimeoutMillis:       semiSyncTimeout,
+				StopDelay:                   time.Duration(stopDelay) * time.Second,
+				SmartShutdownTimeout:        time.Duration(smartShutdownTimeout) * time.Second,
+				MetricsUser:                 metricsUser,
 				Control: pool.ControlParams{
 					User:         controlUser,
 					PasswordFunc: credentials.Getter(src, credentials.Control),
@@ -275,6 +277,8 @@ func NewCommand() *cobra.Command {
 		"Stamp the replication-lag heartbeat table this often on the primary; 0 disables the heartbeat")
 	cmd.Flags().IntVar(&maxReadyLagMillis, "max-ready-lag-millis", 0,
 		"Fail readiness for a replica whose heartbeat lag exceeds this many milliseconds; 0 disables the lag gate")
+	cmd.Flags().IntVar(&storageProtectPct, "read-only-protection-threshold", 0,
+		"Data-volume usage percent (50-99) at or above which the writable primary is held read-only; 0 disables storage protection")
 	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Path to the mysqlbinlog binary (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")
 	cmd.Flags().BoolVar(&semiSync, "semi-sync", false, "Install and enable semi-synchronous replication plugins")
 	cmd.Flags().IntVar(&semiSyncWait, "semi-sync-wait-for-replica-count", 0, "Initial semi-sync acknowledgement count")

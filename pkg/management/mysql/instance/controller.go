@@ -127,6 +127,11 @@ type Controller struct {
 	// and the Pod hangs in Terminating until the kubelet SIGKILLs mysqld
 	// uncleanly (issue #137).
 	shuttingDown atomic.Bool
+	// storageProtectionEngaged reports that the storage-protection watchdog is
+	// currently holding the server read-only because the data volume reached
+	// the threshold (design/042). Written only by the watchdog goroutine and
+	// read by HTTP handler goroutines building the status.
+	storageProtectionEngaged atomic.Bool
 	// pendingReExec guards the timer scheduled by scheduleReExec. It is touched
 	// by HTTP handler goroutines (scheduling), the run-loop goroutine
 	// (BeginShutdown) and the timer goroutine (clearing after a failed exec),
@@ -207,6 +212,19 @@ func (c *Controller) SetReadyLagGate(max time.Duration) {
 // of the data directory; tests may leave it unset.
 func (c *Controller) SetStorageProvider(provider func() *webserver.StorageStatus) {
 	c.storage = provider
+}
+
+// StorageProtectionEngaged reports whether the storage-protection watchdog is
+// currently holding the server read-only because the data volume reached the
+// threshold (design/042).
+func (c *Controller) StorageProtectionEngaged() bool {
+	return c.storageProtectionEngaged.Load()
+}
+
+// setStorageProtectionEngaged publishes the watchdog's engagement to the
+// instance status. Called only by the watchdog goroutine.
+func (c *Controller) setStorageProtectionEngaged(engaged bool) {
+	c.storageProtectionEngaged.Store(engaged)
 }
 
 // SetIsolationDetector wires the API-server isolation detector into the liveness
@@ -472,6 +490,7 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 	if c.storage != nil {
 		status.Storage = c.storage()
 	}
+	status.ReadOnlyProtectionEngaged = c.StorageProtectionEngaged()
 	if c.replicationLag != nil {
 		status.ReplicationLag = c.replicationLag()
 	}
