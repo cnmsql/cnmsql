@@ -33,7 +33,7 @@ workflow:
 Download the archive for your platform and the release metadata:
 
 ```bash
-VERSION=v0.9.0
+VERSION=v0.10.0
 ARCHIVE=kubectl-cnmsql_${VERSION#v}_linux_amd64.tar.gz
 BASE=https://github.com/cnmsql/cnmsql/releases/download/${VERSION}
 for f in "$ARCHIVE" checksums.txt checksums.txt.sigstore.json kubectl-cnmsql.intoto.jsonl; do
