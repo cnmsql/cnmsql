@@ -42,10 +42,19 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 		}, issuerGVK); err != nil {
 			return err
 		}
+		// The CA reuses its private key across renewals and outlives the leaf
+		// certificates: if the CA key rotated at the same time as the leaves,
+		// a leaf could be signed by the old key while the CA Secret already
+		// holds the new one, and the cluster would fail TLS verification
+		// until every leaf is re-issued by hand.
 		if err := r.ensureCertManagerResource(ctx, cluster, plan.CAIssuer, map[string]any{
 			"secretName": plan.ServerCASecretName,
 			"isCA":       true,
 			"commonName": cluster.Name + ".ca.cnmsql",
+			"duration":   "87600h",
+			"privateKey": map[string]any{
+				"rotationPolicy": "Never",
+			},
 			"issuerRef": map[string]any{
 				"name": plan.SelfSignedIssuer,
 				"kind": issuerGVK.Kind,
@@ -73,9 +82,11 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 		for i := 1; i <= plan.Instances; i++ {
 			inst := plan.instanceFor(cluster, i)
 			if err := r.ensureCertManagerResource(ctx, cluster, inst.ServerCertName, map[string]any{
-				"secretName": inst.ServerTLSSecret,
-				"commonName": inst.ServiceName + "." + cluster.Namespace + ".svc",
-				"dnsNames":   serverDNSNames(cluster, plan, inst),
+				"secretName":  inst.ServerTLSSecret,
+				"commonName":  inst.ServiceName + "." + cluster.Namespace + ".svc",
+				"dnsNames":    serverDNSNames(cluster, plan, inst),
+				"duration":    "2160h",
+				"renewBefore": "1440h",
 				"usages": []any{
 					"server auth",
 					"client auth",
@@ -94,7 +105,9 @@ func (r *ClusterReconciler) ensureCertificates(ctx context.Context, cluster *mys
 		return nil
 	}
 	return r.ensureCertManagerResource(ctx, cluster, cluster.Name+"-client", map[string]any{
-		"secretName": plan.ClientTLSSecret,
+		"secretName":  plan.ClientTLSSecret,
+		"duration":    "2160h",
+		"renewBefore": "1440h",
 		// The instance control API grants its full route set only to this name.
 		"commonName": webserver.OperatorCommonName,
 		"usages": []any{
