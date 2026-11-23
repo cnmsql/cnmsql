@@ -151,6 +151,50 @@ func TestEnsureCertificatesSkipsOnlyUserProvidedServerTLS(t *testing.T) {
 	assertUnstructuredNotFound(t, ctx, reconciler, certificateGVK, "demo-1-server")
 }
 
+// A CA renewal that rotates the CA private key strands every leaf signed by
+// the previous key, so the generated CA must reuse its key on renewal and
+// outlive the leaves by far more than one renewal window.
+func TestEnsureCertificatesStableCAKeyAndDecoupledLifetimes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster := baseCluster()
+	scheme := testScheme(t)
+	reconciler := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Scheme: scheme,
+	}
+	plan, err := reconciler.buildPlan(ctx, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reconciler.ensureCertificates(ctx, cluster, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	ca := assertUnstructuredExists(t, ctx, reconciler, certificateGVK, "demo-ca")
+	policy, _, _ := unstructured.NestedString(ca.Object, "spec", "privateKey", "rotationPolicy")
+	if policy != "Never" {
+		t.Fatalf("CA privateKey.rotationPolicy = %q, want Never so renewals keep the signing key", policy)
+	}
+	caDuration, _, _ := unstructured.NestedString(ca.Object, "spec", "duration")
+	if caDuration != "87600h" {
+		t.Fatalf("CA duration = %q, want 87600h", caDuration)
+	}
+
+	for _, name := range []string{"demo-1-server", "demo-client"} {
+		leaf := assertUnstructuredExists(t, ctx, reconciler, certificateGVK, name)
+		duration, _, _ := unstructured.NestedString(leaf.Object, "spec", "duration")
+		if duration != "2160h" {
+			t.Fatalf("%s duration = %q, want 2160h", name, duration)
+		}
+		renewBefore, _, _ := unstructured.NestedString(leaf.Object, "spec", "renewBefore")
+		if renewBefore != "1440h" {
+			t.Fatalf("%s renewBefore = %q, want 1440h", name, renewBefore)
+		}
+	}
+}
+
 func TestServerCAOnlyOverrideSignsGeneratedCertificatesAndIsReady(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -94,6 +94,12 @@ server certificates, and the operator replication/client certificate. The
 operator reconciles issuers/certificates and waits for the resulting Secrets
 before creating Pods that need them.
 
+The generated CA is valid for 10 years and reuses its private key across
+renewals, while the leaf certificates are valid for 90 days and renew 60 days
+before expiry. Leaves therefore always chain to the CA key that the
+`<cluster>-ca` Secret holds: a scheduled renewal never leaves the cluster with
+certificates signed by a key the CA no longer contains.
+
 You can bring your own TLS material with `spec.certificates`. Each field is
 optional and independent; cnmsql only asks cert-manager to generate the
 material you did not provide:
