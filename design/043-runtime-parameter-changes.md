@@ -89,9 +89,30 @@ and retried on a later pass. With zero ready instances the decision defers:
 the change is kept pending (no roll, no probe) until an instance reports, then
 classified from its evidence. Instances that are down are skipped and caught
 up once ready — with the changed parameters only, because the settled pending
-record persists until the next change. A permanently not-ready instance
-defers settlement; the cluster is unhealthy regardless, and the next spec
-edit re-probes the unabsorbed change everywhere.
+record persists until the next change.
+
+**The settlement gate trades restart latency for correctness.** Waiting for
+every instance means one stuck not-ready instance holds back the restart that
+a restart-required (or mixed) change needs on the healthy instances; its own
+answer — or a follow-up spec edit that re-probes the unabsorbed change
+everywhere — settles it. This is intended. Dynamic values still reach the
+ready instances immediately: the probe runs on every ready instance in the
+first pass, before any settlement. The stuck Pod needs no roll to converge —
+when it recovers it answers the pending probe (its dynamic values are then
+set; a refusal there completes settlement and moves the template hash for the
+whole cluster), and any genuine restart picks the desired values up from
+my.cnf, which always renders from the spec. Rolling the restart-required part
+of a degraded cluster, by contrast, would add a serialized Pod recreation on
+top of an already reduced instance set. Bouncing the stuck Pod is the manual
+escape hatch.
+
+**Late verdicts on a settled change are recorded, not acted on.** A Pod
+recreated after settlement is still probed with the changed parameters, and
+its answer lands in the lingering record — but absorb already happened, so a
+refusal there moves nothing. That is acceptable: the Pod started from my.cnf,
+which already holds the desired values, so its runtime matches; the only path
+to a refusal is a container-restarted Pod whose subPath mount still carries
+the old file, and its next genuine restart converges it.
 
 **Runtime rejections are visible.** Absorbing the verdicts emits
 `ParametersAppliedAtRuntime` (Normal) and `ParametersRequireRestart` (Warning,
