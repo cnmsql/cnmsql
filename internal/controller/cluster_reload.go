@@ -19,9 +19,6 @@ package controller
 import (
 	"context"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -30,8 +27,14 @@ import (
 
 // reconcileReload applies a pending configuration reload to the cluster's
 // instances. A reload is requested by stamping reloadAnnotation on the Cluster
-// (e.g. `kubectl cnmsql reload`); the SET GLOBAL pass re-applies the dynamic
+// (e.g. `kubectl cnmsql reload`, or automatically when spec.mysql.parameters
+// changed, see reconcileParameters); the SET GLOBAL pass re-applies dynamic
 // my.cnf parameters to each running mysqld without a restart.
+//
+// The request content depends on who stamped the token: a token that matches
+// the pending automatic change set sends only the changed parameters, so manual
+// SET GLOBAL drift on unchanged parameters survives; any other token is an
+// explicit reload and sends the full spec to correct drift.
 //
 // Idempotency is per-instance: the applied token is recorded on each Pod via
 // reloadAppliedAnnotation, so an instance is only reloaded once per request and
@@ -41,43 +44,29 @@ func (r *ClusterReconciler) reconcileReload(ctx context.Context, cluster *mysqlv
 	if token == "" {
 		return nil
 	}
-
-	log := logf.FromContext(ctx).WithName("reload")
-	params := cluster.Spec.MySQL.Parameters
-	control := r.instanceControlClient()
-
-	for _, name := range cluster.Status.InstanceNames {
-		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, pod); err != nil {
-			return err
-		}
-		if pod.Annotations[reloadAppliedAnnotation] == token {
-			continue
-		}
-		if !podReady(pod) {
-			// Skip not-ready instances; they pick up the desired config from the
-			// rendered my.cnf on (re)start, and a later pass reloads them once ready.
-			continue
-		}
-
-		resp, err := control.Reload(ctx, cluster, name, webserver.ReloadRequest{Parameters: params})
-		if err != nil {
-			return err
-		}
-		if len(resp.Skipped) > 0 {
-			log.Info("Some parameters could not be applied at runtime (restart required)",
-				"instance", name, "skipped", resp.Skipped)
-		}
-		log.Info("Applied configuration reload", "instance", name, "applied", resp.Applied)
-
-		before := pod.DeepCopy()
-		if pod.Annotations == nil {
-			pod.Annotations = map[string]string{}
-		}
-		pod.Annotations[reloadAppliedAnnotation] = token
-		if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
-			return err
-		}
+	params, state := r.reloadParameters(ctx, cluster)
+	if state != nil && state.Pending != nil {
+		// Outcomes from any driver classify the pending change set: evidence is
+		// a property of the parameter, not of the pass that probed it.
+		defer func() {
+			if err := r.saveParametersState(ctx, cluster, state); err != nil {
+				logf.FromContext(ctx).WithName("reload").Error(err, "Could not persist parameter probe results")
+			}
+		}()
 	}
-	return nil
+	return r.applyReload(ctx, cluster, token, params, func(resp *webserver.ReloadResponse) {
+		if state != nil && state.Pending != nil {
+			classifyReloadResults(state.Pending.Changes, resp)
+		}
+	})
+}
+
+// reloadParameters resolves the parameters for the reload pass named by the
+// Cluster's reload token.
+func (r *ClusterReconciler) reloadParameters(_ context.Context, cluster *mysqlv1alpha1.Cluster) (map[string]string, *parametersState) {
+	state := loadParametersState(cluster)
+	if state != nil && state.Pending != nil && state.Pending.Token == cluster.Annotations[reloadAnnotation] {
+		return probeParameters(state.Pending), state
+	}
+	return cluster.Spec.MySQL.Parameters, state
 }

@@ -929,3 +929,75 @@ func TestStatusMySQLOmitsTimelineInputs(t *testing.T) {
 		t.Fatalf("mysql status reported mariadb fields: %+v", status)
 	}
 }
+
+func TestReloadRetriesTypedVariables(t *testing.T) {
+	t.Parallel()
+
+	// The reload binds values as strings; MySQL refuses a string parameter for
+	// numeric and keyword-typed variables in prepared statements (Error 1232).
+	// The reload must retry with a typed literal built from a strict pattern of
+	// the value instead of reporting a perfectly settable parameter as skipped.
+	c, mock := newController(t, nil)
+	// Parameters are applied in sorted order, but the request map's iteration
+	// order is not observable here; match expectations in any order.
+	mock.MatchExpectationsInOrder(false)
+
+	argumentTypeError := func(variable string) *mysql.MySQLError {
+		return &mysql.MySQLError{Number: 1232,
+			Message: "Incorrect argument type to variable '" + variable + "'"}
+	}
+	mock.ExpectExec("SET GLOBAL max_connections = ?").
+		WithArgs("200").WillReturnError(argumentTypeError("max_connections"))
+	mock.ExpectExec("SET GLOBAL max_connections = 200").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectExec("SET GLOBAL innodb_flush_method = ?").
+		WithArgs("O_DSYNC").WillReturnError(argumentTypeError("innodb_flush_method"))
+	mock.ExpectExec("SET GLOBAL innodb_flush_method = O_DSYNC").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	resp, err := c.Reload(context.Background(), webserver.ReloadRequest{Parameters: map[string]string{
+		"max_connections":     "200",
+		"innodb_flush_method": "O_DSYNC",
+	}})
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(resp.Applied) != 2 {
+		t.Errorf("applied = %v, want both typed parameters applied", resp.Applied)
+	}
+	if len(resp.Skipped) != 0 {
+		t.Errorf("skipped = %v, want none", resp.Skipped)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestReloadSkipsNonLiteralRetryValues(t *testing.T) {
+	t.Parallel()
+
+	// A value that is neither numeric nor a bare keyword cannot be retried as a
+	// literal without quoting hazards; the reload reports the server's refusal
+	// instead of interpolating it.
+	c, mock := newController(t, nil)
+
+	argumentTypeError := &mysql.MySQLError{Number: 1232,
+		Message: "Incorrect argument type to variable 'some_numeric_variable'"}
+	mock.ExpectExec("SET GLOBAL some_numeric_variable = ?").
+		WithArgs("abc; DROP TABLE users").WillReturnError(argumentTypeError)
+
+	resp, err := c.Reload(context.Background(), webserver.ReloadRequest{Parameters: map[string]string{
+		"some_numeric_variable": "abc; DROP TABLE users",
+	}})
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(resp.Applied) != 0 {
+		t.Errorf("applied = %v, want none", resp.Applied)
+	}
+	if resp.Skipped["some_numeric_variable"] == "" {
+		t.Errorf("expected the parameter to stay skipped, got %v", resp.Skipped)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}

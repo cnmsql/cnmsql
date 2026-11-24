@@ -454,10 +454,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if failoverHandled {
 		return failoverResult, nil
 	}
-	// Before rolling a MySQL major-version upgrade, hold until a pre-upgrade
-	// backup has completed (the data-dictionary upgrade is irreversible). No-op
-	// unless a major upgrade is pending and backupBeforeUpgrade is enabled.
-	if result, err, handled := r.reconcileUpgradeBackupGate(ctx, cluster, plan, observed); handled {
+	if result, err, handled := r.preProvisioningSteps(ctx, cluster, plan, observed); handled {
 		return result, err
 	}
 	provisioned, err := r.reconcileInstances(ctx, cluster, plan, observed)
@@ -509,6 +506,25 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Keep re-polling the instance managers so status (GTID, roles, readiness)
 	// stays fresh even when no Kubernetes event triggers a reconcile.
 	return ctrl.Result{RequeueAfter: readyResync}, nil
+}
+
+// preProvisioningSteps runs the checks and adjustments that must complete
+// before instances are reconciled: the pre-upgrade backup gate (a MySQL
+// major-version upgrade must not roll before its pre-upgrade backup finished)
+// and the runtime parameter pass, which must precede any roll decision so a
+// runtime-applied parameter change never moves the pod template hash
+// (design/043). handled reports a result to return early.
+func (r *ClusterReconciler) preProvisioningSteps(ctx context.Context, cluster *mysqlv1alpha1.Cluster, plan clusterPlan, observed observedCluster) (ctrl.Result, error, bool) {
+	// Before rolling a MySQL major-version upgrade, hold until a pre-upgrade
+	// backup has completed (the data-dictionary upgrade is irreversible). No-op
+	// unless a major upgrade is pending and backupBeforeUpgrade is enabled.
+	if result, err, handled := r.reconcileUpgradeBackupGate(ctx, cluster, plan, observed); handled {
+		return result, err, true
+	}
+	if err := r.reconcileParameters(ctx, cluster); err != nil {
+		return ctrl.Result{}, err, true
+	}
+	return ctrl.Result{}, nil, false
 }
 
 // resolvePlan builds the cluster plan and records what it concluded about the
