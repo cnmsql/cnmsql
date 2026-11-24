@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"sort"
 	"strings"
@@ -338,7 +337,6 @@ func (r *ClusterReconciler) reconcileParameters(ctx context.Context, cluster *my
 	}
 
 	changes := diffParameters(cluster.Spec.MySQL.Parameters, state.Runtime)
-	fmt.Println("DEBUG changes:", len(changes), "pending:", state.Pending != nil, "fingerprint match:", state.Pending != nil && state.Pending.Fingerprint == fingerprintParameterChanges(changes))
 	if len(changes) == 0 {
 		// The change set is settled. The pending record lingers until the next
 		// change replaces it, so a late-ready instance is caught up with the
@@ -390,7 +388,6 @@ func (r *ClusterReconciler) reconcileParameters(ctx context.Context, cluster *my
 	// Settle and absorb once every instance answered and every parameter is
 	// classified. Removals are classified at diff time; the verdicts come from
 	// the instances.
-	fmt.Println("DEBUG classified:", parameterChangesClassified(state.Pending.Changes), "answers:", state.Pending.Answers, "instances:", cluster.Status.InstanceNames)
 	if parameterChangesClassified(state.Pending.Changes) &&
 		state.Pending.parameterChangesAnswered(cluster.Status.InstanceNames) {
 		if dynamic, restartRequired, ok := state.absorbParameterChanges(state.Pending.Changes); ok {
@@ -448,7 +445,6 @@ func (r *ClusterReconciler) applyReload(ctx context.Context, cluster *mysqlv1alp
 			}
 			return err
 		}
-		fmt.Println("DEBUG applyReload instance:", name, "skipped:", skip != nil && skip(name, pod), "ready:", podReady(pod), "notfound-never")
 		if skip != nil && skip(name, pod) {
 			continue
 		}
@@ -459,7 +455,6 @@ func (r *ClusterReconciler) applyReload(ctx context.Context, cluster *mysqlv1alp
 		}
 
 		resp, err := control.Reload(ctx, cluster, name, webserver.ReloadRequest{Parameters: params})
-		fmt.Println("DEBUG reloaded:", name, "err:", err)
 		if err != nil {
 			// One unreachable instance must not block the others; a later pass
 			// retries it.
