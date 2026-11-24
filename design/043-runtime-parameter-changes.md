@@ -43,14 +43,22 @@ runs before `reconcileInstances` in every reconcile.
   for restart-required changes, mirroring the seed-list trick that keeps the
   hash stable across scale changes;
 - `pending` — the change set currently being probed (token, fingerprint,
-  per-parameter classification). A new or edited spec produces a new
-  fingerprint and a fresh reload token, so partial evidence for an abandoned
-  change is discarded.
+  per-parameter classification, per-instance answers). A new or edited spec
+  produces a new fingerprint and a fresh reload token, so partial evidence for
+  an abandoned change is discarded; because unabsorbed changes stay in the
+  diff, the replacement re-probes them everywhere, so no instance misses a
+  change that was never applied to it. A settled record lingers until the
+  next change replaces it, which keeps catch-up probes changed-only.
+- `templateEpoch` — a counter folded into the pod template hash inputs. It
+  moves the hash for changes the Template map cannot express, namely removing
+  a parameter that was applied at runtime and therefore never entered the
+  Template basis: only a restart undoes the value mysqld still holds.
 
 **The automatic path reuses the manual reload pass.** When a diff appears, the
 operator stamps `reloadAnnotation` with a fresh RFC3339 token (the same
-annotation `kubectl cnmsql reload` stamps) and runs the shared
-`applyReload` pass — same endpoint, same per-pod tokens, same not-ready
+annotation `kubectl cnmsql reload` stamps — and only then: the annotation is
+never rewritten afterwards, so a newer manual token is preserved) and runs the
+shared `applyReload` pass — same endpoint, same per-pod tokens, same not-ready
 skip/catch-up. The request content depends on who stamped the token: a token
 matching the pending change set sends **only the changed parameters**, so
 manual `SET GLOBAL` drift on unchanged parameters survives until an explicit
@@ -58,18 +66,32 @@ reload; any other token sends the full spec (drift correction, unchanged
 semantics). Outcomes are recorded into the pending record from any driver, so
 a manual reload that happens to run first still classifies the change.
 
+**A change settles only when every instance answered.** The pending record
+tracks which instances were probed; the verdicts are absorbed once all
+instances answered. One ready instance applying a parameter proves nothing
+about a lagging one, which may still refuse it — and a refusal that arrives
+late must still move the template hash, or that instance would keep the old
+value forever. Tokens are compared for equality (a Pod stamped by a manual
+pass is that pass's business), never by time: timestamps carry a user's local
+clock and one-second resolution, which could make every Pod look already
+applied.
+
 **Managed keys are structurally excluded.** The diff source is
 `spec.mysql.parameters`, which the validating webhook rejects when it contains
 operator-managed keys (`mysqlconfig.IsDeniedKey`); the instance manager
 additionally refuses them at the endpoint. A managed key can therefore never
 appear in a probe request.
 
-**Partially available clusters.** With zero ready instances the decision
-defers: the change is kept pending (no roll, no probe) until an instance
-reports, then classified from its evidence. Instances that are down during a
-probe are skipped by the pass and caught up once ready — with the changed
-parameters only, because the pending record is retired only after every
-instance recorded the token.
+**Partially available clusters, and instance-level trouble.** The pass never
+fails the reconcile over them: a missing Pod (mid-roll) is skipped so
+`reconcileInstances` can recreate it, and reload or patch errors are logged
+and retried on a later pass. With zero ready instances the decision defers:
+the change is kept pending (no roll, no probe) until an instance reports, then
+classified from its evidence. Instances that are down are skipped and caught
+up once ready — with the changed parameters only, because the settled pending
+record persists until the next change. A permanently not-ready instance
+defers settlement; the cluster is unhealthy regardless, and the next spec
+edit re-probes the unabsorbed change everywhere.
 
 **Runtime rejections are visible.** Absorbing the verdicts emits
 `ParametersAppliedAtRuntime` (Normal) and `ParametersRequireRestart` (Warning,
@@ -88,10 +110,10 @@ listing refused keys) events; the per-instance skips are also logged.
   recovery only if the probe is never run before the instances come back
   ready; otherwise it is caught up by reload. The conservative default (roll)
   is avoided deliberately: rolling a down cluster is needless churn.
-- The reload token mechanism gains one rule: a Pod stamped by a *newer* token
-  is never re-probed by an older pass (tokens are RFC3339 stamps), which
-  prevents the automatic pass and a concurrent manual reload from fighting
-  over the pod annotations.
+- The automatic probe skips instances by recorded answer, not by pod token, so
+  a manual reload stamped between passes cannot hide a change from it; the
+  manual pass compares tokens for equality. Neither pass rewrites the
+  annotation, so the two drivers cannot fight over the pod annotations.
 
 ## Alternatives considered
 

@@ -29,8 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
+
+	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 )
 
 func TestDiffParameters(t *testing.T) {
@@ -245,6 +246,28 @@ func TestAbsorbParameterChanges(t *testing.T) {
 		if _, exists := state.Template["wait_timeout"]; exists {
 			t.Fatal("template must drop a removed parameter")
 		}
+		if state.TemplateEpoch != 0 {
+			t.Fatalf("template epoch = %d, want 0: dropping the key from the template already moves the hash", state.TemplateEpoch)
+		}
+	})
+
+	t.Run("removing a runtime-only parameter bumps the template epoch", func(t *testing.T) {
+		t.Parallel()
+		// The parameter was added dynamically, so the template basis never
+		// carried it: dropping it from the basis would not move the hash and
+		// mysqld would keep the value forever. The epoch must move it instead.
+		state := &parametersState{
+			Runtime: map[string]string{"wait_timeout": "600"},
+		}
+		changes := map[string]*parametersChange{
+			"wait_timeout": {Key: "wait_timeout", From: "600", Removed: true, Status: paramRestartRequired},
+		}
+		if _, _, ok := state.absorbParameterChanges(changes); !ok {
+			t.Fatal("absorb refused a removal")
+		}
+		if state.TemplateEpoch != 1 {
+			t.Fatalf("template epoch = %d, want 1 so the pod template hash moves", state.TemplateEpoch)
+		}
 	})
 }
 
@@ -434,17 +457,12 @@ func TestReconcileParametersDynamicOnlyChange(t *testing.T) {
 		}
 	}
 
-	// A later pass, with the change absorbed and every Pod stamped, retires the
-	// pending record.
+	// A later pass with nothing left to do re-probes nothing.
 	if err := reconciler.reconcileParameters(context.Background(), cluster); err != nil {
 		t.Fatal(err)
 	}
-	state = parametersStateFrom(t, cluster)
-	if state.Pending != nil {
-		t.Fatalf("pending = %+v, want retired once every instance recorded the token", state.Pending)
-	}
 	if len(control.reloaded) != 2 {
-		t.Fatalf("reloads = %v, want the retiring pass to probe nothing", control.reloaded)
+		t.Fatalf("reloads = %v, want the settled pass to probe nothing", control.reloaded)
 	}
 }
 
@@ -481,8 +499,8 @@ func TestReconcileParametersRestartRequiredChangeMovesTemplate(t *testing.T) {
 	if state.Runtime["innodb_flush_method"] != "O_DSYNC" {
 		t.Fatalf("runtime = %q, want O_DSYNC accounted for by the roll", state.Runtime["innodb_flush_method"])
 	}
-	// The pending record lingers for changed-only catch-up until a later pass
-	// retires it; both pods were stamped here, so one more pass clears it.
+	// The pending record lingers for changed-only catch-up until the next
+	// change replaces it.
 	if state.Pending == nil {
 		t.Fatal("pending = nil, want it kept for catch-up bookkeeping")
 	}
@@ -579,12 +597,13 @@ func seededParametersCluster(t *testing.T, spec, runtime, template map[string]st
 	return cluster
 }
 
-func pendingWithToken(t *testing.T, cluster *mysqlv1alpha1.Cluster, token string) {
+func pendingWithToken(t *testing.T, cluster *mysqlv1alpha1.Cluster) {
 	t.Helper()
 	state := parametersStateFrom(t, cluster)
 	if state == nil {
 		t.Fatal("cluster has no parameters state")
 	}
+	const token = "2026-11-24T10:00:00Z"
 	state.Pending = &parametersPending{
 		Token:       token,
 		Fingerprint: fingerprintParameterChanges(diffParameters(cluster.Spec.MySQL.Parameters, state.Runtime)),
@@ -605,7 +624,7 @@ func TestReconcileReloadSendsChangedParametersWhenPendingMatchesToken(t *testing
 		map[string]string{"max_connections": "800", "wait_timeout": "600"},
 		map[string]string{"max_connections": "500", "wait_timeout": "600"},
 		map[string]string{"max_connections": "500", "wait_timeout": "600"})
-	pendingWithToken(t, cluster, "2026-11-24T10:00:00Z")
+	pendingWithToken(t, cluster)
 
 	pod := readyInstancePod("demo-1", nil)
 	scheme := testScheme(t)
@@ -616,9 +635,7 @@ func TestReconcileReloadSendsChangedParametersWhenPendingMatchesToken(t *testing
 		ControlClient: control,
 	}
 
-	if err := reconciler.reconcileReload(context.Background(), cluster); err != nil {
-		t.Fatal(err)
-	}
+	reconciler.reconcileReload(context.Background(), cluster)
 
 	req, ok := control.reloaded["demo-1"]
 	if !ok {
@@ -636,7 +653,7 @@ func TestReconcileReloadSendsFullSpecForManualToken(t *testing.T) {
 		map[string]string{"max_connections": "800", "wait_timeout": "600"},
 		map[string]string{"max_connections": "800", "wait_timeout": "600"},
 		map[string]string{"max_connections": "800", "wait_timeout": "600"})
-	pendingWithToken(t, cluster, "2026-11-24T10:00:00Z")
+	pendingWithToken(t, cluster)
 	// A manual reload stamped a newer token afterwards.
 	cluster.Annotations[reloadAnnotation] = "2026-11-24T11:00:00Z"
 
@@ -649,9 +666,7 @@ func TestReconcileReloadSendsFullSpecForManualToken(t *testing.T) {
 		ControlClient: control,
 	}
 
-	if err := reconciler.reconcileReload(context.Background(), cluster); err != nil {
-		t.Fatal(err)
-	}
+	reconciler.reconcileReload(context.Background(), cluster)
 
 	req := control.reloaded["demo-1"]
 	if !reflect.DeepEqual(req.Parameters, cluster.Spec.MySQL.Parameters) {
@@ -666,7 +681,7 @@ func TestReconcileReloadRecordsEvidenceIntoPending(t *testing.T) {
 		map[string]string{"max_connections": "800"},
 		map[string]string{"max_connections": "500"},
 		map[string]string{"max_connections": "500"})
-	pendingWithToken(t, cluster, "2026-11-24T10:00:00Z")
+	pendingWithToken(t, cluster)
 	// The instance the operator probes with refuses the parameter; evidence must
 	// reach the pending record no matter which pass drove the reload.
 	pod := readyInstancePod("demo-1", nil)
@@ -678,34 +693,12 @@ func TestReconcileReloadRecordsEvidenceIntoPending(t *testing.T) {
 		ControlClient: control,
 	}
 
-	if err := reconciler.reconcileReload(context.Background(), cluster); err != nil {
-		t.Fatal(err)
-	}
+	reconciler.reconcileReload(context.Background(), cluster)
 
 	state := parametersStateFrom(t, cluster)
 	change := state.Pending.Changes["max_connections"]
 	if change == nil || change.Status != paramRestartRequired {
 		t.Fatalf("pending change = %+v, want restartRequired recorded from the reload outcome", change)
-	}
-}
-
-func TestReloadTokenAppliedGuardsAgainstNewerPodToken(t *testing.T) {
-	t.Parallel()
-
-	if !reloadTokenApplied("2026-11-24T11:00:00Z", "2026-11-24T10:00:00Z") {
-		t.Fatal("a pod stamped by a newer pass must not be re-probed")
-	}
-	if reloadTokenApplied("2026-11-24T09:00:00Z", "2026-11-24T10:00:00Z") {
-		t.Fatal("a pod stamped before the pass must be probed")
-	}
-	if !reloadTokenApplied("2026-11-24T10:00:00Z", "2026-11-24T10:00:00Z") {
-		t.Fatal("an equal token means already applied")
-	}
-	if reloadTokenApplied("", "2026-11-24T10:00:00Z") {
-		t.Fatal("an unstamped pod must be probed")
-	}
-	if reloadTokenApplied("garbage", "2026-11-24T10:00:00Z") {
-		t.Fatal("an unparseable pod token must be re-probed, it proves nothing")
 	}
 }
 
@@ -768,4 +761,223 @@ func TestPodAnnotationsTemplateHashBasis(t *testing.T) {
 			t.Fatal("an absent record must default to the spec parameters")
 		}
 	})
+
+	t.Run("a template epoch bump moves the template hash", func(t *testing.T) {
+		t.Parallel()
+		state := &parametersState{
+			Runtime:       map[string]string{"max_connections": "500"},
+			Template:      map[string]string{"max_connections": "500"},
+			TemplateEpoch: 1,
+		}
+		got := hashFor(t, map[string]string{"max_connections": "500"}, state)
+		if got == baseline {
+			t.Fatal("a template epoch bump must move the hash: a runtime-applied parameter was removed and only a restart undoes it")
+		}
+	})
+}
+
+func TestReconcileParametersWaitsForEveryInstanceAnswer(t *testing.T) {
+	t.Parallel()
+
+	cluster := parametersTestCluster(t, map[string]string{"max_connections": "800"})
+	seed := &parametersState{Runtime: map[string]string{"max_connections": "500"}, Template: map[string]string{"max_connections": "500"}}
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster.Annotations = map[string]string{parametersStateAnnotation: string(raw)}
+
+	readyPod := readyInstancePod("demo-1", nil)
+	// demo-2 is up but not Ready: its answer is missing.
+	laggingPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo-2", Namespace: "default"}}
+	laggingPod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+	scheme := testScheme(t)
+	control := &reloadOutcomeClient{recordingControlClient: &recordingControlClient{}, applied: map[string]bool{"max_connections": true}}
+	reconciler := &ClusterReconciler{
+		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, readyPod, laggingPod).Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	if err := reconciler.reconcileParameters(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	state := parametersStateFrom(t, cluster)
+	if state.Runtime["max_connections"] != "500" {
+		t.Fatal("one instance's answer must not settle the change; a lagging instance could still refuse it")
+	}
+	if state.Pending == nil || state.Pending.Answers["demo-1"] != true {
+		t.Fatalf("pending = %+v, want demo-1's answer recorded", state.Pending)
+	}
+
+	// demo-2 becomes ready and answers on the next pass. Pod status is a
+	// subresource for the fake client, so the condition goes through a status
+	// update.
+	readyLagging := readyInstancePod("demo-2", nil)
+	if err := reconciler.Status().Update(context.Background(), readyLagging); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.reconcileParameters(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	state = parametersStateFrom(t, cluster)
+	if state.Runtime["max_connections"] != "800" {
+		t.Fatalf("runtime = %q, want 800 once every instance answered", state.Runtime["max_connections"])
+	}
+	// The already-answered instance must not be probed again.
+	if len(control.reloaded) != 2 {
+		t.Fatalf("reloads = %v, want only the lagging instance probed on the second pass", control.reloaded)
+	}
+}
+
+func TestReconcileParametersSkipsMissingPods(t *testing.T) {
+	t.Parallel()
+
+	cluster := parametersTestCluster(t, map[string]string{"max_connections": "800"})
+	seed := &parametersState{Runtime: map[string]string{"max_connections": "500"}, Template: map[string]string{"max_connections": "500"}}
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster.Annotations = map[string]string{parametersStateAnnotation: string(raw)}
+
+	// demo-2 is being recreated (mid-roll): its Pod is missing. The parameter
+	// pass must not fail the reconcile — reconcileInstances has to run to
+	// recreate the Pod.
+	readyPod := readyInstancePod("demo-1", nil)
+	scheme := testScheme(t)
+	control := &reloadOutcomeClient{recordingControlClient: &recordingControlClient{}, applied: map[string]bool{"max_connections": true}}
+	reconciler := &ClusterReconciler{
+		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, readyPod).Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	if err := reconciler.reconcileParameters(context.Background(), cluster); err != nil {
+		t.Fatalf("reconcileParameters: %v", err)
+	}
+	if _, ok := control.reloaded["demo-1"]; !ok {
+		t.Fatal("the present instance must still be probed")
+	}
+	state := parametersStateFrom(t, cluster)
+	if state.Runtime["max_connections"] != "500" {
+		t.Fatal("a missing Pod's missing answer must block settlement")
+	}
+}
+
+func TestReconcileParametersKeepsManualReloadToken(t *testing.T) {
+	t.Parallel()
+
+	const manualToken = "2026-11-24T12:00:00Z"
+	cluster := parametersTestCluster(t, map[string]string{"max_connections": "800"})
+	seed := &parametersState{Runtime: map[string]string{"max_connections": "500"}}
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster.Annotations = map[string]string{parametersStateAnnotation: string(raw)}
+	// A pending change was stamped automatically, then the user reloaded manually.
+	pendingWithToken(t, cluster)
+	cluster.Annotations[reloadAnnotation] = manualToken
+
+	pod := readyInstancePod("demo-1", nil)
+	scheme := testScheme(t)
+	control := &reloadOutcomeClient{recordingControlClient: &recordingControlClient{}, applied: map[string]bool{}}
+	reconciler := &ClusterReconciler{
+		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pod).Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	if err := reconciler.reconcileParameters(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if cluster.Annotations[reloadAnnotation] != manualToken {
+		t.Fatalf("reload annotation = %q, want the manual token preserved", cluster.Annotations[reloadAnnotation])
+	}
+}
+
+func TestReconcileParametersReplacementReprobesUnansweredInstances(t *testing.T) {
+	t.Parallel()
+
+	cluster := parametersTestCluster(t, map[string]string{"max_connections": "800", "wait_timeout": "600"})
+	// Change A (max_connections) is pending; demo-2 never answered for it, so
+	// A was never absorbed and must not vanish from the probe request when a
+	// second change (wait_timeout) replaces the pending record.
+	seed := &parametersState{
+		Runtime:  map[string]string{"max_connections": "500", "wait_timeout": "600"},
+		Template: map[string]string{"max_connections": "500", "wait_timeout": "600"},
+	}
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster.Annotations = map[string]string{parametersStateAnnotation: string(raw)}
+	pendingWithToken(t, cluster)
+	if state := parametersStateFrom(t, cluster); state.Pending.Changes["max_connections"] == nil {
+		t.Fatalf("pending changes = %+v, want the max_connections change", state.Pending.Changes)
+	}
+
+	// The second change edits the spec: max_connections is still 800 in the
+	// spec but wait_timeout moves too.
+	cluster.Spec.MySQL.Parameters["wait_timeout"] = "900"
+	readyPod := readyInstancePod("demo-1", nil)
+	notReady := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo-2", Namespace: "default"}}
+	notReady.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+	scheme := testScheme(t)
+	control := &reloadOutcomeClient{recordingControlClient: &recordingControlClient{}, applied: map[string]bool{}}
+	reconciler := &ClusterReconciler{
+		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, readyPod, notReady).Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	if err := reconciler.reconcileParameters(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	req, ok := control.reloaded["demo-1"]
+	if !ok {
+		t.Fatal("demo-1 was not probed")
+	}
+	if req.Parameters["max_connections"] != "800" || req.Parameters["wait_timeout"] != "900" {
+		t.Fatalf("probe parameters = %v, want both the unabsorbed change A and the new change B", req.Parameters)
+	}
+}
+
+func TestReconcileReloadEvidenceSaveOnlyWhenVerdictsChange(t *testing.T) {
+	t.Parallel()
+
+	cluster := seededParametersCluster(t,
+		map[string]string{"max_connections": "800"},
+		map[string]string{"max_connections": "500"},
+		map[string]string{"max_connections": "500"})
+	pendingWithToken(t, cluster)
+
+	pod := readyInstancePod("demo-1", nil)
+	scheme := testScheme(t)
+	control := &reloadOutcomeClient{recordingControlClient: &recordingControlClient{}, applied: map[string]bool{"max_connections": true}}
+	reconciler := &ClusterReconciler{
+		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pod).Build(),
+		Scheme:        scheme,
+		ControlClient: control,
+	}
+
+	reconciler.reconcileReload(context.Background(), cluster)
+	before := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(context.Background(), client.ObjectKeyFromObject(cluster), before); err != nil {
+		t.Fatal(err)
+	}
+
+	// A steady-state resync with no new verdicts must not patch the Cluster.
+	reconciler.reconcileReload(context.Background(), cluster)
+	after := &mysqlv1alpha1.Cluster{}
+	if err := reconciler.Get(context.Background(), client.ObjectKeyFromObject(cluster), after); err != nil {
+		t.Fatal(err)
+	}
+	if before.ResourceVersion != after.ResourceVersion {
+		t.Fatalf("resourceVersion moved from %s to %s on a verdict-free resync", before.ResourceVersion, after.ResourceVersion)
+	}
 }

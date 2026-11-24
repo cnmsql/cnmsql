@@ -760,9 +760,7 @@ func (r *ClusterReconciler) reconcileSteadyState(ctx context.Context, cluster *m
 	if err := r.reconcileRetention(ctx, cluster); err != nil {
 		log.Info("Backup retention pass failed, will retry", "error", err.Error())
 	}
-	if err := r.reconcileReload(ctx, cluster); err != nil {
-		log.Info("Configuration reload pass failed, will retry", "error", err.Error())
-	}
+	r.reconcileReload(ctx, cluster)
 }
 
 func (r *ClusterReconciler) instanceControlClient() InstanceControlClient {

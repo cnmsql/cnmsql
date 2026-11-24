@@ -80,6 +80,18 @@ spec:
 		return out
 	}
 
+	// globalVariableG reads a global variable with a soft failure: inside an
+	// Eventually the poll is retried, which is what a Pod mid-roll needs (the
+	// mysql socket disappears while mysqld restarts).
+	globalVariableG := func(g Gomega, pod, password, variable string) string {
+		out, err := mysqlExec(pod, "root", password, "",
+			fmt.Sprintf("SELECT @@GLOBAL.%s;", variable))
+		g.Expect(err).NotTo(HaveOccurred(), "failed to read %s on %s", variable, pod)
+		return strings.TrimSpace(out)
+	}
+
+	// globalVariable is the hard-failing read for post-Ready assertions, where
+	// a failure is a real result and not a Pod mid-roll.
 	globalVariable := func(pod, password, variable string) string {
 		out, err := mysqlExec(pod, "root", password, "",
 			fmt.Sprintf("SELECT @@GLOBAL.%s;", variable))
@@ -105,7 +117,7 @@ spec:
 		By("verifying the new value is live on both instances")
 		for _, pod := range []string{cluster + "-1", cluster + "-2"} {
 			Eventually(func(g Gomega) {
-				g.Expect(globalVariable(pod, password, "max_connections")).To(Equal("120"),
+				g.Expect(globalVariableG(g, pod, password, "max_connections")).To(Equal("120"),
 					"max_connections was not applied at runtime on %s", pod)
 			}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 		}
@@ -144,7 +156,7 @@ spec:
 
 		By("verifying the dynamic value is applied before the roll starts")
 		Eventually(func(g Gomega) {
-			g.Expect(globalVariable(cluster+"-1", password, "max_connections")).To(Equal("130"),
+			g.Expect(globalVariableG(g, cluster+"-1", password, "max_connections")).To(Equal("130"),
 				"the dynamic part of a mixed change must be applied at runtime")
 			g.Expect(podUID(cluster + "-1")).To(Equal(uid1),
 				"the dynamic part must land before the Pod is recreated")
@@ -184,14 +196,18 @@ spec:
 		By("changing only innodb_flush_method")
 		patchClusterParameters(cluster, `{"innodb_flush_method":"O_DSYNC"}`)
 
-		By("waiting for both Pods to be recreated with the new value")
+		By("waiting for the Pods to be recreated")
 		Eventually(func(g Gomega) {
 			g.Expect(podUID(cluster + "-1")).NotTo(Equal(uid1),
 				"a restart-required-only change must roll the primary")
-			g.Expect(globalVariable(cluster+"-1", password, "innodb_flush_method")).To(Equal("O_DSYNC"),
-				"the value must come from my.cnf after the roll")
 		}, e2eTimeout(20*time.Minute), 10*time.Second).Should(Succeed())
 		expectClusterReady(cluster, 2, 20*time.Minute)
+
+		By("verifying the value comes from my.cnf after the roll")
+		Eventually(func(g Gomega) {
+			g.Expect(globalVariableG(g, cluster+"-1", password, "innodb_flush_method")).To(Equal("O_DSYNC"),
+				"the value must come from my.cnf after the roll")
+		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 	})
 
 	It("rejects operator-managed keys in spec.mysql.parameters", func() {

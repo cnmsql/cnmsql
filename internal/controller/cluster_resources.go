@@ -26,6 +26,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -647,6 +648,14 @@ func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan 
 	delete(templateLabels, roleLabel)
 	templateAnnotations := maps.Clone(annotations)
 	templateAnnotations[configHashAnnotation] = stableConfigHash
+	// A template epoch bump marks a change the Template map cannot express
+	// (a runtime-applied parameter was removed), so it must move the hash even
+	// though the rendered basis did not change. Epoch 0 is omitted: adding the
+	// annotation unconditionally would roll every Pod on the operator upgrade
+	// that introduced it.
+	if epoch := templateHashEpoch(cluster); epoch > 0 {
+		templateAnnotations[paramsEpochAnnotation] = strconv.Itoa(epoch)
+	}
 	templateHash, err := hashObject(struct {
 		Labels      map[string]string
 		Annotations map[string]string
@@ -750,4 +759,18 @@ func templateHashParameters(cluster *mysqlv1alpha1.Cluster) map[string]string {
 		return map[string]string{}
 	}
 	return state.Template
+}
+
+// paramsEpochAnnotation carries the parameters state's TemplateEpoch in the
+// pod template hash inputs. See design/043.
+const paramsEpochAnnotation = "cnmsql.cnmsql.co/params-epoch"
+
+// templateHashEpoch returns the state record's TemplateEpoch, or 0 without a
+// record.
+func templateHashEpoch(cluster *mysqlv1alpha1.Cluster) int {
+	state := loadParametersState(cluster)
+	if state == nil {
+		return 0
+	}
+	return state.TemplateEpoch
 }

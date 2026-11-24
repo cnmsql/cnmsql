@@ -21,12 +21,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"sort"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -151,9 +153,14 @@ func normalizeParameterMap(params map[string]string) map[string]string {
 //   - Pending tracks the change set currently being probed, so probe evidence
 //     accumulates across reconciles until every change is classified.
 type parametersState struct {
-	Runtime  map[string]string  `json:"runtime,omitempty"`
-	Template map[string]string  `json:"template,omitempty"`
-	Pending  *parametersPending `json:"pending,omitempty"`
+	Runtime  map[string]string `json:"runtime,omitempty"`
+	Template map[string]string `json:"template,omitempty"`
+	// TemplateEpoch moves the pod template hash when a change cannot be
+	// expressed through the Template map alone: removing a parameter that was
+	// applied at runtime (and therefore never entered Template) leaves the
+	// basis unchanged, yet only a restart undoes the value mysqld still holds.
+	TemplateEpoch int                `json:"templateEpoch,omitempty"`
+	Pending       *parametersPending `json:"pending,omitempty"`
 }
 
 // parametersPending is the in-flight diff: the reload token the pass was
@@ -163,6 +170,11 @@ type parametersPending struct {
 	Token       string                       `json:"token"`
 	Fingerprint string                       `json:"fingerprint"`
 	Changes     map[string]*parametersChange `json:"changes"`
+	// Answers records, per instance, that this change set was probed there by
+	// any pass (the automatic one or a manual reload). A change settles only
+	// when every instance answered: one ready instance applying a parameter
+	// proves nothing about a lagging one, which may still refuse it.
+	Answers map[string]bool `json:"answers,omitempty"`
 }
 
 // classifyReloadResults records the probe outcome of one reload pass into the
@@ -171,19 +183,34 @@ type parametersPending struct {
 // required). A restart-required classification is sticky: the conservative
 // reading wins when a variable behaves differently across instances. Names
 // outside the change set are ignored defensively.
-func classifyReloadResults(changes map[string]*parametersChange, resp *webserver.ReloadResponse) {
+func classifyReloadResults(changes map[string]*parametersChange, resp *webserver.ReloadResponse) bool {
+	changed := false
 	for _, name := range resp.Applied {
 		change, ok := changes[normalizeParameterKey(name)]
 		if !ok || change.Status == paramRestartRequired {
 			continue
 		}
 		change.Status = paramDynamic
+		changed = true
 	}
 	for name := range resp.Skipped {
-		if change, ok := changes[normalizeParameterKey(name)]; ok {
+		if change, ok := changes[normalizeParameterKey(name)]; ok && change.Status != paramRestartRequired {
 			change.Status = paramRestartRequired
+			changed = true
 		}
 	}
+	return changed
+}
+
+// parameterChangesAnswered reports whether every named instance recorded an
+// answer for the pending change set.
+func (p *parametersPending) parameterChangesAnswered(instanceNames []string) bool {
+	for _, name := range instanceNames {
+		if !p.Answers[name] {
+			return false
+		}
+	}
+	return true
 }
 
 // parameterChangesClassified reports whether every change carries a probe
@@ -218,10 +245,20 @@ func (s *parametersState) absorbParameterChanges(changes map[string]*parametersC
 		runtime = map[string]string{}
 	}
 	template := maps.Clone(s.Template)
+	epochBump := false
 	for key, change := range changes {
 		if change.Removed {
 			deleteNormalizedParameter(runtime, key)
-			deleteNormalizedParameter(template, key)
+			if templateHasKey(template, key) {
+				// Dropping the key from the template basis changes the rendered
+				// hash by itself.
+				deleteNormalizedParameter(template, key)
+			} else {
+				// The basis never carried the key (it was applied at runtime),
+				// so only the epoch can move the pod template hash and undo
+				// the value mysqld still holds.
+				epochBump = true
+			}
 			restartRequired = append(restartRequired, key)
 			continue
 		}
@@ -240,9 +277,23 @@ func (s *parametersState) absorbParameterChanges(changes map[string]*parametersC
 	}
 	s.Runtime = runtime
 	s.Template = template
+	if epochBump {
+		s.TemplateEpoch++
+	}
 	sort.Strings(dynamic)
 	sort.Strings(restartRequired)
 	return dynamic, restartRequired, true
+}
+
+// templateHasKey reports whether any verbatim key of m normalizes to the
+// given name.
+func templateHasKey(m map[string]string, normalized string) bool {
+	for key := range m {
+		if normalizeParameterKey(key) == normalized {
+			return true
+		}
+	}
+	return false
 }
 
 // fingerprintParameterChanges digests a change set so a later spec edit during
@@ -263,9 +314,15 @@ func fingerprintParameterChanges(changes map[string]*parametersChange) string {
 // only parameters the server refuses move the pod template hash (via the
 // Template record) so the regular serialized roll picks them up from my.cnf.
 //
-// The probe needs at least one ready instance: with none, the change is kept
-// pending and retried on a later pass instead of guessing, and instances that
-// were down are caught up once they report ready.
+// A change settles only when every instance answered the probe: one ready
+// instance applying a parameter proves nothing about a lagging one, which may
+// still refuse it and need the restart. Until then the diff keeps the change,
+// so a spec edit re-probes the unabsorbed values everywhere.
+//
+// The pass never fails the reconcile over instance-level trouble: a missing
+// Pod (mid-roll) is skipped — reconcileInstances recreates it — and a reload
+// or patch error is logged and retried on a later pass. Only state writes
+// propagate.
 func (r *ClusterReconciler) reconcileParameters(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
 	state := loadParametersState(cluster)
 	if state == nil {
@@ -277,46 +334,77 @@ func (r *ClusterReconciler) reconcileParameters(ctx context.Context, cluster *my
 			Runtime:  maps.Clone(cluster.Spec.MySQL.Parameters),
 			Template: maps.Clone(cluster.Spec.MySQL.Parameters),
 		}
-		return r.saveParametersState(ctx, cluster, state)
+		return r.saveParametersState(ctx, cluster, state, "")
 	}
 
 	changes := diffParameters(cluster.Spec.MySQL.Parameters, state.Runtime)
+	fmt.Println("DEBUG changes:", len(changes), "pending:", state.Pending != nil, "fingerprint match:", state.Pending != nil && state.Pending.Fingerprint == fingerprintParameterChanges(changes))
 	if len(changes) == 0 {
-		// The change set is fully absorbed. Keep the pending record only while
-		// some instance still owes a probe, so a late-ready instance is caught
-		// up with the changed parameters rather than the whole spec.
-		if state.Pending != nil && r.allInstancesReloaded(ctx, cluster, state.Pending.Token) {
-			state.Pending = nil
-			return r.saveParametersState(ctx, cluster, state)
-		}
+		// The change set is settled. The pending record lingers until the next
+		// change replaces it, so a late-ready instance is caught up with the
+		// changed parameters rather than the whole spec (which would overwrite
+		// manual SET GLOBAL drift).
 		return nil
 	}
 
+	dirty := false
+	pendingStampToken := ""
 	fingerprint := fingerprintParameterChanges(changes)
 	if state.Pending == nil || state.Pending.Fingerprint != fingerprint {
-		// A fresh (or edited mid-probe) change set: stamp a new reload token so
-		// the pass runs once per change.
+		// A fresh (or edited mid-probe) change set: stamp a new reload token.
+		// The annotation is written only here, so a newer manual reload token
+		// is never reverted to an older automatic one.
 		state.Pending = &parametersPending{
 			Token:       metav1.Now().UTC().Format(time.RFC3339),
 			Fingerprint: fingerprint,
 			Changes:     changes,
+			Answers:     map[string]bool{},
 		}
+		pendingStampToken = state.Pending.Token
+		dirty = true
 	}
 
-	probeErr := r.applyReload(ctx, cluster, state.Pending.Token, probeParameters(state.Pending),
-		func(resp *webserver.ReloadResponse) {
-			classifyReloadResults(state.Pending.Changes, resp)
-		})
+	// Probe every ready instance that has not answered yet. Tokens are compared
+	// for equality in the manual pass; this pass skips by answer, so a token a
+	// manual reload stamped meanwhile cannot hide the change from this one.
+	// Instance-level errors are logged inside the pass; only a non-NotFound Pod
+	// read failure is returned, and the state saved below is written first so
+	// partial evidence survives it.
+	if err := r.applyReload(ctx, cluster, state.Pending.Token, probeParameters(state.Pending),
+		func(name string, pod *corev1.Pod) bool {
+			return state.Pending.Answers[name]
+		},
+		func(instance string, resp *webserver.ReloadResponse) {
+			if state.Pending == nil {
+				return
+			}
+			if classifyReloadResults(state.Pending.Changes, resp) {
+				dirty = true
+			}
+			state.Pending.Answers[instance] = true
+			dirty = true
+		}); err != nil {
+		logf.FromContext(ctx).WithName("reload").Error(err, "Could not read an instance Pod for the parameter probe, will retry")
+	}
 
-	if parameterChangesClassified(state.Pending.Changes) {
+	// Settle and absorb once every instance answered and every parameter is
+	// classified. Removals are classified at diff time; the verdicts come from
+	// the instances.
+	fmt.Println("DEBUG classified:", parameterChangesClassified(state.Pending.Changes), "answers:", state.Pending.Answers, "instances:", cluster.Status.InstanceNames)
+	if parameterChangesClassified(state.Pending.Changes) &&
+		state.Pending.parameterChangesAnswered(cluster.Status.InstanceNames) {
 		if dynamic, restartRequired, ok := state.absorbParameterChanges(state.Pending.Changes); ok {
 			state.emitParameterEvents(r, cluster, dynamic, restartRequired)
+			dirty = true
 		}
 	}
-	if err := r.saveParametersState(ctx, cluster, state); err != nil {
-		return err
+	if !dirty {
+		return nil
 	}
-	return probeErr
+	// Stamp the reload token only here, and only when this pass created the
+	// pending record; the save stamps it after its diff base is taken, so the
+	// annotation actually reaches the API.
+	return r.saveParametersState(ctx, cluster, state, pendingStampToken)
 }
 
 // emitParameterEvents surfaces the probe verdicts. A refused parameter is
@@ -337,22 +425,31 @@ func (s *parametersState) emitParameterEvents(r *ClusterReconciler, cluster *mys
 }
 
 // applyReload runs one reload pass over the cluster's instances: it re-applies
-// params to every ready instance whose Pod has not recorded this token yet,
-// stamps the token on each probed Pod, and hands every response to record so
-// the caller can accumulate evidence. Pods carrying a newer token are left
-// alone: a manual reload stamped after this pass started must not be undone.
-// This is the single reload pass shared by the automatic parameter path and
-// the manual `kubectl cnmsql reload` annotation.
-func (r *ClusterReconciler) applyReload(ctx context.Context, cluster *mysqlv1alpha1.Cluster, token string, params map[string]string, record func(*webserver.ReloadResponse)) error {
+// params to every ready instance the caller has not excluded via skip, stamps
+// the token on each probed Pod, and hands every response to record so the
+// caller can accumulate evidence. This is the single reload pass shared by the
+// automatic parameter path and the manual `kubectl cnmsql reload` annotation.
+//
+// Instance-level trouble never aborts the pass or fails the reconcile: a
+// missing Pod (mid-roll) is skipped because reconcileInstances recreates it,
+// and reload or patch errors are logged and retried on a later pass. Only a
+// failed Pod read other than NotFound is returned, so an API-server hiccup
+// still requeues.
+func (r *ClusterReconciler) applyReload(ctx context.Context, cluster *mysqlv1alpha1.Cluster, token string, params map[string]string,
+	skip func(instance string, pod *corev1.Pod) bool, record func(instance string, resp *webserver.ReloadResponse)) error {
 	log := logf.FromContext(ctx).WithName("reload")
 	control := r.instanceControlClient()
 
 	for _, name := range cluster.Status.InstanceNames {
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, pod); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
 			return err
 		}
-		if reloadTokenApplied(pod.Annotations[reloadAppliedAnnotation], token) {
+		fmt.Println("DEBUG applyReload instance:", name, "skipped:", skip != nil && skip(name, pod), "ready:", podReady(pod), "notfound-never")
+		if skip != nil && skip(name, pod) {
 			continue
 		}
 		if !podReady(pod) {
@@ -362,15 +459,19 @@ func (r *ClusterReconciler) applyReload(ctx context.Context, cluster *mysqlv1alp
 		}
 
 		resp, err := control.Reload(ctx, cluster, name, webserver.ReloadRequest{Parameters: params})
+		fmt.Println("DEBUG reloaded:", name, "err:", err)
 		if err != nil {
-			return err
+			// One unreachable instance must not block the others; a later pass
+			// retries it.
+			log.Error(err, "Could not probe instance for a parameter reload", "instance", name)
+			continue
 		}
 		if len(resp.Skipped) > 0 {
 			log.Info("Some parameters could not be applied at runtime (restart required)",
 				"instance", name, "skipped", resp.Skipped)
 		}
 		if record != nil {
-			record(resp)
+			record(name, resp)
 		}
 		log.Info("Applied configuration reload", "instance", name, "applied", resp.Applied)
 
@@ -380,38 +481,10 @@ func (r *ClusterReconciler) applyReload(ctx context.Context, cluster *mysqlv1alp
 		}
 		pod.Annotations[reloadAppliedAnnotation] = token
 		if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
-			return err
+			log.Error(err, "Could not record the reload token on the Pod", "instance", name)
 		}
 	}
 	return nil
-}
-
-// reloadTokenApplied reports whether the Pod's recorded reload token already
-// covers the pass token. Tokens are RFC3339 stamps, so "applied" means equal
-// or newer: a Pod stamped by a later pass must not be re-probed by an older
-// one. An unparseable or missing Pod token counts as not applied.
-func reloadTokenApplied(podToken, token string) bool {
-	podTime, podErr := time.Parse(time.RFC3339, podToken)
-	passTime, passErr := time.Parse(time.RFC3339, token)
-	if podErr != nil || passErr != nil {
-		return podToken != "" && podToken == token
-	}
-	return !podTime.Before(passTime)
-}
-
-// allInstancesReloaded reports whether every instance Pod has recorded the
-// given reload token, so the pending record can be retired.
-func (r *ClusterReconciler) allInstancesReloaded(ctx context.Context, cluster *mysqlv1alpha1.Cluster, token string) bool {
-	for _, name := range cluster.Status.InstanceNames {
-		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, pod); err != nil {
-			return false
-		}
-		if pod.Annotations[reloadAppliedAnnotation] != token {
-			return false
-		}
-	}
-	return true
 }
 
 // probeParameters builds the SET GLOBAL request for the pending change set:
@@ -441,12 +514,20 @@ func loadParametersState(cluster *mysqlv1alpha1.Cluster) *parametersState {
 	if err := json.Unmarshal([]byte(raw), state); err != nil {
 		return nil
 	}
+	// A record written before per-instance answers existed (or a partially
+	// populated one) must not carry a nil map into the pass.
+	if state.Pending != nil && state.Pending.Answers == nil {
+		state.Pending.Answers = map[string]bool{}
+	}
 	return state
 }
 
-// saveParametersState persists the parameter record and, while a change set is
-// pending, the reload token that drives the shared pass, in one patch.
-func (r *ClusterReconciler) saveParametersState(ctx context.Context, cluster *mysqlv1alpha1.Cluster, state *parametersState) error {
+// saveParametersState persists the parameter record. A non-empty reloadToken
+// stamps reloadAnnotation — passed only when this pass created the pending
+// record, so a newer manual reload token is never reverted to an older
+// automatic one. The token is stamped after the diff base is copied, or the
+// patch would not carry it.
+func (r *ClusterReconciler) saveParametersState(ctx context.Context, cluster *mysqlv1alpha1.Cluster, state *parametersState, reloadToken string) error {
 	payload, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -456,8 +537,8 @@ func (r *ClusterReconciler) saveParametersState(ctx context.Context, cluster *my
 		cluster.Annotations = map[string]string{}
 	}
 	cluster.Annotations[parametersStateAnnotation] = string(payload)
-	if state.Pending != nil {
-		cluster.Annotations[reloadAnnotation] = state.Pending.Token
+	if reloadToken != "" {
+		cluster.Annotations[reloadAnnotation] = reloadToken
 	}
 	return r.Patch(ctx, cluster, client.MergeFrom(before))
 }
