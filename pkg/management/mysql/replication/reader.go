@@ -133,6 +133,83 @@ func (m *Manager) SemiSyncStatus(ctx context.Context) (SemiSyncState, error) {
 	return SemiSyncState{SourceEnabled: source, ReplicaEnabled: replica}, nil
 }
 
+// SemiSyncSourceLive is the source side's live semi-sync state (design 044),
+// as opposed to the configuration flags in SemiSyncState.
+type SemiSyncSourceLive struct {
+	// Observed is false when the server does not expose the status variables
+	// (the source plugin is not loaded); the other fields are then zero.
+	Observed bool
+	// Active is the live flag: ON while the source waits for
+	// acknowledgements, OFF once it fell back to asynchronous replication.
+	Active bool
+	// Clients is the number of connected semi-sync replicas.
+	Clients int
+	// WaitNoReplica is the wait-no-replica variable's value.
+	WaitNoReplica bool
+	// WaitForReplicaCount is the live acknowledgement count; 1 on an engine
+	// without the variable (MariaDB always waits for exactly one).
+	WaitForReplicaCount int
+}
+
+// SemiSyncSourceLive reads the live semi-sync source state: the status flag
+// that flips OFF when the source falls back to asynchronous replication, the
+// connected semi-sync replica count, and the variables that decide when it
+// falls back.
+func (m *Manager) SemiSyncSourceLive(ctx context.Context) (SemiSyncSourceLive, error) {
+	naming := m.repl.SemiSyncNaming(m.version)
+	if naming.StatusVarSource == "" {
+		return SemiSyncSourceLive{}, nil
+	}
+	query := fmt.Sprintf("SHOW GLOBAL STATUS WHERE Variable_name IN (%s, %s)",
+		quote(naming.StatusVarSource), quote(naming.ClientsVarSource))
+	rows, err := m.conn.QueryContext(ctx, query)
+	if err != nil {
+		return SemiSyncSourceLive{}, fmt.Errorf("query %q: %w", query, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var live SemiSyncSourceLive
+	var sawStatus bool
+	for rows.Next() {
+		var name string
+		var value sql.NullString
+		if err := rows.Scan(&name, &value); err != nil {
+			return SemiSyncSourceLive{}, fmt.Errorf("reading semi-sync status: %w", err)
+		}
+		switch {
+		case strings.EqualFold(name, naming.StatusVarSource):
+			sawStatus = true
+			live.Active = parseBool(value.String)
+		case strings.EqualFold(name, naming.ClientsVarSource):
+			if n, err := strconv.Atoi(strings.TrimSpace(value.String)); err == nil {
+				live.Clients = n
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return SemiSyncSourceLive{}, fmt.Errorf("reading semi-sync status: %w", err)
+	}
+	if !sawStatus {
+		return SemiSyncSourceLive{}, nil
+	}
+	live.Observed = true
+	if naming.WaitNoReplicaVar != "" {
+		if live.WaitNoReplica, err = m.optionalGlobalBool(ctx, naming.WaitNoReplicaVar); err != nil {
+			return SemiSyncSourceLive{}, err
+		}
+	}
+	live.WaitForReplicaCount = 1
+	if naming.WaitForCountVar != "" {
+		count, err := m.scalarString(ctx, "SELECT @@GLOBAL."+naming.WaitForCountVar)
+		if err != nil {
+			return SemiSyncSourceLive{}, err
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(count)); err == nil && n > 0 {
+			live.WaitForReplicaCount = n
+		}
+	}
+	return live, nil
+}
+
 // Uptime returns the mysqld uptime in seconds.
 func (m *Manager) Uptime(ctx context.Context) (int64, error) {
 	var name string

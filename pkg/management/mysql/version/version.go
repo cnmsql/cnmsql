@@ -237,6 +237,17 @@ type SemiSyncNaming struct {
 	WaitForCountVar string
 	// TimeoutVar bounds the acknowledgement wait, in milliseconds.
 	TimeoutVar string
+	// WaitNoReplicaVar decides whether the source keeps waiting for the
+	// timeout when fewer replicas than the wait count are connected (ON, the
+	// server default) or falls back to asynchronous replication at once (OFF).
+	WaitNoReplicaVar string
+	// StatusVarSource is the live status variable that is ON while the source
+	// runs semi-synchronously and OFF once it fell back to asynchronous
+	// replication, unlike the configuration flag EnabledVarSource.
+	StatusVarSource string
+	// ClientsVarSource is the status variable counting connected semi-sync
+	// replicas.
+	ClientsVarSource string
 	// WaitPointVar, when set, is pinned to AFTER_SYNC so the source waits for
 	// the acknowledgement before committing to its storage engine: no other
 	// session sees a transaction that a failover could lose. Empty where that
@@ -258,6 +269,9 @@ func (v Version) SemiSync() SemiSyncNaming {
 			EnabledVarReplica: "rpl_semi_sync_replica_enabled",
 			WaitForCountVar:   "rpl_semi_sync_source_wait_for_replica_count",
 			TimeoutVar:        "rpl_semi_sync_source_timeout",
+			WaitNoReplicaVar:  "rpl_semi_sync_source_wait_no_replica",
+			StatusVarSource:   "Rpl_semi_sync_source_status",
+			ClientsVarSource:  "Rpl_semi_sync_source_clients",
 			PluginSource:      "rpl_semi_sync_source",
 			PluginReplica:     "rpl_semi_sync_replica",
 			LibSource:         "semisync_source.so",
@@ -269,6 +283,9 @@ func (v Version) SemiSync() SemiSyncNaming {
 		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
 		WaitForCountVar:   "rpl_semi_sync_master_wait_for_slave_count",
 		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		WaitNoReplicaVar:  "rpl_semi_sync_master_wait_no_slave",
+		StatusVarSource:   "Rpl_semi_sync_master_status",
+		ClientsVarSource:  "Rpl_semi_sync_master_clients",
 		PluginSource:      "rpl_semi_sync_master",
 		PluginReplica:     "rpl_semi_sync_slave",
 		LibSource:         "semisync_master.so",

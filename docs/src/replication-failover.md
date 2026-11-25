@@ -107,6 +107,87 @@ The operator applies the change on the primary over the mTLS control API during
 its steady-state reconcile. It is a runtime adjustment only; the static
 `my.cnf` floor does not change.
 
+### Semi-sync degradation
+
+Semi-sync is not a guarantee by itself. When a commit's acknowledgement wait
+times out, MySQL and MariaDB silently fall back to asynchronous replication and
+keep committing. They switch back on their own once a replica catches up. The
+configuration flag (`rpl_semi_sync_source_enabled`) stays ON throughout, so it
+says nothing about whether commits are currently protected.
+
+The instance manager watches the primary's live flag
+(`Rpl_semi_sync_source_status`, `Rpl_semi_sync_master_status` before MySQL
+8.0.26 and on MariaDB) every 2 seconds and logs every transition in both
+directions. The operator turns it into the `SemiSyncDegraded` condition on the
+Cluster:
+
+| Status | Reason | Meaning |
+|--------|--------|---------|
+| `False` | `SemiSyncActive` | The primary replicates semi-synchronously. |
+| `True` | `PrimaryAsynchronous` | The primary has run asynchronously for at least `degradedAfterSeconds`. A failover can lose what it committed meanwhile. |
+| `True` | `PrimaryReadOnly` | As above, and the read-only fence (below) is pausing writes. |
+
+The condition only appears once the primary has reported the live flag. A
+`Warning SemiSyncDegraded` event marks the fallback and a
+`Normal SemiSyncRestored` event marks the recovery. `kubectl cnmsql status`
+shows the primary as `Primary (async fallback)` or
+`Primary (async, read-only)`.
+
+The flag flips on the first acknowledgement wait that times out, so a short gap
+would otherwise become an incident. `degradedAfterSeconds` (default 10, `0`
+reports immediately) is how long the flag must stay OFF before the condition
+turns `True`. The operator evaluates it on its resync, so it can show up to 30
+seconds after that.
+
+```yaml
+spec:
+  mysql:
+    semiSync:
+      enabled: true
+      dataDurability: required
+      timeoutMillis: 2000
+      degradedAfterSeconds: 10
+      readOnlyAfterDegradedSeconds: 30
+```
+
+#### `required` mode and `wait_no_replica`
+
+`rpl_semi_sync_source_wait_no_replica` (`rpl_semi_sync_master_wait_no_slave` on
+older MySQL and on MariaDB) decides what a primary does once fewer replicas
+than the wait count are connected. `ON`, the server default, still holds each
+commit for the full timeout. `OFF` falls back to asynchronous replication
+immediately. With `dataDurability: required` the operator renders the variable
+`ON` and turns it back `ON` if anything changes it. The webhook rejects
+`spec.mysql.parameters` that set it. With `preferred` the server default
+stays, and you may set it `OFF` to skip even the one timeout stall that
+precedes the fallback.
+
+#### The read-only fence
+
+Even in `required` mode the primary falls back to asynchronous replication once
+`timeoutMillis` expires; neither server offers a "never degrade" setting. To
+stop writes instead, set `readOnlyAfterDegradedSeconds` (`required` mode only).
+When the live flag has been OFF that long, the instance manager puts the
+primary into read-only mode (`read_only` and `super_read_only`; `read_only`
+only on MariaDB, where users with `SUPER` can still write). Reads keep working,
+and the primary is not failed over for it.
+
+Writes resume when the flag turns back ON, or when enough semi-sync replicas
+have reconnected. The second trigger is needed because the server only switches
+back to semi-sync on an acknowledgement for a new commit, and a read-only
+primary makes none. If the first commit after such a release still gets no
+acknowledgement, the fence engages again one full `readOnlyAfterDegradedSeconds`
+later. The worst-case unprotected window is therefore `timeoutMillis` plus
+`readOnlyAfterDegradedSeconds` plus about 2 seconds. The webhook warns about a
+`required` cluster without the fence.
+
+The fence lives in the instance manager, so it holds even when the operator is
+down. It shares the read-only flags with
+[storage protection](storage.md#protecting-a-full-volume-with-read-only-mode): neither lifts them while the other holds
+them. After an in-place instance-manager upgrade the fence is rebuilt from the
+live flag, which can let writes through for up to one
+`readOnlyAfterDegradedSeconds` window.
+
 ### Probes
 
 The liveness probe (`/livez`) does not depend on mysqld being up. The manager

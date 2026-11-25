@@ -88,6 +88,12 @@ type SemiSync struct {
 	WaitForReplicaCount int
 	// TimeoutMillis mirrors rpl_semi_sync_source_timeout.
 	TimeoutMillis int
+	// WaitNoReplica pins rpl_semi_sync_source_wait_no_replica (or the legacy
+	// rpl_semi_sync_master_wait_no_slave) ON, so a primary with no connected
+	// replica still waits for the timeout instead of falling back to
+	// asynchronous replication at once. Set for "required" data durability
+	// (design 044).
+	WaitNoReplica bool
 }
 
 // ServerConfig is the fully-resolved input to rendering a my.cnf.
@@ -564,6 +570,49 @@ func isDeniedName(name string) bool {
 	return false
 }
 
+// semiSyncWaitNoReplicaNames are both spellings of the wait-no-replica
+// variable: MySQL 8.0.26+ and the legacy/MariaDB name.
+var semiSyncWaitNoReplicaNames = []string{
+	"rpl_semi_sync_source_wait_no_replica",
+	"rpl_semi_sync_master_wait_no_slave",
+}
+
+// semiSyncWaitNoReplicaUniquePrefixes are the shortest prefixes that name only
+// the wait-no-replica variable: anything shorter also matches
+// rpl_semi_sync_*_wait_point or *_wait_for_*_count, which the server would
+// refuse as ambiguous rather than expand.
+var semiSyncWaitNoReplicaUniquePrefixes = []string{
+	"rpl_semi_sync_source_wait_n",
+	"rpl_semi_sync_master_wait_n",
+}
+
+// IsSemiSyncWaitNoReplicaKey reports whether a my.cnf key sets the semi-sync
+// wait-no-replica variable under any name mysqld resolves to it: either
+// spelling, behind loose_ or a value modifier (skip_ turns it OFF), or as a
+// unique abbreviation.
+func IsSemiSyncWaitNoReplicaKey(key string) bool {
+	k := normalizeKey(key)
+	names := []string{k}
+	rest, loose := strings.CutPrefix(k, "loose_")
+	if loose {
+		names = append(names, rest)
+	}
+	for _, m := range optionModifiers {
+		if name, ok := strings.CutPrefix(rest, m); ok {
+			names = append(names, name)
+			break
+		}
+	}
+	for _, name := range names {
+		for i, full := range semiSyncWaitNoReplicaNames {
+			if strings.HasPrefix(full, name) && strings.HasPrefix(name, semiSyncWaitNoReplicaUniquePrefixes[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ValidateUserParameters returns an error listing any user parameters that are
 // malformed, collide with operator-managed keys, or are otherwise denied. Keys
 // must be plain option names and values must fit on one my.cnf line: the
@@ -639,6 +688,16 @@ func (c *ServerConfig) Render() (string, error) {
 	// removed variable aborts mysqld startup, which would strand a major upgrade
 	// mid-roll. The operator surfaces the drops via RemovedUserParameters.
 	userParams := filterRemovedParams(c.UserParameters, ver)
+	if c.SemiSync.Enabled && c.SemiSync.WaitNoReplica {
+		// The operator pins the variable ON in "required" mode; a user value
+		// rendered after it would win. Admission refuses such a parameter, so
+		// this only catches one set before the mode was (design 044).
+		for key := range userParams {
+			if IsSemiSyncWaitNoReplicaKey(key) {
+				delete(userParams, key)
+			}
+		}
+	}
 	if len(userParams) > 0 {
 		writeSection(&b, "# --- user-provided ---", mapToOrderedPairs(userParams))
 	}
@@ -802,6 +861,9 @@ func (c *ServerConfig) managedSettings(ver version.Version) []pair {
 		}
 		if naming.WaitPointVar != "" {
 			pairs = append(pairs, pair{"loose-" + naming.WaitPointVar, "AFTER_SYNC"})
+		}
+		if c.SemiSync.WaitNoReplica && naming.WaitNoReplicaVar != "" {
+			pairs = append(pairs, pair{"loose-" + naming.WaitNoReplicaVar, "ON"})
 		}
 	}
 

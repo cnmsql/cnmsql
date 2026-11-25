@@ -131,6 +131,11 @@ type Status struct {
 	// protection is disabled or not engaged, and on an instance manager that
 	// predates the field.
 	ReadOnlyProtectionEngaged bool `json:"readOnlyProtectionEngaged,omitempty"`
+
+	// SemiSyncReadOnlyEngaged reports that the semi-sync monitor holds this
+	// primary read-only because it has run asynchronously for longer than
+	// spec.mysql.semiSync.readOnlyAfterDegradedSeconds (design 044).
+	SemiSyncReadOnlyEngaged bool `json:"semiSyncReadOnlyEngaged,omitempty"`
 }
 
 // ReplicationLagStatus is one instance's heartbeat reading: how old the newest
@@ -301,4 +306,15 @@ type ReplicationStatus struct {
 type SemiSyncStatus struct {
 	SourceEnabled  bool `json:"sourceEnabled"`
 	ReplicaEnabled bool `json:"replicaEnabled"`
+	// SourceActive is the primary's live semi-sync flag
+	// (Rpl_semi_sync_source_status / Rpl_semi_sync_master_status): false once
+	// it fell back to asynchronous replication. Set only on the writable
+	// primary by an instance manager that monitors it (design 044).
+	SourceActive *bool `json:"sourceActive,omitempty"`
+	// SourceClients is the number of connected semi-sync replicas, alongside
+	// SourceActive.
+	SourceClients *int `json:"sourceClients,omitempty"`
+	// InactiveSeconds is how long SourceActive has been false, measured on
+	// the instance's own clock; nil while it is true.
+	InactiveSeconds *int64 `json:"inactiveSeconds,omitempty"`
 }

@@ -394,6 +394,14 @@ const (
 	// of a lagged failover), so it cannot recover a time or the latest point.
 	ConditionDeadBranch = "DeadBranch"
 
+	// ConditionSemiSyncDegraded is True while the primary of a semi-sync
+	// cluster has been running asynchronously (its live semi-sync flag is OFF)
+	// for at least spec.mysql.semiSync.degradedAfterSeconds: transactions it
+	// commits are not acknowledged by any replica, and a failover can lose
+	// them. It is absent when semi-sync is off, and until the primary has
+	// reported its live semi-sync state.
+	ConditionSemiSyncDegraded = "SemiSyncDegraded"
+
 	// EventMariaDBTimelineTruncated is the Warning event reason emitted when
 	// the MariaDB primary timeline reached its ceiling and dropped history an
 	// instance position or archive segment still referenced.

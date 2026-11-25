@@ -243,6 +243,25 @@ func TestStorageProtectionReleasesAfterRecovery(t *testing.T) {
 	}
 }
 
+func TestStorageProtectionLeavesTheFlagsToTheSemiSyncFence(t *testing.T) {
+	t.Parallel()
+	p, controller, mock := newProtectionController(t, webserver.RolePrimary, engine.FlavorMySQL, usageAt(84))
+	p.engaged = true
+	controller.setSemiSyncReadOnlyEngaged(true)
+
+	// Usage recovered, but the semi-sync fence (design 044) holds the primary
+	// read-only too: the latch drops, the flags stay.
+	expectReadOnly(mock, "1", "1")
+
+	p.Tick(context.Background())
+	if p.engaged || controller.StorageProtectionEngaged() {
+		t.Fatal("protector latch should be clear")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStorageProtectionHoldsWithoutServerChanges(t *testing.T) {
 	t.Parallel()
 	p, _, mock := newProtectionController(t, webserver.RolePrimary, engine.FlavorMySQL, usageAt(50))

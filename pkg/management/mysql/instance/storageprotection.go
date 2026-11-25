@@ -90,6 +90,9 @@ type StorageProtector struct {
 	// writable reports whether the instance holds the writable-primary intent
 	// right now.
 	writable func(ctx context.Context) bool
+	// otherHolds reports whether the semi-sync fence (design 044) holds the
+	// read-only flags too, in which case a release must leave them set.
+	otherHolds func() bool
 	// report publishes the engagement for the instance status.
 	report func(engaged bool)
 
@@ -180,6 +183,9 @@ func (p *StorageProtector) Tick(ctx context.Context) {
 			"usedPercent", fmt.Sprintf("%.1f", usage.Ratio()*100),
 			"thresholdPercent", fmt.Sprintf("%.1f", p.threshold*100),
 			"availableBytes", usage.AvailableBytes)
+	case clear && p.otherHolds != nil && p.otherHolds():
+		p.log.Info("Storage protection released; the semi-sync read-only fence still holds the primary read-only",
+			"usedPercent", fmt.Sprintf("%.1f", usage.Ratio()*100))
 	case clear:
 		if err := p.applyReadOnly(tickCtx, false); err != nil {
 			p.log.Error(err, "Storage protection: could not lift the read-only pause")
@@ -231,17 +237,42 @@ func newStorageProtector(
 	thresholdPercent int,
 	view *storageProtectionClusterView,
 ) *StorageProtector {
+	ops := controllerReadOnlyOps(controller)
 	return &StorageProtector{
-		log:   logf.Log.WithName("storage-protection").WithValues("instance", controller.name),
-		usage: usage,
-		liveReadOnly: func(ctx context.Context) (readOnlyState, error) {
+		log:           logf.Log.WithName("storage-protection").WithValues("instance", controller.name),
+		usage:         usage,
+		liveReadOnly:  ops.live,
+		applyReadOnly: ops.apply,
+		writable: func(ctx context.Context) bool {
+			return controller.storageProtectionWritable(ctx, view)
+		},
+		otherHolds:       controller.SemiSyncReadOnlyEngaged,
+		report:           controller.setStorageProtectionEngaged,
+		hasSuperReadOnly: !controller.mariadb && controller.version.HasSuperReadOnly(),
+		threshold:        float64(thresholdPercent) / 100,
+		engaged:          controller.StorageProtectionEngaged(),
+	}
+}
+
+// readOnlyOps reads and switches the server's read-only flags.
+type readOnlyOps struct {
+	live  func(ctx context.Context) (readOnlyState, error)
+	apply func(ctx context.Context, on bool) error
+}
+
+// controllerReadOnlyOps returns the read-only operations the watchdogs share:
+// the same control connection, and the same read_only / super_read_only order,
+// that demotion and promotion use.
+func controllerReadOnlyOps(controller *Controller) readOnlyOps {
+	return readOnlyOps{
+		live: func(ctx context.Context) (readOnlyState, error) {
 			ro, err := controller.repl.ReadOnly(ctx)
 			if err != nil {
 				return readOnlyState{}, err
 			}
 			return readOnlyState{ReadOnly: ro.ReadOnly, SuperReadOnly: ro.SuperReadOnly}, nil
 		},
-		applyReadOnly: func(ctx context.Context, on bool) error {
+		apply: func(ctx context.Context, on bool) error {
 			if on {
 				if err := controller.repl.SetReadOnly(ctx, true); err != nil {
 					return err
@@ -254,13 +285,6 @@ func newStorageProtector(
 			}
 			return controller.repl.SetReadOnly(ctx, false)
 		},
-		writable: func(ctx context.Context) bool {
-			return controller.storageProtectionWritable(ctx, view)
-		},
-		report:           controller.setStorageProtectionEngaged,
-		hasSuperReadOnly: !controller.mariadb && controller.version.HasSuperReadOnly(),
-		threshold:        float64(thresholdPercent) / 100,
-		engaged:          controller.StorageProtectionEngaged(),
 	}
 }
 
@@ -313,6 +337,9 @@ type storageProtectionClusterView struct {
 	isGroupReplication atomic.Bool
 	// observed reports that at least one Cluster read has landed.
 	observed atomic.Bool
+	// semiSyncSettings holds the Cluster's semi-sync settings for the
+	// semi-sync monitor (design 044); nil until the first read lands.
+	semiSyncSettings atomic.Pointer[semiSyncSettings]
 }
 
 func newStorageProtectionClusterView(instance string) *storageProtectionClusterView {
@@ -324,7 +351,21 @@ func (v *storageProtectionClusterView) Observe(cluster *mysqlv1alpha1.Cluster) {
 	target := cluster.Status.TargetPrimary
 	v.target.Store(&target)
 	v.isGroupReplication.Store(cluster.IsGroupReplication())
+	settings := semiSyncSettings{required: cluster.SemiSyncDurabilityRequired()}
+	if after, ok := cluster.SemiSyncReadOnlyAfter(); ok {
+		settings.readOnlyAfter = after
+	}
+	v.semiSyncSettings.Store(&settings)
 	v.observed.Store(true)
+}
+
+// semiSync returns the Cluster's semi-sync settings, and false until a Cluster
+// read has landed.
+func (v *storageProtectionClusterView) semiSync() (semiSyncSettings, bool) {
+	if s := v.semiSyncSettings.Load(); s != nil {
+		return *s, true
+	}
+	return semiSyncSettings{}, false
 }
 
 // managed reports whether the instance runs under cluster management, i.e.

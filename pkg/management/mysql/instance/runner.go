@@ -684,6 +684,15 @@ func Run(ctx context.Context, opts RunOptions) error {
 			opts.ReadOnlyProtectionThreshold, protectionView)
 	}
 
+	// Semi-sync monitor (design 044): observes the primary's live semi-sync
+	// flag, keeps wait-no-replica ON in "required" mode and runs the opt-in
+	// read-only fence, all from the same Cluster feed.
+	if opts.SemiSyncEnabled {
+		monitorCtx, cancelMonitor := context.WithCancel(logf.IntoContext(ctx, log))
+		defer cancelMonitor()
+		startSemiSyncMonitor(monitorCtx, controller, protectionView)
+	}
+
 	var cm *webserver.TLSCertManager
 	srv, err := buildServer(opts, controller)
 	if err != nil {

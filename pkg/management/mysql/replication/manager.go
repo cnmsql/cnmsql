@@ -421,6 +421,21 @@ func (m *Manager) SetSemiSyncWaitForReplicaCount(ctx context.Context, count int)
 	return m.exec(ctx, SetGlobalStatement(naming.WaitForCountVar, strconv.Itoa(count)))
 }
 
+// SetSemiSyncWaitNoReplica sets the wait-no-replica variable at runtime: ON
+// keeps the source waiting for the timeout when fewer replicas than the wait
+// count are connected, OFF falls back to asynchronous replication at once.
+func (m *Manager) SetSemiSyncWaitNoReplica(ctx context.Context, on bool) error {
+	naming := m.repl.SemiSyncNaming(m.version)
+	if naming.WaitNoReplicaVar == "" {
+		return nil
+	}
+	value := "OFF"
+	if on {
+		value = "ON"
+	}
+	return m.exec(ctx, SetGlobalStatement(naming.WaitNoReplicaVar, value))
+}
+
 // SetSemiSyncTimeoutMillis sets the source wait timeout at runtime.
 func (m *Manager) SetSemiSyncTimeoutMillis(ctx context.Context, timeoutMillis int) error {
 	naming := m.repl.SemiSyncNaming(m.version)

@@ -238,6 +238,52 @@ func TestRenderSemiSync(t *testing.T) {
 	assertNotContains(t, out, "wait_point")
 }
 
+func TestRenderSemiSyncWaitNoReplica(t *testing.T) {
+	c := baseConfig()
+	c.SemiSync = SemiSync{Enabled: true, WaitNoReplica: true}
+	c.UserParameters = map[string]string{
+		"loose-rpl_semi_sync_source_wait_no_replica": "OFF",
+		"max_connections": "500",
+	}
+	out := mustRender(t, c)
+	assertContains(t, out, "loose-rpl_semi_sync_source_wait_no_replica = ON")
+	// The user value would be rendered after the pin and win: it is dropped.
+	assertNotContains(t, out, "wait_no_replica = OFF")
+	assertContains(t, out, "max_connections = 500")
+
+	// Outside required mode the server default stays, and a user value too.
+	c.SemiSync.WaitNoReplica = false
+	out = mustRender(t, c)
+	assertNotContains(t, out, "wait_no_replica = ON")
+	assertContains(t, out, "loose-rpl_semi_sync_source_wait_no_replica = OFF")
+
+	legacy := baseConfig()
+	legacy.Version = "8.0.25"
+	legacy.SemiSync = SemiSync{Enabled: true, WaitNoReplica: true}
+	assertContains(t, mustRender(t, legacy), "loose-rpl_semi_sync_master_wait_no_slave = ON")
+}
+
+func TestIsSemiSyncWaitNoReplicaKey(t *testing.T) {
+	for key, want := range map[string]bool{
+		"rpl_semi_sync_source_wait_no_replica":        true,
+		"rpl_semi_sync_master_wait_no_slave":          true,
+		"rpl-semi-sync-master-wait-no-slave":          true,
+		"loose-rpl_semi_sync_source_wait_no_replica":  true,
+		"skip-rpl_semi_sync_master_wait_no_slave":     true,
+		"loose_skip_rpl_semi_sync_master_wait_no":     true,
+		"rpl_semi_sync_master_wait_n":                 true,
+		"rpl_semi_sync_master_wait_":                  false, // ambiguous with wait_point
+		"rpl_semi_sync_master_wait_point":             false,
+		"rpl_semi_sync_source_wait_for_replica_count": false,
+		"rpl_semi_sync_master_timeout":                false,
+		"max_connections":                             false,
+	} {
+		if got := IsSemiSyncWaitNoReplicaKey(key); got != want {
+			t.Errorf("IsSemiSyncWaitNoReplicaKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
+
 // TestRenderEngineCapabilityOverrides covers the engine-aware rendering path:
 // when SemiSyncNaming is set, managedSettings uses the ServerConfig capability
 // fields instead of the version-derived MySQL defaults. This is the path the

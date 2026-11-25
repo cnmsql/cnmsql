@@ -420,6 +420,7 @@ The Cluster sets these condition types:
 | `MetricsAccountReady` | The `cnmsql_metrics` account exists on the primary with its built-in grants plus exactly those in `spec.monitoring.privileges`. |
 | `StoragePressure` | An instance's data volume is at least 85% full. See [Storage](./storage.md#the-storagepressure-condition). |
 | `StorageReadOnly` | Storage protection holds the primary read-only because its data volume reached the configured threshold. Only exists when `spec.storageProtection.readOnlyOnPressure` is enabled. See [Protecting a full volume with read-only mode](./storage.md#protecting-a-full-volume-with-read-only-mode). |
+| `SemiSyncDegraded` | The primary of a semi-sync cluster fell back to asynchronous replication (its live semi-sync flag has been OFF for `spec.mysql.semiSync.degradedAfterSeconds`): commits it makes are not acknowledged by any replica. Reason `PrimaryReadOnly` when the read-only fence pauses writes. Only exists when semi-sync is enabled. See [Semi-sync degradation](./replication-failover.md#semi-sync-degradation). |
 | `BinlogPurgeHeld` | The purge gate has kept the same archived binary log for a while because an instance has not applied it. The message names the instances. Absent when the gate is off. |
 
 `Backup` and `LogicalRestore` use `Ready`, `Progressing` and `Degraded` with the

@@ -149,8 +149,11 @@ Two settings therefore have no effect on a MariaDB cluster:
 
 - `minSyncReplicas` and `maxSyncReplicas` above 1. The webhook accepts them but
   returns a warning.
-- `spec.mysql.semiSync.dataDurability`. There is no acknowledgement count for
-  the operator to lower, so `preferred` and `required` behave the same.
+- The acknowledgement-count part of `spec.mysql.semiSync.dataDurability`. There
+  is no count for the operator to lower. `required` still pins
+  `rpl_semi_sync_master_wait_no_slave` to `ON` and enables the optional
+  read-only fence (see
+  [Semi-sync degradation](replication-failover.md#semi-sync-degradation)).
 
 When no replica acknowledges a commit, for example because every replica is
 down or fenced, the primary holds the commit for up to `timeoutMillis` (10
@@ -159,7 +162,9 @@ accepting writes. It switches back to semi-synchronous replication by itself
 once a replica catches up. Writes are never blocked for longer than the timeout,
 but while the cluster runs asynchronously a committed transaction may exist only
 on the primary. This is how a MySQL cluster behaves with one required
-acknowledgement.
+acknowledgement. The `SemiSyncDegraded` condition reports that window, and
+`readOnlyAfterDegradedSeconds` can pause writes during it; see
+[Semi-sync degradation](replication-failover.md#semi-sync-degradation).
 
 The operator also sets `rpl_semi_sync_master_wait_point` to `AFTER_SYNC`, as on
 MySQL. MariaDB's own default, `AFTER_COMMIT`, lets other sessions read a

@@ -428,6 +428,25 @@ func TestStorageProtectionHoldsThePrimaryReadOnly(t *testing.T) {
 	}
 }
 
+func TestTargetPrimaryHeldBySemiSyncFenceIsNotPromoted(t *testing.T) {
+	t.Parallel()
+	local := &fakeLocal{status: &webserver.Status{
+		Role:                    webserver.RolePrimary,
+		ReadOnly:                true,
+		SuperReadOnly:           true,
+		SemiSyncReadOnlyEngaged: true,
+	}}
+	r := newReconciler(t, instDemo1,
+		&mysqlv1alpha1.ClusterStatus{TargetPrimary: instDemo1, CurrentPrimary: instDemo1}, local)
+	res := reconcile(t, r)
+	if local.promoted {
+		t.Fatal("the semi-sync fence owns the read-only flags; the reconciler must not promote over it")
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("expected a requeue while the semi-sync fence holds the pause")
+	}
+}
+
 func TestTargetPrimaryReplicaCaughtUpPromotes(t *testing.T) {
 	t.Parallel()
 	behind := int64(0)

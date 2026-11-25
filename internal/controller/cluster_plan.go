@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -219,6 +220,29 @@ func (r *ClusterReconciler) warnDeprecatedParameters(cluster *mysqlv1alpha1.Clus
 	if warnings := mysqlconfig.DeprecatedUserParameters(cluster.Spec.MySQL.Parameters); len(warnings) > 0 {
 		r.Recorder.Event(cluster, corev1.EventTypeWarning, "DeprecatedParameter", strings.Join(warnings, "; "))
 	}
+}
+
+// warnIgnoredSemiSyncParameters emits a Warning event when a "required"
+// semi-sync cluster carries a wait-no-replica parameter: admission refuses one,
+// so it predates the mode or the webhook, and the renderer and instance manager
+// ignore it in favour of ON (design 044).
+func (r *ClusterReconciler) warnIgnoredSemiSyncParameters(cluster *mysqlv1alpha1.Cluster) {
+	if r.Recorder == nil || !cluster.SemiSyncDurabilityRequired() {
+		return
+	}
+	var ignored []string
+	for key := range cluster.Spec.MySQL.Parameters {
+		if mysqlconfig.IsSemiSyncWaitNoReplicaKey(key) {
+			ignored = append(ignored, key)
+		}
+	}
+	if len(ignored) == 0 {
+		return
+	}
+	slices.Sort(ignored)
+	r.Recorder.Event(cluster, corev1.EventTypeWarning, "IgnoredParameter", fmt.Sprintf(
+		"spec.mysql.parameters %s ignored: dataDurability \"required\" keeps the semi-sync wait-no-replica variable ON",
+		strings.Join(ignored, ", ")))
 }
 
 // warnRemovedParameters emits a Warning event for any user-supplied my.cnf

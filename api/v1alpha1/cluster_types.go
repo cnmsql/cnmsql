@@ -439,6 +439,28 @@ type SemiSyncConfiguration struct {
 	// +kubebuilder:default:=preferred
 	// +optional
 	DataDurability string `json:"dataDurability,omitempty"`
+
+	// DegradedAfterSeconds is how long the primary's live semi-sync flag
+	// (Rpl_semi_sync_source_status / Rpl_semi_sync_master_status) must stay OFF,
+	// meaning the primary fell back to asynchronous replication, before the
+	// Cluster reports the SemiSyncDegraded condition. The flag flips on the first
+	// acknowledgement wait that times out, so the delay keeps a short gap from
+	// being reported as an incident. 0 reports it immediately. Defaults to 10.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	DegradedAfterSeconds *int32 `json:"degradedAfterSeconds,omitempty"`
+
+	// ReadOnlyAfterDegradedSeconds, when set, makes the instance manager put the
+	// primary into read-only mode once its live semi-sync flag has been OFF for
+	// this many seconds, so writes stall instead of continuing unprotected.
+	// Even with dataDurability "required", the server falls back to
+	// asynchronous replication after timeoutMillis; this setting is what stops
+	// writes in that case. Writes resume once the flag is back ON or enough
+	// semi-sync replicas have reconnected. Only valid with dataDurability
+	// "required".
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ReadOnlyAfterDegradedSeconds *int32 `json:"readOnlyAfterDegradedSeconds,omitempty"`
 }
 
 // ReplicationMode selects the cluster replication topology.

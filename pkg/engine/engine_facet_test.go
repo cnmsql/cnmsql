@@ -332,6 +332,9 @@ func TestMariaDBFacets(t *testing.T) {
 		EnabledVarSource:  "rpl_semi_sync_master_enabled",
 		EnabledVarReplica: "rpl_semi_sync_slave_enabled",
 		TimeoutVar:        "rpl_semi_sync_master_timeout",
+		WaitNoReplicaVar:  "rpl_semi_sync_master_wait_no_slave",
+		StatusVarSource:   "Rpl_semi_sync_master_status",
+		ClientsVarSource:  "Rpl_semi_sync_master_clients",
 		WaitPointVar:      "rpl_semi_sync_master_wait_point",
 	}
 	for _, s := range []string{"10.11.9", "11.4.3", "12.3.2"} {
