@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/cnmsql/cnmsql/pkg/engine"
+
 	mysqlconfig "github.com/cnmsql/cnmsql/pkg/management/mysql/config"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/executablehash"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/groupreplication"
@@ -43,6 +44,7 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/version"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 	"github.com/go-logr/logr"
+	mysqldriver "github.com/go-sql-driver/mysql"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -997,6 +999,19 @@ func (c *Controller) Reload(ctx context.Context, req webserver.ReloadRequest) (*
 			continue
 		}
 		if _, err := c.conn.ExecContext(ctx, "SET GLOBAL "+variable+" = ?", value); err != nil {
+			// A prepared-statement string parameter is refused for numeric and
+			// keyword-typed variables (Error 1232). Retry with a typed literal
+			// built from a strict pattern of the value: only numeric and bare
+			// keyword values are retried, everything else stays a parameter, so
+			// no arbitrary spec value is ever interpolated into the statement.
+			if isArgumentTypeError(err) {
+				if literal, ok := typedGlobalLiteral(value); ok {
+					if _, retryErr := c.conn.ExecContext(ctx, "SET GLOBAL "+variable+" = "+literal); retryErr == nil {
+						resp.Applied = append(resp.Applied, name)
+						continue
+					}
+				}
+			}
 			// A non-dynamic variable (or a bad value) is reported per-parameter so
 			// the operator can surface it; it does not fail the reload.
 			resp.Skipped[name] = err.Error()
@@ -1117,3 +1132,41 @@ func (c *Controller) role(state *replication.ReplicaState) webserver.Role {
 
 // Ensure Controller satisfies the control API contract.
 var _ webserver.InstanceController = (*Controller)(nil)
+
+// argumentTypeErrorNumber is MySQL's ER_INCORRECT_GLOBAL_LOCAL_VAR (Error
+// 1232), raised when a prepared-statement parameter cannot be coerced to the
+// variable's type.
+const argumentTypeErrorNumber = 1232
+
+// isArgumentTypeError reports whether err is MySQL's "Incorrect argument type
+// to variable" refusal.
+func isArgumentTypeError(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	return mysqlErr.Number == argumentTypeErrorNumber
+}
+
+// numericGlobalLiteral matches integer and decimal values a SET GLOBAL can be
+// retried with as a bare literal.
+var numericGlobalLiteral = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
+
+// identifierGlobalLiteral matches a bare identifier: the shape of every
+// keyword and enum value (ON, OFF, O_DSYNC, fsync, ...). Such a value cannot
+// break out of the literal position — no quotes, whitespace or operators — so
+// interpolating it is safe; the server rejects anything that is not a valid
+// value for the variable.
+var identifierGlobalLiteral = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// typedGlobalLiteral renders a value that can safely be retried as a bare
+// literal in "SET GLOBAL <variable> = <literal>": integers, decimals and
+// identifier-shaped keyword/enum values. Anything else reports false — a
+// string-typed variable accepts a bound parameter and never needs this path.
+func typedGlobalLiteral(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if numericGlobalLiteral.MatchString(value) || identifierGlobalLiteral.MatchString(value) {
+		return value, true
+	}
+	return "", false
+}

@@ -108,21 +108,17 @@ func expectSlowQueryInLogs(name, flavor, image string, exec func(pod, user, pass
 }
 
 // setSlowQueryLog sets slow_query_log on a one-instance cluster and waits for
-// the change to land. A parameter change rolls the instance, so it waits for a
-// new Pod to be ready and returns its name.
+// the change to land. slow_query_log is dynamic, so design 043 applies it with
+// SET GLOBAL on the running instance: it waits for the live value and checks
+// the Pod was not recreated, so the slow log is toggled under the same mysqld
+// and tailer. It returns the Pod's name.
 func setSlowQueryLog(name, value string) string {
 	pod := clusterPrimary(name)
-	uid, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
-	Expect(err).NotTo(HaveOccurred())
-	_, err = kubectl("patch", "cluster", name, "-n", testNamespace, "--type", "merge",
+	uid := podUID(pod)
+	Expect(uid).NotTo(BeEmpty(), "failed to read the UID of %s", pod)
+	_, err := kubectl("patch", "cluster", name, "-n", testNamespace, "--type", "merge",
 		"-p", fmt.Sprintf(`{"spec":{"mysql":{"parameters":{"slow_query_log":%q}}}}`, value))
 	Expect(err).NotTo(HaveOccurred())
-	Eventually(func(g Gomega) {
-		now, err := kubectl("get", "pod", pod, "-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(now).NotTo(Equal(uid), "the instance was not rolled")
-	}, e2eTimeout(10*time.Minute), 5*time.Second).Should(Succeed())
-	expectClusterReady(name, 1, 15*time.Minute)
 
 	want := "1"
 	if value == "OFF" {
@@ -132,7 +128,8 @@ func setSlowQueryLog(name, value string) string {
 		out, err := mysqlExec(pod, "app", appPassword(name), "", "SELECT @@GLOBAL.slow_query_log")
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.TrimSpace(out)).To(Equal(want))
-	}, e2eTimeout(2*time.Minute), 5*time.Second).Should(Succeed())
+	}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
+	Expect(podUID(pod)).To(Equal(uid), "slow_query_log is dynamic: the instance must not be rolled")
 	return pod
 }
 

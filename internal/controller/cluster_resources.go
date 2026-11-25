@@ -26,6 +26,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -253,6 +254,15 @@ func (r *ClusterReconciler) ensureConfigMap(ctx context.Context, cluster *mysqlv
 }
 
 func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, memberNames []string) (string, error) {
+	return r.renderMyCnfWithParams(cluster, plan, inst, memberNames, nil)
+}
+
+// renderMyCnfWithParams renders the my.cnf with a caller-supplied user-parameter
+// map. A nil override uses spec.mysql.parameters. The template-hash render uses
+// the Template record (design/043) so a runtime-applied parameter change never
+// moves the pod template hash, while the rendered my.cnf itself always carries
+// the desired spec values.
+func (r *ClusterReconciler) renderMyCnfWithParams(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan, memberNames []string, userParams map[string]string) (string, error) {
 	role := mysqlconfig.RolePrimary
 	if !inst.IsPrimary {
 		role = mysqlconfig.RoleReplica
@@ -282,7 +292,7 @@ func (r *ClusterReconciler) renderMyCnf(cluster *mysqlv1alpha1.Cluster, plan clu
 			Cert: topology.ServerTLSPath + "/tls.crt",
 			Key:  topology.ServerTLSPath + "/tls.key",
 		},
-		UserParameters:  cluster.Spec.MySQL.Parameters,
+		UserParameters:  userParametersOrSpec(cluster, userParams),
 		PluginLibraries: plugins,
 		Archiving:       archivingConfig(cluster),
 	}
@@ -624,7 +634,9 @@ func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan 
 	// churn. Render the stable hash with a canonical single-member seed list so a
 	// scale change does not move the template hash of the existing members; new
 	// members are still created with the full, current seed list via ensureConfigMap.
-	stableConfig, err := r.renderMyCnf(cluster, stablePlan, stableInst, []string{stableInst.Name})
+	// The template hash is rendered from the Template record, not the spec: a
+	// parameter the instances already applied at runtime must not roll them.
+	stableConfig, err := r.renderMyCnfWithParams(cluster, stablePlan, stableInst, []string{stableInst.Name}, templateHashParameters(cluster))
 	if err != nil {
 		return nil, err
 	}
@@ -636,6 +648,14 @@ func (r *ClusterReconciler) podAnnotations(cluster *mysqlv1alpha1.Cluster, plan 
 	delete(templateLabels, roleLabel)
 	templateAnnotations := maps.Clone(annotations)
 	templateAnnotations[configHashAnnotation] = stableConfigHash
+	// A template epoch bump marks a change the Template map cannot express
+	// (a runtime-applied parameter was removed), so it must move the hash even
+	// though the rendered basis did not change. Epoch 0 is omitted: adding the
+	// annotation unconditionally would roll every Pod on the operator upgrade
+	// that introduced it.
+	if epoch := templateHashEpoch(cluster); epoch > 0 {
+		templateAnnotations[paramsEpochAnnotation] = strconv.Itoa(epoch)
+	}
 	templateHash, err := hashObject(struct {
 		Labels      map[string]string
 		Annotations map[string]string
@@ -715,4 +735,42 @@ func labelsFor(cluster *mysqlv1alpha1.Cluster, instanceName, role string) map[st
 		labels[routableLabel] = routableTrue
 	}
 	return labels
+}
+
+// userParametersOrSpec returns the override when set, else the spec parameters.
+func userParametersOrSpec(cluster *mysqlv1alpha1.Cluster, override map[string]string) map[string]string {
+	if override != nil {
+		return override
+	}
+	return cluster.Spec.MySQL.Parameters
+}
+
+// templateHashParameters returns the user parameters the pod template hash is
+// rendered from. Without a record the basis is the spec, matching the previous
+// hashing behavior; with a record the Template map is the basis verbatim —
+// even when it is empty, because an empty basis is what the existing pods were
+// hashed with when the spec had no parameters at seed time.
+func templateHashParameters(cluster *mysqlv1alpha1.Cluster) map[string]string {
+	state := loadParametersState(cluster)
+	if state == nil {
+		return nil
+	}
+	if state.Template == nil {
+		return map[string]string{}
+	}
+	return state.Template
+}
+
+// paramsEpochAnnotation carries the parameters state's TemplateEpoch in the
+// pod template hash inputs. See design/043.
+const paramsEpochAnnotation = "cnmsql.cnmsql.co/params-epoch"
+
+// templateHashEpoch returns the state record's TemplateEpoch, or 0 without a
+// record.
+func templateHashEpoch(cluster *mysqlv1alpha1.Cluster) int {
+	state := loadParametersState(cluster)
+	if state == nil {
+		return 0
+	}
+	return state.TemplateEpoch
 }
