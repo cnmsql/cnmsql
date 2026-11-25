@@ -27,10 +27,12 @@ primary was running asynchronously.
 Issue #285 proposed setting `rpl_semi_sync_master_wait_no_slave=OFF` in
 `required` mode. Both servers document the opposite:
 
-- `ON` (the default): the replica count may drop to zero and the primary
-  still blocks each commit for the full timeout before falling back.
+- `ON` (the default): the connected semi-sync replica count may drop below the
+  wait count (to zero included) and the primary still blocks the commit for
+  the full timeout before falling back.
 - `OFF`: the primary reverts to asynchronous replication **as soon as** the
-  replica count drops below the wait count.
+  connected count drops below the wait count. With a wait count of two, losing
+  one replica is enough.
 
 (MySQL 8.0.26+ spells it `rpl_semi_sync_source_wait_no_replica`. MariaDB keeps
 `rpl_semi_sync_master_wait_no_slave`.) So the default is already the durable
@@ -107,19 +109,46 @@ least the required number of semi-sync replicas is connected
 MariaDB). The second condition is needed. The server only switches back
 to semi-sync when a replica acknowledges a position at or past the last
 commit, and a read-only primary does not commit, so waiting for the flag
-alone could deadlock. After a clients-based release the grace period
-restarts from the release time. If the next commit still gets no ack, the
-primary goes read-only again after another `readOnlyAfterDegradedSeconds`
-instead of flapping on every tick.
+alone could deadlock.
+
+A connected replica is not proof that it acknowledges (it may still be
+catching up), so the clients-based release is a **probe**, taken once per
+reconnect (the count must have been short since the fence engaged or since
+the last probe). The monitor records `gtid_executed` at the release. While
+the flag stays OFF:
+
+- if `gtid_executed` has not moved, nothing was committed and nothing is
+  unprotected: the fence is not re-engaged, however long that lasts (an
+  earlier version re-fenced an idle primary after the full delay, which
+  could then stay fenced for as long as the replicas stayed connected);
+- once it moves, the commit must be acknowledged within `timeoutMillis`
+  plus one monitor pass. If not, the fence engages again, and only the
+  flag or another reconnect releases it.
+
+So the unprotected window is `timeoutMillis` + `readOnlyAfterDegradedSeconds`
++ one pass at the start of a fallback, and about `timeoutMillis` + one pass
+after each probe.
 
 Like design 042, enforcement lives in the instance manager (a wedged or
-partitioned operator cannot disable it). The engagement is an in-memory latch
-that is rebuilt from live facts after a manager restart. The two watchdogs
+partitioned operator cannot disable it). The engagement is an in-memory latch.
+An in-place manager upgrade re-execs the manager while mysqld keeps running
+read-only, so the new manager **adopts** the fence: on its first pass that
+knows the Cluster settings, a writable-intent primary that is still read-only
+with the flag OFF is latched without touching the flags. That pass runs
+synchronously from the role reconciler's Cluster feed (`OnCluster`), before
+the reconciler reconciles. Otherwise it would see a read-only primary with no
+engagement and make it writable. Adoption happens only on that first pass, so
+a read-only flag set later by something else is never taken over. A full Pod
+restart restarts mysqld, which comes back with the flag ON: nothing to adopt. The two watchdogs
 share the read-only flags, and neither clears them while the other is
 engaged. Releasing one latch while the other holds just drops the latch. The
 role reconciler holds the lease for a fenced primary instead of
 "promoting" over the fence, exactly as for storage protection. Failover
 policy does not change: a fenced primary is healthy and keeps serving reads.
+
+The fence stops writes at the database level only. It is not split-brain
+protection: the primary lease and instance fencing do that. On MariaDB, which
+has no `super_read_only`, `SUPER` accounts can still write.
 
 The `SemiSyncDegraded` condition message says when writes are paused, and a
 `Warning SemiSyncReadOnly` event marks the fence engaging.
@@ -153,7 +182,8 @@ The release threshold is one client. All three parts apply.
   `SetSemiSyncWaitNoReplica`.
 - `pkg/management/mysql/config`: pinned render, `IsSemiSyncWaitNoReplicaKey`.
 - `pkg/management/mysql/instance`: semi-sync monitor (decision function +
-  loop), shared read-only ownership with the storage watchdog, new `/status`
+  loop, commit-gated probe, first-pass adoption run from `OnCluster`),
+  shared read-only ownership with the storage watchdog, new `/status`
   fields; role reconciler holds a fenced primary.
 - `internal/controller`: `SemiSyncDegraded` condition + events.
 - e2e: semi-sync degradation (all replicas fenced → condition True → replicas

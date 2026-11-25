@@ -363,6 +363,8 @@ func TestSemiSyncSourceLive(t *testing.T) {
 			AddRow("Rpl_semi_sync_source_status", "OFF"))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@GLOBAL.rpl_semi_sync_source_wait_no_replica")).
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@GLOBAL.rpl_semi_sync_source_timeout")).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("2000"))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@GLOBAL.rpl_semi_sync_source_wait_for_replica_count")).
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("2"))
 
@@ -370,7 +372,9 @@ func TestSemiSyncSourceLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SemiSyncSourceLive: %v", err)
 	}
-	want := SemiSyncSourceLive{Observed: true, Active: false, Clients: 2, WaitNoReplica: true, WaitForReplicaCount: 2}
+	want := SemiSyncSourceLive{Observed: true, Active: false, Clients: 2, WaitNoReplica: true, WaitForReplicaCount: 2,
+		TimeoutMillis: 2000,
+	}
 	if live != want {
 		t.Fatalf("live = %+v, want %+v", live, want)
 	}

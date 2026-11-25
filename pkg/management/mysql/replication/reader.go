@@ -149,6 +149,8 @@ type SemiSyncSourceLive struct {
 	// WaitForReplicaCount is the live acknowledgement count; 1 on an engine
 	// without the variable (MariaDB always waits for exactly one).
 	WaitForReplicaCount int
+	// TimeoutMillis is the live acknowledgement wait timeout.
+	TimeoutMillis int
 }
 
 // SemiSyncSourceLive reads the live semi-sync source state: the status flag
@@ -195,6 +197,15 @@ func (m *Manager) SemiSyncSourceLive(ctx context.Context) (SemiSyncSourceLive, e
 	if naming.WaitNoReplicaVar != "" {
 		if live.WaitNoReplica, err = m.optionalGlobalBool(ctx, naming.WaitNoReplicaVar); err != nil {
 			return SemiSyncSourceLive{}, err
+		}
+	}
+	if naming.TimeoutVar != "" {
+		timeout, err := m.scalarString(ctx, "SELECT @@GLOBAL."+naming.TimeoutVar)
+		if err != nil {
+			return SemiSyncSourceLive{}, err
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(timeout)); err == nil {
+			live.TimeoutMillis = n
 		}
 	}
 	live.WaitForReplicaCount = 1

@@ -28,7 +28,6 @@ import (
 )
 
 func TestSemiSyncFenceDecision(t *testing.T) {
-	const after = 30 * time.Second
 	cases := []struct {
 		name                          string
 		in                            semiSyncFenceInput
@@ -36,32 +35,39 @@ func TestSemiSyncFenceDecision(t *testing.T) {
 		wantProbe                     bool
 	}{
 		{name: "fence off, not engaged: nothing",
-			in: semiSyncFenceInput{active: false, inactiveFor: time.Hour}},
+			in: semiSyncFenceInput{due: true}},
 		{name: "fence switched off while engaged: lift it",
 			in:        semiSyncFenceInput{engaged: true},
 			wantClear: true},
 		{name: "active: nothing",
-			in: semiSyncFenceInput{configured: true, after: after, active: true}},
-		{name: "inactive below the delay: wait",
-			in: semiSyncFenceInput{configured: true, after: after, inactiveFor: after - time.Second}},
-		{name: "inactive past the delay: engage",
-			in:      semiSyncFenceInput{configured: true, after: after, inactiveFor: after},
+			in: semiSyncFenceInput{configured: true, active: true, due: true}},
+		{name: "inactive, not due yet: wait",
+			in: semiSyncFenceInput{configured: true}},
+		{name: "inactive and due: engage",
+			in:      semiSyncFenceInput{configured: true, due: true},
 			wantSet: true, wantLatch: true},
-		{name: "inactive past the delay, already read-only: latch without touching",
-			in:        semiSyncFenceInput{configured: true, after: after, inactiveFor: after, readOnlyAlready: true},
+		{name: "due, already read-only: latch without touching",
+			in:        semiSyncFenceInput{configured: true, due: true, readOnlyAlready: true},
 			wantLatch: true},
+		{name: "first pass, still read-only and inactive: adopt",
+			in:        semiSyncFenceInput{configured: true, adopt: true, readOnlyAlready: true},
+			wantLatch: true},
+		{name: "first pass, writable: nothing to adopt",
+			in: semiSyncFenceInput{configured: true, adopt: true}},
+		{name: "first pass, read-only but active: nothing to adopt",
+			in: semiSyncFenceInput{configured: true, adopt: true, readOnlyAlready: true, active: true}},
 		{name: "engaged and still inactive: hold",
-			in:        semiSyncFenceInput{configured: true, after: after, engaged: true, inactiveFor: time.Hour},
+			in:        semiSyncFenceInput{configured: true, engaged: true, due: true},
 			wantLatch: true},
 		{name: "engaged and active again: release",
-			in:        semiSyncFenceInput{configured: true, after: after, engaged: true, active: true},
+			in:        semiSyncFenceInput{configured: true, engaged: true, active: true},
 			wantClear: true},
 		{name: "engaged, replicas reconnected: probe release",
-			in: semiSyncFenceInput{configured: true, after: after, engaged: true,
+			in: semiSyncFenceInput{configured: true, engaged: true,
 				enoughClients: true, reconnected: true},
 			wantClear: true, wantProbe: true},
 		{name: "engaged, replicas connected all along: hold for the flag",
-			in: semiSyncFenceInput{configured: true, after: after, engaged: true,
+			in: semiSyncFenceInput{configured: true, engaged: true,
 				enoughClients: true, reconnected: false},
 			wantLatch: true},
 	}
@@ -89,6 +95,7 @@ type fakeSemiSyncServer struct {
 	engaged   bool
 	waitNoSet int
 	applied   []bool
+	gtid      string
 }
 
 func newFakeMonitor(f *fakeSemiSyncServer) *SemiSyncMonitor {
@@ -98,6 +105,7 @@ func newFakeMonitor(f *fakeSemiSyncServer) *SemiSyncMonitor {
 		live: func(context.Context) (replication.SemiSyncSourceLive, error) {
 			return f.live, f.liveErr
 		},
+		position: func(context.Context) (string, error) { return f.gtid, nil },
 		setWaitNoReplica: func(context.Context) error {
 			f.waitNoSet++
 			f.live.WaitNoReplica = true
@@ -130,7 +138,9 @@ func degradedPrimary(settings semiSyncSettings) *fakeSemiSyncServer {
 		now: time.Unix(1_000_000, 0),
 		live: replication.SemiSyncSourceLive{
 			Observed: true, Active: true, Clients: 2, WaitForReplicaCount: 1, WaitNoReplica: true,
+			TimeoutMillis: 2000,
 		},
+		gtid:     "a:1-10",
 		writable: true,
 		settings: &settings,
 	}
@@ -235,7 +245,7 @@ func TestSemiSyncMonitorFencesAndReleasesOnTheFlag(t *testing.T) {
 	}
 }
 
-func TestSemiSyncMonitorProbesOnReconnectAndRearmsTheDelay(t *testing.T) {
+func TestSemiSyncMonitorProbesOnReconnect(t *testing.T) {
 	f := degradedPrimary(semiSyncSettings{required: true, readOnlyAfter: 30 * time.Second})
 	m := newFakeMonitor(f)
 	ctx := context.Background()
@@ -257,23 +267,85 @@ func TestSemiSyncMonitorProbesOnReconnectAndRearmsTheDelay(t *testing.T) {
 		t.Fatalf("reconnect did not release the fence")
 	}
 
-	// The probe commit timed out: the delay restarts from the release instead
-	// of re-fencing on the next tick, and the same connection does not
-	// release twice.
-	f.now = f.now.Add(2 * time.Second)
+	// Nothing is committed: nothing unprotected, so an idle primary is never
+	// re-fenced, however long it stays OFF.
+	f.now = f.now.Add(time.Hour)
 	m.Tick(ctx)
 	if f.engaged {
-		t.Fatalf("re-fenced right after the probe release")
+		t.Fatalf("re-fenced an idle primary")
 	}
-	f.now = f.now.Add(28 * time.Second)
+
+	// A commit lands and stays unacknowledged: re-fence one timeout (plus a
+	// pass) after it, not a full delay.
+	f.gtid = "a:1-11"
+	m.Tick(ctx)
+	if f.engaged {
+		t.Fatalf("re-fenced before the acknowledgement had time to arrive")
+	}
+	f.now = f.now.Add(4 * time.Second)
 	m.Tick(ctx)
 	if !f.engaged || !f.readOnly {
-		t.Fatalf("not re-fenced a full delay after the probe release")
+		t.Fatalf("not re-fenced after an unacknowledged commit")
 	}
+
+	// The same connection does not release twice.
 	f.now = f.now.Add(10 * time.Second)
 	m.Tick(ctx)
 	if !f.engaged {
 		t.Fatalf("released again without a new reconnect")
+	}
+}
+
+func TestSemiSyncMonitorProbeEndsWhenTheCommitIsAcknowledged(t *testing.T) {
+	f := degradedPrimary(semiSyncSettings{required: true, readOnlyAfter: 30 * time.Second})
+	m := newFakeMonitor(f)
+	ctx := context.Background()
+
+	f.live.Active, f.live.Clients = false, 0
+	m.Tick(ctx)
+	f.now = f.now.Add(30 * time.Second)
+	m.Tick(ctx)
+	f.live.Clients = 1
+	m.Tick(ctx)
+	f.gtid, f.live.Active = "a:1-11", true
+	f.now = f.now.Add(time.Minute)
+	m.Tick(ctx)
+	if f.engaged || f.readOnly || m.probing {
+		t.Fatalf("acknowledged commit: engaged=%v readOnly=%v probing=%v", f.engaged, f.readOnly, m.probing)
+	}
+}
+
+func TestSemiSyncMonitorAdoptsAFenceAfterARestart(t *testing.T) {
+	f := degradedPrimary(semiSyncSettings{required: true, readOnlyAfter: 30 * time.Second})
+	// A re-exec'd manager: mysqld is still read-only and OFF from before.
+	f.live.Active, f.readOnly = false, true
+	m := newFakeMonitor(f)
+	m.Observe(context.Background())
+	if !f.engaged {
+		t.Fatalf("fence not adopted on the first pass")
+	}
+	if len(f.applied) != 0 {
+		t.Fatalf("adoption must not touch the flags: %v", f.applied)
+	}
+	// Observe acts once.
+	f.engaged = false
+	m.Observe(context.Background())
+	if f.engaged {
+		t.Fatalf("Observe ran a second pass")
+	}
+}
+
+func TestSemiSyncMonitorAdoptsOnlyOnTheFirstPass(t *testing.T) {
+	f := degradedPrimary(semiSyncSettings{required: true, readOnlyAfter: 30 * time.Second})
+	m := newFakeMonitor(f)
+	ctx := context.Background()
+	m.Tick(ctx)
+	// Later, something else makes the primary read-only while it is OFF: that
+	// is not the fence's to own until its own delay passes.
+	f.live.Active, f.readOnly = false, true
+	m.Tick(ctx)
+	if f.engaged {
+		t.Fatalf("adopted a read-only flag after the first pass")
 	}
 }
 

@@ -18,6 +18,8 @@ package instance
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -79,11 +81,20 @@ type semiSyncSample struct {
 // SemiSyncMonitor is the semi-sync observation and fence state machine for one
 // instance. The run loop drives it with Tick.
 type SemiSyncMonitor struct {
+	// mu serializes passes: the run loop ticks on its own goroutine, and the
+	// first Cluster read runs one pass on the role reconciler's (Observe).
+	mu sync.Mutex
+	// observed flips on the first Cluster read.
+	observed atomic.Bool
+
 	log logr.Logger
 	now func() time.Time
 
 	// live reads the source's live semi-sync state.
 	live func(ctx context.Context) (replication.SemiSyncSourceLive, error)
+	// position reads gtid_executed, to tell whether the primary committed
+	// anything since a release on reconnected replicas.
+	position func(ctx context.Context) (string, error)
 	// setWaitNoReplica turns the wait-no-replica variable ON.
 	setWaitNoReplica func(ctx context.Context) error
 	// liveReadOnly and applyReadOnly read and switch the read-only flags, as
@@ -108,9 +119,18 @@ type SemiSyncMonitor struct {
 	// inactiveSince is when the current OFF window was first seen; zero while
 	// the flag is ON or the instance is not the writable primary.
 	inactiveSince time.Time
-	// baseline restarts the fence delay after a release on reconnected
-	// replicas, so an unacknowledged probe commit does not re-fence at once.
-	baseline time.Time
+	// settled is set after the first pass that knew the Cluster settings. The
+	// pass before it may adopt a fence the server still holds from before an
+	// instance-manager restart (the latch lives in memory).
+	settled bool
+	// probing is set by a release on reconnected replicas: the fence then
+	// re-engages only once a commit stays unacknowledged for the semi-sync
+	// timeout. A primary that commits nothing writes nothing unprotected.
+	probing bool
+	// probeGTID is gtid_executed at the release, and probeCommitAt when a pass
+	// first saw it move.
+	probeGTID     string
+	probeCommitAt time.Time
 	// clientsWereShort records that, since the fence engaged or last released
 	// on reconnected replicas, a pass saw fewer semi-sync replicas than the
 	// wait count. Only then does enough replicas being connected count as a
@@ -122,10 +142,15 @@ type SemiSyncMonitor struct {
 
 // semiSyncFenceInput is everything the pure fence decision reads.
 type semiSyncFenceInput struct {
-	configured      bool
-	after           time.Duration
+	// configured is true when the fence is on (required mode, delay set).
+	configured bool
+	// due is true when the fence deadline has passed: the flag has been OFF
+	// for the configured delay or, after a release on reconnected replicas, a
+	// commit went unacknowledged for the semi-sync timeout.
+	due bool
+	// adopt is true on the first pass that knows the settings.
+	adopt           bool
 	active          bool
-	inactiveFor     time.Duration
 	enoughClients   bool
 	reconnected     bool
 	readOnlyAlready bool
@@ -134,16 +159,22 @@ type semiSyncFenceInput struct {
 
 // semiSyncFenceDecision is the pure fence state machine. It returns whether to
 // assert or clear read-only, the resulting latch, and whether the release was
-// on reconnected replicas (which restarts the fence delay).
+// on reconnected replicas (which arms the probe).
 //
 // Release has two triggers. The live flag coming back ON is the obvious one.
 // But the server only switches back to semi-sync when a replica acknowledges a
 // position at or past the last commit, and a read-only primary does not commit,
 // so a replica that reconnects already caught up may never be asked for an
 // acknowledgement. Enough semi-sync replicas reconnecting therefore releases
-// the fence too, once per reconnect: the next commit then either gets its
-// acknowledgement (the flag turns ON) or times out, and the fence re-engages
-// after another full delay.
+// the fence too, once per reconnect, as a probe: the next commit either gets
+// its acknowledgement (the flag turns ON) or the fence re-engages one timeout
+// later.
+//
+// The fence latch lives in memory, so an instance-manager restart (an in-place
+// upgrade re-execs it while mysqld keeps running) loses it. On the first pass
+// that knows the settings, a primary that is still read-only with the flag OFF
+// is adopted as fenced instead of waiting a full delay, during which the role
+// reconciler would make it writable again.
 func semiSyncFenceDecision(in semiSyncFenceInput) (set, clear, latch, probe bool) {
 	if !in.configured {
 		// The fence was switched off while engaged: lift it.
@@ -158,15 +189,33 @@ func semiSyncFenceDecision(in semiSyncFenceInput) (set, clear, latch, probe bool
 		}
 		return false, false, true, false
 	}
-	if !in.active && in.inactiveFor >= in.after {
+	if in.active {
+		return false, false, false, false
+	}
+	if in.adopt && in.readOnlyAlready {
+		return false, false, true, false
+	}
+	if in.due {
 		return !in.readOnlyAlready, false, true, false
 	}
 	return false, false, false, false
 }
 
+// Observe runs one pass synchronously on the first Cluster read. The role
+// reconciler calls it before it reconciles, so a fence the server still holds
+// from before an instance-manager restart is adopted before the reconciler
+// could make the primary writable again.
+func (m *SemiSyncMonitor) Observe(ctx context.Context) {
+	if m.observed.CompareAndSwap(false, true) {
+		m.Tick(ctx)
+	}
+}
+
 // Tick takes one sample and applies the state machine. A pass that cannot read
 // the server leaves every latch untouched for the next tick.
 func (m *SemiSyncMonitor) Tick(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	tickCtx, cancel := context.WithTimeout(ctx, semiSyncMonitorTickTimeout)
 	defer cancel()
 
@@ -181,6 +230,11 @@ func (m *SemiSyncMonitor) Tick(ctx context.Context) {
 		return
 	}
 	settings, known := m.settings()
+	adopt := false
+	if known {
+		adopt = !m.settled
+		m.settled = true
+	}
 	if known && settings.required {
 		m.ensureWaitNoReplica(tickCtx, live)
 	}
@@ -191,7 +245,7 @@ func (m *SemiSyncMonitor) Tick(ctx context.Context) {
 	now := m.now()
 	m.trackWindow(now, live)
 	if known {
-		m.fence(tickCtx, now, live, settings)
+		m.fence(tickCtx, now, live, settings, adopt)
 	}
 }
 
@@ -216,7 +270,7 @@ func (m *SemiSyncMonitor) ensureWaitNoReplica(ctx context.Context, live replicat
 // them.
 func (m *SemiSyncMonitor) leavePrimary() {
 	m.inactiveSince = time.Time{}
-	m.baseline = time.Time{}
+	m.probing = false
 	m.clientsWereShort = false
 	if m.engaged {
 		m.engaged = false
@@ -238,33 +292,60 @@ func (m *SemiSyncMonitor) trackWindow(now time.Time, live replication.SemiSyncSo
 			"inactiveFor", now.Sub(m.inactiveSince).Round(time.Second).String(),
 			"connectedReplicas", live.Clients)
 		m.inactiveSince = time.Time{}
-		m.baseline = time.Time{}
+		m.probing = false
 	}
 	m.publish(&semiSyncSample{Active: live.Active, Clients: live.Clients, InactiveSince: m.inactiveSince})
 }
 
-// inactiveFor is how long the current OFF window has lasted, counted from the
-// last release on reconnected replicas when there was one.
+// inactiveFor is how long the current OFF window has lasted.
 func (m *SemiSyncMonitor) inactiveFor(now time.Time) time.Duration {
 	if m.inactiveSince.IsZero() {
 		return 0
 	}
-	since := m.inactiveSince
-	if m.baseline.After(since) {
-		since = m.baseline
+	return now.Sub(m.inactiveSince)
+}
+
+// fenceDue reports whether the fence deadline has passed. Normally that is
+// the flag staying OFF for the configured delay. After a release on
+// reconnected replicas it is a commit staying unacknowledged for the semi-sync
+// timeout (plus one pass, for the acknowledgement to show): the release lets
+// the next commit prove the replica acknowledges, and a primary that commits
+// nothing writes nothing unprotected, so it is never re-fenced for idling.
+func (m *SemiSyncMonitor) fenceDue(
+	ctx context.Context, now time.Time, live replication.SemiSyncSourceLive, after time.Duration,
+) bool {
+	if !m.probing {
+		return m.inactiveFor(now) >= after
 	}
-	return now.Sub(since)
+	if m.probeCommitAt.IsZero() {
+		gtid, err := m.position(ctx)
+		if err != nil {
+			m.log.V(1).Info("Semi-sync monitor: could not read gtid_executed", "error", err.Error())
+			return false
+		}
+		if gtid == m.probeGTID {
+			return false
+		}
+		m.probeCommitAt = now
+	}
+	grace := max(time.Duration(live.TimeoutMillis)*time.Millisecond, 0) + semiSyncMonitorInterval
+	return now.Sub(m.probeCommitAt) >= grace
 }
 
 // fence applies the read-only fence state machine for one pass.
 func (m *SemiSyncMonitor) fence(
-	ctx context.Context, now time.Time, live replication.SemiSyncSourceLive, settings semiSyncSettings,
+	ctx context.Context, now time.Time, live replication.SemiSyncSourceLive, settings semiSyncSettings, adopt bool,
 ) {
 	enoughClients := live.Clients >= max(1, live.WaitForReplicaCount)
 	if !enoughClients {
 		m.clientsWereShort = true
 	}
 	inactiveFor := m.inactiveFor(now)
+	configured := settings.required && settings.readOnlyAfter > 0
+	due := false
+	if configured && !live.Active && !m.engaged {
+		due = m.fenceDue(ctx, now, live, settings.readOnlyAfter)
+	}
 	readOnlyAlready := false
 	if !live.Active || m.engaged {
 		ro, err := m.liveReadOnly(ctx)
@@ -276,10 +357,10 @@ func (m *SemiSyncMonitor) fence(
 	}
 
 	set, clear, latch, probe := semiSyncFenceDecision(semiSyncFenceInput{
-		configured:      settings.required && settings.readOnlyAfter > 0,
-		after:           settings.readOnlyAfter,
+		configured:      configured,
+		due:             due,
+		adopt:           adopt,
 		active:          live.Active,
-		inactiveFor:     inactiveFor,
 		enoughClients:   enoughClients,
 		reconnected:     m.clientsWereShort,
 		readOnlyAlready: readOnlyAlready,
@@ -294,6 +375,9 @@ func (m *SemiSyncMonitor) fence(
 		m.log.Info("Semi-sync read-only fence engaged: the primary ran asynchronously too long; writes are paused",
 			"inactiveFor", inactiveFor.Round(time.Second).String(), "readOnlyAfter", settings.readOnlyAfter.String(),
 			"connectedReplicas", live.Clients)
+	case latch && !m.engaged && !set:
+		m.log.Info("Semi-sync read-only fence holds: the primary is still read-only with semi-sync OFF",
+			"inactiveFor", inactiveFor.Round(time.Second).String(), "connectedReplicas", live.Clients)
 	case clear && m.otherHolds():
 		m.log.Info("Semi-sync read-only fence released; storage protection still holds the primary read-only")
 	case clear:
@@ -308,9 +392,17 @@ func (m *SemiSyncMonitor) fence(
 		// A fresh engagement: only a reconnect from here on counts.
 		m.clientsWereShort = !enoughClients
 	}
+	if latch && !m.engaged {
+		m.probing = false
+	}
 	if probe {
-		m.baseline = now
 		m.clientsWereShort = false
+		m.probing = true
+		m.probeCommitAt = time.Time{}
+		m.probeGTID = ""
+		if gtid, err := m.position(ctx); err == nil {
+			m.probeGTID = gtid
+		}
 	}
 	if latch != m.engaged {
 		m.engaged = latch
@@ -320,7 +412,9 @@ func (m *SemiSyncMonitor) fence(
 
 // startSemiSyncMonitor runs the monitor for the life of the manager: one pass
 // immediately, then every semiSyncMonitorInterval.
-func startSemiSyncMonitor(ctx context.Context, controller *Controller, view *storageProtectionClusterView) {
+func startSemiSyncMonitor(
+	ctx context.Context, controller *Controller, view *storageProtectionClusterView,
+) *SemiSyncMonitor {
 	m := newSemiSyncMonitor(controller, view)
 	go func() {
 		m.Tick(ctx)
@@ -335,6 +429,7 @@ func startSemiSyncMonitor(ctx context.Context, controller *Controller, view *sto
 			}
 		}
 	}()
+	return m
 }
 
 // newSemiSyncMonitor wires the monitor to the controller's live state, the
@@ -342,9 +437,10 @@ func startSemiSyncMonitor(ctx context.Context, controller *Controller, view *sto
 func newSemiSyncMonitor(controller *Controller, view *storageProtectionClusterView) *SemiSyncMonitor {
 	ops := controllerReadOnlyOps(controller)
 	return &SemiSyncMonitor{
-		log:  logf.Log.WithName("semi-sync-monitor").WithValues("instance", controller.name),
-		now:  time.Now,
-		live: controller.repl.SemiSyncSourceLive,
+		log:      logf.Log.WithName("semi-sync-monitor").WithValues("instance", controller.name),
+		now:      time.Now,
+		live:     controller.repl.SemiSyncSourceLive,
+		position: controller.repl.GTIDExecuted,
 		setWaitNoReplica: func(ctx context.Context) error {
 			return controller.repl.SetSemiSyncWaitNoReplica(ctx, true)
 		},
