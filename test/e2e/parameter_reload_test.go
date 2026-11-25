@@ -158,15 +158,15 @@ spec:
 		Eventually(func(g Gomega) {
 			g.Expect(globalVariableG(g, cluster+"-1", password, "max_connections")).To(Equal("130"),
 				"the dynamic part of a mixed change must be applied at runtime")
-			g.Expect(podUID(cluster + "-1")).To(Equal(uid1),
+			g.Expect(podUID(cluster+"-1")).To(Equal(uid1),
 				"the dynamic part must land before the Pod is recreated")
 		}, e2eTimeout(5*time.Minute), 5*time.Second).Should(Succeed())
 
 		By("waiting for the roll to apply the restart-required value")
 		Eventually(func(g Gomega) {
-			g.Expect(podUID(cluster + "-1")).NotTo(Equal(uid1),
+			g.Expect(podUID(cluster+"-1")).NotTo(Equal(uid1),
 				"the restart-required part must roll the primary")
-			g.Expect(podUID(cluster + "-2")).NotTo(Equal(uid2),
+			g.Expect(podUID(cluster+"-2")).NotTo(Equal(uid2),
 				"the restart-required part must roll the replica")
 		}, e2eTimeout(20*time.Minute), 10*time.Second).Should(Succeed())
 		expectClusterReady(cluster, 2, 20*time.Minute)
@@ -198,7 +198,7 @@ spec:
 
 		By("waiting for the Pods to be recreated")
 		Eventually(func(g Gomega) {
-			g.Expect(podUID(cluster + "-1")).NotTo(Equal(uid1),
+			g.Expect(podUID(cluster+"-1")).NotTo(Equal(uid1),
 				"a restart-required-only change must roll the primary")
 		}, e2eTimeout(20*time.Minute), 10*time.Second).Should(Succeed())
 		expectClusterReady(cluster, 2, 20*time.Minute)
