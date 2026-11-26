@@ -684,6 +684,16 @@ func Run(ctx context.Context, opts RunOptions) error {
 			opts.ReadOnlyProtectionThreshold, protectionView)
 	}
 
+	// Semi-sync monitor (design 044): observes the primary's live semi-sync
+	// flag, keeps wait-no-replica ON in "required" mode and runs the opt-in
+	// read-only fence, all from the same Cluster feed.
+	var semiSyncMonitor *SemiSyncMonitor
+	if opts.SemiSyncEnabled {
+		monitorCtx, cancelMonitor := context.WithCancel(logf.IntoContext(ctx, log))
+		defer cancelMonitor()
+		semiSyncMonitor = startSemiSyncMonitor(monitorCtx, controller, protectionView)
+	}
+
 	var cm *webserver.TLSCertManager
 	srv, err := buildServer(opts, controller)
 	if err != nil {
@@ -806,9 +816,18 @@ func Run(ctx context.Context, opts RunOptions) error {
 	roleErr := make(chan error, 1)
 	mgrCtx, cancelMgr := context.WithCancel(ctx)
 	defer cancelMgr()
+	// The semi-sync monitor's first pass with the Cluster settings runs here,
+	// before the role reconciler acts, so it can adopt a read-only fence the
+	// server still holds from before a manager restart (design 044).
+	observeSemiSync := func() {
+		if semiSyncMonitor != nil {
+			semiSyncMonitor.Observe(logf.IntoContext(mgrCtx, log))
+		}
+	}
 	onCluster := func(c *mysqlv1alpha1.Cluster) {
 		floor.Observe(c)
 		protectionView.Observe(c)
+		observeSemiSync()
 	}
 	if roleManaged {
 		// Custom monitoring queries come from ConfigMaps and Secrets the
@@ -820,6 +839,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 			onCluster = func(c *mysqlv1alpha1.Cluster) {
 				floor.Observe(c)
 				protectionView.Observe(c)
+				observeSemiSync()
 				querySource.Observe(c)
 			}
 		}

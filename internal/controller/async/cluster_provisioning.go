@@ -42,6 +42,7 @@ func (r *Reconciler) ConfigureServer(
 	}
 	config.SemiSync.Enabled = cluster.Spec.MySQL.SemiSync.Enabled
 	config.SemiSync.WaitForReplicaCount = initialSemiSyncWaitForReplicaCount(cluster)
+	config.SemiSync.WaitNoReplica = cluster.SemiSyncDurabilityRequired()
 	if cluster.Spec.MySQL.SemiSync.TimeoutMillis != nil {
 		config.SemiSync.TimeoutMillis = int(*cluster.Spec.MySQL.SemiSync.TimeoutMillis)
 	}

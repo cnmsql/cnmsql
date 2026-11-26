@@ -354,6 +354,60 @@ func TestSemiSyncRuntimeVariablesUseDialectNaming(t *testing.T) {
 	}
 }
 
+func TestSemiSyncSourceLive(t *testing.T) {
+	m, mock := newManager(t, "8.4.3")
+	mock.ExpectQuery(regexp.QuoteMeta(
+		"SHOW GLOBAL STATUS WHERE Variable_name IN ('Rpl_semi_sync_source_status', 'Rpl_semi_sync_source_clients')")).
+		WillReturnRows(sqlmock.NewRows([]string{"Variable_name", "Value"}).
+			AddRow("Rpl_semi_sync_source_clients", "2").
+			AddRow("Rpl_semi_sync_source_status", "OFF"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@GLOBAL.rpl_semi_sync_source_wait_no_replica")).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("1"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@GLOBAL.rpl_semi_sync_source_timeout")).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("2000"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@GLOBAL.rpl_semi_sync_source_wait_for_replica_count")).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("2"))
+
+	live, err := m.SemiSyncSourceLive(context.Background())
+	if err != nil {
+		t.Fatalf("SemiSyncSourceLive: %v", err)
+	}
+	want := SemiSyncSourceLive{Observed: true, Active: false, Clients: 2, WaitNoReplica: true, WaitForReplicaCount: 2,
+		TimeoutMillis: 2000,
+	}
+	if live != want {
+		t.Fatalf("live = %+v, want %+v", live, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSemiSyncSourceLiveWithoutThePlugin(t *testing.T) {
+	m, mock := newManager(t, "8.0.25")
+	mock.ExpectQuery(regexp.QuoteMeta(
+		"SHOW GLOBAL STATUS WHERE Variable_name IN ('Rpl_semi_sync_master_status', 'Rpl_semi_sync_master_clients')")).
+		WillReturnRows(sqlmock.NewRows([]string{"Variable_name", "Value"}))
+	live, err := m.SemiSyncSourceLive(context.Background())
+	if err != nil {
+		t.Fatalf("SemiSyncSourceLive: %v", err)
+	}
+	if live.Observed {
+		t.Fatalf("live = %+v, want unobserved", live)
+	}
+}
+
+func TestSetSemiSyncWaitNoReplica(t *testing.T) {
+	m, mock := newManager(t, "8.4.3")
+	mock.ExpectExec("SET GLOBAL rpl_semi_sync_source_wait_no_replica = ON").WillReturnResult(sqlmock.NewResult(0, 0))
+	if err := m.SetSemiSyncWaitNoReplica(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestInstallSemiSyncIdempotent(t *testing.T) {
 	m, mock := newManager(t, "8.0.36")
 

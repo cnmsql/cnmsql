@@ -131,6 +131,8 @@ type observedCluster struct {
 	// volume reached the threshold. Empty when protection is disabled or not
 	// engaged anywhere.
 	ReadOnlyProtectionEngaged []string
+	// SemiSync is the primary's live semi-sync state (design 044).
+	SemiSync semiSyncObservation
 	// GroupReplication is the operator's aggregated view of the group under GR
 	// mode (primary, members, quorum); nil for async clusters or before any
 	// member is observed ONLINE. The sticky groupName/bootstrapped fields are
@@ -278,6 +280,8 @@ func (r *ClusterReconciler) observe(ctx context.Context, cluster *mysqlv1alpha1.
 
 	observed.ReadOnlyProtectionObserved, observed.ReadOnlyProtectionEngaged = evaluateReadOnlyProtection(observed)
 
+	observed.SemiSync = evaluateSemiSync(cluster, observed)
+
 	if err := r.observeProvisioning(ctx, cluster, plan, &observed); err != nil {
 		return observedCluster{}, err
 	}
@@ -414,6 +418,120 @@ func evaluateReadOnlyProtection(observed observedCluster) (bool, []string) {
 		}
 	}
 	return anyObserved, engaged
+}
+
+// semiSyncObservation is the primary's live semi-sync state (design 044).
+type semiSyncObservation struct {
+	// Observed is true when the primary reported its live semi-sync flag this
+	// pass. The SemiSyncDegraded condition is left as it was otherwise, so an
+	// unreachable primary or an older instance manager never flips it.
+	Observed bool
+	// Primary is the instance the observation came from.
+	Primary string
+	// Degraded is true when the primary's flag has been OFF for at least
+	// spec.mysql.semiSync.degradedAfterSeconds, or its read-only fence holds.
+	Degraded bool
+	// ReadOnly is true while the primary's semi-sync read-only fence holds.
+	ReadOnly bool
+}
+
+// evaluateSemiSync reads the primary's live semi-sync state for the
+// SemiSyncDegraded condition.
+func evaluateSemiSync(cluster *mysqlv1alpha1.Cluster, observed observedCluster) semiSyncObservation {
+	if !cluster.IsSemiSyncEnabled() || cluster.IsGroupReplication() || observed.PrimaryName == "" {
+		return semiSyncObservation{}
+	}
+	status := observed.StatusByInstance[observed.PrimaryName]
+	if status == nil || status.SemiSync.SourceActive == nil {
+		return semiSyncObservation{}
+	}
+	obs := semiSyncObservation{
+		Observed: true,
+		Primary:  observed.PrimaryName,
+		ReadOnly: status.SemiSyncReadOnlyEngaged,
+	}
+	if !*status.SemiSync.SourceActive && status.SemiSync.InactiveSeconds != nil {
+		inactive := time.Duration(*status.SemiSync.InactiveSeconds) * time.Second
+		obs.Degraded = inactive >= cluster.SemiSyncDegradedAfter()
+	}
+	obs.Degraded = obs.Degraded || obs.ReadOnly
+	return obs
+}
+
+// Reasons of the SemiSyncDegraded condition.
+const (
+	semiSyncReasonActive       = "SemiSyncActive"
+	semiSyncReasonAsynchronous = "PrimaryAsynchronous"
+	semiSyncReasonReadOnly     = "PrimaryReadOnly"
+)
+
+// applySemiSyncDegradedCondition mirrors the primary's live semi-sync state
+// into the SemiSyncDegraded condition. The condition exists only while
+// semi-sync is enabled, and is only set from a pass where the primary reported
+// the live flag. The message names the primary but no durations, so the
+// condition does not churn while the window lasts.
+func (r *ClusterReconciler) applySemiSyncDegradedCondition(latest *mysqlv1alpha1.Cluster, observed observedCluster) {
+	if !latest.IsSemiSyncEnabled() || latest.IsGroupReplication() {
+		apimeta.RemoveStatusCondition(&latest.Status.Conditions, mysqlv1alpha1.ConditionSemiSyncDegraded)
+		return
+	}
+	obs := observed.SemiSync
+	if !obs.Observed {
+		return
+	}
+	reason := semiSyncReasonActive
+	message := fmt.Sprintf("Primary %s replicates semi-synchronously", obs.Primary)
+	switch {
+	case obs.ReadOnly:
+		reason = semiSyncReasonReadOnly
+		message = fmt.Sprintf("Primary %s fell back to asynchronous replication; "+
+			"the semi-sync read-only fence pauses writes until enough replicas acknowledge again", obs.Primary)
+	case obs.Degraded:
+		reason = semiSyncReasonAsynchronous
+		message = fmt.Sprintf("Primary %s fell back to asynchronous replication; "+
+			"its commits are not acknowledged by any replica and a failover can lose them", obs.Primary)
+	}
+	apimeta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+		Type:               mysqlv1alpha1.ConditionSemiSyncDegraded,
+		Status:             conditionStatus(obs.Degraded),
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: latest.Generation,
+	})
+}
+
+// recordSemiSyncEvents emits the SemiSyncDegraded transitions as events: a
+// Warning when the primary is reported asynchronous or fenced read-only, a
+// Normal one when it recovers.
+func (r *ClusterReconciler) recordSemiSyncEvents(ctx context.Context, latest *mysqlv1alpha1.Cluster, before *metav1.Condition) {
+	after := apimeta.FindStatusCondition(latest.Status.Conditions, mysqlv1alpha1.ConditionSemiSyncDegraded)
+	if after == nil {
+		return
+	}
+	wasDegraded := before != nil && before.Status == metav1.ConditionTrue
+	wasReadOnly := before != nil && before.Reason == semiSyncReasonReadOnly
+	isDegraded := after.Status == metav1.ConditionTrue
+	isReadOnly := after.Reason == semiSyncReasonReadOnly
+	log := logf.FromContext(ctx)
+	emit := func(eventType, reason, message string) {
+		if r.Recorder != nil {
+			r.Recorder.Event(latest, eventType, reason, message)
+		}
+	}
+	switch {
+	case isDegraded && !wasDegraded:
+		log.Info("Semi-sync degraded", "reason", after.Reason, "message", after.Message)
+		emit(corev1.EventTypeWarning, eventSemiSyncDegraded, after.Message)
+	case !isDegraded && wasDegraded:
+		log.Info("Semi-sync restored", "message", after.Message)
+		emit(corev1.EventTypeNormal, eventSemiSyncRestored, after.Message)
+	}
+	switch {
+	case isReadOnly && !wasReadOnly:
+		emit(corev1.EventTypeWarning, eventSemiSyncReadOnly, after.Message)
+	case !isReadOnly && wasReadOnly:
+		emit(corev1.EventTypeNormal, eventSemiSyncReadOnlyReleased, "Semi-sync read-only fence released; writes resumed")
+	}
 }
 
 // computeClusterPhase sets the Phase, PhaseReason, Ready, and Progressing
@@ -861,6 +979,8 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 	r.applyStoragePressureCondition(latest, observed)
 	wasStorageProtected := apimeta.IsStatusConditionTrue(before.Status.Conditions, conditionStorageReadOnly)
 	r.applyStorageReadOnlyCondition(latest, observed)
+	semiSyncBefore := apimeta.FindStatusCondition(before.Status.Conditions, mysqlv1alpha1.ConditionSemiSyncDegraded)
+	r.applySemiSyncDegradedCondition(latest, observed)
 	wasBootstrapFailed := apimeta.IsStatusConditionTrue(before.Status.Conditions, mysqlv1alpha1.ConditionBootstrapFailed)
 	if len(observed.InstanceNames) > 0 {
 		r.applyBootstrapFailedCondition(latest, observed)
@@ -925,6 +1045,7 @@ func (r *ClusterReconciler) patchStatus(ctx context.Context, cluster *mysqlv1alp
 			"reason", observed.PhaseReason, "readyInstances", observed.ReadyInstances)
 	}
 	r.recordPhaseEvents(latest, before, observed, wasStoragePressured, wasStorageProtected)
+	r.recordSemiSyncEvents(ctx, latest, semiSyncBefore)
 	r.recordBinlogPurgeHeldEvent(latest, wasPurgeHeld)
 	r.recordArchiveForkedEvent(latest, wasForked)
 	r.recordTimelineTruncatedEvent(latest, observed.MariaDBTimeline)

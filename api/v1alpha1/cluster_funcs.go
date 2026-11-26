@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -299,6 +300,7 @@ func (cluster *Cluster) Validate() field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("mysql", "parameters"), spec.MySQL.Parameters, err.Error()))
 	}
+	allErrs = append(allErrs, cluster.validateSemiSync(specPath.Child("mysql"))...)
 	if _, err := mysqlconfig.PluginLibraries(spec.MySQL.Plugins, cluster.ResolvedFlavor() == FlavorMariaDB); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("mysql", "plugins"), spec.MySQL.Plugins, err.Error()))
@@ -362,6 +364,40 @@ func isInstanceNameOf(clusterName, name string) bool {
 	return err == nil && ordinal > 0
 }
 
+// validateSemiSync checks the semi-sync degradation settings (design 044):
+// the read-only fence only exists in "required" mode, and in that mode the
+// operator owns the wait-no-replica variable, so a parameter that would turn
+// off the wait on a replica-less primary is refused.
+func (cluster *Cluster) validateSemiSync(mysqlPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	semi := cluster.Spec.MySQL.SemiSync
+	if semi == nil {
+		return nil
+	}
+	if semi.ReadOnlyAfterDegradedSeconds != nil &&
+		(!semi.Enabled || semi.DataDurability != DataDurabilityRequired) {
+		allErrs = append(allErrs, field.Invalid(
+			mysqlPath.Child("semiSync", "readOnlyAfterDegradedSeconds"), *semi.ReadOnlyAfterDegradedSeconds,
+			"readOnlyAfterDegradedSeconds requires semiSync.enabled with dataDurability \"required\""))
+	}
+	if cluster.SemiSyncDurabilityRequired() {
+		keys := make([]string, 0, len(cluster.Spec.MySQL.Parameters))
+		for key := range cluster.Spec.MySQL.Parameters {
+			if mysqlconfig.IsSemiSyncWaitNoReplicaKey(key) {
+				keys = append(keys, key)
+			}
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			allErrs = append(allErrs, field.Forbidden(
+				mysqlPath.Child("parameters").Key(key),
+				"the operator keeps the semi-sync wait-no-replica variable ON when dataDurability is \"required\", "+
+					"so the primary keeps waiting for an acknowledgement when no replica is connected"))
+		}
+	}
+	return allErrs
+}
+
 // Warnings returns admission warnings for a spec that is valid but does not do
 // what it appears to ask for. Unlike Validate, they never reject the resource.
 func (cluster *Cluster) Warnings() []string {
@@ -377,6 +413,14 @@ func (cluster *Cluster) Warnings() []string {
 				"always waits for exactly one replica acknowledgement, so values above 1 and "+
 				"spec.mysql.semiSync.dataDurability have no effect",
 			spec.MinSyncReplicas, spec.MaxSyncReplicas))
+	}
+	// "required" still falls back to asynchronous replication once
+	// timeoutMillis expires; only the read-only fence stops writes then.
+	if cluster.SemiSyncDurabilityRequired() && spec.MySQL.SemiSync.ReadOnlyAfterDegradedSeconds == nil {
+		warnings = append(warnings,
+			"spec.mysql.semiSync.dataDurability=required: the primary still falls back to asynchronous "+
+				"replication once timeoutMillis expires without an acknowledgement; set "+
+				"spec.mysql.semiSync.readOnlyAfterDegradedSeconds to pause writes instead")
 	}
 	return warnings
 }
@@ -1215,6 +1259,38 @@ func (cluster *Cluster) SemiSyncDurabilityPreferred() bool {
 // IsSemiSyncEnabled reports whether semi-synchronous replication is configured.
 func (cluster *Cluster) IsSemiSyncEnabled() bool {
 	return cluster.Spec.MySQL.SemiSync != nil && cluster.Spec.MySQL.SemiSync.Enabled
+}
+
+// DefaultSemiSyncDegradedAfterSeconds is the default for
+// spec.mysql.semiSync.degradedAfterSeconds.
+const DefaultSemiSyncDegradedAfterSeconds = 10
+
+// SemiSyncDegradedAfter is how long the primary's live semi-sync flag must
+// stay OFF before the cluster reports SemiSyncDegraded.
+func (cluster *Cluster) SemiSyncDegradedAfter() time.Duration {
+	if s := cluster.Spec.MySQL.SemiSync; s != nil && s.DegradedAfterSeconds != nil {
+		return time.Duration(*s.DegradedAfterSeconds) * time.Second
+	}
+	return DefaultSemiSyncDegradedAfterSeconds * time.Second
+}
+
+// SemiSyncReadOnlyAfter returns how long the primary's live semi-sync flag may
+// stay OFF before the instance manager holds the primary read-only, and
+// whether that fence is configured at all. It is only in effect for an enabled
+// semi-sync cluster with "required" data durability.
+func (cluster *Cluster) SemiSyncReadOnlyAfter() (time.Duration, bool) {
+	s := cluster.Spec.MySQL.SemiSync
+	if !cluster.IsSemiSyncEnabled() || cluster.SemiSyncDurabilityPreferred() ||
+		s.ReadOnlyAfterDegradedSeconds == nil || *s.ReadOnlyAfterDegradedSeconds <= 0 {
+		return 0, false
+	}
+	return time.Duration(*s.ReadOnlyAfterDegradedSeconds) * time.Second, true
+}
+
+// SemiSyncDurabilityRequired reports whether semi-sync is enabled with
+// "required" data durability.
+func (cluster *Cluster) SemiSyncDurabilityRequired() bool {
+	return cluster.IsSemiSyncEnabled() && !cluster.SemiSyncDurabilityPreferred()
 }
 
 // ContinuousArchiving returns the cluster's continuous-archiving configuration,

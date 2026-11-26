@@ -729,6 +729,14 @@ func instanceRole(c *mysqlv1alpha1.Cluster, name, primary string, st *webserver.
 		}
 	}
 	if name == primary {
+		// The live semi-sync flag (design 044): a primary that fell back to
+		// asynchronous replication says so, and a fenced one says writes stop.
+		switch {
+		case st != nil && st.SemiSyncReadOnlyEngaged:
+			return plugin.Bold("Primary").String() + " " + plugin.Red("(async, read-only)").String()
+		case st != nil && st.SemiSync.SourceActive != nil && !*st.SemiSync.SourceActive:
+			return plugin.Bold("Primary").String() + " " + plugin.Yellow("(async fallback)").String()
+		}
 		return plugin.Bold("Primary").String()
 	}
 	switch {

@@ -253,7 +253,9 @@ func (r *Reconciler) reconcileAsyncRole(
 		// primary. The watchdog owns the read-only flags until usage recovers,
 		// and promoting over it would flap the server in and out of
 		// read-only, so hold the lease without touching the server.
-		if amPrimary && (status.ReadOnlyProtectionEngaged || (!status.ReadOnly && !status.SuperReadOnly)) {
+		// The semi-sync read-only fence (design 044) is held the same way.
+		if amPrimary && (status.ReadOnlyProtectionEngaged || status.SemiSyncReadOnlyEngaged ||
+			(!status.ReadOnly && !status.SuperReadOnly)) {
 			return r.holdPrimary(ctx, me, current)
 		}
 		// A replica must drain its relay log before promoting so we do not lose

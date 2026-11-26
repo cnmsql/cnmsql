@@ -72,6 +72,19 @@ reach at least one replica. Without that guarantee, an acknowledged write that
 only existed on a lost primary can be lost before a replica or the object store
 sees it.
 
+What an acknowledgement means: the primary waits at the `AFTER_SYNC` point
+(MySQL's default; the operator pins it on MariaDB, whose default is
+`AFTER_COMMIT`). The transaction is written to the primary's binary log, a
+replica has written it to its relay log and acknowledged it, and only then does
+the primary commit it to its storage engine and return to the client, so no
+other session sees a transaction a failover could lose. The replica has
+*received* the transaction, not necessarily applied it, and it flushes its
+relay log to disk on its own schedule (`sync_relay_log`). Failover accounts for
+that: candidates are ranked on what they executed plus what they retrieved
+into the relay log, and the promoted replica applies its whole relay log before
+it accepts writes. A replica that crashes at the same moment as the primary can
+still lose a received transaction it had not flushed yet.
+
 ### Semi-sync self-healing (data durability)
 
 With semi-sync on, the primary blocks each commit until `minSyncReplicas`
@@ -106,6 +119,128 @@ MariaDB always waits for exactly one acknowledgement, so on a MariaDB cluster
 The operator applies the change on the primary over the mTLS control API during
 its steady-state reconcile. It is a runtime adjustment only; the static
 `my.cnf` floor does not change.
+
+### Semi-sync degradation
+
+:::warning
+`dataDurability: required` is not a zero-data-loss guarantee. Without the
+read-only fence below, a primary that gets no acknowledgement within
+`timeoutMillis` switches to asynchronous replication and keeps committing, and
+a failover during that window loses those commits. With the fence the window is
+bounded, not removed.
+:::
+
+Semi-sync is not a guarantee by itself. When a commit's acknowledgement wait
+times out, MySQL and MariaDB silently fall back to asynchronous replication and
+keep committing. They switch back on their own once a replica catches up. The
+configuration flag (`rpl_semi_sync_source_enabled`) stays ON throughout, so it
+says nothing about whether commits are currently protected.
+
+The instance manager watches the primary's live flag
+(`Rpl_semi_sync_source_status`, `Rpl_semi_sync_master_status` before MySQL
+8.0.26 and on MariaDB) every 2 seconds and logs every transition in both
+directions. The operator turns it into the `SemiSyncDegraded` condition on the
+Cluster:
+
+| Status | Reason | Meaning |
+|--------|--------|---------|
+| `False` | `SemiSyncActive` | The primary replicates semi-synchronously. |
+| `True` | `PrimaryAsynchronous` | The primary has run asynchronously for at least `degradedAfterSeconds`. A failover can lose what it committed meanwhile. |
+| `True` | `PrimaryReadOnly` | As above, and the read-only fence (below) is pausing writes. |
+
+The condition only appears once the primary has reported the live flag. A
+`Warning SemiSyncDegraded` event marks the fallback and a
+`Normal SemiSyncRestored` event marks the recovery. `kubectl cnmsql status`
+shows the primary as `Primary (async fallback)` or
+`Primary (async, read-only)`.
+
+The flag flips on the first acknowledgement wait that times out, so a short gap
+would otherwise become an incident. `degradedAfterSeconds` (default 10, `0`
+reports immediately) is how long the flag must stay OFF before the condition
+turns `True`. The operator evaluates it on its resync, so it can show up to 30
+seconds after that.
+
+```yaml
+spec:
+  mysql:
+    semiSync:
+      enabled: true
+      dataDurability: required
+      timeoutMillis: 2000
+      degradedAfterSeconds: 10
+      readOnlyAfterDegradedSeconds: 30
+```
+
+#### `required` mode and `wait_no_replica`
+
+`rpl_semi_sync_source_wait_no_replica` (`rpl_semi_sync_master_wait_no_slave` on
+older MySQL and on MariaDB) decides what a primary does once fewer semi-sync
+replicas are connected than it waits for (`minSyncReplicas`, or one on
+MariaDB). This is not only about having no replica at all: with two required
+acknowledgements, one disconnected replica is enough. `ON`, the server default,
+still holds each commit for the full timeout, so a replica that reconnects in
+time can acknowledge it. `OFF` falls back to asynchronous replication as soon
+as the count drops, without waiting. With `dataDurability: required` the operator renders the variable
+`ON` and turns it back `ON` if anything changes it. The webhook rejects
+`spec.mysql.parameters` that set it. With `preferred` the server default
+stays, and you may set it `OFF` to skip even the one timeout stall that
+precedes the fallback.
+
+#### The read-only fence
+
+Even in `required` mode the primary falls back to asynchronous replication once
+`timeoutMillis` expires; neither server offers a "never degrade" setting. To
+stop writes instead, set `readOnlyAfterDegradedSeconds` (`required` mode only).
+When the live flag has been OFF that long, the instance manager puts the
+primary into read-only mode (`read_only` and `super_read_only`; `read_only`
+only on MariaDB, where users with `SUPER` can still write). Reads keep working,
+and the primary is not failed over for it.
+
+Writes resume when the flag turns back ON, or when enough semi-sync replicas
+have reconnected. The second trigger is needed because the server only switches
+back to semi-sync on an acknowledgement for a new commit, and a read-only
+primary makes none. A connected replica is not proof that it acknowledges,
+though (it may still be catching up), so that release is a probe. Once per
+reconnect, the next commit must prove it: if it is not acknowledged within
+`timeoutMillis` (plus one 2-second check), the fence engages again and stays
+until the flag turns ON or replicas reconnect again. A primary that commits
+nothing after the release writes nothing unprotected and is not fenced again.
+
+The unprotected window is therefore bounded: `timeoutMillis` plus
+`readOnlyAfterDegradedSeconds` plus about 2 seconds when the fallback starts,
+and about `timeoutMillis` plus 2 seconds after each reconnect probe. The
+webhook warns about a `required` cluster without the fence.
+
+The fence lives in the instance manager, so it holds even when the operator is
+down. It shares the read-only flags with
+[storage protection](storage.md#protecting-a-full-volume-with-read-only-mode):
+neither lifts them while the other holds them. Its latch is kept in memory, so
+after an in-place instance-manager upgrade the new manager adopts it: on its
+first pass with the Cluster settings, before the role reconciler acts, a primary
+that is still read-only with the flag OFF is treated as fenced. A restart of the
+whole Pod restarts mysqld too, which comes back with the flag ON and the
+primary waiting for acknowledgements again.
+
+The fence is a database-level write stop, not split-brain protection. It does
+not stop another instance from being promoted, and it does not cut a primary
+off from clients. On MariaDB, which has no `super_read_only`, accounts with
+`SUPER` (including root) can still write. Split-brain is handled by the
+[primary lease](#primary-lease-fencing) and by
+[fencing an instance](#fencing-an-instance), which stops mysqld.
+
+#### Failure scenarios
+
+| Scenario | Without the fence | With `readOnlyAfterDegradedSeconds` |
+|----------|-------------------|-------------------------------------|
+| One of several replicas lost, `preferred` | The operator lowers the acknowledgement count to the healthy replicas; commits stay acknowledged. | Not applicable (`required` only). |
+| Fewer healthy replicas than `minSyncReplicas`, `required` | The next commit waits `timeoutMillis`, then the primary runs asynchronously and later commits do not wait at all. `SemiSyncDegraded=True` after `degradedAfterSeconds`. | Same, then the primary turns read-only after `readOnlyAfterDegradedSeconds`. |
+| All replicas lost | The primary runs asynchronously after one timed-out commit; a failover has no candidate anyway. | Read-only after the delay; reads keep working. |
+| Replicas come back caught up | The flag turns ON with the next acknowledged commit. | The reconnect releases the fence; the next commit is acknowledged and the condition clears. |
+| Replicas come back still lagging | The flag turns ON once one catches up; commits stay unacknowledged meanwhile. | Released on reconnect; the first unacknowledged commit re-fences after about `timeoutMillis`; released for good once the flag turns ON. |
+| Operator down | Nothing changes on the instances; the condition is not updated until the operator is back. | The fence keeps working: it lives in the instance manager. |
+| Instance manager restarted in place | The window tracking restarts. | A primary still read-only with the flag OFF is adopted as fenced on the first pass. |
+| Primary Pod restarted | mysqld restarts with the flag ON. | Same; the fence starts over from the next timed-out commit. |
+| Primary lost while degraded | Commits since the fallback can be lost; the failover bound treats the recorded primary position as a lower bound. | At most the bounded window above can be lost. |
 
 ### Probes
 

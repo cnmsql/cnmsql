@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("Cluster instance selector", func() {
@@ -930,7 +931,10 @@ var _ = Describe("Cluster admission warnings", func() {
 		cluster.Spec.Instances = 3
 		cluster.Spec.MinSyncReplicas = minSync
 		cluster.Spec.MaxSyncReplicas = maxSync
-		cluster.Spec.MySQL.SemiSync = &SemiSyncConfiguration{Enabled: true, DataDurability: DataDurabilityRequired}
+		cluster.Spec.MySQL.SemiSync = &SemiSyncConfiguration{
+			Enabled: true, DataDurability: DataDurabilityRequired,
+			ReadOnlyAfterDegradedSeconds: ptr.To[int32](30),
+		}
 		return cluster
 	}
 
@@ -954,6 +958,75 @@ var _ = Describe("Cluster admission warnings", func() {
 	It("does not warn on MySQL, which honours the acknowledgement count", func() {
 		Expect(semiSyncCluster(FlavorMySQL, 2, 2).Warnings()).To(BeEmpty())
 		Expect(semiSyncCluster("", 2, 2).Warnings()).To(BeEmpty())
+	})
+
+	It("warns that required durability without the read-only fence still falls back to async", func() {
+		cluster := semiSyncCluster(FlavorMySQL, 1, 1)
+		cluster.Spec.MySQL.SemiSync.ReadOnlyAfterDegradedSeconds = nil
+		warnings := cluster.Warnings()
+		Expect(warnings).To(HaveLen(1))
+		Expect(warnings[0]).To(ContainSubstring("readOnlyAfterDegradedSeconds"))
+
+		cluster.Spec.MySQL.SemiSync.DataDurability = DataDurabilityPreferred
+		Expect(cluster.Warnings()).To(BeEmpty())
+	})
+})
+
+var _ = Describe("Semi-sync degradation settings", func() {
+	semiSync := func(durability string) *Cluster {
+		cluster := &Cluster{
+			Spec: ClusterSpec{
+				ImageName: "percona/percona-server:8.0",
+				Instances: 3,
+				Storage:   StorageConfiguration{Size: "10Gi"},
+			},
+		}
+		cluster.SetDefaults()
+		cluster.Spec.MySQL.SemiSync = &SemiSyncConfiguration{Enabled: true, DataDurability: durability}
+		return cluster
+	}
+
+	It("defaults the degraded delay to ten seconds", func() {
+		cluster := semiSync(DataDurabilityPreferred)
+		Expect(cluster.SemiSyncDegradedAfter()).To(Equal(10 * time.Second))
+		cluster.Spec.MySQL.SemiSync.DegradedAfterSeconds = ptr.To[int32](0)
+		Expect(cluster.SemiSyncDegradedAfter()).To(BeZero())
+	})
+
+	It("only arms the read-only fence in required mode", func() {
+		cluster := semiSync(DataDurabilityRequired)
+		_, ok := cluster.SemiSyncReadOnlyAfter()
+		Expect(ok).To(BeFalse())
+		cluster.Spec.MySQL.SemiSync.ReadOnlyAfterDegradedSeconds = ptr.To[int32](30)
+		after, ok := cluster.SemiSyncReadOnlyAfter()
+		Expect(ok).To(BeTrue())
+		Expect(after).To(Equal(30 * time.Second))
+		Expect(cluster.Validate()).To(BeEmpty())
+
+		cluster.Spec.MySQL.SemiSync.DataDurability = DataDurabilityPreferred
+		_, ok = cluster.SemiSyncReadOnlyAfter()
+		Expect(ok).To(BeFalse())
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Field).To(Equal("spec.mysql.semiSync.readOnlyAfterDegradedSeconds"))
+	})
+
+	It("refuses a wait-no-replica parameter in required mode only", func() {
+		cluster := semiSync(DataDurabilityRequired)
+		cluster.Spec.MySQL.Parameters = map[string]string{
+			"loose-rpl_semi_sync_master_wait_no_slave": "OFF",
+			"rpl-semi-sync-source-wait-no-replica":     "0",
+			"max_connections":                          "500",
+		}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(2))
+		for _, err := range errs {
+			Expect(err.Field).To(HavePrefix("spec.mysql.parameters["))
+			Expect(err.Detail).To(ContainSubstring("wait-no-replica"))
+		}
+
+		cluster.Spec.MySQL.SemiSync.DataDurability = DataDurabilityPreferred
+		Expect(cluster.Validate()).To(BeEmpty())
 	})
 })
 

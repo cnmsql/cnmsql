@@ -134,6 +134,12 @@ type Controller struct {
 	// the threshold (design/042). Written only by the watchdog goroutine and
 	// read by HTTP handler goroutines building the status.
 	storageProtectionEngaged atomic.Bool
+	// semiSyncReadOnlyEngaged reports that the semi-sync monitor holds the
+	// primary read-only because it has run asynchronously too long, and
+	// semiSyncSample is the monitor's latest live-flag sample (design 044).
+	// Written only by the monitor goroutine.
+	semiSyncReadOnlyEngaged atomic.Bool
+	semiSyncSample          atomic.Pointer[semiSyncSample]
 	// pendingReExec guards the timer scheduled by scheduleReExec. It is touched
 	// by HTTP handler goroutines (scheduling), the run-loop goroutine
 	// (BeginShutdown) and the timer goroutine (clearing after a failed exec),
@@ -227,6 +233,20 @@ func (c *Controller) StorageProtectionEngaged() bool {
 // instance status. Called only by the watchdog goroutine.
 func (c *Controller) setStorageProtectionEngaged(engaged bool) {
 	c.storageProtectionEngaged.Store(engaged)
+}
+
+// SemiSyncReadOnlyEngaged reports whether the semi-sync monitor's read-only
+// fence currently holds the primary read-only (design 044).
+func (c *Controller) SemiSyncReadOnlyEngaged() bool {
+	return c.semiSyncReadOnlyEngaged.Load()
+}
+
+func (c *Controller) setSemiSyncReadOnlyEngaged(engaged bool) {
+	c.semiSyncReadOnlyEngaged.Store(engaged)
+}
+
+func (c *Controller) setSemiSyncSample(sample *semiSyncSample) {
+	c.semiSyncSample.Store(sample)
 }
 
 // SetIsolationDetector wires the API-server isolation detector into the liveness
@@ -483,6 +503,16 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 			ReplicaEnabled: semi.ReplicaEnabled,
 		}
 	}
+	if sample := c.semiSyncSample.Load(); sample != nil {
+		active, clients := sample.Active, sample.Clients
+		status.SemiSync.SourceActive = &active
+		status.SemiSync.SourceClients = &clients
+		if !sample.InactiveSince.IsZero() {
+			inactive := int64(time.Since(sample.InactiveSince) / time.Second)
+			status.SemiSync.InactiveSeconds = &inactive
+		}
+	}
+	status.SemiSyncReadOnlyEngaged = c.SemiSyncReadOnlyEngaged()
 	if uptime, err := c.repl.Uptime(ctx); err == nil {
 		status.UptimeSeconds = uptime
 	}

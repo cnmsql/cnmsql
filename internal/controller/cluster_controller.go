@@ -143,6 +143,11 @@ const (
 	eventStorageReadOnly         = "StorageReadOnly"
 	eventStorageReadOnlyReleased = "StorageReadOnlyReleased"
 
+	eventSemiSyncDegraded         = "SemiSyncDegraded"
+	eventSemiSyncRestored         = "SemiSyncRestored"
+	eventSemiSyncReadOnly         = "SemiSyncReadOnly"
+	eventSemiSyncReadOnlyReleased = "SemiSyncReadOnlyReleased"
+
 	// storagePressurePercent is the data-volume usage (percent of capacity) at or
 	// above which an instance is considered under storage pressure. It is a fixed
 	// default for now; promote to a storage.* field if clusters need to tune it.
@@ -353,6 +358,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	r.warnDeprecatedParameters(cluster)
+	r.warnIgnoredSemiSyncParameters(cluster)
 
 	plan, stop, err := r.resolvePlan(ctx, cluster)
 	if stop != nil {

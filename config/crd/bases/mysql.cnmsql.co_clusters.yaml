@@ -4242,10 +4242,34 @@ spec:
                         - preferred
                         - required
                         type: string
+                      degradedAfterSeconds:
+                        description: |-
+                          DegradedAfterSeconds is how long the primary's live semi-sync flag
+                          (Rpl_semi_sync_source_status / Rpl_semi_sync_master_status) must stay OFF,
+                          meaning the primary fell back to asynchronous replication, before the
+                          Cluster reports the SemiSyncDegraded condition. The flag flips on the first
+                          acknowledgement wait that times out, so the delay keeps a short gap from
+                          being reported as an incident. 0 reports it immediately. Defaults to 10.
+                        format: int32
+                        minimum: 0
+                        type: integer
                       enabled:
                         default: false
                         description: Enabled turns on semi-synchronous replication.
                         type: boolean
+                      readOnlyAfterDegradedSeconds:
+                        description: |-
+                          ReadOnlyAfterDegradedSeconds, when set, makes the instance manager put the
+                          primary into read-only mode once its live semi-sync flag has been OFF for
+                          this many seconds, so writes stall instead of continuing unprotected.
+                          Even with dataDurability "required", the server falls back to
+                          asynchronous replication after timeoutMillis; this setting is what stops
+                          writes in that case. Writes resume once the flag is back ON or enough
+                          semi-sync replicas have reconnected. Only valid with dataDurability
+                          "required".
+                        format: int32
+                        minimum: 1
+                        type: integer
                       timeoutMillis:
                         description: |-
                           Timeout in milliseconds the primary waits for a replica acknowledgement
