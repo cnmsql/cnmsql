@@ -108,6 +108,17 @@ type RestoreOptions struct {
 	// mysqlbinlog / mysql for MySQL, mariadb-binlog / mariadb for MariaDB.
 	MysqlbinlogPath string
 	MysqlPath       string
+
+	// The fields below adopt a data directory restored from a VolumeSnapshot
+	// instead of downloading an archive (design 045). FromVolume selects that
+	// path; AdoptID is the adopting cluster's UID and BackupName the Backup that
+	// took the snapshot, whose anchor the replay starts from.
+	FromVolume bool
+	AdoptID    string
+	BackupName string
+	// Anchor, when set, is the replay's starting point in place of the base
+	// backup's binlog-info file.
+	Anchor *engine.BinlogInfo
 }
 
 func (o *RestoreOptions) applyDefaults() {
@@ -133,6 +144,13 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 		"bucket", opts.Bucket,
 		"archiveKey", opts.ArchiveKey,
 	)
+	if opts.FromVolume {
+		eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+		if opts.MysqldPath == defaultMysqldBinary {
+			opts.MysqldPath = eng.ServerdCommand()
+		}
+		return adoptVolume(ctx, opts, eng)
+	}
 	log.Info("Starting restore from object store")
 
 	if opts.Store == nil {

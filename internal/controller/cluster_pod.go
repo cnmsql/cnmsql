@@ -217,19 +217,7 @@ func restoreArgs(plan clusterPlan) []string {
 	}
 	// Point-in-time recovery: replay archived binlogs after the base restore.
 	// --source-cluster enables the replay; bucket/path come from cnmsql_S3_* env.
-	if plan.Recovery.HasTarget {
-		args = append(args, "--source-cluster="+plan.Recovery.SourceCluster)
-		if plan.Recovery.TargetTime != "" {
-			args = append(args, "--target-time="+plan.Recovery.TargetTime)
-		}
-		if plan.Recovery.TargetGTID != "" {
-			args = append(args, "--target-gtid="+plan.Recovery.TargetGTID)
-		}
-		if plan.Recovery.TargetImmediate {
-			args = append(args, "--target-immediate")
-		}
-	}
-	return args
+	return append(args, replayArgs(plan.Recovery)...)
 }
 
 func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapInitDB) []string {

@@ -93,6 +93,11 @@ func (o *RestoreOptions) replayBinlogs(ctx context.Context, bt engine.BackupTool
 	if err != nil {
 		return err
 	}
+	if o.Anchor != nil {
+		// A snapshot restore carries its anchor in its manifest, not in a
+		// binlog-info file.
+		anchor = *o.Anchor
+	}
 	// The backup metadata carries two anchor facts the in-archive binlog-info file
 	// cannot: the fully-specified anchor GTID (a MariaDB 10.11 backup's binlog-info
 	// has only file+position; the GTID was resolved at backup time via

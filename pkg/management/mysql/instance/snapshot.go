@@ -372,10 +372,15 @@ func (c *Controller) readSnapshotPosition(ctx context.Context, conn *sql.Conn) (
 	return anchor, nil
 }
 
+// queryer runs a query on a connection or a pool.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // readBinlogStatus reads File and Position from SHOW BINARY LOG STATUS / SHOW
 // MASTER STATUS, whose other columns vary by flavor and version. A server
 // without binary logging returns no row, and an empty position.
-func readBinlogStatus(ctx context.Context, conn *sql.Conn, query string) (string, int64, error) {
+func readBinlogStatus(ctx context.Context, conn queryer, query string) (string, int64, error) {
 	rows, err := conn.QueryContext(ctx, query)
 	if err != nil {
 		return "", 0, fmt.Errorf("reading the binary log position: %w", err)
