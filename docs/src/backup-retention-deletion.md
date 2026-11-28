@@ -31,8 +31,9 @@ A [volume snapshot backup](volume-snapshots.md) has nothing in the object
 store: `reclaimPolicy: Delete` deletes its VolumeSnapshots instead, and
 `snapshotOwnerReference` can hand them to the Backup or the Cluster for
 garbage collection. Retention GC expires snapshot Backups too (see
-[Retention GC](#retention-gc)); cluster reclaim ignores them. See
-[Ownership and deletion](volume-snapshots.md#ownership-and-deletion).
+[Retention GC](#retention-gc)) and cluster reclaim deletes them (see
+[Reclaiming a Cluster's whole archive on teardown](#reclaiming-a-clusters-whole-archive-on-teardown)).
+See [Ownership and deletion](volume-snapshots.md#ownership-and-deletion).
 
 The Kubernetes Job is owned by the Backup, so Kubernetes garbage collection may
 remove the Job. Object-store artifacts are not owned by Kubernetes and are not
@@ -150,6 +151,13 @@ the finalizer. With a separate archive store (`continuousArchiving.objectStore`)
 the cluster's prefix is wiped in both stores. As with the Backup path, a cleanup failure requeues and emits a
 `CleanupFailed` event; if the object store is permanently unreachable, an operator
 can remove the finalizer by hand to force teardown.
+
+The same finalizer reclaims [volume snapshot backups](volume-snapshots.md). On
+Cluster deletion the operator deletes every snapshot Backup of the cluster with
+its VolumeSnapshots, whatever the Backup's own `reclaimPolicy`, before it
+handles the archive. A cluster that only takes snapshots (`volumeSnapshot`
+without `objectStore`) can set `reclaimPolicy: Delete` too; it has no archive,
+so its deletion does not wait for its Pods.
 
 This is destructive and defaults to `Retain`, so deleting a Cluster leaves its
 archive intact unless you opt in. If the credential Secret is deleted before the

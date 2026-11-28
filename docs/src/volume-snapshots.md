@@ -22,7 +22,7 @@ the binlog archive from it like from any physical backup.
 | Point-in-time recovery | yes, with binlog archiving | yes, with binlog archiving |
 | Recovery without the Backup object | yes, from the raw object store | not yet |
 | Retention | yes | yes, see [Retention](#retention) |
-| Cluster reclaim | yes | not yet, see [Limits](#limits) |
+| Cluster reclaim | yes | yes, see [Ownership and deletion](#ownership-and-deletion) |
 
 ## Requirements
 
@@ -242,6 +242,14 @@ accident. Two settings change that, and they combine:
   VolumeSnapshots when the Backup is deleted, as it removes the archive of an
   XtraBackup Backup. It works with any owner setting.
 
+`spec.backup.reclaimPolicy: Delete` on the Cluster reclaims its snapshots too.
+When the Cluster is deleted, the operator deletes every snapshot Backup of the
+cluster with its VolumeSnapshots, whatever the Backup's own `reclaimPolicy`,
+then wipes the object-store archive if there is one. A cluster that only takes
+snapshots can opt in without an object store. A VolumeSnapshot whose Backup was
+already deleted is left alone: keeping it was a choice. See
+[Reclaiming a Cluster's whole archive on teardown](backup-retention-deletion.md#reclaiming-a-clusters-whole-archive-on-teardown).
+
 Whether deleting a VolumeSnapshot also deletes the data is the class's
 `deletionPolicy`, as for any VolumeSnapshot. The `VolumeSnapshotContent`
 carries none of the operator's annotations; back up the VolumeSnapshot objects
@@ -340,8 +348,6 @@ See [Retention GC](backup-retention-deletion.md#retention-gc).
 
 ## Limits
 
-- **Cluster reclaim.** `spec.backup.reclaimPolicy: Delete` on the Cluster
-  ignores snapshot Backups.
 - **Same namespace.** A volume can only be created from a VolumeSnapshot in its
   own namespace.
 - **Replicas** are still cloned from the primary, not created from a snapshot.

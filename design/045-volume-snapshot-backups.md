@@ -41,7 +41,8 @@ Deferred to follow-up issues (named here so the design leaves room for them):
 
 - retention policy for snapshot Backups (since brought in, see
   [Implementation notes](#implementation-notes));
-- cluster reclaim of snapshots on Cluster deletion;
+- cluster reclaim of snapshots on Cluster deletion (since brought in, see
+  [Implementation notes](#implementation-notes));
 - seeding new replicas from the latest snapshot Backup instead of cloning;
 - recovery from a VolumeSnapshot without a Backup object
   (a `recovery.volumeSnapshots` source naming the snapshot directly);
@@ -321,7 +322,7 @@ with a Kubernetes-level tool, since the content carries none of our
 annotations.
 
 Retention GC (`reconcileRetention`) and cluster reclaim ignore snapshot
-Backups in this design; both are listed as follow-ups above. Retention was
+Backups in this design; both are listed as follow-ups above. Both were
 brought into the same PR, see [Implementation notes](#implementation-notes).
 
 ### 5. Recovery from a snapshot Backup
@@ -539,12 +540,23 @@ the decision:
   backup, which is the only one outside the Kubernetes cluster. The binlog
   horizon is the oldest start among the retained backups of both kinds, so
   point-in-time recovery from a retained snapshot keeps its binlogs.
-  - An expired snapshot Backup is marked `mysql.cnmsql.co/retention-expired`,
+  - An expired snapshot Backup is marked `mysql.cnmsql.co/delete-volume-snapshots`,
     given the cleanup finalizer and deleted. The Backup controller then deletes
     its VolumeSnapshots whatever its `reclaimPolicy`, as retention deletes an
     expired object-store archive.
   - `retentionPolicy` now validates with `objectStore` or `volumeSnapshot`: a
     snapshot-only cluster runs the snapshot step alone.
+- **Cluster reclaim covers snapshot Backups** (deferred above, brought in here).
+  With `spec.backup.reclaimPolicy: Delete`, the cluster finalizer (still named
+  `mysql.cnmsql.co/cleanup-object-store`) also applies to a snapshot-only
+  cluster. On deletion it deletes every snapshot Backup of the cluster the way
+  retention does, with the `mysql.cnmsql.co/delete-volume-snapshots` annotation
+  and the cleanup finalizer. A snapshot-only cluster does not wait for its Pods,
+  since there is no archive they could write to. A VolumeSnapshot whose Backup
+  is already gone is left alone.
+- **Group Replication online snapshots have an e2e spec**: a secondary held
+  while the primary writes, the group keeping quorum and every member applying,
+  a cold snapshot refused, and recovery into a fresh group.
 - **`GET /cluster/snapshot`** reports the hold and whether the instance is
   fenced with mysqld stopped, without querying mysqld. The cold path waits on it
   instead of Pod readiness, which can flip before the shutdown finished.
