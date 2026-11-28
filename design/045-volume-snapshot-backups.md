@@ -496,3 +496,42 @@ Each task is a PR; tests first within each.
    cold, the primary-target warning, ownership and reclaim, recovery, what is
    not covered yet), cross-links from `backup-recovery.md`,
    `backup-retention-deletion.md` and `scheduled-backups.md`.
+
+## Implementation notes
+
+Shipped as one PR (issue #46) rather than the six above. Where it departs from
+the decision:
+
+- **No CRD defaults on `VolumeSnapshotConfiguration`.** The struct is shared by
+  the Cluster and the Backup override; a defaulted field on the Backup would
+  always win over the cluster's. The defaults (`none`, `online: true`, `10m`,
+  `2m`) are applied by the controller. `spec.online` keeps its CRD default of
+  `true`, so only an explicit `false` there counts, between the Backup's
+  `volumeSnapshot.online` and the cluster's.
+- **A cold snapshot records no anchor on the Backup.** Asking the instance once
+  it is back returns a position past the cut: a replica resumes applying as soon
+  as mysqld restarts. The adopt Job derives the exact anchor from the stopped
+  server's data directory instead (a temporary server with the binary log on),
+  and writes it as the manifest.
+- **`GET /cluster/snapshot`** reports the hold and whether the instance is
+  fenced with mysqld stopped, without querying mysqld. The cold path waits on it
+  instead of Pod readiness, which can flip before the shutdown finished.
+- **The heartbeat writer skips its stamp during a hold.** On a primary target
+  the stamp would queue behind the read lock and hold a control connection for
+  as long.
+- **`mysql.cnmsql.co/snapshot-release` finalizer** is held from before the
+  prepare step to the release, so a Backup deleted mid-hold still releases its
+  source. The cold fence is marked with `mysql.cnmsql.co/snapshot-fence` so the
+  release only ever clears a fence it set.
+- **The hold polls every 2 s**, not 10 s: every poll the hold lasts is a write
+  stall on a primary target. After the release it polls every 10 s.
+- **The adopt sentinel holds the adopting cluster's UID**, and the adoption
+  removes the source's replay sentinel and its own: a snapshot of a cluster that
+  was itself recovered from one carries both.
+- **The class-to-driver preflight reads the PV and classes uncached**, and skips
+  them on Forbidden: a namespaced install cannot read cluster-scoped objects,
+  and a cached read would block on an informer it may not run.
+- **A recovery `targetTime` is checked against the cut** (the snapshot's
+  `creationTime`), not the Backup's completion, which waits for the upload.
+- **`SnapshotCrossNamespace`** is not implemented: `recovery.backup` is a local
+  reference, so the Backup is always in the cluster's namespace.
