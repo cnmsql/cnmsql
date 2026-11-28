@@ -146,6 +146,15 @@ type Controller struct {
 	// so all access holds pendingReExecMu.
 	pendingReExecMu sync.Mutex
 	pendingReExec   *time.Timer
+	// snapshot enables the /cluster/snapshot routes (design 045). hold is the
+	// active volume-snapshot hold and expiredHolds the Backups whose hold timed
+	// out before end; both are guarded by snapshotMu. openSnapshotConn opens
+	// the hold's dedicated connection and is overridable in tests.
+	snapshot         *SnapshotConfig
+	snapshotMu       sync.Mutex
+	hold             *snapshotHold
+	expiredHolds     map[string]struct{}
+	openSnapshotConn func(ctx context.Context) (*sql.Conn, func(), error)
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -513,6 +522,7 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 		}
 	}
 	status.SemiSyncReadOnlyEngaged = c.SemiSyncReadOnlyEngaged()
+	status.SnapshotHold = c.snapshotHoldStatus()
 	if uptime, err := c.repl.Uptime(ctx); err == nil {
 		status.UptimeSeconds = uptime
 	}

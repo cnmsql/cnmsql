@@ -393,3 +393,33 @@ func TestEnsureSchemaSkipsDDLWhenTheTableExists(t *testing.T) {
 		t.Fatalf("unexpected statements: %v", err)
 	}
 }
+
+// TestPausedTickReadsWithoutStamping proves a paused pass (a volume-snapshot
+// hold on the primary) issues no write, which would queue behind the global
+// read lock, and keeps reporting the writer it last saw.
+func TestPausedTickReadsWithoutStamping(t *testing.T) {
+	loop, mock := newTestLoop(t)
+	paused := true
+	loop.cfg.Paused = func() bool { return paused }
+	loop.state.Writing = true
+
+	mock.ExpectQuery(regexp.QuoteMeta(readQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"micros"}).AddRow(int64(1_000_000)))
+	loop.tick(context.Background())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
+	}
+	if state := loop.State(); !state.Writing || !state.LagKnown {
+		t.Fatalf("paused state = %+v, want the writer kept and the lag read", state)
+	}
+
+	// Unpaused, the next pass probes and stamps again.
+	paused = false
+	readOnly(mock, true)
+	mock.ExpectQuery(regexp.QuoteMeta(readQuery)).
+		WillReturnRows(sqlmock.NewRows([]string{"micros"}).AddRow(int64(1_000_000)))
+	loop.tick(context.Background())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
+	}
+}

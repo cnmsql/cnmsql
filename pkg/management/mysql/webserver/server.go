@@ -162,6 +162,11 @@ func Handler(controller InstanceController) http.Handler {
 	if streamer, ok := controller.(LoadStreamer); ok {
 		mux.HandleFunc("POST /cluster/load", loadHandler(streamer))
 	}
+	if quiescer, ok := controller.(SnapshotQuiescer); ok {
+		mux.HandleFunc("GET /cluster/snapshot", snapshotStateHandler(quiescer))
+		mux.HandleFunc("POST /cluster/snapshot/begin", snapshotBeginHandler(quiescer))
+		mux.HandleFunc("POST /cluster/snapshot/end", snapshotEndHandler(quiescer))
+	}
 	return mux
 }
 

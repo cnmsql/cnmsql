@@ -75,6 +75,11 @@ type Config struct {
 	Table  string
 	// Interval is the stamping period. Zero takes DefaultInterval.
 	Interval time.Duration
+	// Paused, when set and returning true, skips the stamp for that pass; the
+	// read still runs. The instance manager pauses the stamp while it holds a
+	// global read lock for a volume snapshot, where the write would queue
+	// behind the lock and hold a control connection for as long.
+	Paused func() bool
 }
 
 func (c Config) schema() string {
@@ -172,10 +177,16 @@ func (l *Loop) Run(ctx context.Context) {
 
 // tick runs one stamp-and-read pass.
 func (l *Loop) tick(ctx context.Context) {
-	writing, err := l.stamp(ctx)
-	if err != nil {
-		l.fail(err)
-		return
+	var writing bool
+	if l.cfg.Paused != nil && l.cfg.Paused() {
+		// No stamp this pass: keep reporting who the writer is.
+		writing = l.State().Writing
+	} else {
+		var err error
+		if writing, err = l.stamp(ctx); err != nil {
+			l.fail(err)
+			return
+		}
 	}
 	lag, known, err := l.read(ctx)
 	if err != nil {

@@ -136,6 +136,11 @@ type Status struct {
 	// primary read-only because it has run asynchronously for longer than
 	// spec.mysql.semiSync.readOnlyAfterDegradedSeconds (design 044).
 	SemiSyncReadOnlyEngaged bool `json:"semiSyncReadOnlyEngaged,omitempty"`
+
+	// SnapshotHold reports an active volume-snapshot hold: the instance holds a
+	// global read lock while a VolumeSnapshot is cut (design 045). Nil when
+	// none.
+	SnapshotHold *SnapshotHoldStatus `json:"snapshotHold,omitempty"`
 }
 
 // ReplicationLagStatus is one instance's heartbeat reading: how old the newest

@@ -607,6 +607,19 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// A LogicalRestore loads into the primary as the control account, which
 	// the manager already holds; the instance refuses the load unless it is
 	// writable when the load starts.
+	// A volume snapshot holds a global read lock on its own connection as the
+	// control account; the manifest it writes travels inside the snapshot
+	// (design 045).
+	if opts.DataDir != "" {
+		controller.SetSnapshotConfig(SnapshotConfig{
+			Engine:       eng,
+			DataDir:      opts.DataDir,
+			Socket:       opts.Socket,
+			User:         opts.Control.User,
+			Password:     opts.Control.Password,
+			PasswordFunc: opts.Control.PasswordFunc,
+		})
+	}
 	controller.SetLoadConfig(LoadConfig{
 		Engine:       eng,
 		Socket:       opts.Socket,
@@ -661,7 +674,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Heartbeat != nil && opts.Heartbeat.Enabled {
 		heartbeatCtx, cancelHeartbeat := context.WithCancel(logf.IntoContext(ctx, log))
 		defer cancelHeartbeat()
-		heartbeatLoop = startHeartbeat(heartbeatCtx, *opts.Heartbeat, db)
+		heartbeatLoop = startHeartbeat(heartbeatCtx, *opts.Heartbeat, db, controller.SnapshotHeld)
 		controller.SetReplicationLagProvider(heartbeatStatusProvider(heartbeatLoop))
 	}
 	if opts.MaxReadyLag > 0 {
