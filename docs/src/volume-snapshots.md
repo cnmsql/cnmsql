@@ -21,7 +21,8 @@ the binlog archive from it like from any physical backup.
 | Recovery | download, prepare, copy back | a new volume created from the snapshot |
 | Point-in-time recovery | yes, with binlog archiving | yes, with binlog archiving |
 | Recovery without the Backup object | yes, from the raw object store | not yet |
-| Retention and cluster reclaim | yes | not yet, see [Limits](#limits) |
+| Retention | yes | yes, see [Retention](#retention) |
+| Cluster reclaim | yes | not yet, see [Limits](#limits) |
 
 ## Requirements
 
@@ -144,6 +145,24 @@ unfenced. A replica restarts and catches up; that is a replication catch-up and
 a routing change for every cold snapshot. Cold snapshots are not supported on
 Group Replication clusters yet (`UnsupportedOnGroupReplication`).
 
+A stopped server has no position to read, so the anchor of a cold snapshot is
+read on the instance's next start. Before the cut, the operator arms a capture
+on the instance. The next mysqld start then runs with replication held
+(`--skip-replica-start`), and the manager reads the GTID position and binlog
+coordinates before anything else can write. Nothing ran since the clean stop,
+so that position is the snapshot's. The manager then resumes replication, and
+the operator records the anchor on the Backup before completing it, usually
+a few seconds after the release.
+
+Before it releases the instance, the operator checks that the capture is still
+waiting. If mysqld started in between (for example after a manager restart),
+the position it read could be past the cut. The operator then discards it and
+completes the Backup without an anchor. The same happens when the instance
+gives up after five failed reads, or when nothing is read within `deadline`. A
+cold snapshot without a recorded anchor still restores, and point-in-time
+recovery from it still works: the restore reads the anchor from the snapshot's
+own data directory.
+
 A Backup is cold when `spec.volumeSnapshot.online` is `false`, or, when that is
 unset, when `spec.online` is `false`, or, when that is unset too, when the
 cluster's `volumeSnapshot.online` is `false`. `spec.online` defaults to `true`
@@ -167,15 +186,15 @@ A completed snapshot Backup records:
   `name`, the `volume` role (`data`), the source `pvcName`, the `className`, and
   the driver's `readyToUse`, `restoreSize` and `creationTime`
 - `status.endGTID` and `status.beginGTID`: the anchor, the GTID position of the
-  cut (online only)
+  cut
 - `status.endBinlog`: the binlog coordinates of the cut, as `file:position`
-  (online only)
 - `status.binlogObjectStore`: the archive the anchor belongs to, when the
   cluster archives binlogs
 
 `jobName`, `destinationPath`, `objectStore`, `sha256` and `backupId` stay
-empty. A cold snapshot records no anchor on the Backup: the restore reads it
-from the stopped server's own data directory.
+empty. The anchor of a cold snapshot is the one read on the instance's next
+start (see [Online and cold snapshots](#online-and-cold-snapshots)). It stays
+empty when that read was discarded or failed.
 
 The VolumeSnapshot itself carries labels (`mysql.cnmsql.co/cluster`,
 `mysql.cnmsql.co/backup`, `mysql.cnmsql.co/instance`,
@@ -292,14 +311,37 @@ directory. A `targetTime` must not be before the snapshot was cut
 (`status.volumeSnapshots[0].creationTime`), which is earlier than the Backup's
 completion. See [Point-In-Time Recovery](pitr.md).
 
+## Retention
+
+`spec.backup.retentionPolicy` covers snapshot Backups. A completed snapshot
+Backup expires when it completed before the window. The operator then deletes
+the Backup and its VolumeSnapshots, whatever the Backup's `reclaimPolicy`, the
+same way retention deletes an expired object-store backup. The newest snapshot
+Backup is always kept, and so is the newest object-store backup: a recent
+snapshot never expires the last backup that lives outside the Kubernetes
+cluster.
+
+Snapshots count for the binlog archive too. The recovery horizon is the oldest
+start time among the retained backups of both kinds, so the archive keeps every
+binlog a retained snapshot needs for point-in-time recovery.
+
+A cluster that only takes snapshots can set a `retentionPolicy` without an
+object store:
+
+```yaml
+spec:
+  backup:
+    retentionPolicy: 14d
+    volumeSnapshot:
+      className: csi-hostpath-snapclass
+```
+
+See [Retention GC](backup-retention-deletion.md#retention-gc).
+
 ## Limits
 
-- **Retention.** `spec.backup.retentionPolicy` and cluster reclaim
-  (`spec.backup.reclaimPolicy: Delete`) ignore snapshot Backups. Retention
-  keeps the binlogs that object-store backups need, not the ones a snapshot
-  needs: point-in-time recovery from a snapshot older than the retention window
-  can fail on missing binlogs. Delete old snapshot Backups with `reclaimPolicy:
-  Delete` or ScheduledBackup history limits.
+- **Cluster reclaim.** `spec.backup.reclaimPolicy: Delete` on the Cluster
+  ignores snapshot Backups.
 - **Same namespace.** A volume can only be created from a VolumeSnapshot in its
   own namespace.
 - **Replicas** are still cloned from the primary, not created from a snapshot.

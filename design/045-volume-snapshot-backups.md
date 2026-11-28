@@ -39,7 +39,8 @@ In scope:
 
 Deferred to follow-up issues (named here so the design leaves room for them):
 
-- retention policy for snapshot Backups;
+- retention policy for snapshot Backups (since brought in, see
+  [Implementation notes](#implementation-notes));
 - cluster reclaim of snapshots on Cluster deletion;
 - seeding new replicas from the latest snapshot Backup instead of cloning;
 - recovery from a VolumeSnapshot without a Backup object
@@ -320,7 +321,8 @@ with a Kubernetes-level tool, since the content carries none of our
 annotations.
 
 Retention GC (`reconcileRetention`) and cluster reclaim ignore snapshot
-Backups in this design; both are listed as follow-ups above.
+Backups in this design; both are listed as follow-ups above. Retention was
+brought into the same PR, see [Implementation notes](#implementation-notes).
 
 ### 5. Recovery from a snapshot Backup
 
@@ -508,11 +510,41 @@ the decision:
   `2m`) are applied by the controller. `spec.online` keeps its CRD default of
   `true`, so only an explicit `false` there counts, between the Backup's
   `volumeSnapshot.online` and the cluster's.
-- **A cold snapshot records no anchor on the Backup.** Asking the instance once
-  it is back returns a position past the cut: a replica resumes applying as soon
-  as mysqld restarts. The adopt Job derives the exact anchor from the stopped
-  server's data directory instead (a temporary server with the binary log on),
-  and writes it as the manifest.
+- **A cold snapshot's anchor is read on the next start, with replication
+  held.** Asking the instance once it is back, as decided, returns a position
+  past the cut: a replica resumes applying as soon as mysqld restarts (the
+  instance does not run with `skip_replica_start`, and the role reconciler
+  restarts stopped threads). Instead, once mysqld has stopped, the operator arms
+  a capture (`POST /cluster/snapshot/begin` with `cold: true`), which the
+  instance writes as `.cnmsql-cold-snapshot` on the data directory. While it
+  waits, every mysqld start adds `--skip-replica-start`, and every path that
+  starts replication (`EnsureReplicaStarted`, `EnsureReplicaConfigured`,
+  `RepairReplication`) first reads the position into the record. Replication
+  resumes once the read succeeds, or after five failed reads. The operator
+  copies the anchor from `GET /cluster/snapshot` to the Backup and clears the
+  record with `end`, waiting at most until `deadline`.
+  - The capture is armed before the cut. So the operator checks that it is
+    still pending before it unfences: a position already read means mysqld
+    started in between (a manager restart), possibly before the cut, so it is
+    discarded.
+  - A Backup whose capture was discarded or failed completes without an anchor.
+    The adopt Job derives the anchor from the snapshot itself (a temporary
+    server with the binary log on) whenever the manifest does not match the
+    Backup, which is always the case for a cold snapshot.
+  - The archive-gap judge skips a snapshot Backup without an anchor. Judging by
+    it would call every gap open and take an unneeded base backup.
+- **Retention covers snapshot Backups** (deferred above, brought in here).
+  `PlanRetentionWithSnapshots` expires both kinds on the same window, each with
+  its own floor. The newest snapshot never expires the newest object-store
+  backup, which is the only one outside the Kubernetes cluster. The binlog
+  horizon is the oldest start among the retained backups of both kinds, so
+  point-in-time recovery from a retained snapshot keeps its binlogs.
+  - An expired snapshot Backup is marked `mysql.cnmsql.co/retention-expired`,
+    given the cleanup finalizer and deleted. The Backup controller then deletes
+    its VolumeSnapshots whatever its `reclaimPolicy`, as retention deletes an
+    expired object-store archive.
+  - `retentionPolicy` now validates with `objectStore` or `volumeSnapshot`: a
+    snapshot-only cluster runs the snapshot step alone.
 - **`GET /cluster/snapshot`** reports the hold and whether the instance is
   fenced with mysqld stopped, without querying mysqld. The cold path waits on it
   instead of Pod readiness, which can flip before the shutdown finished.
