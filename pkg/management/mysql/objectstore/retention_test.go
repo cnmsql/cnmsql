@@ -257,3 +257,74 @@ func TestApplyExpirySplitsStores(t *testing.T) {
 		}
 	}
 }
+
+func snapshotEntry(name string, started, completed time.Time) SnapshotEntry {
+	return SnapshotEntry{BackupName: name, StartedAt: started, CompletedAt: completed}
+}
+
+func TestPlanRetentionWithSnapshots(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	cutoff := now.Add(-7 * day)
+
+	t.Run("a retained snapshot holds the horizon back", func(t *testing.T) {
+		t.Parallel()
+		backups := []BackupEntry{
+			backup("c/b1/", now.Add(-30*day), now.Add(-30*day)),
+			backup("c/b2/", now.Add(-1*day), now.Add(-1*day)),
+		}
+		snapshots := []SnapshotEntry{snapshotEntry("snap-recent", now.Add(-3*day), now.Add(-3*day))}
+		plan := PlanRetentionWithSnapshots(backups, snapshots, cutoff)
+		if !slices.Equal(plan.DeleteBackupPrefixes, []string{"c/b1/"}) || len(plan.DeleteSnapshotBackups) != 0 {
+			t.Fatalf("plan = %+v", plan)
+		}
+		if want := now.Add(-3 * day); !plan.Horizon.Equal(want) {
+			t.Fatalf("horizon = %v, want the retained snapshot's start %v", plan.Horizon, want)
+		}
+	})
+
+	t.Run("expired snapshots go, the newest snapshot stays", func(t *testing.T) {
+		t.Parallel()
+		backups := []BackupEntry{backup("c/b1/", now.Add(-2*day), now.Add(-2*day))}
+		snapshots := []SnapshotEntry{
+			snapshotEntry("snap-old", now.Add(-30*day), now.Add(-30*day)),
+			snapshotEntry("snap-newest", now.Add(-10*day), now.Add(-10*day)),
+			snapshotEntry("snap-mid", now.Add(-20*day), now.Add(-20*day)),
+		}
+		plan := PlanRetentionWithSnapshots(backups, snapshots, cutoff)
+		got := slices.Sorted(slices.Values(plan.DeleteSnapshotBackups))
+		if !slices.Equal(got, []string{"snap-mid", "snap-old"}) || len(plan.DeleteBackupPrefixes) != 0 {
+			t.Fatalf("plan = %+v", plan)
+		}
+		if want := now.Add(-10 * day); !plan.Horizon.Equal(want) {
+			t.Fatalf("horizon = %v, want the newest snapshot's start %v", plan.Horizon, want)
+		}
+	})
+
+	t.Run("a newer snapshot does not expire the last object-store backup", func(t *testing.T) {
+		t.Parallel()
+		backups := []BackupEntry{backup("c/b1/", now.Add(-30*day), now.Add(-30*day))}
+		snapshots := []SnapshotEntry{snapshotEntry("snap", now.Add(-1*day), now.Add(-1*day))}
+		plan := PlanRetentionWithSnapshots(backups, snapshots, cutoff)
+		if !plan.Empty() || !plan.Horizon.IsZero() {
+			t.Fatalf("plan = %+v, want nothing expired", plan)
+		}
+	})
+
+	t.Run("snapshots alone", func(t *testing.T) {
+		t.Parallel()
+		snapshots := []SnapshotEntry{
+			snapshotEntry("snap-old", now.Add(-30*day), now.Add(-30*day)),
+			snapshotEntry("snap-new", now.Add(-1*day), now.Add(-1*day)),
+		}
+		plan := PlanRetentionWithSnapshots(nil, snapshots, cutoff)
+		if !slices.Equal(plan.DeleteSnapshotBackups, []string{"snap-old"}) {
+			t.Fatalf("plan = %+v", plan)
+		}
+		if want := now.Add(-1 * day); !plan.Horizon.Equal(want) {
+			t.Fatalf("horizon = %v, want %v", plan.Horizon, want)
+		}
+	})
+}

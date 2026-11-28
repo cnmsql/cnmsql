@@ -33,17 +33,18 @@ import (
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
 )
 
-// clusterBackupFinalizer reclaims the cluster's entire object-store archive when
-// the Cluster is deleted. It is added only when spec.backup.reclaimPolicy is
-// Delete and an object store is configured.
+// clusterBackupFinalizer reclaims the cluster's entire object-store archive and
+// its volume-snapshot Backups when the Cluster is deleted. It is added only
+// when spec.backup.reclaimPolicy is Delete and an object store or volume
+// snapshots are configured.
 const clusterBackupFinalizer = mysqlv1alpha1.ClusterBackupCleanupFinalizer
 
-// wantsObjectStoreCleanup reports whether the Cluster opted into wiping its
-// object-store archive on deletion.
+// wantsObjectStoreCleanup reports whether the Cluster opted into removing its
+// backups on deletion: the object-store archive, the volume snapshots, or both.
 func (r *ClusterReconciler) wantsObjectStoreCleanup(cluster *mysqlv1alpha1.Cluster) bool {
 	backup := cluster.Spec.Backup
 	return backup != nil &&
-		backup.ObjectStore != nil &&
+		(backup.ObjectStore != nil || backup.VolumeSnapshot != nil) &&
 		backup.ReclaimPolicy == mysqlv1alpha1.BackupReclaimDelete
 }
 
@@ -110,8 +111,16 @@ func (r *ClusterReconciler) reconcileClusterDelete(
 	if !controllerutil.ContainsFinalizer(cluster, clusterBackupFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if wait, err := r.stopArchiveWriters(ctx, cluster); err != nil || wait > 0 {
-		return ctrl.Result{RequeueAfter: wait}, err
+	// Volume snapshots need no wait: the Backup controller deletes them, and
+	// releases a source a Backup still holds first.
+	if err := r.reclaimSnapshotBackups(ctx, cluster); err != nil {
+		r.Recorder.Event(cluster, corev1.EventTypeWarning, "CleanupFailed", err.Error())
+		return ctrl.Result{}, err
+	}
+	if cluster.Spec.Backup != nil && cluster.Spec.Backup.ObjectStore != nil {
+		if wait, err := r.stopArchiveWriters(ctx, cluster); err != nil || wait > 0 {
+			return ctrl.Result{RequeueAfter: wait}, err
+		}
 	}
 	if err := r.cleanupClusterObjectStore(ctx, cluster); err != nil {
 		r.Recorder.Event(cluster, corev1.EventTypeWarning, "CleanupFailed", err.Error())
@@ -186,6 +195,34 @@ func mayWriteArchive(pod *corev1.Pod, now time.Time) bool {
 		return true
 	}
 	return now.Before(pod.DeletionTimestamp.Add(stuckPodMargin))
+}
+
+// reclaimSnapshotBackups deletes every volume-snapshot Backup of the cluster
+// with its VolumeSnapshots, whatever the Backup's reclaimPolicy. A
+// VolumeSnapshot whose Backup is already gone was kept on purpose and is left
+// alone.
+func (r *ClusterReconciler) reclaimSnapshotBackups(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
+	var backups mysqlv1alpha1.BackupList
+	if err := r.List(ctx, &backups, client.InNamespace(cluster.Namespace)); err != nil {
+		return err
+	}
+	deleted := 0
+	for i := range backups.Items {
+		b := &backups.Items[i]
+		if b.Spec.Cluster.Name != cluster.Name || !b.IsVolumeSnapshot() || !b.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.deleteSnapshotBackup(ctx, cluster.Namespace, b.Name); err != nil {
+			return fmt.Errorf("deleting volume snapshot Backup %s: %w", b.Name, err)
+		}
+		deleted++
+	}
+	if deleted > 0 {
+		logf.FromContext(ctx).Info("Deleted the cluster's volume snapshot Backups", "cluster", cluster.Name, "backups", deleted)
+		r.Recorder.Event(cluster, corev1.EventTypeNormal, "Cleanup",
+			fmt.Sprintf("Deleted %d volume snapshot Backup(s) with their VolumeSnapshots", deleted))
+	}
+	return nil
 }
 
 // cleanupClusterObjectStore removes the cluster's whole archive prefix (every

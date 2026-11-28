@@ -146,6 +146,22 @@ type Controller struct {
 	// so all access holds pendingReExecMu.
 	pendingReExecMu sync.Mutex
 	pendingReExec   *time.Timer
+	// snapshot enables the /cluster/snapshot routes (design 045). hold is the
+	// active volume-snapshot hold and expiredHolds the Backups whose hold timed
+	// out before end; both are guarded by snapshotMu. openSnapshotConn opens
+	// the hold's dedicated connection and is overridable in tests.
+	snapshot         *SnapshotConfig
+	snapshotMu       sync.Mutex
+	hold             *snapshotHold
+	expiredHolds     map[string]struct{}
+	openSnapshotConn func(ctx context.Context) (*sql.Conn, func(), error)
+	// coldMu guards the cold-snapshot record on the data directory and
+	// coldAttempts, the failed reads of its anchor since this manager started.
+	// It is never held while taking snapshotMu.
+	coldMu       sync.Mutex
+	coldAttempts int
+	// coldResuming is set while ResumeAfterColdSnapshot runs.
+	coldResuming atomic.Bool
 }
 
 // NewController builds a Controller for the named instance. versionStr is the
@@ -513,6 +529,7 @@ func (c *Controller) collectStatus(ctx context.Context) (*webserver.Status, erro
 		}
 	}
 	status.SemiSyncReadOnlyEngaged = c.SemiSyncReadOnlyEngaged()
+	status.SnapshotHold = c.snapshotHoldStatus()
 	if uptime, err := c.repl.Uptime(ctx); err == nil {
 		status.UptimeSeconds = uptime
 	}
@@ -802,13 +819,22 @@ func (c *Controller) Demote(ctx context.Context) error {
 // EnsureReplicaStarted resumes replication when this instance is a configured
 // replica whose threads did not auto-start with mysqld.
 func (c *Controller) EnsureReplicaStarted(ctx context.Context) error {
+	if c.captureColdAnchor(ctx) {
+		return nil
+	}
 	logf.FromContext(ctx).WithName("instance-controller").Info("Ensuring replication is started", "instance", c.name)
 	return c.repl.EnsureReplicaStarted(ctx)
 }
 
 // EnsureReplicaConfigured restores missing replication source metadata and
 // resumes stopped replication threads for an expected replica.
+//
+// While a cold volume snapshot's anchor is still to be read, it reads it
+// first and leaves replication held when that fails (see captureColdAnchor).
 func (c *Controller) EnsureReplicaConfigured(ctx context.Context, opts replication.SourceOptions) error {
+	if c.captureColdAnchor(ctx) {
+		return nil
+	}
 	logf.FromContext(ctx).WithName("instance-controller").Info("Ensuring replication source is configured",
 		"instance", c.name,
 		"sourceHost", opts.Host,
@@ -830,6 +856,9 @@ func (c *Controller) RepairReplication(ctx context.Context, opts replication.Sou
 	logf.FromContext(ctx).WithName("instance-controller").Info("Repairing replication metadata",
 		"instance", c.name,
 		"sourceHost", opts.Host)
+	if c.captureColdAnchor(ctx) {
+		return nil
+	}
 	if err := c.repl.RepairReplication(ctx, opts); err != nil {
 		return err
 	}

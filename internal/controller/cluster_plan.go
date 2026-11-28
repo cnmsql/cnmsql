@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -53,6 +54,10 @@ type clusterPlan struct {
 	// ClusterName is the owning Cluster's name. The bootstrap commands carry
 	// it as --cluster-name to locate the cluster's credential Secrets.
 	ClusterName string
+	// ClusterUID is the owning Cluster's UID. An adopt bootstrap records it in
+	// the data directory, so a snapshot of a cluster that was itself adopted is
+	// still adopted again.
+	ClusterUID string
 
 	// Cluster-wide secret names.
 	RootSecretName    string
@@ -127,6 +132,27 @@ type recoveryPlan struct {
 	// BinlogStore is the resolved (defaulted) store holding SourceCluster's
 	// binary-log archive. It is Store unless the archive was kept apart.
 	BinlogStore mysqlv1alpha1.S3ObjectStore
+
+	// Snapshot, when set, bootstraps the primary's volume from a VolumeSnapshot
+	// instead of an object-store archive (design 045). Bucket, ArchiveKey and
+	// MetadataKey are empty, and Store and StoreEnv only describe the binlog
+	// archive, for point-in-time recovery.
+	Snapshot *snapshotRecoveryPlan
+}
+
+// snapshotRecoveryPlan is the VolumeSnapshot a recovering primary's volume is
+// created from.
+type snapshotRecoveryPlan struct {
+	// Name is the VolumeSnapshot, in the cluster's namespace.
+	Name string
+	// BackupName is the Backup that took it: the restore accepts the anchor
+	// file inside the snapshot only when it names this Backup.
+	BackupName string
+	// RestoreSize is the minimum request of a volume restored from it.
+	RestoreSize resource.Quantity
+	// AnchorGTID is the Backup's recorded anchor; empty for a cold snapshot.
+	AnchorGTID string
+	Online     bool
 }
 
 // instancePlan holds the per-instance derived names and identity.
@@ -282,6 +308,7 @@ func (r *ClusterReconciler) buildPlan(ctx context.Context, cluster *mysqlv1alpha
 		Instances:          cluster.Spec.Instances,
 		PrimaryName:        cluster.Status.CurrentPrimary,
 		ClusterName:        cluster.Name,
+		ClusterUID:         string(cluster.UID),
 		OperatorImage:      r.OperatorImageName,
 		RootSecretName:     cluster.RootSecretName(),
 		AppSecretName:      cluster.Name + "-app",
@@ -379,6 +406,10 @@ func (r *ClusterReconciler) checkPlanStoreSecrets(
 		}
 	}
 	for _, store := range stores {
+		if store == nil || store.Bucket == "" {
+			// A snapshot recovery without a target reads no object store.
+			continue
+		}
 		if err := objectstore.CheckStoreSecrets(ctx, r.Client, cluster.Namespace, store); err != nil {
 			if errors.Is(err, objectstore.ErrCredentialsSecretRefused) {
 				return &storeSecretsRefusedError{err: err}
@@ -436,6 +467,9 @@ func (r *ClusterReconciler) resolveRecovery(
 		return nil, fmt.Errorf("%s: recovery backup %q is a logical backup, and recovery restores a physical "+
 			"data directory; load a logical backup into a new cluster with bootstrap.initdb.import instead",
 			reasonLogicalBackupNotRecoverable, backup.Name)
+	}
+	if backup.IsVolumeSnapshot() {
+		return r.resolveSnapshotRecovery(ctx, cluster, rec, backup)
 	}
 	if backup.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted {
 		return nil, fmt.Errorf("recovery backup %q is not completed (phase %q)", backup.Name, backup.Status.Phase)

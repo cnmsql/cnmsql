@@ -17,6 +17,7 @@ limitations under the License.
 package restore
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -81,5 +82,15 @@ func TestBinlogStoreFromEnvSkippedWithoutReplay(t *testing.T) {
 	}
 	if client != nil {
 		t.Fatal("a restore without replay must not build a client for the archive store")
+	}
+}
+
+func TestFromVolumeRequiresTheAdoptionFlags(t *testing.T) {
+	cmd := NewCommand()
+	cmd.SetArgs([]string{"--from-volume", "--backup-name=nightly"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--cluster-uid") {
+		t.Fatalf("error = %v, want the missing --cluster-uid named", err)
 	}
 }

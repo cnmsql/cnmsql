@@ -351,7 +351,12 @@ func archivingConfig(cluster *mysqlv1alpha1.Cluster) mysqlconfig.Archiving {
 // needsRoll=true when the volume has a pending node-side resize that cannot
 // complete while it stays mounted — see ShouldResizeInUseVolumes — so the caller
 // must recycle the Pod to finish the expansion.
-func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan) (bool, error) {
+//
+// snapshot, when set, is the VolumeSnapshot a recovering primary's volume is
+// created from (design 045).
+func (r *ClusterReconciler) ensurePVC(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, inst instancePlan, snapshot *snapshotRecoveryPlan,
+) (bool, error) {
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 		Name:      inst.PVCName,
 		Namespace: cluster.Namespace,
@@ -367,10 +372,16 @@ func (r *ClusterReconciler) ensurePVC(ctx context.Context, cluster *mysqlv1alpha
 		pvc.Labels = labelsFor(cluster, inst.Name, roleOf(inst))
 		pvc.Annotations = map[string]string{pvcStatusAnnotation: pvcStatusInitializing}
 		pvc.Spec = spec
+		if snapshot != nil {
+			applySnapshotSource(&pvc.Spec, snapshot)
+		}
 		if err := controllerutil.SetControllerReference(cluster, pvc, r.Scheme); err != nil {
 			return false, err
 		}
 		return false, r.Create(ctx, pvc)
+	}
+	if err := checkSnapshotSource(pvc, snapshot); err != nil {
+		return false, err
 	}
 
 	// A volume from before bootstrap Jobs was bootstrapped by its Pod's init

@@ -197,39 +197,28 @@ func caCertVolume(name, secretName string) corev1.Volume {
 // and restore a physical backup from object storage into the data directory,
 // then (for point-in-time recovery) replay archived binlogs up to the target.
 func restoreArgs(plan clusterPlan) []string {
-	args := []string{
+	args := make([]string, 0, 18)
+	args = append(args,
 		managerInstanceCmd, "restore",
-		"--data-dir=" + dataDir,
-		"--backup-dir=" + joinBackupDir,
-		"--bucket=" + plan.Recovery.Bucket,
-		"--archive-key=" + plan.Recovery.ArchiveKey,
-		"--metadata-key=" + plan.Recovery.MetadataKey,
+		"--data-dir="+dataDir,
+		"--backup-dir="+joinBackupDir,
+		"--bucket="+plan.Recovery.Bucket,
+		"--archive-key="+plan.Recovery.ArchiveKey,
+		"--metadata-key="+plan.Recovery.MetadataKey,
 		// Reset the restored internal accounts to this cluster's generated
 		// credentials so the instance manager can authenticate post-recovery.
-		"--mysqld=" + mysqldBinary,
-		"--config=" + configPath,
-		"--socket=" + socketPath,
-		"--control-user=" + controlUser,
-		"--backup-user=" + backupUser,
+		"--mysqld="+mysqldBinary,
+		"--config="+configPath,
+		"--socket="+socketPath,
+		"--control-user="+controlUser,
+		"--backup-user="+backupUser,
 		// restore reads the control and backup passwords from the cluster's
 		// credential Secrets through the Kubernetes API.
-		"--cluster-name=" + plan.ClusterName,
-	}
+		"--cluster-name="+plan.ClusterName,
+	)
 	// Point-in-time recovery: replay archived binlogs after the base restore.
 	// --source-cluster enables the replay; bucket/path come from cnmsql_S3_* env.
-	if plan.Recovery.HasTarget {
-		args = append(args, "--source-cluster="+plan.Recovery.SourceCluster)
-		if plan.Recovery.TargetTime != "" {
-			args = append(args, "--target-time="+plan.Recovery.TargetTime)
-		}
-		if plan.Recovery.TargetGTID != "" {
-			args = append(args, "--target-gtid="+plan.Recovery.TargetGTID)
-		}
-		if plan.Recovery.TargetImmediate {
-			args = append(args, "--target-immediate")
-		}
-	}
-	return args
+	return append(args, replayArgs(plan.Recovery)...)
 }
 
 func (r *ClusterReconciler) initdbArgs(cluster *mysqlv1alpha1.Cluster, initdb *mysqlv1alpha1.BootstrapInitDB) []string {

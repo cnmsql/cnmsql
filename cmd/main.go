@@ -11,6 +11,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,6 +46,7 @@ func init() {
 
 	utilruntime.Must(mysqlv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(monitoringv1.AddToScheme(scheme))
+	utilruntime.Must(snapshotv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -189,6 +191,7 @@ func main() {
 			controller.RegisterGRMetrics(mgr.GetClient())
 			if err := (&controller.BackupReconciler{
 				Client:            mgr.GetClient(),
+				APIReader:         mgr.GetAPIReader(),
 				Scheme:            mgr.GetScheme(),
 				Recorder:          mgr.GetEventRecorderFor("backup-controller"), //nolint:staticcheck
 				OperatorImageName: operatorImage,

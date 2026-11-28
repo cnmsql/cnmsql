@@ -101,13 +101,14 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore is the S3-compatible destination for backups and binlog<br />archiving. |  | Optional: \{\} <br /> |
-| `retentionPolicy` _string_ | RetentionPolicy is a duration string (e.g. "30d", "8w") describing how<br />long to keep backups. |  | Pattern: `^[1-9][0-9]*[dwm]$` <br />Optional: \{\} <br /> |
-| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to the cluster's entire object-store<br />archive (every base backup, the archived binlogs, and the archive index)<br />when the Cluster is deleted. With "Delete" the operator adds a cleanup<br />finalizer and wipes the archive on teardown; with "Retain" (the default)<br />the archive is kept so a deleted Cluster can still be recovered. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `retentionPolicy` _string_ | RetentionPolicy is a duration string (e.g. "30d", "8w") describing how<br />long to keep backups. It expires object-store base backups, the archived<br />binary logs no retained backup needs, logical backups, and volumeSnapshot<br />Backups with their VolumeSnapshots. The newest object-store backup and<br />the newest volumeSnapshot Backup are always kept. It requires objectStore<br />or volumeSnapshot. |  | Pattern: `^[1-9][0-9]*[dwm]$` <br />Optional: \{\} <br /> |
+| `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to the cluster's backups when the<br />Cluster is deleted: its entire object-store archive (every base backup,<br />the archived binlogs, and the archive index) and its volumeSnapshot<br />Backups with their VolumeSnapshots. With "Delete" the operator adds a<br />cleanup finalizer and removes them on teardown; with "Retain" (the<br />default) they are kept so a deleted Cluster can still be recovered. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take backups from, defaults to a standby if available. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
 | `xtrabackupOptions` _string array_ | XtrabackupOptions are extra flags passed to xtrabackup. |  | Optional: \{\} <br /> |
 | `logicalOptions` _string array_ | LogicalOptions are extra flags passed to the dump client (mysqldump /<br />mariadb-dump) for logical backups. A Backup's spec.logical.extraArgs<br />replaces them. The operator does not validate them: flags that change the<br />output format or GTID handling break restore. |  | Optional: \{\} <br /> |
 | `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate is the default shaping applied to backup worker Jobs created for<br />this cluster: resources, scheduling (nodeSelector/tolerations/affinity/<br />priorityClassName), extra labels/annotations, and the finished-Job TTL. A<br />per-Backup spec.jobTemplate overrides it field by field. During recovery the<br />resources from this template are also applied to the restore Job. |  | Optional: \{\} <br /> |
 | `continuousArchiving` _[ContinuousArchivingConfiguration](#continuousarchivingconfiguration)_ | ContinuousArchiving configures continuous binary-log archiving to the<br />object store, the foundation for point-in-time recovery. Disabled by<br />default. |  | Optional: \{\} <br /> |
+| `volumeSnapshot` _[VolumeSnapshotConfiguration](#volumesnapshotconfiguration)_ | VolumeSnapshot configures Backups taken with method volumeSnapshot. It is<br />required for that method: a snapshot Backup on a cluster without it fails<br />with ClusterHasNoVolumeSnapshotSection. |  | Optional: \{\} <br /> |
 
 
 #### BackupJobTemplate
@@ -241,10 +242,11 @@ _Appears in:_
 | `objectStore` _[S3ObjectStore](#s3objectstore)_ | ObjectStore overrides the destination configured on the referenced<br />Cluster. When omitted, the Cluster's backup object store is used. |  | Optional: \{\} <br /> |
 | `method` _[BackupMethod](#backupmethod)_ | Method is the backup method to use. | xtrabackup | Enum: [xtrabackup volumeSnapshot logical] <br />Optional: \{\} <br /> |
 | `target` _[BackupTarget](#backuptarget)_ | Target instance to take the backup from. | prefer-standby | Enum: [primary prefer-standby] <br />Optional: \{\} <br /> |
-| `online` _boolean_ | Online, when true, performs a non-blocking (hot) backup. Defaults to true. | true | Optional: \{\} <br /> |
+| `online` _boolean_ | Online, when true, performs a non-blocking (hot) backup. Defaults to true.<br />For method volumeSnapshot, false takes a cold snapshot (the source<br />instance is fenced for the cut); see spec.volumeSnapshot.online. | true | Optional: \{\} <br /> |
 | `reclaimPolicy` _[BackupReclaimPolicy](#backupreclaimpolicy)_ | ReclaimPolicy controls what happens to this backup's object-store archive<br />(the backup payload and its manifest) when the Backup object is deleted.<br />With "Delete" the operator adds the cleanup finalizer and removes the<br />archive on deletion; with "Retain" (the default) the archive is kept. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 | `jobTemplate` _[BackupJobTemplate](#backupjobtemplate)_ | JobTemplate shapes the backup worker Job for this backup: resources,<br />scheduling (nodeSelector/tolerations/affinity/priorityClassName), extra<br />labels/annotations, and the finished-Job TTL. It overrides the cluster-wide<br />spec.backup.jobTemplate field by field. |  | Optional: \{\} <br /> |
 | `logical` _[LogicalBackupOptions](#logicalbackupoptions)_ | Logical configures the dump when method is "logical". |  | Optional: \{\} <br /> |
+| `volumeSnapshot` _[VolumeSnapshotConfiguration](#volumesnapshotconfiguration)_ | VolumeSnapshot overrides the cluster's spec.backup.volumeSnapshot field by<br />field for this Backup. Only valid with method: volumeSnapshot. A snapshot<br />Backup ignores spec.objectStore and spec.jobTemplate: no worker Job runs. |  | Optional: \{\} <br /> |
 
 
 #### BackupStatus
@@ -274,6 +276,8 @@ _Appears in:_
 | `beginBinlog` _string_ | BeginBinlog/EndBinlog record the binary log coordinates. For a logical<br />backup both hold the dump's snapshot position (file:position), for<br />reference. |  | Optional: \{\} <br /> |
 | `endBinlog` _string_ |  |  | Optional: \{\} <br /> |
 | `databases` _string array_ | Databases lists the schemas in a logical backup, which are the ones an<br />import can select. |  | Optional: \{\} <br /> |
+| `volumeSnapshots` _[VolumeSnapshotStatus](#volumesnapshotstatus) array_ | VolumeSnapshots lists the snapshots this Backup produced, one per instance<br />volume. Empty for other methods. |  | Optional: \{\} <br /> |
+| `online` _boolean_ | Online records whether a volumeSnapshot Backup was taken under a read lock<br />(true) or on a fenced instance (false). Only set for method<br />volumeSnapshot. |  | Optional: \{\} <br /> |
 | `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | StartedAt/StoppedAt record the backup timing. |  | Optional: \{\} <br /> |
 | `stoppedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ |  |  | Optional: \{\} <br /> |
 | `error` _string_ | Error holds the error message if the backup failed. |  | Optional: \{\} <br /> |
@@ -2158,6 +2162,26 @@ _Appears in:_
 | `replace` | ServiceUpdateStrategyReplace replaces operator defaults with the user template.<br /> |
 
 
+#### SnapshotOwnerReference
+
+_Underlying type:_ _string_
+
+SnapshotOwnerReference names the object that owns the VolumeSnapshots a
+volumeSnapshot Backup creates.
+
+_Validation:_
+- Enum: [none backup cluster]
+
+_Appears in:_
+- [VolumeSnapshotConfiguration](#volumesnapshotconfiguration)
+
+| Field | Description |
+| --- | --- |
+| `none` | SnapshotOwnerNone sets no owner: the VolumeSnapshots outlive the Backup and<br />the Cluster. This is the default.<br /> |
+| `backup` | SnapshotOwnerBackup makes the Backup the VolumeSnapshots' controller owner,<br />so they are garbage-collected with it.<br /> |
+| `cluster` | SnapshotOwnerCluster makes the Cluster the VolumeSnapshots' controller<br />owner, so they are garbage-collected with it.<br /> |
+
+
 #### StorageConfiguration
 
 
@@ -2211,5 +2235,52 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `backupBeforeUpgrade` _boolean_ | BackupBeforeUpgrade controls whether the operator takes a fresh backup<br />before starting a major-version upgrade and waits for it to succeed before<br />rolling any instance. Defaults to true. Set false to skip (e.g. when an<br />external backup process is in place). The data-dictionary upgrade is<br />irreversible, so the backup is the only rollback path. |  | Optional: \{\} <br /> |
+
+
+#### VolumeSnapshotConfiguration
+
+
+
+VolumeSnapshotConfiguration configures Backups taken with method
+volumeSnapshot. On a Backup it overrides the cluster's
+spec.backup.volumeSnapshot field by field.
+
+
+
+_Appears in:_
+- [BackupConfiguration](#backupconfiguration)
+- [BackupSpec](#backupspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `className` _string_ | ClassName is the VolumeSnapshotClass used for the instance data volume.<br />Empty uses the default class for the volume's CSI driver. |  | Optional: \{\} <br /> |
+| `labels` _object (keys:string, values:string)_ | Labels are added to every VolumeSnapshot. Operator keys win on conflict. |  | Optional: \{\} <br /> |
+| `annotations` _object (keys:string, values:string)_ | Annotations are added to every VolumeSnapshot. Operator keys win on<br />conflict. |  | Optional: \{\} <br /> |
+| `snapshotOwnerReference` _[SnapshotOwnerReference](#snapshotownerreference)_ | SnapshotOwnerReference sets who owns the VolumeSnapshot objects: none (the<br />default; they outlive the Backup and the Cluster), backup, or cluster. |  | Enum: [none backup cluster] <br />Optional: \{\} <br /> |
+| `online` _boolean_ | Online selects how the source instance is quiesced for the cut. True holds<br />a global read lock on the source while the snapshot is cut, which stalls<br />writes on a primary target. False fences the source instance (mysqld<br />stopped) for the cut. When unset on the Backup and the cluster, a Backup<br />with spec.online: false is cold and every other one is online. |  | Optional: \{\} <br /> |
+| `deadline` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | Deadline bounds how long a snapshot Backup retries CSI errors and waits<br />for the snapshot to be provisioned and ready before failing. Default 10m. |  | Optional: \{\} <br /> |
+| `lockTimeout` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#duration-v1-meta)_ | LockTimeout bounds how long the source instance holds the global read lock<br />(online) or stays fenced (cold) waiting for the snapshot to be cut. When it<br />elapses the instance releases on its own and the Backup fails. Default 2m. |  | Optional: \{\} <br /> |
+
+
+#### VolumeSnapshotStatus
+
+
+
+VolumeSnapshotStatus records one VolumeSnapshot a Backup produced.
+
+
+
+_Appears in:_
+- [BackupStatus](#backupstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name of the VolumeSnapshot, in the Backup's namespace. |  |  |
+| `volume` _string_ | Volume is the role of the snapshotted volume: data. |  |  |
+| `pvcName` _string_ | PVCName is the source claim. |  | Optional: \{\} <br /> |
+| `className` _string_ | ClassName is the VolumeSnapshotClass used, resolved at creation. Empty<br />when the snapshot used the driver's default class. |  | Optional: \{\} <br /> |
+| `readyToUse` _boolean_ | ReadyToUse mirrors the snapshot's status.readyToUse. |  | Optional: \{\} <br /> |
+| `restoreSize` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#quantity-resource-api)_ | RestoreSize mirrors status.restoreSize: the minimum PVC request that can<br />restore it. |  | Optional: \{\} <br /> |
+| `creationTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#time-v1-meta)_ | CreationTime mirrors status.creationTime: when the driver cut it. |  | Optional: \{\} <br /> |
 
 

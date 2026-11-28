@@ -19,13 +19,16 @@ package controller
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -65,12 +68,14 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = monitoringv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+	err = snapshotv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     append([]string{filepath.Join("..", "..", "config", "crd", "bases")}, snapshotCRDPaths()...),
 		ErrorIfCRDPathMissing: false,
 	}
 
@@ -96,6 +101,20 @@ var _ = AfterSuite(func() {
 		return testEnv.Stop()
 	}, time.Minute, time.Second).Should(Succeed())
 })
+
+// snapshotCRDPaths returns the directory of the VolumeSnapshot CRDs shipped in
+// the snapshot client module, so the volumeSnapshot Backup specs run against
+// the real schema. It is empty when the module cannot be located; those specs
+// then fail on the missing kind.
+func snapshotCRDPaths() []string {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}",
+		"github.com/kubernetes-csi/external-snapshotter/client/v8").Output()
+	if err != nil {
+		logf.Log.Error(err, "Failed to locate the snapshot client module")
+		return nil
+	}
+	return []string{filepath.Join(strings.TrimSpace(string(out)), "config", "crd")}
+}
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by

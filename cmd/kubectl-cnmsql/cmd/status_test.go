@@ -228,3 +228,14 @@ func TestContinuousBackupIgnoresLogicalBackupsForRecoverability(t *testing.T) {
 		t.Errorf("the logical backup still counts as the last successful backup:\n%s", out)
 	}
 }
+
+func TestInstanceHealthShowsASnapshotHold(t *testing.T) {
+	cluster := &mysqlv1alpha1.Cluster{}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "c-2"}}
+	live := &instanceStatus{Instance: "c-2", Status: &webserver.Status{
+		SnapshotHold: &webserver.SnapshotHoldStatus{BackupName: "nightly"},
+	}}
+	if got := instanceHealth(cluster, pod, live); !strings.Contains(got, "Snapshot hold (nightly)") {
+		t.Fatalf("health = %q, want the snapshot hold", got)
+	}
+}

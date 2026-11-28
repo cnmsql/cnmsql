@@ -51,7 +51,7 @@ func TestEnsurePVCMarksNewVolumeInitializing(t *testing.T) {
 	r := &ClusterReconciler{Client: c, Scheme: scheme}
 	inst := testPlan().instanceFor(cluster, 1)
 
-	if _, err := r.ensurePVC(ctx, cluster, inst); err != nil {
+	if _, err := r.ensurePVC(ctx, cluster, inst, nil); err != nil {
 		t.Fatal(err)
 	}
 	pvc := &corev1.PersistentVolumeClaim{}
@@ -73,7 +73,7 @@ func TestEnsurePVCBackfillsLegacyVolume(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, legacy).Build()
 	r := &ClusterReconciler{Client: c, Scheme: scheme}
 
-	if _, err := r.ensurePVC(ctx, cluster, inst); err != nil {
+	if _, err := r.ensurePVC(ctx, cluster, inst, nil); err != nil {
 		t.Fatal(err)
 	}
 	pvc := &corev1.PersistentVolumeClaim{}
@@ -96,7 +96,7 @@ func TestEnsurePVCKeepsInitializingVolume(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, pvc).Build()
 	r := &ClusterReconciler{Client: c, Scheme: scheme}
 
-	if _, err := r.ensurePVC(ctx, cluster, inst); err != nil {
+	if _, err := r.ensurePVC(ctx, cluster, inst, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := &corev1.PersistentVolumeClaim{}

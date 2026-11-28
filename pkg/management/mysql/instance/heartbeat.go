@@ -41,9 +41,11 @@ type HeartbeatConfig struct {
 // loop has no terminal error: a heartbeat that cannot be written or read is a
 // lost lag reading, not a reason to take the instance down, so there is no error
 // channel for the run loop to select on.
-func startHeartbeat(ctx context.Context, cfg HeartbeatConfig, db *sql.DB) *heartbeat.Loop {
+// paused, when non-nil, skips the stamp while it returns true (a volume-snapshot
+// hold).
+func startHeartbeat(ctx context.Context, cfg HeartbeatConfig, db *sql.DB, paused func() bool) *heartbeat.Loop {
 	log := logf.FromContext(ctx).WithName("heartbeat")
-	loop := heartbeat.NewLoop(db, heartbeat.Config{Interval: cfg.Interval}, log)
+	loop := heartbeat.NewLoop(db, heartbeat.Config{Interval: cfg.Interval, Paused: paused}, log)
 	go loop.Run(ctx)
 	log.Info("Started replication-lag heartbeat", "interval", cfg.Interval)
 	return loop

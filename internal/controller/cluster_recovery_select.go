@@ -155,17 +155,23 @@ func anchorOnDeadBranch(anchor string, index *objectstore.ArchiveIndex, mariadb 
 // checkNamedBackupTarget refuses a targetTime before a named Backup
 // completed: the backup already holds transactions committed after the target.
 func checkNamedBackupTarget(backup *mysqlv1alpha1.Backup, target *mysqlv1alpha1.RecoveryTarget) error {
-	if target == nil || target.TargetTime == "" || backup.Status.StoppedAt == nil {
+	consistent := backup.Status.StoppedAt
+	// A snapshot's consistent point is its cut, which can be well before the
+	// Backup completed: readyToUse waits for the upload.
+	if snaps := backup.Status.VolumeSnapshots; len(snaps) == 1 && snaps[0].CreationTime != nil {
+		consistent = snaps[0].CreationTime
+	}
+	if target == nil || target.TargetTime == "" || consistent == nil {
 		return nil
 	}
 	t, err := time.Parse(time.RFC3339, target.TargetTime)
 	if err != nil {
 		return fmt.Errorf("invalid recovery targetTime %q: %w", target.TargetTime, err)
 	}
-	if t.Before(backup.Status.StoppedAt.Time) {
-		return fmt.Errorf("recovery targetTime %s is before backup %q completed (%s): "+
+	if t.Before(consistent.Time) {
+		return fmt.Errorf("recovery targetTime %s is before backup %q's consistent point (%s): "+
 			"the backup already holds later transactions; name an older backup",
-			target.TargetTime, backup.Name, backup.Status.StoppedAt.UTC().Format(time.RFC3339))
+			target.TargetTime, backup.Name, consistent.UTC().Format(time.RFC3339))
 	}
 	return nil
 }

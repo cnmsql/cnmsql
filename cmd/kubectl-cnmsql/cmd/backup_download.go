@@ -118,6 +118,11 @@ func downloadLogicalBackup(
 	opts downloadOptions,
 	stdout io.Writer,
 ) (string, error) {
+	if backup.IsVolumeSnapshot() {
+		return "", fmt.Errorf("backup %q is a volume snapshot and has nothing to download; its data is in "+
+			"VolumeSnapshot %s/%s, which a new PersistentVolumeClaim can name as its dataSource",
+			backup.Name, backup.Namespace, backupSnapshotName(backup))
+	}
 	if backup.Spec.Method != mysqlv1alpha1.BackupMethodLogical {
 		return "", fmt.Errorf("backup %q is a %s backup; only logical backups can be downloaded",
 			backup.Name, backup.Spec.Method)
@@ -253,3 +258,13 @@ func streamDump(
 // errDownloadStopped closes the download pipe when decompression stopped
 // reading it, so the download's own error can be told apart from it.
 var errDownloadStopped = errors.New("download stopped")
+
+// backupSnapshotName is the VolumeSnapshot a volumeSnapshot Backup produced:
+// the one its status records, else the Backup's own name, which the operator
+// gives it.
+func backupSnapshotName(backup *mysqlv1alpha1.Backup) string {
+	if len(backup.Status.VolumeSnapshots) > 0 {
+		return backup.Status.VolumeSnapshots[0].Name
+	}
+	return backup.Name
+}

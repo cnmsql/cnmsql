@@ -108,6 +108,17 @@ type RestoreOptions struct {
 	// mysqlbinlog / mysql for MySQL, mariadb-binlog / mariadb for MariaDB.
 	MysqlbinlogPath string
 	MysqlPath       string
+
+	// The fields below adopt a data directory restored from a VolumeSnapshot
+	// instead of downloading an archive (design 045). FromVolume selects that
+	// path; AdoptID is the adopting cluster's UID and BackupName the Backup that
+	// took the snapshot, whose anchor the replay starts from.
+	FromVolume bool
+	AdoptID    string
+	BackupName string
+	// Anchor, when set, is the replay's starting point in place of the base
+	// backup's binlog-info file.
+	Anchor *engine.BinlogInfo
 }
 
 func (o *RestoreOptions) applyDefaults() {
@@ -133,6 +144,13 @@ func Restore(ctx context.Context, opts RestoreOptions) error {
 		"bucket", opts.Bucket,
 		"archiveKey", opts.ArchiveKey,
 	)
+	if opts.FromVolume {
+		eng := engine.MustForFlavor(engine.Flavor(os.Getenv("CNMSQL_FLAVOR")))
+		if opts.MysqldPath == defaultMysqldBinary {
+			opts.MysqldPath = eng.ServerdCommand()
+		}
+		return adoptVolume(ctx, opts, eng)
+	}
 	log.Info("Starting restore from object store")
 
 	if opts.Store == nil {
@@ -337,14 +355,10 @@ func (o *RestoreOptions) reconcileRestoredServer(ctx context.Context, eng engine
 	args := temporaryServerArgs(o.ConfigFile, o.DataDir, o.Socket)
 	// Do not start replication on the temporary server: the restored metadata is
 	// about to be reset, and starting from it would reach for the backup source's
-	// host. The option was renamed slave→replica in 8.0.26.
-	skipStart := "--skip-slave-start"
-	if eng.UsesReplicaTerminology(restoredServerVersion(o.Version)) {
-		skipStart = "--skip-replica-start"
-	}
+	// host.
 	args = append(args,
 		"--skip-grant-tables",
-		skipStart,
+		skipReplicaStartArg(eng, restoredServerVersion(o.Version)),
 		// Suppress the binary log for the credential reset. The config file enables
 		// log_bin, so without this the ALTER USER / FLUSH statements would be written
 		// to the binlog and advance the restored server's GTID state past the base

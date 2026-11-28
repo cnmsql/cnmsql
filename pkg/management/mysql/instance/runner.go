@@ -430,6 +430,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	sup := NewDetachedSupervisor(opts.MysqldPath, args,
+		WithStartArgs(func() []string { return ColdSnapshotStartArgs(opts.DataDir, eng, ver) }),
 		WithDetachedShutdownTimeout(opts.ShutdownTimeout),
 		WithFIFO(fifoLog),
 		WithPIDFile(opts.PIDFile))
@@ -568,6 +569,21 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// crash.
 	fence := NewFenceGate()
 	controller.SetFenceGate(fence)
+	// A volume snapshot holds a global read lock on its own connection as the
+	// control account; the manifest it writes travels inside the snapshot
+	// (design 045). It is set before replication is resumed below: a start
+	// after a cold snapshot held replication, and the capture of its anchor
+	// must run first.
+	if opts.DataDir != "" {
+		controller.SetSnapshotConfig(SnapshotConfig{
+			Engine:       eng,
+			DataDir:      opts.DataDir,
+			Socket:       opts.Socket,
+			User:         opts.Control.User,
+			Password:     opts.Control.Password,
+			PasswordFunc: opts.Control.PasswordFunc,
+		})
+	}
 	switch {
 	case adopting:
 		// Adopting an already-serving mysqld after an in-place upgrade: replication
@@ -596,6 +612,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 			_ = sup.Shutdown(ctx)
 			return err
 		}
+	}
+	if !adopting {
+		// A start after a cold volume snapshot held replication; when its
+		// anchor could not be read above, this keeps trying.
+		go controller.ResumeAfterColdSnapshot(logf.IntoContext(ctx, log))
 	}
 	if opts.Backup != nil {
 		controller.SetBackupConfig(*opts.Backup)
@@ -661,7 +682,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Heartbeat != nil && opts.Heartbeat.Enabled {
 		heartbeatCtx, cancelHeartbeat := context.WithCancel(logf.IntoContext(ctx, log))
 		defer cancelHeartbeat()
-		heartbeatLoop = startHeartbeat(heartbeatCtx, *opts.Heartbeat, db)
+		heartbeatLoop = startHeartbeat(heartbeatCtx, *opts.Heartbeat, db, controller.SnapshotHeld)
 		controller.SetReplicationLagProvider(heartbeatStatusProvider(heartbeatLoop))
 	}
 	if opts.MaxReadyLag > 0 {
@@ -808,6 +829,8 @@ func Run(ctx context.Context, opts RunOptions) error {
 				mysqldExit <- fmt.Errorf("restarting mysqld after unfence: %w", serr)
 				return
 			}
+			// The start after a cold volume snapshot held replication.
+			go controller.ResumeAfterColdSnapshot(logf.IntoContext(ctx, log))
 		}
 	}()
 

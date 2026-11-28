@@ -64,7 +64,7 @@ func TestEnsurePVCGrowsRequest(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	rolled, err := reconciler.ensurePVC(ctx, cluster, inst)
+	rolled, err := reconciler.ensurePVC(ctx, cluster, inst, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestEnsurePVCResizeRollGatedOnResizeInUseVolumes(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			rolled, err := reconciler.ensurePVC(ctx, cluster, inst)
+			rolled, err := reconciler.ensurePVC(ctx, cluster, inst, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

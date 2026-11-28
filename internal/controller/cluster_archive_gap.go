@@ -43,7 +43,7 @@ import (
 const archiveGapBackupLabel = "mysql.cnmsql.co/archive-gap-backup"
 
 // newestPhysicalBackup returns the most recently completed physical Backup of
-// the cluster, or nil when there is none.
+// the cluster whose anchor is known, or nil when there is none.
 func (r *ClusterReconciler) newestPhysicalBackup(
 	ctx context.Context, cluster *mysqlv1alpha1.Cluster,
 ) (*mysqlv1alpha1.Backup, error) {
@@ -56,6 +56,12 @@ func (r *ClusterReconciler) newestPhysicalBackup(
 		b := &backups.Items[i]
 		if b.Spec.Cluster.Name != cluster.Name || b.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted ||
 			isLogicalBackup(b) || b.Status.StoppedAt == nil {
+			continue
+		}
+		// A cold volume snapshot whose anchor could not be read holds the gap
+		// or not, and nothing here can tell: judging by it would call every
+		// gap open, so the newest backup with a known anchor judges instead.
+		if b.IsVolumeSnapshot() && b.Status.EndGTID == "" {
 			continue
 		}
 		if newest == nil || b.Status.StoppedAt.After(newest.Status.StoppedAt.Time) {

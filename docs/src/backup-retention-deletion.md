@@ -27,6 +27,14 @@ A [logical backup](logical-backups.md) uses the same directory, with
 `dump.sql.zst` and `logical.json` inside it. Everything below applies to it the
 same way.
 
+A [volume snapshot backup](volume-snapshots.md) has nothing in the object
+store: `reclaimPolicy: Delete` deletes its VolumeSnapshots instead, and
+`snapshotOwnerReference` can hand them to the Backup or the Cluster for
+garbage collection. Retention GC expires snapshot Backups too (see
+[Retention GC](#retention-gc)) and cluster reclaim deletes them (see
+[Reclaiming a Cluster's whole archive on teardown](#reclaiming-a-clusters-whole-archive-on-teardown)).
+See [Ownership and deletion](volume-snapshots.md#ownership-and-deletion).
+
 The Kubernetes Job is owned by the Backup, so Kubernetes garbage collection may
 remove the Job. Object-store artifacts are not owned by Kubernetes and are not
 removed unless you opt the Backup into remote cleanup with `reclaimPolicy: Delete`,
@@ -144,6 +152,13 @@ the cluster's prefix is wiped in both stores. As with the Backup path, a cleanup
 `CleanupFailed` event; if the object store is permanently unreachable, an operator
 can remove the finalizer by hand to force teardown.
 
+The same finalizer reclaims [volume snapshot backups](volume-snapshots.md). On
+Cluster deletion the operator deletes every snapshot Backup of the cluster with
+its VolumeSnapshots, whatever the Backup's own `reclaimPolicy`, before it
+handles the archive. A cluster that only takes snapshots (`volumeSnapshot`
+without `objectStore`) can set `reclaimPolicy: Delete` too; it has no archive,
+so its deletion does not wait for its Pods.
+
 This is destructive and defaults to `Retain`, so deleting a Cluster leaves its
 archive intact unless you opt in. If the credential Secret is deleted before the
 finalizer runs (for example a fast namespace teardown), cleanup cannot
@@ -165,14 +180,16 @@ spec:
       # ...
 ```
 
-A `retentionPolicy` requires an object store; setting one without
-`spec.backup.objectStore` is rejected by validation.
+A `retentionPolicy` requires an object store or
+[volume snapshots](volume-snapshots.md); setting one with neither
+`spec.backup.objectStore` nor `spec.backup.volumeSnapshot` is rejected by
+validation.
 
 ### What gets deleted
 
 The operator runs a throttled retention pass (at most once per hour, tracked in
-`status.lastRetentionRunTime`) on clusters that have a policy, an object store,
-and an established primary. Each pass:
+`status.lastRetentionRunTime`) on clusters that have a policy, an object store
+or volume snapshots, and an established primary. Each pass:
 
 1. **Expires old base backups.** A base backup is deletable when its
    `completedAt` is older than `now - window`. Its whole archive directory
@@ -192,6 +209,13 @@ and an established primary. Each pass:
 4. **Expires old logical backups** on the same window, keeping the newest one.
    Dumps are counted on their own: they never keep a base backup or a binlog
    alive, and they never count as the newest base backup.
+5. **Expires old volume snapshot Backups** on the same window. The Backup and
+   its VolumeSnapshots are deleted, whatever the Backup's `reclaimPolicy`.
+   Snapshots keep their own floor: the newest snapshot Backup is always kept,
+   and a recent snapshot never expires the newest object-store backup. Retained
+   snapshots count for the horizon in step 3, so the archive keeps the binlogs
+   their point-in-time recovery needs. A cluster without an object store only
+   runs this step.
 
 With a separate archive store, base and logical backups expire in
 `spec.backup.objectStore` and binlog segments and the index in the archive

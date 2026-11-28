@@ -106,6 +106,11 @@ deletion non-destructive. See
 reclaim-policy semantics, including reclaiming a whole Cluster's archive on
 teardown.
 
+A schedule with `method: volumeSnapshot` generates
+[volume snapshot backups](volume-snapshots.md). There, `reclaimPolicy: Delete`
+deletes each generated Backup's VolumeSnapshot, and the history limits are the
+only retention: the cluster's `retentionPolicy` ignores snapshot Backups.
+
 ## Immediate backup
 
 When `spec.immediate` is true, the scheduler creates one Backup as soon as it

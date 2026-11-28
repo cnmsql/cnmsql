@@ -100,6 +100,11 @@ const sidebars = {
     },
     {
       type: 'doc',
+      id: 'volume-snapshots',
+      label: 'Volume Snapshot Backups',
+    },
+    {
+      type: 'doc',
       id: 'scheduled-backups',
       label: 'Scheduled Backups',
     },

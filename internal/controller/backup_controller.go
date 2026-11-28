@@ -38,6 +38,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
 	"github.com/cnmsql/cnmsql/internal/controller/topology"
 	"github.com/cnmsql/cnmsql/pkg/management/mysql/objectstore"
@@ -75,13 +78,26 @@ type BackupReconciler struct {
 	// with its own cloud identity for a store that has no static credentials. Off
 	// by default: that identity is shared by every tenant (GHSA-qxwf-59cm-cj4x).
 	ObjectStoreAmbientCredentials bool
+	// SnapshotClient drives a source instance's volume-snapshot hold. Nil uses
+	// the mTLS control API.
+	SnapshotClient SnapshotControlClient
+	// APIReader reads the cluster-scoped objects a snapshot preflight checks
+	// (the PersistentVolume, VolumeSnapshotClasses) without the cache: a cached
+	// read would start a cluster-wide informer for one lookup, and in a
+	// namespaced install, which may not list them, would block on it. Nil
+	// reads through the client.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods;secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods;secrets;persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotclasses;volumesnapshotcontents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -119,6 +135,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	cluster.SetDefaults()
 
 	method := backup.Spec.Method
+	// A volume snapshot needs no object store and runs no Job: it branches
+	// before either is resolved.
+	if method == mysqlv1alpha1.BackupMethodVolumeSnapshot {
+		return r.reconcileVolumeSnapshot(ctx, backup, cluster)
+	}
 	buildKeys, reason, message := backupKeysForMethod(backup)
 	if reason != "" {
 		return ctrl.Result{}, r.failBackup(ctx, backup, reason, message)
@@ -274,10 +295,18 @@ func (r *BackupReconciler) completeBackup(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&mysqlv1alpha1.Backup{}).
-		Owns(&batchv1.Job{}).
-		Complete(r)
+		Owns(&batchv1.Job{})
+	// Watching VolumeSnapshots needs their CRD: without it the informer never
+	// syncs. The snapshot step machine also requeues on its own, so a
+	// snapshotter installed after startup still works, only slower.
+	if volumeSnapshotAPIAvailable(mgr.GetRESTMapper()) {
+		builder = builder.Watches(&snapshotv1.VolumeSnapshot{}, handler.EnqueueRequestsFromMapFunc(snapshotsForBackup))
+	} else {
+		mgr.GetLogger().Info("VolumeSnapshot CRD not installed; volumeSnapshot Backups are polled, not watched")
+	}
+	return builder.Complete(r)
 }
 
 // backupTerminal reports whether a Backup in phase is done. Failed is terminal
@@ -708,11 +737,14 @@ func (r *BackupReconciler) createBackupJob(ctx context.Context, job *batchv1.Job
 // case the caller should stop this pass and let the update re-trigger reconcile).
 func (r *BackupReconciler) reconcileFinalizer(ctx context.Context, backup *mysqlv1alpha1.Backup) (bool, error) {
 	has := controllerutil.ContainsFinalizer(backup, backupFinalizer)
+	// A Backup retention expired is being deleted with its artifacts, whatever
+	// its reclaim policy.
+	wants := backup.WantsObjectStoreCleanup() || backup.Annotations[mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation] == "true"
 	switch {
-	case backup.WantsObjectStoreCleanup() && !has:
+	case wants && !has:
 		controllerutil.AddFinalizer(backup, backupFinalizer)
 		return true, r.Update(ctx, backup)
-	case !backup.WantsObjectStoreCleanup() && has:
+	case !wants && has:
 		controllerutil.RemoveFinalizer(backup, backupFinalizer)
 		return true, r.Update(ctx, backup)
 	}
@@ -724,8 +756,19 @@ func (r *BackupReconciler) reconcileFinalizer(ctx context.Context, backup *mysql
 // failure requeues (via the returned error) so deletion never silently leaves
 // half-cleaned remote state.
 func (r *BackupReconciler) reconcileDelete(ctx context.Context, backup *mysqlv1alpha1.Backup) (ctrl.Result, error) {
+	// A volumeSnapshot Backup deleted while it held its source releases it
+	// first.
+	if err := r.reconcileSnapshotRelease(ctx, backup); err != nil {
+		return ctrl.Result{}, err
+	}
 	if !controllerutil.ContainsFinalizer(backup, backupFinalizer) {
 		return ctrl.Result{}, nil
+	}
+	if backup.IsVolumeSnapshot() {
+		if err := r.cleanupVolumeSnapshots(ctx, backup); err != nil {
+			r.event(backup, corev1.EventTypeWarning, "CleanupFailed", err.Error())
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.cleanupObjectStore(ctx, backup); err != nil {
 		if r.Recorder != nil {

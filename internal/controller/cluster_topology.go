@@ -239,7 +239,7 @@ func (r *ClusterReconciler) ensureInstance(ctx context.Context, cluster *mysqlv1
 	if err := r.ensureConfigMap(ctx, cluster, plan, inst); err != nil {
 		return false, err
 	}
-	needsResizeRoll, err := r.ensurePVC(ctx, cluster, inst)
+	needsResizeRoll, err := r.ensurePVC(ctx, cluster, inst, pvcSnapshotSource(plan, inst))
 	if err != nil {
 		return false, err
 	}

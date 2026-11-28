@@ -101,3 +101,51 @@ var _ = Describe("Logical backup admission", func() {
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, s) })
 	})
 })
+
+// The volumeSnapshot override rule lives in the CRD schema (CEL), next to the
+// logical one.
+var _ = Describe("Volume snapshot backup admission", func() {
+	ctx := context.Background()
+
+	It("accepts a snapshot override on a volumeSnapshot backup", func() {
+		b := &mysqlv1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{Name: "snapshot-ok", Namespace: "default"},
+			Spec: mysqlv1alpha1.BackupSpec{
+				Cluster: mysqlv1alpha1.LocalObjectReference{Name: "demo"},
+				Method:  mysqlv1alpha1.BackupMethodVolumeSnapshot,
+				VolumeSnapshot: &mysqlv1alpha1.VolumeSnapshotConfiguration{
+					ClassName:              "csi-hostpath-snapclass",
+					SnapshotOwnerReference: mysqlv1alpha1.SnapshotOwnerBackup,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, b)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, b) })
+	})
+
+	It("rejects a snapshot override on another method", func() {
+		err := k8sClient.Create(ctx, &mysqlv1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{Name: "snapshot-on-physical", Namespace: "default"},
+			Spec: mysqlv1alpha1.BackupSpec{
+				Cluster:        mysqlv1alpha1.LocalObjectReference{Name: "demo"},
+				VolumeSnapshot: &mysqlv1alpha1.VolumeSnapshotConfiguration{ClassName: "x"},
+			},
+		})
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got %v", err)
+		Expect(err.Error()).To(ContainSubstring("volumeSnapshot is only valid with method: volumeSnapshot"))
+	})
+
+	It("rejects an unknown snapshot owner", func() {
+		err := k8sClient.Create(ctx, &mysqlv1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{Name: "snapshot-bad-owner", Namespace: "default"},
+			Spec: mysqlv1alpha1.BackupSpec{
+				Cluster: mysqlv1alpha1.LocalObjectReference{Name: "demo"},
+				Method:  mysqlv1alpha1.BackupMethodVolumeSnapshot,
+				VolumeSnapshot: &mysqlv1alpha1.VolumeSnapshotConfiguration{
+					SnapshotOwnerReference: "namespace",
+				},
+			},
+		})
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got %v", err)
+	})
+})

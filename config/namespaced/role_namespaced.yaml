@@ -4,6 +4,10 @@
 #   - The cluster-scoped resources `namespaces` and `clusterimagecatalogs` are
 #     omitted because a namespaced Role cannot grant access to them. In namespaced
 #     mode use the namespaced `ImageCatalog` instead of `ClusterImageCatalog`.
+#   - The cluster-scoped `persistentvolumes`, `volumesnapshotclasses` and
+#     `volumesnapshotcontents` are omitted for the same reason. A volumeSnapshot
+#     Backup then skips its class-to-driver preflight and uses the class named in
+#     spec.backup.volumeSnapshot.className, or the driver's default.
 # Keep in sync with role.yaml when permissions change.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -166,4 +170,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - snapshot.storage.k8s.io
+  resources:
+  - volumesnapshots
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
   - watch

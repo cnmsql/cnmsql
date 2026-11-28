@@ -25,6 +25,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -41,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
+	"github.com/cnmsql/cnmsql/pkg/management/mysql/webserver"
 )
 
 // testPKI issues the certificates of an instance's control API: a CA, the
@@ -121,7 +123,8 @@ type controlServer struct {
 	clientCerts []string
 }
 
-func newControlServer(t *testing.T, pki *testPKI, serverName string) *controlServer {
+func newControlServer(t *testing.T, pki *testPKI) *controlServer {
+	const serverName = "demo-1.default.svc"
 	t.Helper()
 	certPEM, keyPEM := pki.issue(serverName, []string{serverName}, x509.ExtKeyUsageServerAuth)
 	serverCert, err := tls.X509KeyPair(certPEM, keyPEM)
@@ -208,7 +211,7 @@ func testControlCluster() *mysqlv1alpha1.Cluster {
 // primary until it was OOMKilled.
 func TestStatusReusesOneConnectionAcrossCalls(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	c, _ := newTestControlClient(t, pki, server, "operator")
 	cluster := testControlCluster()
 
@@ -231,7 +234,7 @@ func TestStatusReusesOneConnectionAcrossCalls(t *testing.T) {
 // Secret, the next call presents the new certificate.
 func TestStatusPicksUpARotatedClientCertificate(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	c, kube := newTestControlClient(t, pki, server, "operator-before")
 	cluster := testControlCluster()
 	ctx := context.Background()
@@ -266,7 +269,7 @@ func TestStatusPicksUpARotatedClientCertificate(t *testing.T) {
 // client side has to.
 func TestTransportClosesIdleConnections(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	c, _ := newTestControlClient(t, pki, server, "operator")
 
 	transport, err := c.transport(context.Background(), "default", statusTLS{
@@ -277,5 +280,39 @@ func TestTransportClosesIdleConnections(t *testing.T) {
 	}
 	if transport.IdleConnTimeout <= 0 {
 		t.Fatalf("IdleConnTimeout = %s, want a bound", transport.IdleConnTimeout)
+	}
+}
+
+// TestSnapshotCallsMapInstanceRefusals proves the snapshot routes' refusals
+// come back as the webserver errors the step machine branches on.
+func TestSnapshotCallsMapInstanceRefusals(t *testing.T) {
+	pki := newTestPKI(t)
+	server := newControlServer(t, pki)
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/cluster/snapshot/begin":
+			_, _ = w.Write([]byte(`{"anchorGTID":"uuid:1-9","binlogFile":"binlog.000004","binlogPos":12}`))
+		case "/cluster/snapshot/end":
+			w.WriteHeader(http.StatusGone)
+			_, _ = w.Write([]byte(`{"error":"the snapshot hold expired before it was ended"}`))
+		case "/cluster/snapshot":
+			_, _ = w.Write([]byte(`{"fenced":true,"mysqldStopped":true}`))
+		}
+	})
+	c, _ := newTestControlClient(t, pki, server, "operator")
+	cluster := testControlCluster()
+
+	anchor, err := c.BeginSnapshot(context.Background(), cluster, "demo-1", webserver.SnapshotBeginRequest{BackupName: "b"})
+	if err != nil || anchor.AnchorGTID != "uuid:1-9" || anchor.BinlogPos != 12 {
+		t.Fatalf("begin = %+v, %v", anchor, err)
+	}
+	err = c.EndSnapshot(context.Background(), cluster, "demo-1", webserver.SnapshotEndRequest{BackupName: "b"})
+	if !errors.Is(err, webserver.ErrSnapshotHoldExpired) {
+		t.Fatalf("end = %v, want ErrSnapshotHoldExpired", err)
+	}
+	state, err := c.SnapshotState(context.Background(), cluster, "demo-1")
+	if err != nil || !state.Fenced || !state.MysqldStopped {
+		t.Fatalf("state = %+v, %v", state, err)
 	}
 }

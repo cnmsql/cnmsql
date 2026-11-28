@@ -122,6 +122,8 @@ const (
 func (r *ClusterReconciler) bootstrapModeFor(cluster *mysqlv1alpha1.Cluster, plan clusterPlan, inst instancePlan) bootstrapMode {
 	if inst.IsPrimary {
 		switch {
+		case plan.Recovery != nil && plan.Recovery.Snapshot != nil:
+			return bootstrapModeAdopt
 		case plan.Recovery != nil:
 			return bootstrapModeRestore
 		case plan.Import != nil:
@@ -171,6 +173,8 @@ func (r *ClusterReconciler) bootstrapContainers(
 	switch mode {
 	case bootstrapModeRestore:
 		return nil, step(string(mode), restoreArgs(plan), plan.Recovery.StoreEnv)
+	case bootstrapModeAdopt:
+		return nil, step(string(mode), adoptArgs(plan), plan.Recovery.StoreEnv)
 	case bootstrapModeImport:
 		initdb := step(string(bootstrapModeInitDB), r.initdbArgs(cluster, cluster.Spec.Bootstrap.InitDB), nil)
 		return []corev1.Container{initdb}, step(string(mode), importArgs(plan), plan.Import.StoreEnv)
@@ -196,7 +200,7 @@ func (r *ClusterReconciler) bootstrapJob(
 ) (*batchv1.Job, error) {
 	tpl := bootstrapJobTemplate(cluster)
 	resources := cluster.Spec.Resources
-	if mode == bootstrapModeRestore && hasResourceRequirements(tpl.Resources) {
+	if (mode == bootstrapModeRestore || mode == bootstrapModeAdopt) && hasResourceRequirements(tpl.Resources) {
 		resources = tpl.Resources
 	}
 	operatorImage := cmp.Or(plan.OperatorImage, plan.Image)

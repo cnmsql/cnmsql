@@ -930,16 +930,21 @@ type BackupConfiguration struct {
 	ObjectStore *S3ObjectStore `json:"objectStore,omitempty"`
 
 	// RetentionPolicy is a duration string (e.g. "30d", "8w") describing how
-	// long to keep backups.
+	// long to keep backups. It expires object-store base backups, the archived
+	// binary logs no retained backup needs, logical backups, and volumeSnapshot
+	// Backups with their VolumeSnapshots. The newest object-store backup and
+	// the newest volumeSnapshot Backup are always kept. It requires objectStore
+	// or volumeSnapshot.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*[dwm]$`
 	RetentionPolicy string `json:"retentionPolicy,omitempty"`
 
-	// ReclaimPolicy controls what happens to the cluster's entire object-store
-	// archive (every base backup, the archived binlogs, and the archive index)
-	// when the Cluster is deleted. With "Delete" the operator adds a cleanup
-	// finalizer and wipes the archive on teardown; with "Retain" (the default)
-	// the archive is kept so a deleted Cluster can still be recovered.
+	// ReclaimPolicy controls what happens to the cluster's backups when the
+	// Cluster is deleted: its entire object-store archive (every base backup,
+	// the archived binlogs, and the archive index) and its volumeSnapshot
+	// Backups with their VolumeSnapshots. With "Delete" the operator adds a
+	// cleanup finalizer and removes them on teardown; with "Retain" (the
+	// default) they are kept so a deleted Cluster can still be recovered.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default:=Retain
 	// +optional
@@ -975,6 +980,12 @@ type BackupConfiguration struct {
 	// default.
 	// +optional
 	ContinuousArchiving *ContinuousArchivingConfiguration `json:"continuousArchiving,omitempty"`
+
+	// VolumeSnapshot configures Backups taken with method volumeSnapshot. It is
+	// required for that method: a snapshot Backup on a cluster without it fails
+	// with ClusterHasNoVolumeSnapshotSection.
+	// +optional
+	VolumeSnapshot *VolumeSnapshotConfiguration `json:"volumeSnapshot,omitempty"`
 }
 
 // ContinuousArchivingConfiguration configures continuous binary-log (binlog)

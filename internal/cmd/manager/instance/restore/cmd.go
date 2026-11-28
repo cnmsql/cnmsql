@@ -60,6 +60,11 @@ func NewCommand() *cobra.Command {
 		mysqlbinlogPath string
 		mysqlPath       string
 
+		// Adoption of a volume restored from a VolumeSnapshot (design 045).
+		fromVolume bool
+		clusterUID string
+		backupName string
+
 		creds credentials.Options
 	)
 
@@ -73,9 +78,17 @@ func NewCommand() *cobra.Command {
 			"those of a separate binlog archive store from cnmsql_BINLOG_S3_*. " +
 			"Idempotent: a no-op when the data directory is already initialised.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, err := objectstore.NewClientFromEnv()
-			if err != nil {
-				return err
+			// A volume restored from a snapshot reads no archive unless it
+			// replays binlogs, and then cnmsql_S3_* names the binlog archive.
+			var store *objectstore.Client
+			if !fromVolume || sourceCluster != "" {
+				var err error
+				if store, err = objectstore.NewClientFromEnv(); err != nil {
+					return err
+				}
+			}
+			if fromVolume && (clusterUID == "" || backupName == "") {
+				return fmt.Errorf("--from-volume requires --cluster-uid and --backup-name")
 			}
 			binlogClient, binlogStore, err := binlogStoreFromEnv(sourceCluster != "")
 			if err != nil {
@@ -145,6 +158,10 @@ func NewCommand() *cobra.Command {
 				Target:          target,
 				MysqlbinlogPath: mysqlbinlogPath,
 				MysqlPath:       mysqlPath,
+				// Adoption of a snapshot-restored volume.
+				FromVolume: fromVolume,
+				AdoptID:    clusterUID,
+				BackupName: backupName,
 			})
 		},
 	}
@@ -176,6 +193,13 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&targetImmediate, "target-immediate", false, "Stop replay as soon as a consistent state is reached")
 	cmd.Flags().StringVar(&mysqlbinlogPath, "mysqlbinlog", "", "Override the binlog decode client (defaults to the engine's tool: mysqlbinlog / mariadb-binlog)")
 	cmd.Flags().StringVar(&mysqlPath, "mysql", "", "Override the SQL client used to apply the replay (defaults to the engine's tool: mysql / mariadb)")
+
+	// Adoption of a data directory restored from a VolumeSnapshot: nothing is
+	// downloaded; the copy is reset to a standalone primary and, with
+	// --source-cluster, replayed from the anchor the snapshot carries.
+	cmd.Flags().BoolVar(&fromVolume, "from-volume", false, "Adopt the data directory already on the volume (restored from a VolumeSnapshot) instead of downloading an archive")
+	cmd.Flags().StringVar(&clusterUID, "cluster-uid", "", "UID of the adopting Cluster, recorded so a retry skips a completed adoption (with --from-volume)")
+	cmd.Flags().StringVar(&backupName, "backup-name", "", "Backup that took the snapshot; its anchor file in the data directory is the replay's start (with --from-volume)")
 
 	return cmd
 }

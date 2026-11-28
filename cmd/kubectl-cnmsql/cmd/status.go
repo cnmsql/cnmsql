@@ -782,6 +782,10 @@ func instanceHealth(c *mysqlv1alpha1.Cluster, pod *corev1.Pod, live *instanceSta
 		return plugin.Red("Unreachable").String()
 	case live.Status.InPlaceUpgrading:
 		return plugin.Yellow("Upgrading").String()
+	case live.Status.SnapshotHold != nil:
+		// A volume snapshot holds a global read lock here (design 045); a
+		// held replica's applier is stopped, so it also reads as not ready.
+		return plugin.Yellow("Snapshot hold (" + live.Status.SnapshotHold.BackupName + ")").String()
 	case !plugin.PodReady(pod) || !live.Status.IsReady:
 		return plugin.Yellow("Not ready").String()
 	default:
