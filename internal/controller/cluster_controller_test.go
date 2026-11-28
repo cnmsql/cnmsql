@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -62,6 +63,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	if err := monitoringv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshotv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	return scheme

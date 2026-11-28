@@ -240,9 +240,13 @@ func TestDownloadLogicalBackupRejects(t *testing.T) {
 	physical.Spec.Method = mysqlv1alpha1.BackupMethodXtrabackup
 	running := f.backup.DeepCopy()
 	running.Status.Phase = mysqlv1alpha1.BackupPhaseRunning
+	snapshot := f.backup.DeepCopy()
+	snapshot.Spec.Method = mysqlv1alpha1.BackupMethodVolumeSnapshot
+	snapshot.Status.VolumeSnapshots = []mysqlv1alpha1.VolumeSnapshotStatus{{Name: "nightly-snap", Volume: "data"}}
 	for backup, want := range map[*mysqlv1alpha1.Backup]string{
 		physical: "only logical backups can be downloaded",
 		running:  "is not completed",
+		snapshot: "VolumeSnapshot default/nightly-snap",
 	} {
 		_, err := downloadLogicalBackup(context.Background(), f.client, backup, downloadOptions{Output: "-"}, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), want) {

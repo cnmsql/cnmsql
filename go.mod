@@ -11,6 +11,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.2
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.5
+	github.com/kubernetes-csi/external-snapshotter/client/v8 v8.7.0
 	github.com/logrusorgru/aurora/v4 v4.0.0
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/onsi/ginkgo/v2 v2.34.0

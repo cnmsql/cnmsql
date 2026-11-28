@@ -217,6 +217,91 @@ func (c *HTTPControlClient) UpgradeInstanceManager(ctx context.Context, cluster 
 	return nil
 }
 
+// snapshotRequestTimeout bounds a snapshot begin: stopping the applier and
+// taking FLUSH TABLES WITH READ LOCK wait on running transactions, up to the
+// instance's own lock wait bound.
+const snapshotRequestTimeout = 45 * time.Second
+
+// BeginSnapshot asks the named instance to hold itself consistent for a volume
+// snapshot and returns the anchor read under the hold.
+func (c *HTTPControlClient) BeginSnapshot(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req webserver.SnapshotBeginRequest,
+) (*webserver.SnapshotAnchor, error) {
+	resp, err := c.snapshotCall(ctx, cluster, instanceName, "/cluster/snapshot/begin", req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var anchor webserver.SnapshotAnchor
+	if err := json.NewDecoder(resp.Body).Decode(&anchor); err != nil {
+		return nil, err
+	}
+	return &anchor, nil
+}
+
+// EndSnapshot releases the named instance's hold for a Backup.
+func (c *HTTPControlClient) EndSnapshot(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string, req webserver.SnapshotEndRequest,
+) error {
+	resp, err := c.snapshotCall(ctx, cluster, instanceName, "/cluster/snapshot/end", req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// SnapshotState reads the named instance's hold and fence state.
+func (c *HTTPControlClient) SnapshotState(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName string,
+) (*webserver.SnapshotState, error) {
+	var state webserver.SnapshotState
+	if err := c.fetch(ctx, cluster, instanceName, "/cluster/snapshot", &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+// snapshotCall POSTs to a snapshot route and maps its refusals back to the
+// webserver errors, so the reconciler can tell an expired hold from a failure.
+func (c *HTTPControlClient) snapshotCall(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, path string, body any,
+) (*http.Response, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doRaw(ctx, cluster, instanceName, http.MethodPost, path, bytes.NewReader(payload),
+		map[string]string{"Content-Type": "application/json"}, snapshotRequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var detail struct {
+		Error string `json:"error"`
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if json.Unmarshal(raw, &detail) != nil || detail.Error == "" {
+		detail.Error = strings.TrimSpace(string(raw))
+	}
+	var sentinel error
+	switch resp.StatusCode {
+	case http.StatusConflict:
+		sentinel = webserver.ErrSnapshotHoldConflict
+	case http.StatusNotFound:
+		sentinel = webserver.ErrSnapshotNotHeld
+	case http.StatusGone:
+		sentinel = webserver.ErrSnapshotHoldExpired
+	case http.StatusBadRequest:
+		sentinel = webserver.ErrInvalidSnapshotRequest
+	default:
+		return nil, fmt.Errorf("instance %s returned %s: %s", path, resp.Status, detail.Error)
+	}
+	return nil, fmt.Errorf("instance %s: %w: %s", path, sentinel, detail.Error)
+}
+
 // action POSTs a JSON body to an instance control endpoint and treats any
 // non-200 status as an error.
 func (c *HTTPControlClient) action(ctx context.Context, cluster *mysqlv1alpha1.Cluster, instanceName, path string, body any) error {
