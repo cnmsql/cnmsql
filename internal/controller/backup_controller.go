@@ -737,11 +737,14 @@ func (r *BackupReconciler) createBackupJob(ctx context.Context, job *batchv1.Job
 // case the caller should stop this pass and let the update re-trigger reconcile).
 func (r *BackupReconciler) reconcileFinalizer(ctx context.Context, backup *mysqlv1alpha1.Backup) (bool, error) {
 	has := controllerutil.ContainsFinalizer(backup, backupFinalizer)
+	// A Backup retention expired is being deleted with its artifacts, whatever
+	// its reclaim policy.
+	wants := backup.WantsObjectStoreCleanup() || backup.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] == "true"
 	switch {
-	case backup.WantsObjectStoreCleanup() && !has:
+	case wants && !has:
 		controllerutil.AddFinalizer(backup, backupFinalizer)
 		return true, r.Update(ctx, backup)
-	case !backup.WantsObjectStoreCleanup() && has:
+	case !wants && has:
 		controllerutil.RemoveFinalizer(backup, backupFinalizer)
 		return true, r.Update(ctx, backup)
 	}

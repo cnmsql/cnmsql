@@ -94,6 +94,12 @@ type BackupJobTemplate struct {
 // so default deletes leave remote archives untouched.
 const BackupCleanupFinalizer = "mysql.cnmsql.co/cleanup-backup-files"
 
+// BackupRetentionExpiredAnnotation marks a volumeSnapshot Backup that the
+// Cluster's retentionPolicy expired. Its VolumeSnapshots are deleted with it
+// whatever its reclaimPolicy, as retention deletes an expired object-store
+// archive.
+const BackupRetentionExpiredAnnotation = "mysql.cnmsql.co/retention-expired"
+
 // ClusterBackupCleanupFinalizer, when present on a Cluster, makes the operator
 // delete the cluster's entire object-store archive (every backup, the archived
 // binlogs, and the archive index) when the Cluster is deleted. It is

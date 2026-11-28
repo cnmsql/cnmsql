@@ -64,11 +64,25 @@ type BackupEntry struct {
 	Meta BackupMetadata
 }
 
+// SnapshotEntry is a completed volume-snapshot Backup (design 045): a base
+// backup that lives in the Kubernetes cluster rather than the object store,
+// and anchors point-in-time recovery the same way.
+type SnapshotEntry struct {
+	// BackupName is the Backup object's name.
+	BackupName string
+	// StartedAt and CompletedAt are the Backup's start and completion times.
+	StartedAt   time.Time
+	CompletedAt time.Time
+}
+
 // RetentionPlan is the pure decision of a retention pass: which base backups and
 // binlog files to delete, and the rewritten archive index.
 type RetentionPlan struct {
 	// DeleteBackupPrefixes are the backup directory prefixes to remove wholesale.
 	DeleteBackupPrefixes []string
+	// DeleteSnapshotBackups are the volume-snapshot Backups to delete, with
+	// their VolumeSnapshots.
+	DeleteSnapshotBackups []string
 	// DeleteBinlogKeys are the object keys to remove: each file's key followed
 	// by its manifest's.
 	DeleteBinlogKeys []string
@@ -81,13 +95,14 @@ type RetentionPlan struct {
 	// another index writer made in between is kept.
 	DeletedBinlogs map[string]map[string]struct{}
 	// Horizon is the recovery horizon: the oldest retained base backup's start
-	// time. Binlogs ending before it are uncoverable. Zero when nothing expired.
+	// time, volume snapshots included. Binlogs ending before it are
+	// uncoverable. Zero when nothing expired.
 	Horizon time.Time
 }
 
 // Empty reports whether the plan would delete nothing.
 func (p RetentionPlan) Empty() bool {
-	return len(p.DeleteBackupPrefixes) == 0 && len(p.DeleteBinlogKeys) == 0
+	return len(p.DeleteBackupPrefixes) == 0 && len(p.DeleteBinlogKeys) == 0 && len(p.DeleteSnapshotBackups) == 0
 }
 
 // PlanRetention plans which base backups a retention pass expires, and the
@@ -104,35 +119,56 @@ func (p RetentionPlan) Empty() bool {
 //     ExpireBinlogs adds them to the plan. The horizon is zero, and no binlog
 //     expires, unless a base backup did.
 func PlanRetention(backups []BackupEntry, cutoff time.Time) RetentionPlan {
+	return PlanRetentionWithSnapshots(backups, nil, cutoff)
+}
+
+// PlanRetentionWithSnapshots is PlanRetention over both kinds of base backup:
+// those in the object store and volume snapshots. Each kind expires on the
+// same cutoff and keeps its own floor, its most recent backup: snapshots live
+// in the Kubernetes cluster, so a recent one must not expire the last
+// object-store backup a cluster can be recovered from elsewhere. The horizon
+// is the oldest StartedAt across what both kinds retain, so the archive keeps
+// the binlogs any retained snapshot needs for point-in-time recovery.
+func PlanRetentionWithSnapshots(backups []BackupEntry, snapshots []SnapshotEntry, cutoff time.Time) RetentionPlan {
 	var plan RetentionPlan
-	if len(backups) == 0 {
-		// No base backups to anchor a horizon: never strand the binlog archive.
-		return plan
+	var horizon time.Time
+	retain := func(startedAt time.Time) {
+		if horizon.IsZero() || startedAt.Before(horizon) {
+			horizon = startedAt
+		}
 	}
 
-	sorted := make([]BackupEntry, len(backups))
-	copy(sorted, backups)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Meta.CompletedAt.Before(sorted[j].Meta.CompletedAt)
+	sortedBackups := slices.Clone(backups)
+	sort.SliceStable(sortedBackups, func(i, j int) bool {
+		return sortedBackups[i].Meta.CompletedAt.Before(sortedBackups[j].Meta.CompletedAt)
 	})
-
-	newestIdx := len(sorted) - 1
-	var retained []BackupEntry
-	for i, entry := range sorted {
-		if i != newestIdx && entry.Meta.CompletedAt.Before(cutoff) {
+	for i, entry := range sortedBackups {
+		if i != len(sortedBackups)-1 && entry.Meta.CompletedAt.Before(cutoff) {
 			plan.DeleteBackupPrefixes = append(plan.DeleteBackupPrefixes, entry.Prefix)
 			continue
 		}
-		retained = append(retained, entry)
+		retain(entry.Meta.StartedAt)
 	}
 
-	if len(plan.DeleteBackupPrefixes) == 0 {
-		// Nothing expired: leave binlogs alone (the oldest backup still covers
-		// the whole archive).
+	sortedSnapshots := slices.Clone(snapshots)
+	sort.SliceStable(sortedSnapshots, func(i, j int) bool {
+		return sortedSnapshots[i].CompletedAt.Before(sortedSnapshots[j].CompletedAt)
+	})
+	for i, entry := range sortedSnapshots {
+		if i != len(sortedSnapshots)-1 && entry.CompletedAt.Before(cutoff) {
+			plan.DeleteSnapshotBackups = append(plan.DeleteSnapshotBackups, entry.BackupName)
+			continue
+		}
+		retain(entry.StartedAt)
+	}
+
+	// Nothing expired: leave binlogs alone (the oldest backup still covers the
+	// whole archive). With no backup at all there is no horizon to anchor on,
+	// and the archive is never stranded.
+	if len(plan.DeleteBackupPrefixes) == 0 && len(plan.DeleteSnapshotBackups) == 0 {
 		return plan
 	}
-
-	plan.Horizon = retained[0].Meta.StartedAt
+	plan.Horizon = horizon
 	return plan
 }
 

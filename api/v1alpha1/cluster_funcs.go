@@ -984,10 +984,10 @@ func (spec *ClusterSpec) validateBackup(path *field.Path) field.ErrorList {
 		if _, err := ParseRetentionPolicy(spec.Backup.RetentionPolicy); err != nil {
 			allErrs = append(allErrs, field.Invalid(
 				path.Child("retentionPolicy"), spec.Backup.RetentionPolicy, err.Error()))
-		} else if spec.Backup.ObjectStore == nil {
+		} else if spec.Backup.ObjectStore == nil && spec.Backup.VolumeSnapshot == nil {
 			allErrs = append(allErrs, field.Invalid(
 				path.Child("retentionPolicy"), spec.Backup.RetentionPolicy,
-				"retentionPolicy requires backup.objectStore to be configured"))
+				"retentionPolicy requires backup.objectStore or backup.volumeSnapshot to be configured"))
 		}
 	}
 	allErrs = append(allErrs, spec.Backup.ObjectStore.Validate(path.Child("objectStore"))...)

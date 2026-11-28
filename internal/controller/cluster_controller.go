@@ -313,7 +313,7 @@ type ClusterReconciler struct {
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=imagecatalogs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=clusterimagecatalogs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps;pods;pods/status;persistentvolumeclaims;secrets;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get

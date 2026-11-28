@@ -23,7 +23,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mysqlv1alpha1 "github.com/cnmsql/cnmsql/api/v1alpha1"
@@ -39,16 +43,17 @@ const retentionInterval = time.Hour
 // skipped because nothing at the store proves it is this cluster's.
 const eventRetentionNotOwned = "RetentionNotOwned"
 
-// reconcileRetention expires base backups (and the now-uncoverable binlog
-// segments) and logical backups past spec.backup.retentionPolicy. It is
-// best-effort and throttled: it only runs on an established, archiving cluster,
-// at most once per retentionInterval, and a transient object-store error is
-// returned for a retry without failing the wider reconcile.
+// reconcileRetention expires base backups (object-store and volume-snapshot
+// ones, and the now-uncoverable binlog segments) and logical backups past
+// spec.backup.retentionPolicy. It is best-effort and throttled: it only runs on
+// an established cluster, at most once per retentionInterval, and a transient
+// object-store error is returned for a retry without failing the wider
+// reconcile.
 func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
 	log := logf.FromContext(ctx)
 
 	backup := cluster.Spec.Backup
-	if backup == nil || backup.RetentionPolicy == "" || backup.ObjectStore == nil {
+	if backup == nil || backup.RetentionPolicy == "" || (backup.ObjectStore == nil && backup.VolumeSnapshot == nil) {
 		return nil
 	}
 	// Only an established cluster owns its archive; a fresh/recovering one must
@@ -65,6 +70,37 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 		return nil
 	}
 
+	// Volume-snapshot Backups are base backups too: they expire on the same
+	// window and anchor the binlog horizon (design 045).
+	snapshots, err := r.snapshotRetentionEntries(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-window)
+	if backup.ObjectStore == nil {
+		// Snapshots alone: no archive to prune.
+		plan := objectstore.PlanRetentionWithSnapshots(nil, snapshots, cutoff)
+		if err := r.expireSnapshotBackups(ctx, cluster, plan.DeleteSnapshotBackups); err != nil {
+			return err
+		}
+		if len(plan.DeleteSnapshotBackups) > 0 {
+			log.Info("Applied backup retention", "deletedSnapshotBackups", len(plan.DeleteSnapshotBackups))
+			r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", fmt.Sprintf(
+				"Retention (%s) removed %d volume snapshot backup(s)", backup.RetentionPolicy, len(plan.DeleteSnapshotBackups)))
+		}
+		return r.stampRetentionRun(ctx, cluster)
+	}
+	return r.reconcileObjectStoreRetention(ctx, cluster, snapshots, cutoff)
+}
+
+// reconcileObjectStoreRetention is the pass over a cluster with an object
+// store: base backups, the binlog archive and logical backups, planned
+// together with the volume snapshots.
+func (r *ClusterReconciler) reconcileObjectStoreRetention(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster, snapshots []objectstore.SnapshotEntry, cutoff time.Time,
+) error {
+	log := logf.FromContext(ctx)
+	backup := cluster.Spec.Backup
 	store := backup.ObjectStore
 	cfg, err := r.objectStoreConfig(ctx, cluster.Namespace, store)
 	if reason := retentionCredentialsRefused(err); reason != "" {
@@ -73,25 +109,25 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	if err != nil {
 		return err
 	}
-	client, err := objectstore.NewClient(cfg)
+	storeClient, err := objectstore.NewClient(cfg)
 	if err != nil {
 		return err
 	}
 
-	backups, err := objectstore.ListBaseBackups(ctx, client, *store, cluster.Name)
+	backups, err := objectstore.ListBaseBackups(ctx, storeClient, *store, cluster.Name)
 	if err != nil {
 		return err
 	}
 	// Logical backups expire on their own (below), but are listed up front:
 	// their manifests help prove the store is this cluster's.
-	logical, err := objectstore.ListLogicalBackups(ctx, client, *store, cluster.Name)
+	logical, err := objectstore.ListLogicalBackups(ctx, storeClient, *store, cluster.Name)
 	if err != nil {
 		return err
 	}
 	// The archive may live in its own store; base and logical backups stay in
 	// the backup store.
 	binlogStore := cluster.BinlogObjectStore()
-	binlogClient := client
+	binlogClient := storeClient
 	if !store.SameLocation(binlogStore) {
 		binlogClient, err = r.objectStoreClient(ctx, cluster.Namespace, binlogStore)
 		if reason := retentionCredentialsRefused(err); reason != "" {
@@ -123,8 +159,7 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 			"archivedBinlogs", len(binlogKeys))
 	}
 
-	cutoff := time.Now().Add(-window)
-	plan, err := planRetention(ctx, binlogClient, *binlogStore, backups, archived, index, cutoff)
+	plan, err := planRetention(ctx, binlogClient, *binlogStore, backups, snapshots, archived, index, cutoff)
 	if err != nil {
 		return err
 	}
@@ -133,18 +168,23 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	// before the logical pass below: a failure on the logical side must not
 	// keep expired recovery points alive.
 	if !plan.Empty() {
-		if err := objectstore.ApplyBackupExpiry(ctx, client, *store, plan); err != nil {
+		if err := objectstore.ApplyBackupExpiry(ctx, storeClient, *store, plan); err != nil {
 			return err
 		}
 		if err := objectstore.ApplyBinlogExpiry(ctx, binlogClient, *binlogStore, cluster.Name, plan); err != nil {
 			return err
 		}
+		// Snapshots expire after the archive: the horizon never depends on an
+		// expired one, so a failure here only delays their deletion.
+		if err := r.expireSnapshotBackups(ctx, cluster, plan.DeleteSnapshotBackups); err != nil {
+			return err
+		}
 		msg := fmt.Sprintf(
-			"Retention (%s) removed %d base backup(s) and %d archived binlog(s); horizon %s",
-			backup.RetentionPolicy, len(plan.DeleteBackupPrefixes),
+			"Retention (%s) removed %d base backup(s), %d volume snapshot backup(s) and %d archived binlog(s); horizon %s",
+			backup.RetentionPolicy, len(plan.DeleteBackupPrefixes), len(plan.DeleteSnapshotBackups),
 			len(plan.DeleteBinlogKeys)/2, plan.Horizon.UTC().Format(time.RFC3339))
 		log.Info("Applied backup retention", "deletedBackups", len(plan.DeleteBackupPrefixes),
-			"deletedBinlogs", len(plan.DeleteBinlogKeys)/2)
+			"deletedSnapshotBackups", len(plan.DeleteSnapshotBackups), "deletedBinlogs", len(plan.DeleteBinlogKeys)/2)
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "BackupRetention", msg)
 	}
 
@@ -158,7 +198,7 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	// anchor recovery, so they neither move the horizon nor keep binlogs.
 	expiredDumps := objectstore.PlanLogicalRetention(logical, cutoff)
 	for _, prefix := range expiredDumps {
-		if err := client.RemovePrefix(ctx, store.Bucket, prefix); err != nil {
+		if err := storeClient.RemovePrefix(ctx, store.Bucket, prefix); err != nil {
 			return err
 		}
 	}
@@ -169,10 +209,74 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 	}
 
 	// Stamp the run time even on a no-op pass so the throttle holds.
+	return r.stampRetentionRun(ctx, cluster)
+}
+
+// stampRetentionRun records the pass's run time for the throttle.
+func (r *ClusterReconciler) stampRetentionRun(ctx context.Context, cluster *mysqlv1alpha1.Cluster) error {
 	return r.updateStatus(ctx, cluster, func(s *mysqlv1alpha1.ClusterStatus) {
 		now := metav1.Now()
 		s.LastRetentionRunTime = &now
 	})
+}
+
+// snapshotRetentionEntries lists the cluster's completed volume-snapshot
+// Backups that retention plans over.
+func (r *ClusterReconciler) snapshotRetentionEntries(
+	ctx context.Context, cluster *mysqlv1alpha1.Cluster,
+) ([]objectstore.SnapshotEntry, error) {
+	var backups mysqlv1alpha1.BackupList
+	if err := r.List(ctx, &backups, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil, err
+	}
+	var entries []objectstore.SnapshotEntry
+	for i := range backups.Items {
+		b := &backups.Items[i]
+		if b.Spec.Cluster.Name != cluster.Name || !b.IsVolumeSnapshot() || !b.DeletionTimestamp.IsZero() ||
+			b.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || b.Status.StartedAt == nil || b.Status.StoppedAt == nil {
+			continue
+		}
+		entries = append(entries, objectstore.SnapshotEntry{
+			BackupName:  b.Name,
+			StartedAt:   b.Status.StartedAt.Time,
+			CompletedAt: b.Status.StoppedAt.Time,
+		})
+	}
+	return entries, nil
+}
+
+// expireSnapshotBackups deletes expired volume-snapshot Backups with their
+// VolumeSnapshots, whatever their reclaimPolicy, as retention deletes an
+// expired object-store archive. The Backup is marked and given the cleanup
+// finalizer first, so the Backup controller deletes its VolumeSnapshots
+// before the Backup goes.
+func (r *ClusterReconciler) expireSnapshotBackups(ctx context.Context, cluster *mysqlv1alpha1.Cluster, names []string) error {
+	for _, name := range names {
+		b := &mysqlv1alpha1.Backup{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, b); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if b.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] != "true" ||
+			!controllerutil.ContainsFinalizer(b, backupFinalizer) {
+			patch := client.MergeFrom(b.DeepCopy())
+			if b.Annotations == nil {
+				b.Annotations = map[string]string{}
+			}
+			b.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] = "true"
+			controllerutil.AddFinalizer(b, backupFinalizer)
+			if err := r.Patch(ctx, b, patch); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+		}
+		if err := r.Delete(ctx, b); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		logf.FromContext(ctx).Info("Expired volume snapshot Backup", "backup", name)
+	}
+	return nil
 }
 
 // listArchive lists the archived files and reads the archive index, nil when
@@ -180,19 +284,19 @@ func (r *ClusterReconciler) reconcileRetention(ctx context.Context, cluster *mys
 // few manifests a pass needs are read later (planRetention), only once a base
 // backup expired and there may be binlogs to expire.
 func listArchive(
-	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
+	ctx context.Context, storeClient *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
 ) ([]objectstore.ArchivedBinlog, *objectstore.ArchiveIndex, error) {
-	keys, err := objectstore.ListArchivedBinlogs(ctx, client, store, clusterName)
+	keys, err := objectstore.ListArchivedBinlogs(ctx, storeClient, store, clusterName)
 	if err != nil {
 		return nil, nil, err
 	}
 	indexKey := objectstore.ArchiveIndexKey(store, clusterName)
-	exists, err := client.Exists(ctx, store.Bucket, indexKey)
+	exists, err := storeClient.Exists(ctx, store.Bucket, indexKey)
 	if err != nil || !exists {
 		return keys, nil, err
 	}
 	index := &objectstore.ArchiveIndex{}
-	if err := client.GetJSON(ctx, store.Bucket, indexKey, index); err != nil {
+	if err := storeClient.GetJSON(ctx, store.Bucket, indexKey, index); err != nil {
 		return nil, nil, err
 	}
 	return keys, index, nil
@@ -204,16 +308,16 @@ func listArchive(
 // none. A pass that does reads a dozen per server, not one per file (see
 // objectstore.ExpiredBinlogs).
 func planRetention(
-	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore,
-	backups []objectstore.BackupEntry, archived []objectstore.ArchivedBinlog, index *objectstore.ArchiveIndex,
-	cutoff time.Time,
+	ctx context.Context, storeClient *objectstore.Client, store mysqlv1alpha1.S3ObjectStore,
+	backups []objectstore.BackupEntry, snapshots []objectstore.SnapshotEntry,
+	archived []objectstore.ArchivedBinlog, index *objectstore.ArchiveIndex, cutoff time.Time,
 ) (objectstore.RetentionPlan, error) {
-	plan := objectstore.PlanRetention(backups, cutoff)
-	if len(plan.DeleteBackupPrefixes) == 0 || index == nil {
+	plan := objectstore.PlanRetentionWithSnapshots(backups, snapshots, cutoff)
+	if plan.Horizon.IsZero() || index == nil {
 		return plan, nil
 	}
 	expired, err := objectstore.ExpiredBinlogs(
-		ctx, objectstore.ReadBinlogManifests(client, store.Bucket), archived, plan.Horizon)
+		ctx, objectstore.ReadBinlogManifests(storeClient, store.Bucket), archived, plan.Horizon)
 	if err != nil {
 		return objectstore.RetentionPlan{}, err
 	}
@@ -299,13 +403,13 @@ func retentionOwnership(
 // are gone (see objectstore.DropDanglingIndexEntries). Without an index there
 // is nothing to drop.
 func dropDanglingIndexEntries(
-	ctx context.Context, client *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
+	ctx context.Context, storeClient *objectstore.Client, store mysqlv1alpha1.S3ObjectStore, clusterName string,
 	keys []objectstore.BinlogKeys, index *objectstore.ArchiveIndex,
 ) error {
 	if index == nil {
 		return nil
 	}
-	dropped, err := objectstore.DropDanglingIndexEntries(ctx, client, store, clusterName, keys)
+	dropped, err := objectstore.DropDanglingIndexEntries(ctx, storeClient, store, clusterName, keys)
 	if err != nil {
 		return err
 	}

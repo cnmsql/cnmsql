@@ -659,3 +659,124 @@ func TestReconcileRetentionSkipsRefusedCredentialSecrets(t *testing.T) {
 	}
 	assertRetentionStamped(t, r, cluster)
 }
+
+// completedSnapshotBackup is a completed volumeSnapshot Backup of cluster.
+func completedSnapshotBackup(name, cluster string, started, completed time.Time) *mysqlv1alpha1.Backup {
+	startedAt, stoppedAt := metav1.NewTime(started), metav1.NewTime(completed)
+	return &mysqlv1alpha1.Backup{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: mysqlv1alpha1.BackupSpec{
+			Cluster: mysqlv1alpha1.LocalObjectReference{Name: cluster},
+			Method:  mysqlv1alpha1.BackupMethodVolumeSnapshot,
+		},
+		Status: mysqlv1alpha1.BackupStatus{
+			Phase:     mysqlv1alpha1.BackupPhaseCompleted,
+			StartedAt: &startedAt,
+			StoppedAt: &stoppedAt,
+		},
+	}
+}
+
+func TestReconcileRetentionExpiresSnapshotBackupsWithoutAnObjectStore(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	day := 24 * time.Hour
+	cluster := baseCluster()
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		VolumeSnapshot:  &mysqlv1alpha1.VolumeSnapshotConfiguration{},
+		RetentionPolicy: "7d",
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	expired := completedSnapshotBackup("snap-old", "demo", now.Add(-30*day), now.Add(-30*day))
+	newest := completedSnapshotBackup("snap-new", "demo", now.Add(-20*day), now.Add(-20*day))
+	otherCluster := completedSnapshotBackup("other-old", "other", now.Add(-30*day), now.Add(-30*day))
+	running := completedSnapshotBackup("snap-running", "demo", now.Add(-40*day), now.Add(-40*day))
+	running.Status.Phase = mysqlv1alpha1.BackupPhaseRunning
+
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, expired, newest, otherCluster, running).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &mysqlv1alpha1.Backup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(expired), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.DeletionTimestamp.IsZero() || got.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] != "true" ||
+		!slices.Contains(got.Finalizers, mysqlv1alpha1.BackupCleanupFinalizer) {
+		t.Fatalf("expired snapshot Backup not deleted with its cleanup: %+v", got.ObjectMeta)
+	}
+	for _, kept := range []*mysqlv1alpha1.Backup{newest, otherCluster, running} {
+		if err := r.Get(context.Background(), client.ObjectKeyFromObject(kept), got); err != nil {
+			t.Fatalf("%s: %v", kept.Name, err)
+		}
+		if !got.DeletionTimestamp.IsZero() {
+			t.Fatalf("%s was expired; only the cluster's completed, superseded snapshots expire", kept.Name)
+		}
+	}
+	assertRetentionStamped(t, r, cluster)
+}
+
+// A retained volume snapshot started before an archived binlog's last event
+// still needs that binlog for point-in-time recovery, though the object-store
+// backup the binlog followed expired.
+func TestReconcileRetentionKeepsBinlogsARetainedSnapshotNeeds(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	old, recent := now.Add(-60*24*time.Hour), now.Add(-24*time.Hour)
+	const uuid = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	baseSrv, baseWrites := memS3Server(t, map[string]string{
+		"backups/base/demo/bk-old/id-old/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: testClusterUID, StartedAt: old, CompletedAt: old}),
+		"backups/base/demo/bk-new/id-new/metadata.json": mustJSON(t, objectstore.BackupMetadata{
+			ClusterUID: testClusterUID, StartedAt: recent, CompletedAt: recent}),
+		"backups/base/demo/bk-old/id-old/backup.xbstream": "x",
+		"backups/base/demo/binlogs/" + uuid + "/binlog.000001.json": mustJSON(t, objectstore.BinlogMetadata{
+			ServerUUID: uuid, BinlogName: "binlog.000001", LastEventTime: old.Add(2 * time.Hour)}),
+		"backups/base/demo/binlogs/" + uuid + "/binlog.000001": "b",
+		"backups/base/demo/binlogs/_index.json": mustJSON(t, objectstore.ArchiveIndex{
+			ClusterName: "demo",
+			ClusterUID:  testClusterUID,
+			Segments:    []objectstore.ArchiveSegment{{ServerUUID: uuid, Binlogs: []string{"binlog.000001"}}},
+		}),
+	})
+
+	cluster := baseCluster()
+	cluster.UID = testClusterUID
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		ObjectStore:     storeAt(baseSrv.URL, "backups", "base"),
+		VolumeSnapshot:  &mysqlv1alpha1.VolumeSnapshotConfiguration{},
+		RetentionPolicy: "30d",
+	}
+	cluster.Status.CurrentPrimary = instanceName(cluster, 1)
+	snapshot := completedSnapshotBackup("snap", "demo", old.Add(time.Hour), recent)
+	scheme := testScheme(t)
+	r := &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&mysqlv1alpha1.Cluster{}).
+			WithObjects(cluster, s3CredentialsSecret(), snapshot).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if err := r.reconcileRetention(context.Background(), cluster); err != nil {
+		t.Fatal(err)
+	}
+	got := baseWrites()
+	if !slices.Contains(got, "DELETE /backups/base/demo/bk-old/id-old/metadata.json") {
+		t.Fatalf("store writes = %v, want the expired backup deleted", got)
+	}
+	for _, req := range got {
+		if strings.HasPrefix(req, "DELETE ") && strings.Contains(req, "binlog.000001") {
+			t.Fatalf("store writes = %v, want the binlog the retained snapshot needs kept", got)
+		}
+	}
+}

@@ -746,3 +746,17 @@ func expectCompletedSnapshot(t *testing.T, r *BackupReconciler, name string) {
 		t.Fatal("backup-end annotation missing")
 	}
 }
+
+func TestVolumeSnapshotRetentionExpiredBackupKeepsItsCleanupFinalizer(t *testing.T) {
+	t.Parallel()
+	backup := snapshotBackup()
+	backup.Annotations = map[string]string{mysqlv1alpha1.BackupRetentionExpiredAnnotation: "true"}
+	r := newSnapshotReconciler(t, &fakeSnapshotClient{}, append(snapshotVolumeObjects(), snapshotCluster(), backup)...)
+	latest := getSnapshotBackup(t, r, backup.Name)
+	if _, err := r.reconcileFinalizer(context.Background(), latest); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(getSnapshotBackup(t, r, backup.Name), backupFinalizer) {
+		t.Fatal("a Retain Backup that retention expired lost the finalizer that deletes its VolumeSnapshot")
+	}
+}

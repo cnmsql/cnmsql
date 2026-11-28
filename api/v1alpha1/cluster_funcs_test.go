@@ -342,10 +342,19 @@ var _ = Describe("Cluster validation", func() {
 		Expect(cluster.Validate()).NotTo(BeEmpty())
 	})
 
-	It("rejects a retention policy without an object store", func() {
+	It("rejects a retention policy with neither an object store nor volume snapshots", func() {
 		cluster := newValidCluster()
 		cluster.Spec.Backup = &BackupConfiguration{RetentionPolicy: "30d"}
 		Expect(cluster.Validate()).NotTo(BeEmpty())
+	})
+
+	It("accepts a retention policy over volume snapshots alone", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Backup = &BackupConfiguration{
+			VolumeSnapshot:  &VolumeSnapshotConfiguration{},
+			RetentionPolicy: "30d",
+		}
+		Expect(cluster.Validate()).To(BeEmpty())
 	})
 
 	It("accepts a source-based recovery referencing an objectStore externalCluster", func() {

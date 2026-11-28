@@ -930,7 +930,11 @@ type BackupConfiguration struct {
 	ObjectStore *S3ObjectStore `json:"objectStore,omitempty"`
 
 	// RetentionPolicy is a duration string (e.g. "30d", "8w") describing how
-	// long to keep backups.
+	// long to keep backups. It expires object-store base backups, the archived
+	// binary logs no retained backup needs, logical backups, and volumeSnapshot
+	// Backups with their VolumeSnapshots. The newest object-store backup and
+	// the newest volumeSnapshot Backup are always kept. It requires objectStore
+	// or volumeSnapshot.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*[dwm]$`
 	RetentionPolicy string `json:"retentionPolicy,omitempty"`
