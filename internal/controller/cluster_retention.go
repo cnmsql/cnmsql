@@ -23,7 +23,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -247,36 +246,44 @@ func (r *ClusterReconciler) snapshotRetentionEntries(
 
 // expireSnapshotBackups deletes expired volume-snapshot Backups with their
 // VolumeSnapshots, whatever their reclaimPolicy, as retention deletes an
-// expired object-store archive. The Backup is marked and given the cleanup
-// finalizer first, so the Backup controller deletes its VolumeSnapshots
-// before the Backup goes.
+// expired object-store archive.
 func (r *ClusterReconciler) expireSnapshotBackups(ctx context.Context, cluster *mysqlv1alpha1.Cluster, names []string) error {
 	for _, name := range names {
-		b := &mysqlv1alpha1.Backup{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, b); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if b.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] != "true" ||
-			!controllerutil.ContainsFinalizer(b, backupFinalizer) {
-			patch := client.MergeFrom(b.DeepCopy())
-			if b.Annotations == nil {
-				b.Annotations = map[string]string{}
-			}
-			b.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] = "true"
-			controllerutil.AddFinalizer(b, backupFinalizer)
-			if err := r.Patch(ctx, b, patch); err != nil {
-				return client.IgnoreNotFound(err)
-			}
-		}
-		if err := r.Delete(ctx, b); client.IgnoreNotFound(err) != nil {
+		if err := r.deleteSnapshotBackup(ctx, cluster.Namespace, name); err != nil {
 			return err
 		}
 		logf.FromContext(ctx).Info("Expired volume snapshot Backup", "backup", name)
 	}
 	return nil
+}
+
+// deleteSnapshotBackup deletes a volume-snapshot Backup with its
+// VolumeSnapshots. The Backup is marked and given the cleanup finalizer first,
+// so the Backup controller deletes its VolumeSnapshots before the Backup goes,
+// whatever its reclaimPolicy.
+func (r *ClusterReconciler) deleteSnapshotBackup(ctx context.Context, namespace, name string) error {
+	b := &mysqlv1alpha1.Backup{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, b); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	// A Backup already being deleted takes no new finalizer: it goes with
+	// whatever cleanup it was deleted with.
+	if !b.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if b.Annotations[mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation] != "true" ||
+		!controllerutil.ContainsFinalizer(b, backupFinalizer) {
+		patch := client.MergeFrom(b.DeepCopy())
+		if b.Annotations == nil {
+			b.Annotations = map[string]string{}
+		}
+		b.Annotations[mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation] = "true"
+		controllerutil.AddFinalizer(b, backupFinalizer)
+		if err := r.Patch(ctx, b, patch); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, b))
 }
 
 // listArchive lists the archived files and reads the archive index, nil when

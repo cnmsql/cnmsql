@@ -750,7 +750,7 @@ func expectCompletedSnapshot(t *testing.T, r *BackupReconciler, name string) {
 func TestVolumeSnapshotRetentionExpiredBackupKeepsItsCleanupFinalizer(t *testing.T) {
 	t.Parallel()
 	backup := snapshotBackup()
-	backup.Annotations = map[string]string{mysqlv1alpha1.BackupRetentionExpiredAnnotation: "true"}
+	backup.Annotations = map[string]string{mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation: "true"}
 	r := newSnapshotReconciler(t, &fakeSnapshotClient{}, append(snapshotVolumeObjects(), snapshotCluster(), backup)...)
 	latest := getSnapshotBackup(t, r, backup.Name)
 	if _, err := r.reconcileFinalizer(context.Background(), latest); err != nil {

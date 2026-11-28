@@ -939,11 +939,12 @@ type BackupConfiguration struct {
 	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*[dwm]$`
 	RetentionPolicy string `json:"retentionPolicy,omitempty"`
 
-	// ReclaimPolicy controls what happens to the cluster's entire object-store
-	// archive (every base backup, the archived binlogs, and the archive index)
-	// when the Cluster is deleted. With "Delete" the operator adds a cleanup
-	// finalizer and wipes the archive on teardown; with "Retain" (the default)
-	// the archive is kept so a deleted Cluster can still be recovered.
+	// ReclaimPolicy controls what happens to the cluster's backups when the
+	// Cluster is deleted: its entire object-store archive (every base backup,
+	// the archived binlogs, and the archive index) and its volumeSnapshot
+	// Backups with their VolumeSnapshots. With "Delete" the operator adds a
+	// cleanup finalizer and removes them on teardown; with "Retain" (the
+	// default) they are kept so a deleted Cluster can still be recovered.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default:=Retain
 	// +optional

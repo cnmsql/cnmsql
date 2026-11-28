@@ -437,3 +437,77 @@ func TestClusterDeleteOrphaningLeavesPodsAlone(t *testing.T) {
 		t.Fatalf("archive not removed: %v", seen())
 	}
 }
+
+// A snapshot-only cluster opts into reclaim too, and deleting it deletes its
+// volume-snapshot Backups (whatever their own reclaimPolicy) without waiting
+// for its Pods: there is no archive they could write to.
+func TestClusterDeleteReclaimsVolumeSnapshotBackups(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	cluster := baseCluster()
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		VolumeSnapshot: &mysqlv1alpha1.VolumeSnapshotConfiguration{},
+		ReclaimPolicy:  mysqlv1alpha1.BackupReclaimDelete,
+	}
+	reconciler := &ClusterReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	if changed, err := reconciler.reconcileBackupReclaimFinalizer(context.Background(), cluster); err != nil || !changed {
+		t.Fatalf("a snapshot-only cluster with reclaimPolicy Delete did not get the finalizer: changed=%v err=%v", changed, err)
+	}
+
+	now := time.Now()
+	cluster = baseCluster()
+	cluster.Spec.Backup = &mysqlv1alpha1.BackupConfiguration{
+		VolumeSnapshot: &mysqlv1alpha1.VolumeSnapshotConfiguration{},
+		ReclaimPolicy:  mysqlv1alpha1.BackupReclaimDelete,
+	}
+	cluster.Finalizers = []string{clusterBackupFinalizer}
+	deletion := metav1.Now()
+	cluster.DeletionTimestamp = &deletion
+	completed := completedSnapshotBackup("snap-done", "demo", now.Add(-time.Hour), now)
+	failed := completedSnapshotBackup("snap-failed", "demo", now.Add(-time.Hour), now)
+	failed.Status.Phase = mysqlv1alpha1.BackupPhaseFailed
+	other := completedSnapshotBackup("other-snap", "other", now.Add(-time.Hour), now)
+	xtrabackup := completedBackup("xb", "uuid:1-5", now)
+	instance := clusterPod(cluster, "demo-1", true)
+	reconciler = &ClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(cluster, completed, failed, other, xtrabackup, instance).Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+	}
+	result, err := reconciler.reconcileClusterDelete(context.Background(), cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("a snapshot-only cluster waited for its Pods: %+v", result)
+	}
+	for _, name := range []string{"snap-done", "snap-failed"} {
+		got := &mysqlv1alpha1.Backup{}
+		if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.DeletionTimestamp.IsZero() || got.Annotations[mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation] != "true" ||
+			!slices.Contains(got.Finalizers, mysqlv1alpha1.BackupCleanupFinalizer) {
+			t.Fatalf("%s not deleted with its VolumeSnapshots: %+v", name, got.ObjectMeta)
+		}
+	}
+	for _, name := range []string{"other-snap", "xb"} {
+		got := &mysqlv1alpha1.Backup{}
+		if err := reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !got.DeletionTimestamp.IsZero() {
+			t.Fatalf("%s was deleted; only the cluster's snapshot Backups go", name)
+		}
+	}
+	err = reconciler.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: cluster.Name}, &mysqlv1alpha1.Cluster{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("cluster finalizer not released: %v", err)
+	}
+}

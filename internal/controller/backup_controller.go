@@ -739,7 +739,7 @@ func (r *BackupReconciler) reconcileFinalizer(ctx context.Context, backup *mysql
 	has := controllerutil.ContainsFinalizer(backup, backupFinalizer)
 	// A Backup retention expired is being deleted with its artifacts, whatever
 	// its reclaim policy.
-	wants := backup.WantsObjectStoreCleanup() || backup.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] == "true"
+	wants := backup.WantsObjectStoreCleanup() || backup.Annotations[mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation] == "true"
 	switch {
 	case wants && !has:
 		controllerutil.AddFinalizer(backup, backupFinalizer)

@@ -710,7 +710,7 @@ func TestReconcileRetentionExpiresSnapshotBackupsWithoutAnObjectStore(t *testing
 	if err := r.Get(context.Background(), client.ObjectKeyFromObject(expired), got); err != nil {
 		t.Fatal(err)
 	}
-	if got.DeletionTimestamp.IsZero() || got.Annotations[mysqlv1alpha1.BackupRetentionExpiredAnnotation] != "true" ||
+	if got.DeletionTimestamp.IsZero() || got.Annotations[mysqlv1alpha1.BackupDeleteVolumeSnapshotsAnnotation] != "true" ||
 		!slices.Contains(got.Finalizers, mysqlv1alpha1.BackupCleanupFinalizer) {
 		t.Fatalf("expired snapshot Backup not deleted with its cleanup: %+v", got.ObjectMeta)
 	}
