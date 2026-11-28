@@ -123,7 +123,8 @@ type controlServer struct {
 	clientCerts []string
 }
 
-func newControlServer(t *testing.T, pki *testPKI, serverName string) *controlServer {
+func newControlServer(t *testing.T, pki *testPKI) *controlServer {
+	const serverName = "demo-1.default.svc"
 	t.Helper()
 	certPEM, keyPEM := pki.issue(serverName, []string{serverName}, x509.ExtKeyUsageServerAuth)
 	serverCert, err := tls.X509KeyPair(certPEM, keyPEM)
@@ -210,7 +211,7 @@ func testControlCluster() *mysqlv1alpha1.Cluster {
 // primary until it was OOMKilled.
 func TestStatusReusesOneConnectionAcrossCalls(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	c, _ := newTestControlClient(t, pki, server, "operator")
 	cluster := testControlCluster()
 
@@ -233,7 +234,7 @@ func TestStatusReusesOneConnectionAcrossCalls(t *testing.T) {
 // Secret, the next call presents the new certificate.
 func TestStatusPicksUpARotatedClientCertificate(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	c, kube := newTestControlClient(t, pki, server, "operator-before")
 	cluster := testControlCluster()
 	ctx := context.Background()
@@ -268,7 +269,7 @@ func TestStatusPicksUpARotatedClientCertificate(t *testing.T) {
 // client side has to.
 func TestTransportClosesIdleConnections(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	c, _ := newTestControlClient(t, pki, server, "operator")
 
 	transport, err := c.transport(context.Background(), "default", statusTLS{
@@ -286,7 +287,7 @@ func TestTransportClosesIdleConnections(t *testing.T) {
 // come back as the webserver errors the step machine branches on.
 func TestSnapshotCallsMapInstanceRefusals(t *testing.T) {
 	pki := newTestPKI(t)
-	server := newControlServer(t, pki, "demo-1.default.svc")
+	server := newControlServer(t, pki)
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {

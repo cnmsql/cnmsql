@@ -50,6 +50,14 @@ func withHoldConn(t *testing.T, c *Controller, dataDir string) sqlmock.Sqlmock {
 
 func q(s string) string { return regexp.QuoteMeta(s) }
 
+func begin(c *Controller, backup, timeout string) (*webserver.SnapshotAnchor, error) {
+	return c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: backup, Timeout: timeout})
+}
+
+func end(c *Controller, backup string) error {
+	return c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: backup})
+}
+
 // expectReplicaState answers the control pool's SHOW REPLICA STATUS.
 func expectReplicaState(mock sqlmock.Sqlmock, replica, sqlRunning bool) {
 	rows := sqlmock.NewRows([]string{"Source_Host", "Replica_IO_Running", "Replica_SQL_Running"})
@@ -83,7 +91,7 @@ func TestSnapshotHoldOnReplicaStopsApplierAndWritesManifest(t *testing.T) {
 	hold.ExpectExec(q("STOP REPLICA SQL_THREAD")).WillReturnResult(sqlmock.NewResult(0, 0))
 	expectHold(hold, "20", "SELECT @@GLOBAL.gtid_executed", "uuid:1-10,\nother:1-3", "SHOW MASTER STATUS")
 
-	anchor, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "nightly", Timeout: "1m"})
+	anchor, err := begin(c, "nightly", "1m")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +118,7 @@ func TestSnapshotHoldOnReplicaStopsApplierAndWritesManifest(t *testing.T) {
 
 	hold.ExpectExec(q("UNLOCK TABLES")).WillReturnResult(sqlmock.NewResult(0, 0))
 	hold.ExpectExec(q("START REPLICA SQL_THREAD")).WillReturnResult(sqlmock.NewResult(0, 0))
-	if err := c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: "nightly"}); err != nil {
+	if err := end(c, "nightly"); err != nil {
 		t.Fatal(err)
 	}
 	if c.SnapshotHeld() {
@@ -130,23 +138,23 @@ func TestSnapshotBeginIsIdempotentAndRefusesAnotherBackup(t *testing.T) {
 	expectReplicaState(control, false, false)
 	expectHold(hold, "20", "SELECT @@GLOBAL.gtid_executed", "uuid:1-5", "SHOW MASTER STATUS")
 
-	first, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "a"})
+	first, err := begin(c, "a", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "a"})
+	again, err := begin(c, "a", "")
 	if err != nil || *again != *first {
 		t.Fatalf("repeated begin = %+v, %v; want %+v", again, err, first)
 	}
-	if _, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "b"}); !errors.Is(err, webserver.ErrSnapshotHoldConflict) {
+	if _, err := begin(c, "b", ""); !errors.Is(err, webserver.ErrSnapshotHoldConflict) {
 		t.Fatalf("begin for another backup = %v, want conflict", err)
 	}
-	if err := c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: "b"}); !errors.Is(err, webserver.ErrSnapshotHoldConflict) {
+	if err := end(c, "b"); !errors.Is(err, webserver.ErrSnapshotHoldConflict) {
 		t.Fatalf("end for another backup = %v, want conflict", err)
 	}
 	// A primary: nothing stopped, so release only unlocks.
 	hold.ExpectExec(q("UNLOCK TABLES")).WillReturnResult(sqlmock.NewResult(0, 0))
-	if err := c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: "a"}); err != nil {
+	if err := end(c, "a"); err != nil {
 		t.Fatal(err)
 	}
 	if err := hold.ExpectationsWereMet(); err != nil {
@@ -163,7 +171,7 @@ func TestSnapshotHoldReleasesItselfOnTimeout(t *testing.T) {
 	hold.ExpectExec(q("UNLOCK TABLES")).WillReturnResult(sqlmock.NewResult(0, 0))
 	hold.ExpectExec(q("START REPLICA SQL_THREAD")).WillReturnResult(sqlmock.NewResult(0, 0))
 
-	if _, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "slow", Timeout: "50ms"}); err != nil {
+	if _, err := begin(c, "slow", "50ms"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -173,7 +181,7 @@ func TestSnapshotHoldReleasesItselfOnTimeout(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: "slow"}); !errors.Is(err, webserver.ErrSnapshotHoldExpired) {
+	if err := end(c, "slow"); !errors.Is(err, webserver.ErrSnapshotHoldExpired) {
 		t.Fatalf("end after expiry = %v, want expired", err)
 	}
 	if err := hold.ExpectationsWereMet(); err != nil {
@@ -191,7 +199,7 @@ func TestSnapshotBeginUndoesAFailedLock(t *testing.T) {
 	hold.ExpectExec(q("UNLOCK TABLES")).WillReturnResult(sqlmock.NewResult(0, 0))
 	hold.ExpectExec(q("START REPLICA SQL_THREAD")).WillReturnResult(sqlmock.NewResult(0, 0))
 
-	if _, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "x"}); err == nil {
+	if _, err := begin(c, "x", ""); err == nil {
 		t.Fatal("begin succeeded over a failed lock")
 	}
 	if c.SnapshotHeld() {
@@ -204,7 +212,7 @@ func TestSnapshotBeginUndoesAFailedLock(t *testing.T) {
 
 func TestSnapshotBeginRejectsBadRequests(t *testing.T) {
 	c, _ := newController(t, nil)
-	if _, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "x"}); err == nil {
+	if _, err := begin(c, "x", ""); err == nil {
 		t.Fatal("begin without a snapshot config succeeded")
 	}
 	withHoldConn(t, c, t.TempDir())
@@ -217,7 +225,7 @@ func TestSnapshotBeginRejectsBadRequests(t *testing.T) {
 			t.Errorf("begin %+v = %v, want invalid", req, err)
 		}
 	}
-	if err := c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: "x"}); !errors.Is(err, webserver.ErrSnapshotNotHeld) {
+	if err := end(c, "x"); !errors.Is(err, webserver.ErrSnapshotNotHeld) {
 		t.Fatalf("end with nothing held = %v, want not held", err)
 	}
 }
@@ -236,7 +244,7 @@ func TestSnapshotHoldDialects(t *testing.T) {
 		hold := withHoldConn(t, c, t.TempDir())
 		expectReplicaState(control, false, false)
 		expectHold(hold, "20", "SELECT @@GLOBAL.gtid_executed", "uuid:1-5", "SHOW BINARY LOG STATUS")
-		if _, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "x"}); err != nil {
+		if _, err := begin(c, "x", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := hold.ExpectationsWereMet(); err != nil {
@@ -259,7 +267,7 @@ func TestSnapshotHoldDialects(t *testing.T) {
 			sqlmock.NewRows([]string{"Master_Host", "Slave_IO_Running", "Slave_SQL_Running"}).AddRow("p", "Yes", "Yes"))
 		hold.ExpectExec(q("STOP SLAVE SQL_THREAD")).WillReturnResult(sqlmock.NewResult(0, 0))
 		expectHold(hold, "20", "SELECT @@GLOBAL.gtid_binlog_pos", "0-1-42", "SHOW MASTER STATUS")
-		anchor, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "x"})
+		anchor, err := begin(c, "x", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +276,7 @@ func TestSnapshotHoldDialects(t *testing.T) {
 		}
 		hold.ExpectExec(q("UNLOCK TABLES")).WillReturnResult(sqlmock.NewResult(0, 0))
 		hold.ExpectExec(q("START SLAVE SQL_THREAD")).WillReturnResult(sqlmock.NewResult(0, 0))
-		if err := c.EndSnapshot(context.Background(), webserver.SnapshotEndRequest{BackupName: "x"}); err != nil {
+		if err := end(c, "x"); err != nil {
 			t.Fatal(err)
 		}
 		if err := hold.ExpectationsWereMet(); err != nil {
@@ -281,7 +289,7 @@ func TestSnapshotHoldDialects(t *testing.T) {
 		c.EnableGroupReplication()
 		hold := withHoldConn(t, c, t.TempDir())
 		expectHold(hold, "20", "SELECT @@GLOBAL.gtid_executed", "group:1-9", "SHOW MASTER STATUS")
-		if _, err := c.BeginSnapshot(context.Background(), webserver.SnapshotBeginRequest{BackupName: "x"}); err != nil {
+		if _, err := begin(c, "x", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := control.ExpectationsWereMet(); err != nil {
@@ -316,7 +324,9 @@ func TestSnapshotManifestRoundTrip(t *testing.T) {
 	if got, err := ReadSnapshotManifest(dir); got != nil || err != nil {
 		t.Fatalf("missing manifest = %v, %v", got, err)
 	}
-	want := SnapshotManifest{BackupName: "b", AnchorGTID: "u:1-3", BinlogFile: "binlog.000002", BinlogPos: 9, Online: true, TakenAt: "t"}
+	want := SnapshotManifest{
+		BackupName: "b", AnchorGTID: "u:1-3", BinlogFile: "binlog.000002", BinlogPos: 9, Online: true, TakenAt: "t",
+	}
 	if err := WriteSnapshotManifest(dir, want); err != nil {
 		t.Fatal(err)
 	}

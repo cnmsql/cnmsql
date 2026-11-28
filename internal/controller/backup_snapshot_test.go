@@ -96,7 +96,8 @@ func snapshotBackup() *mysqlv1alpha1.Backup {
 }
 
 // snapshotVolumeObjects is the replica's bound CSI volume and its class.
-func snapshotVolumeObjects(instance string) []client.Object {
+func snapshotVolumeObjects() []client.Object {
+	const instance = "demo-2"
 	return []client.Object{
 		&corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: instance, Namespace: "default"},
@@ -191,7 +192,7 @@ func TestVolumeSnapshotOnlineBackupRunsTheStepMachine(t *testing.T) {
 		AnchorGTID: "uuid:1-42", BinlogFile: "binlog.000003", BinlogPos: 157, Flavor: "mysql", ServerVersion: "8.4.3",
 	}}
 	backup := snapshotBackup()
-	objs := append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())
+	objs := append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())
 	r := newSnapshotReconciler(t, snapshots, objs...)
 
 	// Preflight passes and takes the release finalizer before holding anything.
@@ -211,31 +212,7 @@ func TestVolumeSnapshotOnlineBackupRunsTheStepMachine(t *testing.T) {
 		snapshots.begins[0].BackupName != backup.Name || snapshots.begins[0].Timeout != "2m0s" {
 		t.Fatalf("begin calls = %+v on %s", snapshots.begins, snapshots.instance)
 	}
-	running := getSnapshotBackup(t, r, backup.Name)
-	if running.Status.Phase != mysqlv1alpha1.BackupPhaseRunning || running.Status.Method != mysqlv1alpha1.BackupMethodVolumeSnapshot ||
-		running.Status.InstanceName != "demo-2" || running.Status.EndGTID != "uuid:1-42" ||
-		running.Status.BeginGTID != "uuid:1-42" || running.Status.EndBinlog != "binlog.000003:157" ||
-		running.Status.JobName != "" || running.Status.ObjectStore != nil {
-		t.Fatalf("running status = %+v", running.Status)
-	}
-	snap := getSnapshot(t, r, backup.Name)
-	if snap.Spec.Source.PersistentVolumeClaimName == nil || *snap.Spec.Source.PersistentVolumeClaimName != "demo-2" ||
-		snap.Spec.VolumeSnapshotClassName == nil || *snap.Spec.VolumeSnapshotClassName != testSnapshotClass {
-		t.Fatalf("snapshot spec = %+v", snap.Spec)
-	}
-	for k, v := range map[string]string{
-		clusterLabel: "demo", snapshotBackupLabel: backup.Name, instanceLabel: "demo-2", snapshotVolumeLabel: "data",
-	} {
-		if snap.Labels[k] != v {
-			t.Errorf("label %s = %q, want %q", k, snap.Labels[k], v)
-		}
-	}
-	if snap.Annotations[snapshotServerVersionAnnotation] != "8.4.3" || snap.Annotations[snapshotAnchorGTIDAnnotation] != "" {
-		t.Fatalf("annotations before the cut = %v", snap.Annotations)
-	}
-	if len(snap.OwnerReferences) != 0 {
-		t.Fatalf("default owner is none, got %v", snap.OwnerReferences)
-	}
+	expectHeldSnapshot(t, r, backup.Name)
 
 	// Not yet cut: still held, no end.
 	reconcileBackup(t, r, backup)
@@ -251,38 +228,12 @@ func TestVolumeSnapshotOnlineBackupRunsTheStepMachine(t *testing.T) {
 	if len(snapshots.ends) != 1 || snapshots.ends[0].BackupName != backup.Name {
 		t.Fatalf("end calls = %+v", snapshots.ends)
 	}
-	released := getSnapshotBackup(t, r, backup.Name)
-	if controllerutil.ContainsFinalizer(released, snapshotReleaseFinalizer) {
-		t.Fatal("release finalizer kept after the release")
-	}
-	if snapshotProgressReason(released) != reasonSnapshotProvisioned || released.Status.Online == nil || !*released.Status.Online {
-		t.Fatalf("released status = %+v", released.Status)
-	}
-	snap = getSnapshot(t, r, backup.Name)
-	if snap.Annotations[snapshotAnchorGTIDAnnotation] != "uuid:1-42" ||
-		snap.Annotations[snapshotAnchorBinlogAnnotation] != "binlog.000003:157" ||
-		snap.Annotations[snapshotOnlineAnnotation] != "true" || snap.Annotations[snapshotBackupEndAnnotation] != "" {
-		t.Fatalf("annotations after the cut = %v", snap.Annotations)
-	}
+	expectReleasedSnapshot(t, r, backup.Name)
 
 	// Ready: complete.
 	provisionSnapshot(t, r, backup.Name, true)
 	reconcileBackup(t, r, backup)
-	done := getSnapshotBackup(t, r, backup.Name)
-	if done.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || done.Status.StoppedAt == nil {
-		t.Fatalf("final status = %+v", done.Status)
-	}
-	if len(done.Status.VolumeSnapshots) != 1 {
-		t.Fatalf("volumeSnapshots = %+v", done.Status.VolumeSnapshots)
-	}
-	entry := done.Status.VolumeSnapshots[0]
-	if entry.Name != backup.Name || entry.Volume != "data" || entry.PVCName != "demo-2" || entry.ClassName != testSnapshotClass ||
-		!entry.ReadyToUse || entry.RestoreSize == nil || entry.RestoreSize.String() != "10Gi" || entry.CreationTime == nil {
-		t.Fatalf("volumeSnapshots[0] = %+v", entry)
-	}
-	if getSnapshot(t, r, backup.Name).Annotations[snapshotBackupEndAnnotation] == "" {
-		t.Fatal("backup-end annotation missing")
-	}
+	expectCompletedSnapshot(t, r, backup.Name)
 	if len(snapshots.begins) != 1 || len(snapshots.ends) != 1 {
 		t.Fatalf("hold taken %d times, released %d times", len(snapshots.begins), len(snapshots.ends))
 	}
@@ -293,7 +244,7 @@ func TestVolumeSnapshotColdBackupFencesTheSource(t *testing.T) {
 	snapshots := &fakeSnapshotClient{}
 	backup := snapshotBackup()
 	backup.Spec.Online = new(false)
-	objs := append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())
+	objs := append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())
 	r := newSnapshotReconciler(t, snapshots, objs...)
 
 	reconcileBackup(t, r, backup) // finalizer
@@ -411,7 +362,7 @@ func TestVolumeSnapshotPreflightFailures(t *testing.T) {
 			t.Parallel()
 			snapshots := &fakeSnapshotClient{}
 			cluster, backup := snapshotCluster(), snapshotBackup()
-			objs := append(snapshotVolumeObjects("demo-2"), readyReplicaPod())
+			objs := append(snapshotVolumeObjects(), readyReplicaPod())
 			tc.mutate(cluster, backup, &objs)
 			r := newSnapshotReconciler(t, snapshots, append(objs, cluster, backup)...)
 			reconcileBackup(t, r, backup)
@@ -448,7 +399,7 @@ func TestVolumeSnapshotResolvesTheDriversDefaultClass(t *testing.T) {
 	t.Parallel()
 	cluster, backup := snapshotCluster(), snapshotBackup()
 	cluster.Spec.Backup.VolumeSnapshot.ClassName = ""
-	objs := snapshotVolumeObjects("demo-2")
+	objs := snapshotVolumeObjects()
 	objs = append(objs, &snapshotv1.VolumeSnapshotClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "default-hostpath", Annotations: map[string]string{defaultSnapshotClassAnnotation: "true"}},
 		Driver:     testCSIDriver,
@@ -469,7 +420,7 @@ func TestVolumeSnapshotFailsWhenTheHoldExpiredBeforeTheCut(t *testing.T) {
 	t.Parallel()
 	snapshots := &fakeSnapshotClient{anchor: webserver.SnapshotAnchor{AnchorGTID: "uuid:1-3"}}
 	backup := snapshotBackup()
-	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())...)
+	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())...)
 	reconcileBackup(t, r, backup)
 	reconcileBackup(t, r, backup)
 	provisionSnapshot(t, r, backup.Name, false)
@@ -485,7 +436,7 @@ func TestVolumeSnapshotGivesUpAtTheLockTimeout(t *testing.T) {
 	snapshots := &fakeSnapshotClient{anchor: webserver.SnapshotAnchor{AnchorGTID: "uuid:1-3"}}
 	backup := snapshotBackup()
 	backup.Spec.VolumeSnapshot = &mysqlv1alpha1.VolumeSnapshotConfiguration{LockTimeout: &metav1.Duration{Duration: 30 * time.Second}}
-	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())...)
+	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())...)
 	reconcileBackup(t, r, backup)
 	reconcileBackup(t, r, backup)
 	if snapshots.begins[0].Timeout != "30s" {
@@ -510,7 +461,7 @@ func TestVolumeSnapshotPrepareFailureFailsTheBackup(t *testing.T) {
 	t.Parallel()
 	snapshots := &fakeSnapshotClient{beginErr: fmt.Errorf("instance /cluster/snapshot/begin: %w", webserver.ErrSnapshotHoldConflict)}
 	backup := snapshotBackup()
-	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())...)
+	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())...)
 	reconcileBackup(t, r, backup)
 	reconcileBackup(t, r, backup)
 	expectBackupFailed(t, r, backup.Name, reasonSnapshotPrepareFailed)
@@ -527,7 +478,7 @@ func TestVolumeSnapshotOwnerReference(t *testing.T) {
 	} {
 		backup := snapshotBackup()
 		backup.Spec.VolumeSnapshot = &mysqlv1alpha1.VolumeSnapshotConfiguration{SnapshotOwnerReference: owner}
-		r := newSnapshotReconciler(t, &fakeSnapshotClient{}, append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())...)
+		r := newSnapshotReconciler(t, &fakeSnapshotClient{}, append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())...)
 		reconcileBackup(t, r, backup)
 		reconcileBackup(t, r, backup)
 		refs := getSnapshot(t, r, backup.Name).OwnerReferences
@@ -541,7 +492,7 @@ func TestVolumeSnapshotBackupDeletedMidHoldReleasesTheSource(t *testing.T) {
 	t.Parallel()
 	snapshots := &fakeSnapshotClient{anchor: webserver.SnapshotAnchor{AnchorGTID: "uuid:1-3"}}
 	backup := snapshotBackup()
-	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects("demo-2"), snapshotCluster(), backup, readyReplicaPod())...)
+	r := newSnapshotReconciler(t, snapshots, append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())...)
 	reconcileBackup(t, r, backup)
 	reconcileBackup(t, r, backup)
 	if err := r.Delete(context.Background(), getSnapshotBackup(t, r, backup.Name)); err != nil {
@@ -625,5 +576,76 @@ func TestResolveSnapshotConfig(t *testing.T) {
 			got.Deadline != tc.want.Deadline || got.LockTimeout != tc.want.LockTimeout {
 			t.Errorf("%s: got %+v, want %+v", name, got, tc.want)
 		}
+	}
+}
+
+// expectHeldSnapshot checks the Backup and VolumeSnapshot while the replica is
+// held: the anchor is recorded, the snapshot targets the replica's volume, and
+// nothing that depends on the cut is written yet.
+func expectHeldSnapshot(t *testing.T, r *BackupReconciler, name string) {
+	t.Helper()
+	running := getSnapshotBackup(t, r, name)
+	st := running.Status
+	if st.Phase != mysqlv1alpha1.BackupPhaseRunning || st.Method != mysqlv1alpha1.BackupMethodVolumeSnapshot ||
+		st.InstanceName != "demo-2" || st.EndGTID != "uuid:1-42" || st.BeginGTID != "uuid:1-42" ||
+		st.EndBinlog != "binlog.000003:157" || st.JobName != "" || st.ObjectStore != nil {
+		t.Fatalf("running status = %+v", st)
+	}
+	snap := getSnapshot(t, r, name)
+	if snap.Spec.Source.PersistentVolumeClaimName == nil || *snap.Spec.Source.PersistentVolumeClaimName != "demo-2" ||
+		snap.Spec.VolumeSnapshotClassName == nil || *snap.Spec.VolumeSnapshotClassName != testSnapshotClass {
+		t.Fatalf("snapshot spec = %+v", snap.Spec)
+	}
+	for k, v := range map[string]string{
+		clusterLabel: "demo", snapshotBackupLabel: name, instanceLabel: "demo-2", snapshotVolumeLabel: "data",
+	} {
+		if snap.Labels[k] != v {
+			t.Errorf("label %s = %q, want %q", k, snap.Labels[k], v)
+		}
+	}
+	if snap.Annotations[snapshotServerVersionAnnotation] != "8.4.3" || snap.Annotations[snapshotAnchorGTIDAnnotation] != "" {
+		t.Fatalf("annotations before the cut = %v", snap.Annotations)
+	}
+	if len(snap.OwnerReferences) != 0 {
+		t.Fatalf("default owner is none, got %v", snap.OwnerReferences)
+	}
+}
+
+// expectReleasedSnapshot checks the state after the cut: the finalizer is
+// gone, the step is recorded, and the snapshot carries its anchor.
+func expectReleasedSnapshot(t *testing.T, r *BackupReconciler, name string) {
+	t.Helper()
+	released := getSnapshotBackup(t, r, name)
+	if controllerutil.ContainsFinalizer(released, snapshotReleaseFinalizer) {
+		t.Fatal("release finalizer kept after the release")
+	}
+	if snapshotProgressReason(released) != reasonSnapshotProvisioned || released.Status.Online == nil || !*released.Status.Online {
+		t.Fatalf("released status = %+v", released.Status)
+	}
+	snap := getSnapshot(t, r, name)
+	if snap.Annotations[snapshotAnchorGTIDAnnotation] != "uuid:1-42" ||
+		snap.Annotations[snapshotAnchorBinlogAnnotation] != "binlog.000003:157" ||
+		snap.Annotations[snapshotOnlineAnnotation] != "true" || snap.Annotations[snapshotBackupEndAnnotation] != "" {
+		t.Fatalf("annotations after the cut = %v", snap.Annotations)
+	}
+}
+
+// expectCompletedSnapshot checks the completed Backup's snapshot record.
+func expectCompletedSnapshot(t *testing.T, r *BackupReconciler, name string) {
+	t.Helper()
+	done := getSnapshotBackup(t, r, name)
+	if done.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || done.Status.StoppedAt == nil {
+		t.Fatalf("final status = %+v", done.Status)
+	}
+	if len(done.Status.VolumeSnapshots) != 1 {
+		t.Fatalf("volumeSnapshots = %+v", done.Status.VolumeSnapshots)
+	}
+	entry := done.Status.VolumeSnapshots[0]
+	if entry.Name != name || entry.Volume != "data" || entry.PVCName != "demo-2" || entry.ClassName != testSnapshotClass ||
+		!entry.ReadyToUse || entry.RestoreSize == nil || entry.RestoreSize.String() != "10Gi" || entry.CreationTime == nil {
+		t.Fatalf("volumeSnapshots[0] = %+v", entry)
+	}
+	if getSnapshot(t, r, name).Annotations[snapshotBackupEndAnnotation] == "" {
+		t.Fatal("backup-end annotation missing")
 	}
 }

@@ -228,7 +228,9 @@ func (c *Controller) SnapshotState() webserver.SnapshotState {
 // connection, reads the position under it, writes the manifest into the data
 // directory and arms a timer that releases the hold on its own. A repeated
 // begin for the same Backup returns the anchor already taken.
-func (c *Controller) BeginSnapshot(ctx context.Context, req webserver.SnapshotBeginRequest) (*webserver.SnapshotAnchor, error) {
+func (c *Controller) BeginSnapshot(
+	ctx context.Context, req webserver.SnapshotBeginRequest,
+) (*webserver.SnapshotAnchor, error) {
 	if c.snapshot == nil {
 		return nil, errors.New("volume snapshots are not available in this context")
 	}
@@ -272,7 +274,9 @@ func (c *Controller) BeginSnapshot(ctx context.Context, req webserver.SnapshotBe
 }
 
 // takeSnapshotHold runs the quiesce. On any failure it undoes what it did.
-func (c *Controller) takeSnapshotHold(ctx context.Context, backupName string, timeout time.Duration) (_ *snapshotHold, err error) {
+func (c *Controller) takeSnapshotHold(
+	ctx context.Context, backupName string, timeout time.Duration,
+) (_ *snapshotHold, err error) {
 	conn, closeConn, err := c.openSnapshotConn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("opening the snapshot connection: %w", err)
@@ -280,7 +284,9 @@ func (c *Controller) takeSnapshotHold(ctx context.Context, backupName string, ti
 	hold := &snapshotHold{backupName: backupName, conn: conn, closeConn: closeConn}
 	defer func() {
 		if err != nil {
-			c.releaseSnapshotHold(context.WithoutCancel(ctx), hold)
+			// The begin's own error is what the caller needs; the release
+			// closes the connection, which drops the lock either way.
+			_ = c.releaseSnapshotHold(context.WithoutCancel(ctx), hold)
 		}
 	}()
 
@@ -460,7 +466,8 @@ func (c *Controller) expireSnapshotHold(backupName string, hold *snapshotHold) {
 		log.Error(err, "Released an expired volume snapshot hold with errors")
 		return
 	}
-	log.Info("Released an expired volume snapshot hold", "heldFor", time.Since(hold.since).Round(time.Millisecond).String())
+	log.Info("Released an expired volume snapshot hold",
+		"heldFor", time.Since(hold.since).Round(time.Millisecond).String())
 }
 
 // releaseSnapshotHold unlocks the tables, restarts the applier when the hold

@@ -49,7 +49,8 @@ func TestRemoveAdoptLeftoversKeepsTheData(t *testing.T) {
 	if err := removeAdoptLeftovers(dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"demo-2.pid", "mysqld.sock", "mysqld.sock.lock", corruptionMarker, pitrSentinelFile, adoptSentinel} {
+	gone := []string{"demo-2.pid", "mysqld.sock", "mysqld.sock.lock", corruptionMarker, pitrSentinelFile, adoptSentinel}
+	for _, gone := range gone {
 		if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
 			t.Errorf("%s survived the adoption cleanup", gone)
 		}
@@ -108,7 +109,9 @@ func TestAdoptReplayNeedsThisBackupsAnchor(t *testing.T) {
 
 func TestEnsureAdoptAnchorKeepsTheOnlineManifest(t *testing.T) {
 	dir := snapshotDataDir(t)
-	want := SnapshotManifest{BackupName: "nightly", AnchorGTID: "u:1-9", BinlogFile: "binlog.000003", BinlogPos: 157, Online: true}
+	want := SnapshotManifest{
+		BackupName: "nightly", AnchorGTID: "u:1-9", BinlogFile: "binlog.000003", BinlogPos: 157, Online: true,
+	}
 	if err := WriteSnapshotManifest(dir, want); err != nil {
 		t.Fatal(err)
 	}

@@ -70,6 +70,10 @@ const (
 	// defaultSnapshotClassAnnotation marks a VolumeSnapshotClass as its
 	// driver's default.
 	defaultSnapshotClassAnnotation = "snapshot.storage.kubernetes.io/is-default-class"
+
+	// volumeSnapshotKind is the VolumeSnapshot kind, for RESTMapper lookups
+	// and PVC data sources.
+	volumeSnapshotKind = "VolumeSnapshot"
 )
 
 // Progressing reasons of a volumeSnapshot Backup. The reason is the step
@@ -179,7 +183,7 @@ func volumeSnapshotAPIAvailable(mapper apimeta.RESTMapper) bool {
 	if mapper == nil {
 		return false
 	}
-	_, err := mapper.RESTMapping(schema.GroupKind{Group: snapshotv1.GroupName, Kind: "VolumeSnapshot"},
+	_, err := mapper.RESTMapping(schema.GroupKind{Group: snapshotv1.GroupName, Kind: volumeSnapshotKind},
 		snapshotv1.SchemeGroupVersion.Version)
 	return err == nil
 }
@@ -341,7 +345,7 @@ func (r *BackupReconciler) continueVolumeSnapshot(
 		}
 		return ctrl.Result{RequeueAfter: snapshotHoldPoll}, nil
 	}
-	return r.finalizeVolumeSnapshot(ctx, backup, cluster, snap, cfg)
+	return r.finalizeVolumeSnapshot(ctx, backup, cluster, snap)
 }
 
 // prepareSnapshotSource quiesces the source (step 1). It reports whether the
@@ -482,7 +486,7 @@ func (r *BackupReconciler) createVolumeSnapshot(
 // 4), records the snapshot and anchor, and writes the anchor annotations.
 func (r *BackupReconciler) finalizeVolumeSnapshot(
 	ctx context.Context, backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster,
-	snap *snapshotv1.VolumeSnapshot, cfg resolvedSnapshotConfig,
+	snap *snapshotv1.VolumeSnapshot,
 ) (ctrl.Result, error) {
 	instance := backup.Status.InstanceName
 	online := snapshotOnline(backup)

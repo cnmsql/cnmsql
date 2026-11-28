@@ -94,7 +94,8 @@ func adoptVolume(ctx context.Context, opts RestoreOptions, eng engine.Engine) er
 		return fmt.Errorf("reading the snapshot anchor: %w", err)
 	}
 	if manifest == nil || manifest.BackupName != opts.BackupName {
-		return fmt.Errorf("adopt: point-in-time recovery needs the anchor of backup %q, and the data directory has none", opts.BackupName)
+		return fmt.Errorf("adopt: point-in-time recovery needs the anchor of backup %q, and the data directory has none",
+			opts.BackupName)
 	}
 	opts.Anchor = &engine.BinlogInfo{File: manifest.BinlogFile, Position: manifest.BinlogPos, GTIDSet: manifest.AnchorGTID}
 	if err := opts.maybeReplay(ctx, eng.Backup(), eng); err != nil {

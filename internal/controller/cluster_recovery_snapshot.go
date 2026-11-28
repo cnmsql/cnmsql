@@ -134,7 +134,7 @@ func pvcSnapshotSource(plan clusterPlan, inst instancePlan) *snapshotRecoveryPla
 // volume smaller than the snapshot cannot be provisioned from it.
 func applySnapshotSource(spec *corev1.PersistentVolumeClaimSpec, snapshot *snapshotRecoveryPlan) {
 	group := snapshotv1.GroupName
-	spec.DataSource = &corev1.TypedLocalObjectReference{APIGroup: &group, Kind: "VolumeSnapshot", Name: snapshot.Name}
+	spec.DataSource = &corev1.TypedLocalObjectReference{APIGroup: &group, Kind: volumeSnapshotKind, Name: snapshot.Name}
 	spec.DataSourceRef = nil
 	if snapshot.RestoreSize.IsZero() {
 		return
@@ -155,7 +155,7 @@ func checkSnapshotSource(pvc *corev1.PersistentVolumeClaim, snapshot *snapshotRe
 		return nil
 	}
 	ds := pvc.Spec.DataSource
-	if ds != nil && ds.Kind == "VolumeSnapshot" && ds.APIGroup != nil && *ds.APIGroup == snapshotv1.GroupName &&
+	if ds != nil && ds.Kind == volumeSnapshotKind && ds.APIGroup != nil && *ds.APIGroup == snapshotv1.GroupName &&
 		ds.Name == snapshot.Name {
 		return nil
 	}
@@ -169,20 +169,21 @@ func checkSnapshotSource(pvc *corev1.PersistentVolumeClaim, snapshot *snapshotRe
 // point-in-time recovery, replay archived binlogs from the snapshot's anchor.
 func adoptArgs(plan clusterPlan) []string {
 	snapshot := plan.Recovery.Snapshot
-	args := []string{
+	args := make([]string, 0, 18)
+	args = append(args,
 		managerInstanceCmd, "restore",
 		"--from-volume",
-		"--data-dir=" + dataDir,
-		"--backup-dir=" + joinBackupDir,
-		"--backup-name=" + snapshot.BackupName,
-		"--cluster-uid=" + plan.ClusterUID,
-		"--mysqld=" + mysqldBinary,
-		"--config=" + configPath,
-		"--socket=" + socketPath,
-		"--control-user=" + controlUser,
-		"--backup-user=" + backupUser,
-		"--cluster-name=" + plan.ClusterName,
-	}
+		"--data-dir="+dataDir,
+		"--backup-dir="+joinBackupDir,
+		"--backup-name="+snapshot.BackupName,
+		"--cluster-uid="+plan.ClusterUID,
+		"--mysqld="+mysqldBinary,
+		"--config="+configPath,
+		"--socket="+socketPath,
+		"--control-user="+controlUser,
+		"--backup-user="+backupUser,
+		"--cluster-name="+plan.ClusterName,
+	)
 	return append(args, replayArgs(plan.Recovery)...)
 }
 
