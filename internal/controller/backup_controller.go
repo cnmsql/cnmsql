@@ -81,6 +81,12 @@ type BackupReconciler struct {
 	// SnapshotClient drives a source instance's volume-snapshot hold. Nil uses
 	// the mTLS control API.
 	SnapshotClient SnapshotControlClient
+	// APIReader reads the cluster-scoped objects a snapshot preflight checks
+	// (the PersistentVolume, VolumeSnapshotClasses) without the cache: a cached
+	// read would start a cluster-wide informer for one lookup, and in a
+	// namespaced install, which may not list them, would block on it. Nil
+	// reads through the client.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=mysql.cnmsql.co,resources=backups,verbs=get;list;watch;update;patch

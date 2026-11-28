@@ -691,9 +691,13 @@ func (r *BackupReconciler) preflightSnapshotVolume(
 		return "", reasonPVCNotBound, fmt.Sprintf("PersistentVolumeClaim %s is not bound", instance), nil
 	}
 	skip := func(err error) bool { return apierrors.IsForbidden(err) || apimeta.IsNoMatchError(err) }
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
 
 	pv := &corev1.PersistentVolume{}
-	if err := r.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err != nil {
 		if skip(err) {
 			return className, "", "", nil
 		}
@@ -707,7 +711,7 @@ func (r *BackupReconciler) preflightSnapshotVolume(
 
 	if className != "" {
 		class := &snapshotv1.VolumeSnapshotClass{}
-		if err := r.Get(ctx, types.NamespacedName{Name: className}, class); err != nil {
+		if err := reader.Get(ctx, types.NamespacedName{Name: className}, class); err != nil {
 			if apierrors.IsNotFound(err) {
 				return "", reasonVolumeSnapshotClassMismatch, fmt.Sprintf("VolumeSnapshotClass %q was not found", className), nil
 			}
@@ -725,7 +729,7 @@ func (r *BackupReconciler) preflightSnapshotVolume(
 	}
 
 	classes := &snapshotv1.VolumeSnapshotClassList{}
-	if err := r.List(ctx, classes); err != nil {
+	if err := reader.List(ctx, classes); err != nil {
 		if skip(err) {
 			return "", "", "", nil
 		}

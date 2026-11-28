@@ -191,6 +191,7 @@ func main() {
 			controller.RegisterGRMetrics(mgr.GetClient())
 			if err := (&controller.BackupReconciler{
 				Client:            mgr.GetClient(),
+				APIReader:         mgr.GetAPIReader(),
 				Scheme:            mgr.GetScheme(),
 				Recorder:          mgr.GetEventRecorderFor("backup-controller"), //nolint:staticcheck
 				OperatorImageName: operatorImage,
