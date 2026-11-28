@@ -23,6 +23,14 @@ them into a new or a running cluster, or move to another series. It is never a
 recovery base.
 :::
 
+:::tip Volume snapshots
+On volumes from a CSI driver that supports snapshots, a
+[volume snapshot backup](volume-snapshots.md) (`method: volumeSnapshot`) is
+another physical backup: the driver cuts the data volume instead of the
+operator streaming it, and a new cluster is bootstrapped from a volume created
+from the snapshot. This page covers XtraBackup.
+:::
+
 ```mermaid
 flowchart LR
     BackupCR["Backup CR"]

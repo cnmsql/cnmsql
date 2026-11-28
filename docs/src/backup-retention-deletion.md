@@ -27,6 +27,13 @@ A [logical backup](logical-backups.md) uses the same directory, with
 `dump.sql.zst` and `logical.json` inside it. Everything below applies to it the
 same way.
 
+A [volume snapshot backup](volume-snapshots.md) has nothing in the object
+store: `reclaimPolicy: Delete` deletes its VolumeSnapshots instead, and
+`snapshotOwnerReference` can hand them to the Backup or the Cluster for
+garbage collection. Retention GC and cluster reclaim ignore snapshot Backups,
+and retention does not keep the binlogs a snapshot needs for point-in-time
+recovery. See [Ownership and deletion](volume-snapshots.md#ownership-and-deletion).
+
 The Kubernetes Job is owned by the Backup, so Kubernetes garbage collection may
 remove the Job. Object-store artifacts are not owned by Kubernetes and are not
 removed unless you opt the Backup into remote cleanup with `reclaimPolicy: Delete`,
