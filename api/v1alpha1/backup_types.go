@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -155,6 +156,101 @@ type LogicalBackupOptions struct {
 	ExtraArgs []string `json:"extraArgs,omitempty"`
 }
 
+// SnapshotOwnerReference names the object that owns the VolumeSnapshots a
+// volumeSnapshot Backup creates.
+// +kubebuilder:validation:Enum=none;backup;cluster
+type SnapshotOwnerReference string
+
+const (
+	// SnapshotOwnerNone sets no owner: the VolumeSnapshots outlive the Backup and
+	// the Cluster. This is the default.
+	SnapshotOwnerNone SnapshotOwnerReference = "none"
+	// SnapshotOwnerBackup makes the Backup the VolumeSnapshots' controller owner,
+	// so they are garbage-collected with it.
+	SnapshotOwnerBackup SnapshotOwnerReference = "backup"
+	// SnapshotOwnerCluster makes the Cluster the VolumeSnapshots' controller
+	// owner, so they are garbage-collected with it.
+	SnapshotOwnerCluster SnapshotOwnerReference = "cluster"
+)
+
+// VolumeSnapshotConfiguration configures Backups taken with method
+// volumeSnapshot. On a Backup it overrides the cluster's
+// spec.backup.volumeSnapshot field by field.
+type VolumeSnapshotConfiguration struct {
+	// ClassName is the VolumeSnapshotClass used for the instance data volume.
+	// Empty uses the default class for the volume's CSI driver.
+	// +optional
+	ClassName string `json:"className,omitempty"`
+
+	// Labels are added to every VolumeSnapshot. Operator keys win on conflict.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations are added to every VolumeSnapshot. Operator keys win on
+	// conflict.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// SnapshotOwnerReference sets who owns the VolumeSnapshot objects: none (the
+	// default; they outlive the Backup and the Cluster), backup, or cluster.
+	// +optional
+	SnapshotOwnerReference SnapshotOwnerReference `json:"snapshotOwnerReference,omitempty"`
+
+	// Online selects how the source instance is quiesced for the cut. True holds
+	// a global read lock on the source while the snapshot is cut, which stalls
+	// writes on a primary target. False fences the source instance (mysqld
+	// stopped) for the cut. When unset on the Backup and the cluster, a Backup
+	// with spec.online: false is cold and every other one is online.
+	// +optional
+	Online *bool `json:"online,omitempty"`
+
+	// Deadline bounds how long a snapshot Backup retries CSI errors and waits
+	// for the snapshot to be provisioned and ready before failing. Default 10m.
+	// +optional
+	Deadline *metav1.Duration `json:"deadline,omitempty"`
+
+	// LockTimeout bounds how long the source instance holds the global read lock
+	// (online) or stays fenced (cold) waiting for the snapshot to be cut. When it
+	// elapses the instance releases on its own and the Backup fails. Default 2m.
+	// +optional
+	LockTimeout *metav1.Duration `json:"lockTimeout,omitempty"`
+}
+
+// VolumeSnapshotStatus records one VolumeSnapshot a Backup produced.
+type VolumeSnapshotStatus struct {
+	// Name of the VolumeSnapshot, in the Backup's namespace.
+	Name string `json:"name"`
+
+	// Volume is the role of the snapshotted volume: data.
+	Volume string `json:"volume"`
+
+	// PVCName is the source claim.
+	// +optional
+	PVCName string `json:"pvcName,omitempty"`
+
+	// ClassName is the VolumeSnapshotClass used, resolved at creation. Empty
+	// when the snapshot used the driver's default class.
+	// +optional
+	ClassName string `json:"className,omitempty"`
+
+	// ReadyToUse mirrors the snapshot's status.readyToUse.
+	// +optional
+	ReadyToUse bool `json:"readyToUse,omitempty"`
+
+	// RestoreSize mirrors status.restoreSize: the minimum PVC request that can
+	// restore it.
+	// +optional
+	RestoreSize *resource.Quantity `json:"restoreSize,omitempty"`
+
+	// CreationTime mirrors status.creationTime: when the driver cut it.
+	// +optional
+	CreationTime *metav1.Time `json:"creationTime,omitempty"`
+}
+
+// VolumeSnapshotVolumeData is the VolumeSnapshotStatus.Volume value of the
+// instance data volume.
+const VolumeSnapshotVolumeData = "data"
+
 // BackupPhase is the current phase of a Backup.
 type BackupPhase string
 
@@ -172,6 +268,7 @@ const (
 // BackupSpec defines the desired state of Backup.
 // +kubebuilder:validation:XValidation:rule="!has(self.logical) || (has(self.method) && self.method == 'logical')",message="logical is only valid with method: logical"
 // +kubebuilder:validation:XValidation:rule="!has(self.method) || self.method != 'logical' || !has(self.online) || self.online",message="a logical backup is always online"
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeSnapshot) || (has(self.method) && self.method == 'volumeSnapshot')",message="volumeSnapshot is only valid with method: volumeSnapshot"
 type BackupSpec struct {
 	// Cluster references the cluster to back up.
 	// +kubebuilder:validation:Required
@@ -193,6 +290,8 @@ type BackupSpec struct {
 	Target BackupTarget `json:"target,omitempty"`
 
 	// Online, when true, performs a non-blocking (hot) backup. Defaults to true.
+	// For method volumeSnapshot, false takes a cold snapshot (the source
+	// instance is fenced for the cut); see spec.volumeSnapshot.online.
 	// +kubebuilder:default:=true
 	// +optional
 	Online *bool `json:"online,omitempty"`
@@ -216,6 +315,12 @@ type BackupSpec struct {
 	// Logical configures the dump when method is "logical".
 	// +optional
 	Logical *LogicalBackupOptions `json:"logical,omitempty"`
+
+	// VolumeSnapshot overrides the cluster's spec.backup.volumeSnapshot field by
+	// field for this Backup. Only valid with method: volumeSnapshot. A snapshot
+	// Backup ignores spec.objectStore and spec.jobTemplate: no worker Job runs.
+	// +optional
+	VolumeSnapshot *VolumeSnapshotConfiguration `json:"volumeSnapshot,omitempty"`
 }
 
 // BackupStatus defines the observed state of Backup.
@@ -284,6 +389,19 @@ type BackupStatus struct {
 	// import can select.
 	// +optional
 	Databases []string `json:"databases,omitempty"`
+
+	// VolumeSnapshots lists the snapshots this Backup produced, one per instance
+	// volume. Empty for other methods.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	VolumeSnapshots []VolumeSnapshotStatus `json:"volumeSnapshots,omitempty"`
+
+	// Online records whether a volumeSnapshot Backup was taken under a read lock
+	// (true) or on a fenced instance (false). Only set for method
+	// volumeSnapshot.
+	// +optional
+	Online *bool `json:"online,omitempty"`
 
 	// StartedAt/StoppedAt record the backup timing.
 	// +optional

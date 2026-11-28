@@ -128,6 +128,28 @@ var _ = Describe("Cluster validation", func() {
 		Expect(newValidCluster().Validate()).To(BeEmpty())
 	})
 
+	It("accepts a volumeSnapshot section without an object store", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Backup = &BackupConfiguration{VolumeSnapshot: &VolumeSnapshotConfiguration{
+			ClassName:   "csi-hostpath-snapclass",
+			Deadline:    &metav1.Duration{Duration: 5 * time.Minute},
+			LockTimeout: &metav1.Duration{Duration: 30 * time.Second},
+		}}
+		Expect(cluster.Validate()).To(BeEmpty())
+	})
+
+	It("rejects non-positive volumeSnapshot durations", func() {
+		cluster := newValidCluster()
+		cluster.Spec.Backup = &BackupConfiguration{VolumeSnapshot: &VolumeSnapshotConfiguration{
+			Deadline:    &metav1.Duration{},
+			LockTimeout: &metav1.Duration{Duration: -time.Second},
+		}}
+		errs := cluster.Validate()
+		Expect(errs).To(HaveLen(2))
+		Expect(errs[0].Field).To(Equal("spec.backup.volumeSnapshot.deadline"))
+		Expect(errs[1].Field).To(Equal("spec.backup.volumeSnapshot.lockTimeout"))
+	})
+
 	It("accepts an opt-in storage protection stanza with a valid threshold", func() {
 		cluster := newValidCluster()
 		cluster.Spec.StorageProtection = &StorageProtection{

@@ -16,6 +16,8 @@ limitations under the License.
 
 package v1alpha1
 
+import "k8s.io/apimachinery/pkg/util/validation/field"
+
 // SetDefaults fills in unset fields of the Backup spec with their default
 // values, mirroring the kubebuilder markers so the in-memory object is
 // consistent before the reconciler reads it. It is idempotent.
@@ -30,6 +32,31 @@ func (b *Backup) SetDefaults() {
 	if spec.ReclaimPolicy == "" {
 		spec.ReclaimPolicy = BackupReclaimRetain
 	}
+}
+
+// Validate checks the durations of a volumeSnapshot configuration: a zero or
+// negative deadline or lock timeout would fail every snapshot Backup at once.
+// A nil configuration is valid.
+func (c *VolumeSnapshotConfiguration) Validate(path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if c == nil {
+		return allErrs
+	}
+	if c.Deadline != nil && c.Deadline.Duration <= 0 {
+		allErrs = append(allErrs, field.Invalid(path.Child("deadline"), c.Deadline.Duration.String(),
+			"must be a positive duration"))
+	}
+	if c.LockTimeout != nil && c.LockTimeout.Duration <= 0 {
+		allErrs = append(allErrs, field.Invalid(path.Child("lockTimeout"), c.LockTimeout.Duration.String(),
+			"must be a positive duration"))
+	}
+	return allErrs
+}
+
+// IsVolumeSnapshot reports whether the Backup is, or was taken as, a
+// volumeSnapshot backup.
+func (b *Backup) IsVolumeSnapshot() bool {
+	return b.Spec.Method == BackupMethodVolumeSnapshot || b.Status.Method == BackupMethodVolumeSnapshot
 }
 
 // WantsObjectStoreCleanup reports whether this Backup's archive should be

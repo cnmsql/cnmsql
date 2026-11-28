@@ -975,6 +975,12 @@ type BackupConfiguration struct {
 	// default.
 	// +optional
 	ContinuousArchiving *ContinuousArchivingConfiguration `json:"continuousArchiving,omitempty"`
+
+	// VolumeSnapshot configures Backups taken with method volumeSnapshot. It is
+	// required for that method: a snapshot Backup on a cluster without it fails
+	// with ClusterHasNoVolumeSnapshotSection.
+	// +optional
+	VolumeSnapshot *VolumeSnapshotConfiguration `json:"volumeSnapshot,omitempty"`
 }
 
 // ContinuousArchivingConfiguration configures continuous binary-log (binlog)

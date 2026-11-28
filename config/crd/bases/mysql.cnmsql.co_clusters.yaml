@@ -2518,6 +2518,59 @@ spec:
                     - primary
                     - prefer-standby
                     type: string
+                  volumeSnapshot:
+                    description: |-
+                      VolumeSnapshot configures Backups taken with method volumeSnapshot. It is
+                      required for that method: a snapshot Backup on a cluster without it fails
+                      with ClusterHasNoVolumeSnapshotSection.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Annotations are added to every VolumeSnapshot. Operator keys win on
+                          conflict.
+                        type: object
+                      className:
+                        description: |-
+                          ClassName is the VolumeSnapshotClass used for the instance data volume.
+                          Empty uses the default class for the volume's CSI driver.
+                        type: string
+                      deadline:
+                        description: |-
+                          Deadline bounds how long a snapshot Backup retries CSI errors and waits
+                          for the snapshot to be provisioned and ready before failing. Default 10m.
+                        type: string
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels are added to every VolumeSnapshot. Operator
+                          keys win on conflict.
+                        type: object
+                      lockTimeout:
+                        description: |-
+                          LockTimeout bounds how long the source instance holds the global read lock
+                          (online) or stays fenced (cold) waiting for the snapshot to be cut. When it
+                          elapses the instance releases on its own and the Backup fails. Default 2m.
+                        type: string
+                      online:
+                        description: |-
+                          Online selects how the source instance is quiesced for the cut. True holds
+                          a global read lock on the source while the snapshot is cut, which stalls
+                          writes on a primary target. False fences the source instance (mysqld
+                          stopped) for the cut. When unset on the Backup and the cluster, a Backup
+                          with spec.online: false is cold and every other one is online.
+                        type: boolean
+                      snapshotOwnerReference:
+                        description: |-
+                          SnapshotOwnerReference sets who owns the VolumeSnapshot objects: none (the
+                          default; they outlive the Backup and the Cluster), backup, or cluster.
+                        enum:
+                        - none
+                        - backup
+                        - cluster
+                        type: string
+                    type: object
                   xtrabackupOptions:
                     description: XtrabackupOptions are extra flags passed to xtrabackup.
                     items:

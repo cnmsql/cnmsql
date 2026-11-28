@@ -1321,8 +1321,10 @@ spec:
                 type: object
               online:
                 default: true
-                description: Online, when true, performs a non-blocking (hot) backup.
-                  Defaults to true.
+                description: |-
+                  Online, when true, performs a non-blocking (hot) backup. Defaults to true.
+                  For method volumeSnapshot, false takes a cold snapshot (the source
+                  instance is fenced for the cut); see spec.volumeSnapshot.online.
                 type: boolean
               reclaimPolicy:
                 default: Retain
@@ -1342,6 +1344,59 @@ spec:
                 - primary
                 - prefer-standby
                 type: string
+              volumeSnapshot:
+                description: |-
+                  VolumeSnapshot overrides the cluster's spec.backup.volumeSnapshot field by
+                  field for this Backup. Only valid with method: volumeSnapshot. A snapshot
+                  Backup ignores spec.objectStore and spec.jobTemplate: no worker Job runs.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Annotations are added to every VolumeSnapshot. Operator keys win on
+                      conflict.
+                    type: object
+                  className:
+                    description: |-
+                      ClassName is the VolumeSnapshotClass used for the instance data volume.
+                      Empty uses the default class for the volume's CSI driver.
+                    type: string
+                  deadline:
+                    description: |-
+                      Deadline bounds how long a snapshot Backup retries CSI errors and waits
+                      for the snapshot to be provisioned and ready before failing. Default 10m.
+                    type: string
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels are added to every VolumeSnapshot. Operator
+                      keys win on conflict.
+                    type: object
+                  lockTimeout:
+                    description: |-
+                      LockTimeout bounds how long the source instance holds the global read lock
+                      (online) or stays fenced (cold) waiting for the snapshot to be cut. When it
+                      elapses the instance releases on its own and the Backup fails. Default 2m.
+                    type: string
+                  online:
+                    description: |-
+                      Online selects how the source instance is quiesced for the cut. True holds
+                      a global read lock on the source while the snapshot is cut, which stalls
+                      writes on a primary target. False fences the source instance (mysqld
+                      stopped) for the cut. When unset on the Backup and the cluster, a Backup
+                      with spec.online: false is cold and every other one is online.
+                    type: boolean
+                  snapshotOwnerReference:
+                    description: |-
+                      SnapshotOwnerReference sets who owns the VolumeSnapshot objects: none (the
+                      default; they outlive the Backup and the Cluster), backup, or cluster.
+                    enum:
+                    - none
+                    - backup
+                    - cluster
+                    type: string
+                type: object
             required:
             - cluster
             type: object
@@ -1351,6 +1406,9 @@ spec:
             - message: a logical backup is always online
               rule: '!has(self.method) || self.method != ''logical'' || !has(self.online)
                 || self.online'
+            - message: 'volumeSnapshot is only valid with method: volumeSnapshot'
+              rule: '!has(self.volumeSnapshot) || (has(self.method) && self.method
+                == ''volumeSnapshot'')'
           status:
             description: status defines the observed state of Backup
             properties:
@@ -1744,6 +1802,12 @@ spec:
                 - bucket
                 - credentials
                 type: object
+              online:
+                description: |-
+                  Online records whether a volumeSnapshot Backup was taken under a read lock
+                  (true) or on a fenced instance (false). Only set for method
+                  volumeSnapshot.
+                type: boolean
               phase:
                 description: Phase is the current phase of the backup.
                 type: string
@@ -1757,6 +1821,54 @@ spec:
               stoppedAt:
                 format: date-time
                 type: string
+              volumeSnapshots:
+                description: |-
+                  VolumeSnapshots lists the snapshots this Backup produced, one per instance
+                  volume. Empty for other methods.
+                items:
+                  description: VolumeSnapshotStatus records one VolumeSnapshot a Backup
+                    produced.
+                  properties:
+                    className:
+                      description: |-
+                        ClassName is the VolumeSnapshotClass used, resolved at creation. Empty
+                        when the snapshot used the driver's default class.
+                      type: string
+                    creationTime:
+                      description: 'CreationTime mirrors status.creationTime: when
+                        the driver cut it.'
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name of the VolumeSnapshot, in the Backup's namespace.
+                      type: string
+                    pvcName:
+                      description: PVCName is the source claim.
+                      type: string
+                    readyToUse:
+                      description: ReadyToUse mirrors the snapshot's status.readyToUse.
+                      type: boolean
+                    restoreSize:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: |-
+                        RestoreSize mirrors status.restoreSize: the minimum PVC request that can
+                        restore it.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    volume:
+                      description: 'Volume is the role of the snapshotted volume:
+                        data.'
+                      type: string
+                  required:
+                  - name
+                  - volume
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         required:
         - spec

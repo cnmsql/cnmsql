@@ -991,6 +991,7 @@ func (spec *ClusterSpec) validateBackup(path *field.Path) field.ErrorList {
 		}
 	}
 	allErrs = append(allErrs, spec.Backup.ObjectStore.Validate(path.Child("objectStore"))...)
+	allErrs = append(allErrs, spec.Backup.VolumeSnapshot.Validate(path.Child("volumeSnapshot"))...)
 	if spec.Backup.ContinuousArchiving == nil {
 		return allErrs
 	}
