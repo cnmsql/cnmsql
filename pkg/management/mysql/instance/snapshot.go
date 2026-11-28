@@ -86,21 +86,27 @@ func ReadSnapshotManifest(dataDir string) (*SnapshotManifest, error) {
 	return &manifest, nil
 }
 
-// WriteSnapshotManifest writes manifest to dataDir durably: a temporary file,
-// fsync, rename, then an fsync of the directory, so the snapshot cut after the
-// call returns always holds the complete file.
+// WriteSnapshotManifest writes manifest to dataDir durably (see
+// writeDataDirFile), so the snapshot cut after the call returns always holds
+// the complete file.
 func WriteSnapshotManifest(dataDir string, manifest SnapshotManifest) error {
 	content, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(dataDir, SnapshotManifestFile)
-	tmp, err := os.CreateTemp(dataDir, "."+SnapshotManifestFile+".*")
+	return writeDataDirFile(dataDir, SnapshotManifestFile, append(content, '\n'))
+}
+
+// writeDataDirFile writes name under dataDir durably: a temporary file, fsync,
+// rename, then an fsync of the directory.
+func writeDataDirFile(dataDir, name string, content []byte) error {
+	target := filepath.Join(dataDir, name)
+	tmp, err := os.CreateTemp(dataDir, "."+strings.TrimPrefix(name, ".")+".*")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(append(content, '\n')); err != nil {
+	if _, err := tmp.Write(content); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -220,6 +226,7 @@ func (c *Controller) SnapshotState() webserver.SnapshotState {
 	if c.supervisor != nil {
 		state.MysqldStopped = c.supervisor.Pid() == 0
 	}
+	state.Cold = c.coldSnapshotStatus()
 	return state
 }
 
@@ -236,6 +243,12 @@ func (c *Controller) BeginSnapshot(
 	}
 	if req.BackupName == "" {
 		return nil, fmt.Errorf("%w: backupName is required", webserver.ErrInvalidSnapshotRequest)
+	}
+	if req.Cold {
+		if err := c.armColdSnapshot(ctx, req.BackupName); err != nil {
+			return nil, err
+		}
+		return &webserver.SnapshotAnchor{}, nil
 	}
 	timeout := DefaultSnapshotHoldTimeout
 	if req.Timeout != "" {
@@ -347,8 +360,8 @@ func (c *Controller) replicaSQLThreadStatement(verb string) string {
 }
 
 // readSnapshotPosition reads the GTID position, binlog coordinates and server
-// version on the held connection.
-func (c *Controller) readSnapshotPosition(ctx context.Context, conn *sql.Conn) (webserver.SnapshotAnchor, error) {
+// version on the held connection, or on the control pool for a cold capture.
+func (c *Controller) readSnapshotPosition(ctx context.Context, conn rowQueryer) (webserver.SnapshotAnchor, error) {
 	anchor := webserver.SnapshotAnchor{Flavor: string(engine.FlavorMySQL), ServerVersion: c.versionStr}
 	gtidQuery := "SELECT @@GLOBAL.gtid_executed"
 	statusQuery := "SHOW MASTER STATUS"
@@ -381,6 +394,12 @@ func (c *Controller) readSnapshotPosition(ctx context.Context, conn *sql.Conn) (
 // queryer runs a query on a connection or a pool.
 type queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// rowQueryer also reads single rows.
+type rowQueryer interface {
+	queryer
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // readBinlogStatus reads File and Position from SHOW BINARY LOG STATUS / SHOW
@@ -422,11 +441,15 @@ func readBinlogStatus(ctx context.Context, conn queryer, query string) (string, 
 	return file, pos, rows.Err()
 }
 
-// EndSnapshot releases the hold for req.BackupName.
+// EndSnapshot releases the hold for req.BackupName, or clears its cold
+// capture.
 func (c *Controller) EndSnapshot(ctx context.Context, req webserver.SnapshotEndRequest) error {
 	c.snapshotMu.Lock()
 	defer c.snapshotMu.Unlock()
 	if c.hold == nil || c.hold.backupName != req.BackupName {
+		if cleared, err := c.clearColdSnapshot(ctx, req.BackupName); cleared || err != nil {
+			return err
+		}
 		if _, ok := c.expiredHolds[req.BackupName]; ok {
 			return webserver.ErrSnapshotHoldExpired
 		}

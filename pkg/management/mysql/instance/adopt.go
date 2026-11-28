@@ -38,9 +38,11 @@ import (
 const adoptSentinel = ".cnmsql-adopted"
 
 // adoptLeftovers are the files of the source instance that must not survive a
-// clone: its process and socket files, its corruption record, and its replay
-// and adoption sentinels, which would skip this restore's own steps.
-var adoptLeftovers = []string{"*.pid", "*.sock", "*.sock.lock", corruptionMarker, pitrSentinelFile, adoptSentinel}
+// clone: its process and socket files, its corruption record, its replay and
+// adoption sentinels, which would skip this restore's own steps, and the
+// cold-snapshot capture record, which would hold replication on its start.
+var adoptLeftovers = []string{"*.pid", "*.sock", "*.sock.lock", corruptionMarker, pitrSentinelFile, adoptSentinel,
+	coldSnapshotFile}
 
 // adoptVolume bootstraps a data directory restored from a VolumeSnapshot
 // (design 045). The copy is already in place, so unlike Restore nothing is
@@ -168,11 +170,8 @@ func ensureAdoptAnchor(ctx context.Context, opts *RestoreOptions, eng engine.Eng
 func deriveAnchor(ctx context.Context, opts *RestoreOptions, eng engine.Engine) (engine.BinlogInfo, string, error) {
 	log := logf.FromContext(ctx).WithName("instance-adopt")
 	v := restoredServerVersion(opts.Version)
-	skipStart := "--skip-slave-start"
-	if eng.UsesReplicaTerminology(v) {
-		skipStart = "--skip-replica-start"
-	}
-	args := append(temporaryServerArgs(opts.ConfigFile, opts.DataDir, opts.Socket), "--skip-grant-tables", skipStart)
+	args := append(temporaryServerArgs(opts.ConfigFile, opts.DataDir, opts.Socket),
+		"--skip-grant-tables", skipReplicaStartArg(eng, v))
 	stdout, stderr := newProcessLogWriters(log.WithName("temporary-mysqld"))
 	sup := NewProcessSupervisor(opts.MysqldPath, args, WithShutdownTimeout(opts.ReadyTimeout), WithOutput(stdout, stderr))
 	log.Info("Starting temporary mysqld to read a cold snapshot's anchor", "socket", opts.Socket)

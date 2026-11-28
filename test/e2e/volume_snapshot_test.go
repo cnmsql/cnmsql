@@ -225,6 +225,9 @@ func volumeSnapshotSpecs(f forkFlavor, prefix string) {
 		got, err := backupField(backup, "{.status.online}")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(Equal("false"))
+		anchor, err := backupField(backup, "{.status.endGTID}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(anchor).NotTo(BeEmpty(), "a cold snapshot records the anchor read on the replica's next start")
 
 		instance, err := backupField(backup, "{.status.instanceName}")
 		Expect(err).NotTo(HaveOccurred())

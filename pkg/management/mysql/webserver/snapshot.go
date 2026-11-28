@@ -31,6 +31,12 @@ type SnapshotBeginRequest struct {
 	// Timeout bounds the hold (a Go duration). When it elapses the instance
 	// releases the lock on its own. Empty takes DefaultSnapshotHoldTimeout.
 	Timeout string `json:"timeout,omitempty"`
+	// Cold arms the capture of a cold snapshot's anchor instead of taking a
+	// hold: the instance must be fenced with mysqld stopped. Its next mysqld
+	// start holds replication, reads the position (which is the snapshot's,
+	// since nothing ran in between), then resumes replication. The anchor is
+	// reported by GET /cluster/snapshot and cleared by end.
+	Cold bool `json:"cold,omitempty"`
 }
 
 // SnapshotEndRequest is the JSON body of POST /cluster/snapshot/end.
@@ -69,6 +75,19 @@ type SnapshotState struct {
 	// exited. A cold snapshot is cut only once both are true.
 	Fenced        bool `json:"fenced"`
 	MysqldStopped bool `json:"mysqldStopped"`
+	// Cold is the armed cold-snapshot capture, nil when none.
+	Cold *ColdSnapshotStatus `json:"cold,omitempty"`
+}
+
+// ColdSnapshotStatus is the state of a cold snapshot's anchor capture.
+type ColdSnapshotStatus struct {
+	BackupName string `json:"backupName"`
+	// Anchor is the position read on the first start after the cut, nil until
+	// it is read.
+	Anchor *SnapshotAnchor `json:"anchor,omitempty"`
+	// Error is set when the capture gave up; the restore derives the anchor
+	// from the snapshot instead.
+	Error string `json:"error,omitempty"`
 }
 
 // SnapshotQuiescer holds an instance consistent while a volume snapshot is cut.
@@ -90,6 +109,8 @@ var (
 	// ErrSnapshotHoldExpired (410): the hold for this Backup timed out and was
 	// released before end, so the snapshot may postdate the anchor.
 	ErrSnapshotHoldExpired = errors.New("the snapshot hold expired before it was ended")
+	// ErrSnapshotNotStopped (409): a cold capture was armed while mysqld runs.
+	ErrSnapshotNotStopped = errors.New("the instance is not fenced with mysqld stopped")
 	// ErrInvalidSnapshotRequest (400): a malformed request.
 	ErrInvalidSnapshotRequest = errors.New("invalid snapshot request")
 )
@@ -138,7 +159,7 @@ func snapshotStateHandler(q SnapshotQuiescer) http.HandlerFunc {
 func writeSnapshotError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, ErrSnapshotHoldConflict):
+	case errors.Is(err, ErrSnapshotHoldConflict), errors.Is(err, ErrSnapshotNotStopped):
 		status = http.StatusConflict
 	case errors.Is(err, ErrSnapshotNotHeld):
 		status = http.StatusNotFound

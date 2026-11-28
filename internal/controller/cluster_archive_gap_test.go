@@ -110,6 +110,22 @@ func TestArchiveGapCondition(t *testing.T) {
 	}
 }
 
+// A cold volume snapshot whose anchor could not be read is newer than the
+// backup that holds the gap: it must not make the gap look open.
+func TestArchiveGapIgnoresASnapshotWithoutAnAnchor(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	cluster := gapCluster(gapUUID + ":101-150")
+	cold := completedBackup("cold", "", now)
+	cold.Spec.Method = mysqlv1alpha1.BackupMethodVolumeSnapshot
+	r := gapReconciler(t, completedBackup("old", gapUUID+":1-170", now.Add(-time.Hour)), cold)
+	r.applyArchiveGapCondition(ctx, cluster)
+	cond := apimeta.FindStatusCondition(cluster.Status.Conditions, mysqlv1alpha1.ConditionArchiveGap)
+	if cond == nil || cond.Status != metav1.ConditionFalse || !strings.Contains(cond.Message, "(old)") {
+		t.Fatalf("condition = %+v, want False, judged by the backup with a known anchor", cond)
+	}
+}
+
 // On the transition to True the operator warns and takes a base backup, once.
 func TestArchiveGapTakesABackup(t *testing.T) {
 	ctx := context.Background()

@@ -64,6 +64,30 @@ func TestDetachedStartWritesInheritedOutput(t *testing.T) {
 	}
 }
 
+func TestDetachedStartArgsAreEvaluatedOnEachStart(t *testing.T) {
+	out := openOutFile(t)
+	extra := []string{"first"}
+	// sh -c 'echo "$0"' prints the argument after the script.
+	s := NewDetachedSupervisor("/bin/sh", []string{"-c", `echo "$0"`}, WithFileOutput(out, out),
+		WithStartArgs(func() []string { return extra }))
+	for _, want := range []string{"first", "second"} {
+		extra = []string{want}
+		if err := s.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if err := s.Wait(); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+	}
+	data, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := string(data); got != "first\nsecond\n" {
+		t.Errorf("output = %q, want each start's own argument", got)
+	}
+}
+
 func TestDetachedWritesAndRemovesPIDFile(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "mysqld.pid")
 	s := NewDetachedSupervisor("/bin/sleep", []string{"60"},

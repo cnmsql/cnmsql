@@ -299,7 +299,7 @@ func (r *BackupReconciler) continueVolumeSnapshot(
 		elapsed = time.Since(backup.Status.StartedAt.Time)
 	}
 	if snapshotProgressReason(backup) == reasonSnapshotProvisioned {
-		return r.awaitSnapshotReady(ctx, backup, snap, cfg, elapsed)
+		return r.awaitSnapshotReady(ctx, backup, cluster, snap, cfg, elapsed)
 	}
 
 	// The source is held from here to the finalize step, bounded on both
@@ -416,7 +416,21 @@ func (r *BackupReconciler) prepareSnapshotSource(
 		logf.FromContext(ctx).V(1).Info("Could not read the instance snapshot state", "error", err.Error())
 		return nil, false, nil
 	}
-	return nil, state.Fenced && state.MysqldStopped, nil
+	if !state.Fenced || !state.MysqldStopped {
+		return nil, false, nil
+	}
+	// Arm the capture of the anchor: the instance's next mysqld start holds
+	// replication and reads the position, which is the snapshot's since
+	// nothing runs in between. Armed before the cut, and checked still
+	// pending before the release, so a start in between is caught.
+	if _, err := r.snapshotControl().BeginSnapshot(ctx, cluster, instance, webserver.SnapshotBeginRequest{
+		BackupName: backup.Name,
+		Cold:       true,
+	}); err != nil {
+		logf.FromContext(ctx).V(1).Info("Could not arm the cold snapshot anchor capture", "error", err.Error())
+		return nil, false, nil
+	}
+	return nil, true, nil
 }
 
 // createVolumeSnapshot creates the data volume's VolumeSnapshot (step 2). An
@@ -502,8 +516,13 @@ func (r *BackupReconciler) finalizeVolumeSnapshot(
 			// Transient: retried, bounded by the lock timeout.
 			return ctrl.Result{}, fmt.Errorf("releasing the snapshot hold on %s: %w", instance, err)
 		}
-	} else if err := r.unfenceSnapshotSource(ctx, backup.Namespace, instance, backup.Name); err != nil {
-		return ctrl.Result{}, err
+	} else {
+		if err := r.checkColdCapture(ctx, backup, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.unfenceSnapshotSource(ctx, backup.Namespace, instance, backup.Name); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	annotations := map[string]string{snapshotOnlineAnnotation: fmt.Sprintf("%t", online)}
@@ -545,12 +564,16 @@ func (r *BackupReconciler) finalizeVolumeSnapshot(
 // awaitSnapshotReady waits for readyToUse (step 5) and completes the Backup
 // (step 6).
 func (r *BackupReconciler) awaitSnapshotReady(
-	ctx context.Context, backup *mysqlv1alpha1.Backup, snap *snapshotv1.VolumeSnapshot,
-	cfg resolvedSnapshotConfig, elapsed time.Duration,
+	ctx context.Context, backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster,
+	snap *snapshotv1.VolumeSnapshot, cfg resolvedSnapshotConfig, elapsed time.Duration,
 ) (ctrl.Result, error) {
 	if snap == nil {
 		return ctrl.Result{}, r.failVolumeSnapshot(ctx, backup, reasonSnapshotMissing,
 			fmt.Sprintf("VolumeSnapshot %s disappeared before it was ready to use", backup.Name))
+	}
+	waiting, err := r.recordColdAnchor(ctx, backup, cluster, snap, elapsed > cfg.Deadline)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	entry := snapshotStatusEntry(backup, snap)
 	ready := snap.Status != nil && snap.Status.ReadyToUse != nil && *snap.Status.ReadyToUse
@@ -567,6 +590,9 @@ func (r *BackupReconciler) awaitSnapshotReady(
 			}
 		}
 		return ctrl.Result{RequeueAfter: snapshotReadyPoll}, nil
+	}
+	if waiting {
+		return ctrl.Result{RequeueAfter: snapshotHoldPoll}, nil
 	}
 
 	now := metav1.Now()
@@ -623,6 +649,15 @@ func (r *BackupReconciler) releaseSnapshotSource(ctx context.Context, backup *my
 		return nil
 	}
 	if !snapshotOnline(backup) {
+		// A failed Backup needs no anchor: clear the capture before the
+		// release, so the restart does not hold replication for it.
+		if cluster != nil {
+			if err := r.snapshotControl().EndSnapshot(ctx, cluster, instance,
+				webserver.SnapshotEndRequest{BackupName: backup.Name}); err != nil &&
+				!errors.Is(err, webserver.ErrSnapshotNotHeld) {
+				logf.FromContext(ctx).V(1).Info("Could not clear the cold snapshot anchor capture", "error", err.Error())
+			}
+		}
 		return r.unfenceSnapshotSource(ctx, backup.Namespace, instance, backup.Name)
 	}
 	if cluster == nil {
@@ -936,4 +971,99 @@ func (r *BackupReconciler) event(obj *mysqlv1alpha1.Backup, eventType, reason, m
 	if r.Recorder != nil {
 		r.Recorder.Event(obj, eventType, reason, message)
 	}
+}
+
+// checkColdCapture runs before a cold snapshot's source is released. The
+// capture armed before the cut must still be pending: an anchor (or a given-up
+// capture) already there means mysqld started after the arm, possibly before
+// the cut, so the position it read may not be the snapshot's. Such a capture
+// is cleared, and the Backup completes without an anchor (the restore derives
+// it from the snapshot). Errors are transient and retried until the lock
+// timeout.
+func (r *BackupReconciler) checkColdCapture(ctx context.Context, backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster) error {
+	instance := backup.Status.InstanceName
+	state, err := r.snapshotControl().SnapshotState(ctx, cluster, instance)
+	if err != nil {
+		return fmt.Errorf("reading the snapshot state of %s: %w", instance, err)
+	}
+	cold := state.Cold
+	if cold == nil || cold.BackupName != backup.Name || (cold.Anchor == nil && cold.Error == "") {
+		return nil
+	}
+	logf.FromContext(ctx).Info("Discarding a cold snapshot anchor read before the release; mysqld started after the capture was armed",
+		"backup", backup.Name, "instance", instance)
+	err = r.snapshotControl().EndSnapshot(ctx, cluster, instance, webserver.SnapshotEndRequest{BackupName: backup.Name})
+	if err != nil && !errors.Is(err, webserver.ErrSnapshotNotHeld) {
+		return fmt.Errorf("clearing the cold snapshot anchor capture on %s: %w", instance, err)
+	}
+	return nil
+}
+
+// recordColdAnchor copies a cold snapshot's anchor to the Backup once the
+// source has read it on its first start after the cut, and clears the
+// capture. It reports whether completion must wait for it: only while the
+// capture is still pending (or the instance unreachable) and the deadline has
+// not passed. A capture that is gone, discarded or given up completes the
+// Backup without an anchor.
+func (r *BackupReconciler) recordColdAnchor(
+	ctx context.Context, backup *mysqlv1alpha1.Backup, cluster *mysqlv1alpha1.Cluster,
+	snap *snapshotv1.VolumeSnapshot, pastDeadline bool,
+) (bool, error) {
+	if snapshotOnline(backup) || backup.Status.EndGTID != "" || cluster == nil {
+		return false, nil
+	}
+	log := logf.FromContext(ctx).WithValues("backup", backup.Name, "instance", backup.Status.InstanceName)
+	instance := backup.Status.InstanceName
+	state, err := r.snapshotControl().SnapshotState(ctx, cluster, instance)
+	if err != nil {
+		if pastDeadline {
+			log.Info("Completing a cold snapshot without its anchor; the instance did not answer before the deadline",
+				"error", err.Error())
+			return false, nil
+		}
+		return true, nil
+	}
+	cold := state.Cold
+	switch {
+	case cold == nil || cold.BackupName != backup.Name:
+		return false, nil
+	case cold.Error != "":
+		log.Info("Completing a cold snapshot without its anchor; the instance could not read it", "error", cold.Error)
+	case cold.Anchor == nil:
+		if !pastDeadline {
+			return true, nil
+		}
+		log.Info("Completing a cold snapshot without its anchor; it was not read before the deadline")
+	default:
+		anchor := cold.Anchor
+		binlog := ""
+		if anchor.BinlogFile != "" {
+			binlog = fmt.Sprintf("%s:%d", anchor.BinlogFile, anchor.BinlogPos)
+		}
+		annotations := map[string]string{snapshotAnchorGTIDAnnotation: anchor.AnchorGTID}
+		if binlog != "" {
+			annotations[snapshotAnchorBinlogAnnotation] = binlog
+		}
+		if anchor.ServerVersion != "" {
+			annotations[snapshotServerVersionAnnotation] = anchor.ServerVersion
+		}
+		if err := r.annotateSnapshot(ctx, snap, annotations); err != nil {
+			return false, err
+		}
+		if err := r.patchBackupStatus(ctx, backup, func(status *mysqlv1alpha1.BackupStatus) {
+			status.BeginGTID, status.EndGTID = anchor.AnchorGTID, anchor.AnchorGTID
+			status.BeginBinlog, status.EndBinlog = binlog, binlog
+		}); err != nil {
+			return false, err
+		}
+		backup.Status.BeginGTID, backup.Status.EndGTID = anchor.AnchorGTID, anchor.AnchorGTID
+		backup.Status.BeginBinlog, backup.Status.EndBinlog = binlog, binlog
+		log.Info("Recorded the anchor of a cold volume snapshot", "anchorGTID", anchor.AnchorGTID, "binlog", binlog)
+	}
+	// Not clearing it only leaves a record that no longer holds replication.
+	if err := r.snapshotControl().EndSnapshot(ctx, cluster, instance,
+		webserver.SnapshotEndRequest{BackupName: backup.Name}); err != nil && !errors.Is(err, webserver.ErrSnapshotNotHeld) {
+		log.V(1).Info("Could not clear the cold snapshot anchor capture", "error", err.Error())
+	}
+	return false, nil
 }

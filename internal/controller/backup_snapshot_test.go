@@ -272,8 +272,12 @@ func TestVolumeSnapshotColdBackupFencesTheSource(t *testing.T) {
 	if getSnapshot(t, r, backup.Name).Annotations[snapshotOnlineAnnotation] != "false" {
 		t.Fatal("cold snapshot not marked offline")
 	}
+	if len(snapshots.begins) != 1 || !snapshots.begins[0].Cold || snapshots.begins[0].BackupName != backup.Name {
+		t.Fatalf("cold anchor capture not armed before the cut: %+v", snapshots.begins)
+	}
 
 	provisionSnapshot(t, r, backup.Name, true)
+	snapshots.state.Cold = &webserver.ColdSnapshotStatus{BackupName: backup.Name}
 	reconcileBackup(t, r, backup) // release
 	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "demo-2"}, pod); err != nil {
 		t.Fatal(err)
@@ -284,16 +288,109 @@ func TestVolumeSnapshotColdBackupFencesTheSource(t *testing.T) {
 	if _, ok := pod.Annotations[snapshotFenceAnnotation]; ok {
 		t.Fatalf("fence marker left behind: %v", pod.Annotations)
 	}
-	reconcileBackup(t, r, backup) // complete
+	if len(snapshots.ends) != 0 {
+		t.Fatalf("a pending capture was cleared at the release: %+v", snapshots.ends)
+	}
+
+	// Ready, but the instance has not read the anchor yet: completion waits.
+	reconcileBackup(t, r, backup)
+	if got := getSnapshotBackup(t, r, backup.Name); got.Status.Phase == mysqlv1alpha1.BackupPhaseCompleted {
+		t.Fatal("cold snapshot completed before its anchor was read")
+	}
+
+	snapshots.state = webserver.SnapshotState{Cold: &webserver.ColdSnapshotStatus{
+		BackupName: backup.Name,
+		Anchor:     &webserver.SnapshotAnchor{AnchorGTID: "uuid:1-42", BinlogFile: "binlog.000009", BinlogPos: 4},
+	}}
+	reconcileBackup(t, r, backup) // record the anchor and complete
 	done := getSnapshotBackup(t, r, backup.Name)
 	if done.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || done.Status.Online == nil || *done.Status.Online {
 		t.Fatalf("cold status = %+v", done.Status)
 	}
-	if done.Status.EndGTID != "" {
-		t.Fatalf("a cold snapshot recorded an anchor %q it cannot know", done.Status.EndGTID)
+	if done.Status.EndGTID != "uuid:1-42" || done.Status.BeginGTID != "uuid:1-42" || done.Status.EndBinlog != "binlog.000009:4" {
+		t.Fatalf("cold anchor not recorded: %+v", done.Status)
 	}
-	if len(snapshots.ends) != 0 {
-		t.Fatal("a cold snapshot ended a read lock")
+	if got := getSnapshot(t, r, backup.Name).Annotations[snapshotAnchorGTIDAnnotation]; got != "uuid:1-42" {
+		t.Fatalf("cold anchor annotation = %q", got)
+	}
+	if len(snapshots.ends) != 1 || snapshots.ends[0].BackupName != backup.Name {
+		t.Fatalf("cold capture not cleared after it was recorded: %+v", snapshots.ends)
+	}
+}
+
+// coldBackupAtRelease runs a cold snapshot up to the pass that releases the
+// source, with the capture state the instance reports at that pass.
+func coldBackupAtRelease(t *testing.T, cold *webserver.ColdSnapshotStatus) (*BackupReconciler, *fakeSnapshotClient, *mysqlv1alpha1.Backup) {
+	t.Helper()
+	snapshots := &fakeSnapshotClient{}
+	backup := snapshotBackup()
+	backup.Spec.Online = new(false)
+	objs := append(snapshotVolumeObjects(), snapshotCluster(), backup, readyReplicaPod())
+	r := newSnapshotReconciler(t, snapshots, objs...)
+	reconcileBackup(t, r, backup) // finalizer
+	reconcileBackup(t, r, backup) // fence
+	snapshots.state = webserver.SnapshotState{Fenced: true, MysqldStopped: true}
+	reconcileBackup(t, r, backup) // arm and cut
+	provisionSnapshot(t, r, backup.Name, true)
+	snapshots.state.Cold = cold
+	reconcileBackup(t, r, backup) // release
+	return r, snapshots, backup
+}
+
+func TestVolumeSnapshotColdDiscardsAnAnchorReadBeforeTheRelease(t *testing.T) {
+	t.Parallel()
+	// mysqld started after the arm (a manager restart): the position it read
+	// may postdate the cut.
+	r, snapshots, backup := coldBackupAtRelease(t, &webserver.ColdSnapshotStatus{
+		BackupName: "backup-sample",
+		Anchor:     &webserver.SnapshotAnchor{AnchorGTID: "uuid:1-99"},
+	})
+	if len(snapshots.ends) != 1 {
+		t.Fatalf("early capture not cleared at the release: %+v", snapshots.ends)
+	}
+	// The instance no longer reports a capture: complete without an anchor.
+	snapshots.state = webserver.SnapshotState{}
+	reconcileBackup(t, r, backup)
+	done := getSnapshotBackup(t, r, backup.Name)
+	if done.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || done.Status.EndGTID != "" {
+		t.Fatalf("status after a discarded capture = %+v", done.Status)
+	}
+}
+
+func TestVolumeSnapshotColdCompletesWithoutAnAnchorTheInstanceGaveUpOn(t *testing.T) {
+	t.Parallel()
+	r, snapshots, backup := coldBackupAtRelease(t, &webserver.ColdSnapshotStatus{BackupName: "backup-sample"})
+	snapshots.state = webserver.SnapshotState{Cold: &webserver.ColdSnapshotStatus{BackupName: backup.Name, Error: "boom"}}
+	reconcileBackup(t, r, backup)
+	done := getSnapshotBackup(t, r, backup.Name)
+	if done.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || done.Status.EndGTID != "" {
+		t.Fatalf("status after a given-up capture = %+v", done.Status)
+	}
+	if len(snapshots.ends) != 1 {
+		t.Fatalf("given-up capture not cleared: %+v", snapshots.ends)
+	}
+}
+
+func TestVolumeSnapshotColdStopsWaitingForTheAnchorAtTheDeadline(t *testing.T) {
+	t.Parallel()
+	r, snapshots, backup := coldBackupAtRelease(t, &webserver.ColdSnapshotStatus{BackupName: "backup-sample"})
+	reconcileBackup(t, r, backup)
+	if getSnapshotBackup(t, r, backup.Name).Status.Phase == mysqlv1alpha1.BackupPhaseCompleted {
+		t.Fatal("completed while the capture was pending")
+	}
+	latest := getSnapshotBackup(t, r, backup.Name)
+	past := metav1.NewTime(time.Now().Add(-time.Hour))
+	latest.Status.StartedAt = &past
+	if err := r.Status().Update(context.Background(), latest); err != nil {
+		t.Fatal(err)
+	}
+	reconcileBackup(t, r, backup)
+	done := getSnapshotBackup(t, r, backup.Name)
+	if done.Status.Phase != mysqlv1alpha1.BackupPhaseCompleted || done.Status.EndGTID != "" {
+		t.Fatalf("status past the deadline = %+v", done.Status)
+	}
+	if len(snapshots.ends) != 1 {
+		t.Fatalf("pending capture not cleared past the deadline: %+v", snapshots.ends)
 	}
 }
 

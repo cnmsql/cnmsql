@@ -355,14 +355,10 @@ func (o *RestoreOptions) reconcileRestoredServer(ctx context.Context, eng engine
 	args := temporaryServerArgs(o.ConfigFile, o.DataDir, o.Socket)
 	// Do not start replication on the temporary server: the restored metadata is
 	// about to be reset, and starting from it would reach for the backup source's
-	// host. The option was renamed slave→replica in 8.0.26.
-	skipStart := "--skip-slave-start"
-	if eng.UsesReplicaTerminology(restoredServerVersion(o.Version)) {
-		skipStart = "--skip-replica-start"
-	}
+	// host.
 	args = append(args,
 		"--skip-grant-tables",
-		skipStart,
+		skipReplicaStartArg(eng, restoredServerVersion(o.Version)),
 		// Suppress the binary log for the credential reset. The config file enables
 		// log_bin, so without this the ALTER USER / FLUSH statements would be written
 		// to the binlog and advance the restored server's GTID state past the base

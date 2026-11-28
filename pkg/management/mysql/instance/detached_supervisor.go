@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -43,6 +44,8 @@ type DetachedSupervisor struct {
 	pidFilePath     string
 	shutdownTimeout time.Duration
 	fifoLog         *FifoLog
+	// startArgs, when set, returns arguments appended to args on each Start.
+	startArgs func() []string
 
 	mu      sync.Mutex
 	pid     int           // the supervised process PID, 0 when not running
@@ -86,6 +89,13 @@ func WithFIFO(fl *FifoLog) DetachedOption {
 	}
 }
 
+// WithStartArgs sets a function whose result is appended to the arguments on
+// each Start, for a flag that only applies to some starts (the start after a
+// cold volume snapshot holds replication with --skip-replica-start).
+func WithStartArgs(fn func() []string) DetachedOption {
+	return func(s *DetachedSupervisor) { s.startArgs = fn }
+}
+
 // NewDetachedSupervisor builds a detached supervisor for the given binary and
 // arguments.
 func NewDetachedSupervisor(binary string, args []string, opts ...DetachedOption) *DetachedSupervisor {
@@ -125,7 +135,11 @@ func (s *DetachedSupervisor) Start(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cmd := exec.Command(s.binary, s.args...)
+	args := s.args
+	if s.startArgs != nil {
+		args = append(slices.Clone(s.args), s.startArgs()...)
+	}
+	cmd := exec.Command(s.binary, args...)
 	// Inherited *os.File targets: exec.Cmd passes the descriptor directly, so
 	// there is no pipe to break when the manager later re-execs.
 	cmd.Stdout = s.stdout
